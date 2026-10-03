@@ -14,10 +14,16 @@ ARG GOFLAGS=-p=2
 WORKDIR /app/teamgram-server
 COPY teamgram-server/ ./
 COPY proto/ /app/proto/
-RUN bash -e ./build.sh
+RUN for attempt in 1 2 3; do \
+      bash -e ./build.sh && exit 0; \
+      test "$attempt" -lt 3 || exit 1; \
+      sleep 3; \
+    done
 
-FROM ubuntu:latest AS teamgram-app
-RUN apt update -y && apt install -y ffmpeg psmisc && apt-get clean
+# Reuse the local ARM64 runtime layer used by the previous isolated stack. It
+# already contains ffmpeg, bash, and the process utilities needed by the
+# service entrypoints; only the freshly built Teamgram binaries are replaced.
+FROM teamgram-web-isolated-runtime:20260929-bff-05fe5dda AS teamgram-app
 WORKDIR /app
 COPY --from=builder /app/teamgram-server/teamgramd/ /app/
 RUN chmod +x /app/docker/entrypoint.sh /app/docker/entrypoint-web-isolated.sh
