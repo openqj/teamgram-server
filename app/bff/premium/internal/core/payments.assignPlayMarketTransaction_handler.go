@@ -25,8 +25,10 @@ import (
 // PaymentsAssignPlayMarketTransaction
 // payments.assignPlayMarketTransaction#dffd50d3 receipt:DataJSON purpose:InputStorePaymentPurpose = Updates;
 func (c *PremiumCore) PaymentsAssignPlayMarketTransaction(in *mtproto.TLPaymentsAssignPlayMarketTransaction) (*mtproto.Updates, error) {
-	// TODO: not impl
-	c.Logger.Errorf("payments.assignPlayMarketTransaction blocked, License key from https://teamgram.net required to unlock enterprise features.")
+	if in == nil || in.GetReceipt().GetData() == "" {
+		return nil, mtproto.ErrPaymentProviderInvalid
+	}
 
-	return nil, mtproto.ErrEnterpriseIsBlocked
+	// Receipt is not verified and Premium is not granted.
+	return nil, mtproto.ErrPaymentUnsupported
 }

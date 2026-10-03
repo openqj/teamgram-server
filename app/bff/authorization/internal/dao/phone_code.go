@@ -46,6 +46,7 @@ func (d *Dao) CreatePhoneCode(ctx context.Context,
 			SessionId:             sessionId,
 			PhoneNumberRegistered: phoneNumberRegistered,
 			PhoneCode:             random2.RandomNumeric(5),
+			PhoneCodeLength:       5,
 			PhoneCodeHash:         crypto.GenerateStringNonce(16),
 			PhoneCodeExpired:      int32(time.Now().Unix() + 3*60),
 			SentCodeType:          sendCodeType,
@@ -55,19 +56,7 @@ func (d *Dao) CreatePhoneCode(ctx context.Context,
 		}
 	}
 
-	if codeData, err = d.GetCachePhoneCode(ctx, authKeyId, phoneNumber); err != nil {
-		logx.WithContext(ctx).Errorf("getCachePhoneCode - error: %v", err)
-		err = mtproto.ErrInternalServerError
-		return
-	}
-	if codeData == nil {
-		codeData = newCodeData()
-	} else if sessionId != codeData.SessionId {
-		codeData.State = model.CodeStateSend
-		codeData.SessionId = sessionId
-	}
-
-	return
+	return newCodeData(), nil
 }
 
 func (d *Dao) GetPhoneCode(ctx context.Context,
@@ -93,6 +82,9 @@ func (d *Dao) GetPhoneCode(ctx context.Context,
 }
 
 func (d *Dao) DeletePhoneCode(ctx context.Context, authKeyId int64, phoneNumber, phoneCodeHash string) error {
+	if _, err := d.GetPhoneCode(ctx, authKeyId, phoneNumber, phoneCodeHash); err != nil {
+		return err
+	}
 	return d.DeleteCachePhoneCode(ctx, authKeyId, phoneNumber)
 }
 

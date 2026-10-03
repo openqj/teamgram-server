@@ -25,8 +25,16 @@ import (
 // HelpSaveAppLog
 // help.saveAppLog#6f02f748 events:Vector<InputAppEvent> = Bool;
 func (c *MiscellaneousCore) HelpSaveAppLog(in *mtproto.TLHelpSaveAppLog) (*mtproto.Bool, error) {
-	// TODO: not impl
-	c.Logger.Errorf("help.saveAppLog blocked, License key from https://teamgram.net required to unlock enterprise features.")
+	n := 0
+	if in != nil {
+		for _, ev := range in.GetEvents() {
+			if ev == nil || ev.GetType() == "" {
+				continue
+			}
+			n++
+		}
+	}
+	c.Logger.Infof("help.saveAppLog events=%d", n)
 
-	return nil, mtproto.ErrEnterpriseIsBlocked
+	return mtproto.BoolTrue, nil
 }

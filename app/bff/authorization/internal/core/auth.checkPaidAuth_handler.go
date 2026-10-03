@@ -25,8 +25,26 @@ import (
 // AuthCheckPaidAuth
 // auth.checkPaidAuth#56e59f9c phone_number:string phone_code_hash:string form_id:long = auth.SentCode;
 func (c *AuthorizationCore) AuthCheckPaidAuth(in *mtproto.TLAuthCheckPaidAuth) (*mtproto.Auth_SentCode, error) {
-	// TODO: not impl
-	c.Logger.Errorf("auth.checkPaidAuth blocked, License key from https://teamgram.net required to unlock enterprise features.")
+	if in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if c == nil {
+		return nil, mtproto.ErrMethodNotImpl
+	}
+	_, phoneNumber, err := checkPhoneNumberInvalid(in.GetPhoneNumber())
+	if err != nil {
+		c.Logger.Errorf("auth.checkPaidAuth - phone: %v", err)
+		return nil, mtproto.ErrPhoneNumberInvalid
+	}
+	if in.GetPhoneCodeHash() == "" {
+		c.Logger.Errorf("auth.checkPaidAuth - empty phone_code_hash")
+		return nil, mtproto.ErrPhoneCodeHashEmpty
+	}
 
-	return nil, mtproto.ErrEnterpriseIsBlocked
+	_ = phoneNumber
+	_ = in.GetFormId()
+	// No payment form/provider exists in this service. Do not manufacture a
+	// payment-required SentCode that a client could treat as an accepted flow.
+	c.Logger.Errorf("auth.checkPaidAuth - payment provider unavailable")
+	return nil, mtproto.ErrMethodNotImpl
 }

@@ -763,3 +763,29 @@ func (dao *ChatsDAO) SearchByQueryStringWithCB(ctx context.Context, q string, li
 
 	return
 }
+
+// SearchByQueryStringForUser returns only active basic groups the caller belongs to.
+func (dao *ChatsDAO) SearchByQueryStringForUser(ctx context.Context, userID int64, q string, limit int32) (rList []int64, err error) {
+	return dao.SearchByQueryStringForUserOffset(ctx, userID, q, 0, limit)
+}
+
+// SearchByQueryStringForUserOffset returns only active basic groups the caller
+// belongs to, starting after offset matching rows. Keeping the membership and
+// deactivation predicates in this query makes pagination use the same
+// authorization boundary as the first page.
+func (dao *ChatsDAO) SearchByQueryStringForUserOffset(ctx context.Context, userID int64, q string, offset int64, limit int32) (rList []int64, err error) {
+	query := `SELECT chats.id
+		FROM chats
+		INNER JOIN chat_participants ON chat_participants.chat_id = chats.id
+		WHERE chat_participants.user_id = ?
+		  AND chat_participants.state = 0
+		  AND chats.deactivated = 0
+		  AND chats.title LIKE ?
+		ORDER BY chats.id DESC
+		LIMIT ? OFFSET ?`
+	err = dao.db.QueryRowsPartial(ctx, &rList, query, userID, q, limit, offset)
+	if err != nil {
+		logx.WithContext(ctx).Errorf("select in SearchByQueryStringForUserOffset(_), error: %v", err)
+	}
+	return
+}

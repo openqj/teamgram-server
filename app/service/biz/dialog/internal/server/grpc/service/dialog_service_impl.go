@@ -498,6 +498,20 @@ func (s *Service) DialogToggleSavedDialogPin(ctx context.Context, request *dialo
 	return r, err
 }
 
+// DialogMarkSavedHistoryRead stores the cursor carried in read_inbox_max_id.
+func (s *Service) DialogMarkSavedHistoryRead(ctx context.Context, request *dialog.TLDialogInsertOrUpdateDialog) (*mtproto.Bool, error) {
+	c := core.New(ctx, s.svcCtx)
+	c.Logger.Debugf("dialog.markSavedHistoryRead - metadata: {%s}, request: {%s}", c.MD, request)
+
+	r, err := c.DialogMarkSavedHistoryRead(request)
+	if err != nil {
+		return nil, err
+	}
+
+	c.Logger.Debugf("dialog.markSavedHistoryRead - reply: {%s}", r)
+	return r, nil
+}
+
 // DialogReorderPinnedSavedDialogs
 // dialog.reorderPinnedSavedDialogs user_id:long force:Bool order:Vector<PeerUtil> = Bool;
 func (s *Service) DialogReorderPinnedSavedDialogs(ctx context.Context, request *dialog.TLDialogReorderPinnedSavedDialogs) (*mtproto.Bool, error) {

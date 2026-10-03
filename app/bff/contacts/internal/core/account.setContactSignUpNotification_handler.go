@@ -32,7 +32,11 @@ func (c *ContactsCore) AccountSetContactSignUpNotification(in *mtproto.TLAccount
 	})
 	if err != nil {
 		c.Logger.Errorf("account.setContactSignUpNotification - error: %v", err)
-		return mtproto.BoolFalse, nil
+		return nil, err
+	}
+	if rValue == nil || !mtproto.FromBool(rValue) {
+		c.Logger.Errorf("account.setContactSignUpNotification - error: user service did not acknowledge the write")
+		return nil, mtproto.ErrInternalServerError
 	}
 
 	return rValue, nil

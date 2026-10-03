@@ -30,6 +30,12 @@ import (
 // MessagesDeleteChatUser
 // messages.deleteChatUser#a2185cab flags:# revoke_history:flags.0?true chat_id:long user_id:InputUser = Updates;
 func (c *ChatsCore) MessagesDeleteChatUser(in *mtproto.TLMessagesDeleteChatUser) (*mtproto.Updates, error) {
+	if c == nil || c.MD == nil {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
+	if in == nil || in.GetChatId() <= 0 || in.GetUserId() == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
 	deleteUser := mtproto.FromInputUser(c.MD.UserId, in.UserId)
 
 	if !deleteUser.IsUser() || deleteUser.PeerId == 0 {
@@ -52,11 +58,18 @@ func (c *ChatsCore) MessagesDeleteChatUser(in *mtproto.TLMessagesDeleteChatUser)
 		c.Logger.Errorf("messages.deleteChatUser - error: %v", err)
 		return nil, err
 	}
-	c.svcCtx.Dao.DialogClient.DialogDeleteDialog(c.ctx, &dialog.TLDialogDeleteDialog{
+	if chat == nil || chat.GetChat() == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
+	if reply, deleteErr := c.svcCtx.Dao.DialogClient.DialogDeleteDialog(c.ctx, &dialog.TLDialogDeleteDialog{
 		UserId:   deleteUser.PeerId,
 		PeerType: mtproto.PEER_CHAT,
 		PeerId:   in.ChatId,
-	})
+	}); deleteErr != nil {
+		return nil, deleteErr
+	} else if reply == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
 
 	if c.MD.Client == "ios" || c.MD.Client == "android" {
 		chat.Walk(func(userId int64, participant *mtproto.ImmutableChatParticipant) error {
@@ -89,6 +102,9 @@ func (c *ChatsCore) MessagesDeleteChatUser(in *mtproto.TLMessagesDeleteChatUser)
 		if err != nil {
 			c.Logger.Errorf("messages.deleteChatUser - error: %v", err)
 			return nil, err
+		}
+		if replyUpdates == nil {
+			return nil, mtproto.ErrInternalServerError
 		}
 
 		updateChatParticipants := mtproto.MakeTLUpdateChatParticipants(&mtproto.Update{

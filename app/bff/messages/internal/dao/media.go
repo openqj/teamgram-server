@@ -8,6 +8,7 @@ package dao
 
 import (
 	"context"
+	"math/rand"
 	"time"
 
 	"github.com/teamgram/proto/mtproto"
@@ -223,36 +224,20 @@ func GetMessageMedia(ctx context.Context, d MediaHelper, userId, ownerId int64, 
 		}).To_MessageMedia()
 	case mtproto.Predicate_inputMediaPoll:
 		// inputMediaPoll#f94e5f1 flags:# poll:Poll correct_answers:flags.0?Vector<bytes> solution:flags.1?string solution_entities:flags.1?Vector<MessageEntity> = InputMedia;
-		//messageMedia = mtproto.MakeTLMessageMediaPoll(&mtproto.MessageMedia{
-		//	Poll:    media.Poll,
-		//	Results: nil,
-		//}).To_MessageMedia()
-		err = mtproto.ErrEnterpriseIsBlocked
-
+		messageMedia = mtproto.MakeTLMessageMediaPoll(&mtproto.MessageMedia{
+			Poll:    media.Poll,
+			Results: nil,
+		}).To_MessageMedia()
 	case mtproto.Predicate_inputMediaDice:
-		err = mtproto.ErrEnterpriseIsBlocked
-		//// inputMediaDice#e66fbf7b emoticon:string = InputMedia;
-		//if media.Emoticon == "🎲" {
-		//	messageMedia = mtproto.MakeTLMessageMediaDice(&mtproto.MessageMedia{
-		//		Value:    rand.Int31()%6 + 1,
-		//		Emoticon: media.Emoticon,
-		//	}).To_MessageMedia()
-		//} else if media.Emoticon == "🎯" {
-		//	messageMedia = mtproto.MakeTLMessageMediaDice(&mtproto.MessageMedia{
-		//		Value:    rand.Int31()%6 + 1,
-		//		Emoticon: media.Emoticon,
-		//	}).To_MessageMedia()
-		//} else if media.Emoticon == "🏀" {
-		//	messageMedia = mtproto.MakeTLMessageMediaDice(&mtproto.MessageMedia{
-		//		Value:    rand.Int31()%5 + 1,
-		//		Emoticon: media.Emoticon,
-		//	}).To_MessageMedia()
-		//} else {
-		//	messageMedia = mtproto.MakeTLMessageMediaDice(&mtproto.MessageMedia{
-		//		Value:    rand.Int31()%6 + 1,
-		//		Emoticon: media.Emoticon,
-		//	}).To_MessageMedia()
-		//}
+		// inputMediaDice#e66fbf7b emoticon:string = InputMedia;
+		value := rand.Int31()%6 + 1
+		if media.Emoticon == "🏀" {
+			value = rand.Int31()%5 + 1
+		}
+		messageMedia = mtproto.MakeTLMessageMediaDice(&mtproto.MessageMedia{
+			Value:    value,
+			Emoticon: media.Emoticon,
+		}).To_MessageMedia()
 
 	default:
 		err = mtproto.ErrMediaInvalid

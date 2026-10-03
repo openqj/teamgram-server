@@ -17,6 +17,7 @@ import (
 	"github.com/teamgram/marmota/pkg/net/ip"
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/proto/mtproto/rpc/metadata"
+	"github.com/teamgram/teamgram-server/app/bff/apifull/layer229"
 	bff_proxy_client "github.com/teamgram/teamgram-server/app/bff/bff/client"
 	"github.com/teamgram/teamgram-server/app/interface/session/internal/config"
 	authsession_client "github.com/teamgram/teamgram-server/app/service/authsession/client"
@@ -56,10 +57,14 @@ func New(c config.Config) *Dao {
 	}
 
 	d.watchGateway(c.GatewayClient)
+	wireLayer229(c, d.AuthsessionClient)
 
 	return d
 }
 
 func (d *Dao) InvokeContext(ctx context.Context, rpcMetaData *metadata.RpcMetadata, object mtproto.TLObject) (mtproto.TLObject, error) {
+	if reply, ok, err := layer229.Dispatch(ctx, rpcMetaData, object); ok {
+		return reply, err
+	}
 	return d.BFFProxyClient.InvokeContext(ctx, rpcMetaData, object)
 }

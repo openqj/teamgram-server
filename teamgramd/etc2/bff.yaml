@@ -1,5 +1,10 @@
 Name: bff.bff
 ListenOn: 0.0.0.0:20010
+DcId: 2
+# This isolated deployment is an explicitly shared authority for DC 1 and 2.
+# Leave this unset in a single-DC deployment so cross-DC transfers fail closed.
+KnownDcIds:
+  - 1
 Etcd:
   Hosts:
     - etcd:2379
@@ -24,6 +29,7 @@ Telemetry:
   
 KV:
   - Host: redis:6379
+MysqlDSN: teamgram:teamgram@tcp(mysql:3306)/teamgram?charset=utf8mb4&parseTime=true
 
 Code:
   Name: "none"

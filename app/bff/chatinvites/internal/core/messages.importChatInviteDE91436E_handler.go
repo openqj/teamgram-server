@@ -21,6 +21,7 @@ import (
 	"math/rand"
 
 	"github.com/teamgram/proto/mtproto"
+	"github.com/teamgram/teamgram-server/app/bff/apifull/channelview"
 	msgpb "github.com/teamgram/teamgram-server/app/messenger/msg/msg/msg"
 	"github.com/teamgram/teamgram-server/app/messenger/sync/sync"
 	chatpb "github.com/teamgram/teamgram-server/app/service/biz/chat/chat"
@@ -46,6 +47,18 @@ func (c *ChatInvitesCore) MessagesImportChatInviteDE91436E(in *mtproto.TLMessage
 		return nil, err
 	}
 
+	if chatpb.IsChannelInviteHash(in.Hash) {
+		updates, requestNeeded, err := channelview.ImportInvite(c.MD.UserId, in.Hash)
+		if err != nil {
+			return nil, err
+		}
+		if requestNeeded {
+			return nil, mtproto.ErrInviteRequestSent
+		}
+		return mtproto.MakeTLMessagesChatInviteJoinResultOk(&mtproto.Messages_ChatInviteJoinResult{
+			Updates: updates,
+		}).To_Messages_ChatInviteJoinResult(), nil
+	}
 	if !chatpb.IsChatInviteHash(in.Hash) {
 		err := mtproto.ErrInviteHashInvalid
 		c.Logger.Errorf("messages.importChatInvite - error: %v", err)

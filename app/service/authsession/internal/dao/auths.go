@@ -20,6 +20,8 @@ package dao
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"math/rand"
 	"strings"
@@ -38,6 +40,8 @@ import (
 const (
 	authDataPrefix = "auth_data.2"
 )
+
+var ErrAuthKeyOwnedByAnotherUser = errors.New("auth key is already owned by another user")
 
 func genAuthDataCacheKey(id int64) string {
 	return fmt.Sprintf("%s#%d", authDataPrefix, id)
@@ -239,7 +243,11 @@ func (d *Dao) GetAuthKeyUserId(ctx context.Context, authKeyId int64) int64 {
 	return cData.UserId()
 }
 
-func (d *Dao) BindAuthKeyUser(ctx context.Context, authKeyId int64, userId int64) int64 {
+func (d *Dao) BindAuthKeyUser(ctx context.Context, authKeyId int64, userId int64) (int64, error) {
+	if authKeyId == 0 || userId <= 0 {
+		return 0, fmt.Errorf("invalid auth key binding")
+	}
+
 	now := time.Now().Unix()
 	authUsersDO := &dataobject.AuthUsersDO{
 		AuthKeyId:   authKeyId,
@@ -249,34 +257,64 @@ func (d *Dao) BindAuthKeyUser(ctx context.Context, authKeyId int64, userId int64
 		DateActive:  now,
 	}
 
-	_, _, err := d.CachedConn.Exec(
-		ctx,
-		func(ctx context.Context, conn *sqlx.DB) (int64, int64, error) {
-			return d.AuthUsersDAO.InsertOrUpdates(ctx, authUsersDO)
-		},
-		genAuthDataCacheKey(authKeyId))
-	if err != nil {
-		return 0
+	txResult := sqlx.TxWrapper(ctx, d.DB, func(tx *sqlx.Tx, result *sqlx.StoreResult) {
+		var lockedAuthKeyID int64
+		if err := tx.QueryRow(&lockedAuthKeyID,
+			"SELECT auth_key_id FROM auth_key_infos WHERE auth_key_id = ? AND deleted = 0 FOR UPDATE",
+			authKeyId); err != nil {
+			result.Err = err
+			return
+		}
+
+		existing := new(dataobject.AuthUsersDO)
+		err := tx.QueryRowPartial(existing,
+			"SELECT id, auth_key_id, user_id, hash, date_created, date_active FROM auth_users WHERE auth_key_id = ? AND deleted = 0 LIMIT 1 FOR UPDATE",
+			authKeyId)
+		switch {
+		case err == nil:
+			if existing.UserId != userId {
+				result.Err = ErrAuthKeyOwnedByAnotherUser
+				return
+			}
+			authUsersDO.Hash = existing.Hash
+			authUsersDO.DateCreated = existing.DateCreated
+			return
+		case !errors.Is(err, sql.ErrNoRows):
+			result.Err = err
+			return
+		}
+
+		_, _, err = d.AuthUsersDAO.InsertOrUpdatesTx(tx, authUsersDO)
+		if sqlx.IsDuplicate(err) {
+			result.Err = ErrAuthKeyOwnedByAnotherUser
+			return
+		}
+		result.Err = err
+	})
+	if txResult.Err != nil {
+		return 0, txResult.Err
+	}
+	if err := d.CachedConn.DelCache(ctx, genAuthDataCacheKey(authKeyId)); err != nil {
+		return 0, err
 	}
 
-	return authUsersDO.Hash
+	return authUsersDO.Hash, nil
 }
 
-func (d *Dao) UnbindAuthUser(ctx context.Context, authKeyId int64, userId int64) bool {
-	var (
-		err error
-	)
-
+func (d *Dao) UnbindAuthUser(ctx context.Context, authKeyId int64, userId int64) error {
 	if authKeyId == 0 {
 		var (
 			idList []string
 		)
-		d.AuthUsersDAO.SelectAuthKeyIdsWithCB(
+		_, err := d.AuthUsersDAO.SelectAuthKeyIdsWithCB(
 			ctx,
 			userId,
 			func(sz, i int, v *dataobject.AuthUsersDO) {
 				idList = append(idList, genAuthDataCacheKey(v.AuthKeyId))
 			})
+		if err != nil {
+			return err
+		}
 		if len(idList) > 0 {
 			_, _, err = d.CachedConn.Exec(
 				ctx,
@@ -285,18 +323,19 @@ func (d *Dao) UnbindAuthUser(ctx context.Context, authKeyId int64, userId int64)
 					return 0, 0, err2
 				},
 				idList...)
+			return err
 		}
+		return nil
 	} else {
-		_, _, err = d.CachedConn.Exec(
+		_, _, err := d.CachedConn.Exec(
 			ctx,
 			func(ctx context.Context, conn *sqlx.DB) (int64, int64, error) {
 				_, err2 := d.AuthUsersDAO.Delete(ctx, authKeyId, userId)
 				return 0, 0, err2
 			},
 			genAuthDataCacheKey(authKeyId))
+		return err
 	}
-
-	return err == nil
 }
 
 func (d *Dao) SetClientSessionInfo(ctx context.Context, session *authsession.ClientSession) error {

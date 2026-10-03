@@ -21,13 +21,19 @@ package core
 import (
 	"github.com/teamgram/proto/mtproto"
 	userpb "github.com/teamgram/teamgram-server/app/service/biz/user/user"
+	"github.com/teamgram/teamgram-server/pkg/phonenumber"
 )
 
 // ContactsResolvePhone
 // contacts.resolvePhone#8af94344 phone:string = contacts.ResolvedPeer;
 func (c *UsersCore) ContactsResolvePhone(in *mtproto.TLContactsResolvePhone) (*mtproto.Contacts_ResolvedPeer, error) {
+	_, phone, err := phonenumber.CheckPhoneNumberInvalid(in.GetPhone())
+	if err != nil {
+		return nil, err
+	}
+
 	id, err := c.svcCtx.Dao.UserClient.UserGetUserIdByPhone(c.ctx, &userpb.TLUserGetUserIdByPhone{
-		Phone: in.GetPhone(),
+		Phone: phone,
 	})
 	if err != nil {
 		c.Logger.Errorf("contacts.resolvePhone - error: %v", err)

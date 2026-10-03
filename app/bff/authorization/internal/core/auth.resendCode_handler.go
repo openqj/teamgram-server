@@ -19,9 +19,12 @@
 package core
 
 import (
+	"time"
+
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/bff/authorization/internal/logic"
 	"github.com/teamgram/teamgram-server/app/bff/authorization/model"
+	verification "github.com/teamgram/teamgram-server/pkg/code"
 )
 
 /*
@@ -127,33 +130,14 @@ func (c *AuthorizationCore) AuthResendCode(in *mtproto.TLAuthResendCode) (*mtpro
 		phoneNumber,
 		in.PhoneCodeHash,
 		func(codeData2 *model.PhoneCodeTransaction) error {
-			//if codeData2.State == model.CodeStateSent {
-			//	return
-			//}
-
-			// 400	SMS_CODE_CREATE_FAILED	An error occurred while creating the SMS code
-			extraData, err2 := c.svcCtx.AuthLogic.VerifyCodeInterface.SendSmsVerifyCode(c.ctx, phoneNumber, codeData2.PhoneCode, codeData2.PhoneCodeHash)
-			if err2 != nil {
-				c.Logger.Errorf("sendSmsVerifyCode error: %v", err2)
-				return err2
+			codeData2.PhoneCodeExpired = int32(time.Now().Add(3 * time.Minute).Unix())
+			if _, issueErr := c.issuePhoneChallenge(codeData2, verification.ChannelSMS, challengePurposeAuthLogin, ""); issueErr != nil {
+				return issueErr
 			}
-
 			codeData2.SentCodeType = model.SentCodeTypeSms
-			codeData2.NextCodeType = model.CodeTypeSms
+			codeData2.NextCodeType = model.CodeTypeNone
 			codeData2.State = model.CodeStateSent
-			codeData2.PhoneCodeExtraData = extraData
-
 			return nil
-
-			//go func() {
-			//	if m.VerifyCodeInterface != nil {
-			//		m.VerifyCodeInterface.SendSmsVerifyCode(context.Background(), phoneNumber, codeData.PhoneCode, codeData.PhoneCodeHash)
-			//	}
-			//
-			//	// TODO(@benqi): after sendSms success, save codeData
-			//	codeData.State = model.CodeStateSent
-			//	m.AuthCore.UpdatePhoneCodeData(context.Background(), authKeyId, phoneNumber, codeData.PhoneCodeHash, codeData)
-			//}()
 		})
 	if err2 != nil {
 		c.Logger.Errorf("auth.resendCode - error: %v", err2)

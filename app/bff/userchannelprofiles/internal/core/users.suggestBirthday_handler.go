@@ -25,8 +25,13 @@ import (
 // UsersSuggestBirthday
 // users.suggestBirthday#fc533372 id:InputUser birthday:Birthday = Updates;
 func (c *UserChannelProfilesCore) UsersSuggestBirthday(in *mtproto.TLUsersSuggestBirthday) (*mtproto.Updates, error) {
-	// TODO: not impl
-	c.Logger.Errorf("users.suggestBirthday blocked, License key from https://teamgram.net required to unlock enterprise features.")
-
-	return nil, mtproto.ErrEnterpriseIsBlocked
+	if _, err := otherUserPeer(c.MD.UserId, in.GetId()); err != nil {
+		c.Logger.Errorf("users.suggestBirthday - error: %v", err)
+		return nil, err
+	}
+	if in.GetBirthday() == nil {
+		c.Logger.Errorf("users.suggestBirthday - error: empty birthday")
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	return nil, mtproto.ErrMethodNotImpl
 }

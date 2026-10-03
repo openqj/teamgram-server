@@ -291,13 +291,19 @@ func (m *Dao) GetDocumentListByIdList(ctx context.Context, idList []int64) []*mt
 	return append(documentList, missDocumentList...)
 }
 
-func (m *Dao) SaveDocumentV2(ctx context.Context, fileName string, document *mtproto.Document) {
+func (m *Dao) SaveDocumentV2(ctx context.Context, fileName string, document *mtproto.Document) error {
+	if document == nil || document.Id == 0 {
+		return mtproto.ErrMediaInvalid
+	}
 	var (
 		aStr string
 	)
 
 	if document.GetAttributes() != nil {
-		aBuf, _ := jsonx.Marshal(document.GetAttributes())
+		aBuf, err := jsonx.Marshal(document.GetAttributes())
+		if err != nil {
+			return err
+		}
 		aStr = hack.String(aBuf)
 	}
 
@@ -323,6 +329,7 @@ func (m *Dao) SaveDocumentV2(ctx context.Context, fileName string, document *mtp
 		data.VideoThumbId = document.Id
 	}
 
-	data.Id, _, _ = m.DocumentsDAO.Insert(ctx, data)
-	return
+	var err error
+	data.Id, _, err = m.DocumentsDAO.Insert(ctx, data)
+	return err
 }

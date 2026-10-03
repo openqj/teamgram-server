@@ -21,6 +21,7 @@ func (c *UserCore) UserDeletePeerSettings(in *user.TLUserDeletePeerSettings) (*m
 
 	if err != nil {
 		c.Logger.Errorf("user.deletePeerSettings - error: %v", err)
+		return nil, err
 	}
 
 	return mtproto.BoolTrue, nil

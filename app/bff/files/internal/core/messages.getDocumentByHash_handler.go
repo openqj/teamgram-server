@@ -19,14 +19,26 @@
 package core
 
 import (
+	"crypto/sha256"
+
 	"github.com/teamgram/proto/mtproto"
 )
 
 // MessagesGetDocumentByHash
 // messages.getDocumentByHash#338e2464 sha256:bytes size:int mime_type:string = Document;
 func (c *FilesCore) MessagesGetDocumentByHash(in *mtproto.TLMessagesGetDocumentByHash) (*mtproto.Document, error) {
-	// TODO: not impl
-	c.Logger.Errorf("messages.getDocumentByHash blocked, License key from https://teamgram.net required to unlock enterprise features.")
+	size := in.GetSize2_INT64()
+	if size == 0 {
+		size = int64(in.GetSize2_INT32())
+	}
+	if len(in.GetSha256()) != sha256.Size || in.GetMimeType() == "" || size < 0 {
+		c.Logger.Errorf("messages.getDocumentByHash - invalid request")
+		return nil, mtproto.ErrDocumentInvalid
+	}
 
-	return mtproto.MakeTLDocumentEmpty(nil).To_Document(), nil
+	// MediaGetDocument (messages.uploadMedia) is keyed by document id. The
+	// media and DFS services expose no authoritative sha256 lookup, so fail
+	// closed instead of returning documentEmpty as a successful response.
+	c.Logger.Errorf("messages.getDocumentByHash - hash lookup provider unavailable")
+	return nil, mtproto.ErrMethodNotImpl
 }

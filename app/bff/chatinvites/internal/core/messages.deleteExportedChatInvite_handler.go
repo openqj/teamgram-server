@@ -20,6 +20,7 @@ package core
 
 import (
 	"github.com/teamgram/proto/mtproto"
+	"github.com/teamgram/teamgram-server/app/bff/apifull/channelview"
 	chatpb "github.com/teamgram/teamgram-server/app/service/biz/chat/chat"
 )
 
@@ -31,20 +32,29 @@ func (c *ChatInvitesCore) MessagesDeleteExportedChatInvite(in *mtproto.TLMessage
 		err  error
 	)
 
-	if !peer.IsChat() {
+	if !peer.IsChat() && !peer.IsChannel() {
 		err = mtproto.ErrPeerIdInvalid
 		c.Logger.Errorf("messages.deleteExportedChatInvite - error: ", err)
 		return nil, err
 	}
 
-	_, err = c.svcCtx.Dao.ChatClient.ChatDeleteExportedChatInvite(c.ctx, &chatpb.TLChatDeleteExportedChatInvite{
-		SelfId: c.MD.UserId,
-		ChatId: peer.PeerId,
-		Link:   in.GetLink(),
-	})
-	if err != nil {
-		c.Logger.Errorf("messages.deleteExportedChatInvite - error: %v", err)
-		return nil, err
+	if peer.IsChannel() {
+		if _, err = channelview.ValidateInputPeer(c.MD.UserId, in.Peer); err != nil {
+			return nil, err
+		}
+		if err = channelview.DeleteExportedInvite(c.MD.UserId, peer.PeerId, in.GetLink()); err != nil {
+			return nil, err
+		}
+	} else {
+		_, err = c.svcCtx.Dao.ChatClient.ChatDeleteExportedChatInvite(c.ctx, &chatpb.TLChatDeleteExportedChatInvite{
+			SelfId: c.MD.UserId,
+			ChatId: peer.PeerId,
+			Link:   in.GetLink(),
+		})
+		if err != nil {
+			c.Logger.Errorf("messages.deleteExportedChatInvite - error: %v", err)
+			return nil, err
+		}
 	}
 
 	return mtproto.BoolTrue, nil

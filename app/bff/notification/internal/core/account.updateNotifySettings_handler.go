@@ -66,15 +66,33 @@ func (c *NotificationCore) AccountUpdateNotifySettings(in *mtproto.TLAccountUpda
 	case mtproto.PEER_CHATS:
 	case mtproto.PEER_BROADCASTS:
 	case mtproto.PEER_USER:
-		if users, err2 := c.svcCtx.Dao.UserClient.UserGetMutableUsers(c.ctx, &userpb.TLUserGetMutableUsers{
+		users, err2 := c.svcCtx.Dao.UserClient.UserGetMutableUsers(c.ctx, &userpb.TLUserGetMutableUsers{
 			Id: []int64{c.MD.UserId, peer.PeerId},
-		}); err2 != nil {
+		})
+		if err2 != nil {
+			c.Logger.Errorf("account.updateNotifySettings - load user error: %v", err2)
+			return nil, mtproto.ErrPeerIdInvalid
+		}
+		if users == nil {
+			err = mtproto.ErrPeerIdInvalid
 			c.Logger.Errorf("account.updateNotifySettings - error: %v", err)
-			err2 = mtproto.ErrPeerIdInvalid
-			return nil, err2
-		} else {
-			peerUser, _ = users.GetUnsafeUser(c.MD.UserId, peer.PeerId)
-			_ = peerUser
+			return nil, err
+		}
+		immutablePeerUser, ok := users.GetImmutableUser(peer.PeerId)
+		if !ok || immutablePeerUser == nil {
+			err = mtproto.ErrPeerIdInvalid
+			c.Logger.Errorf("account.updateNotifySettings - error: %v", err)
+			return nil, err
+		}
+		if immutablePeerUser.Deleted() {
+			err = mtproto.ErrInputUserDeactivated
+			c.Logger.Errorf("account.updateNotifySettings - error: %v", err)
+			return nil, err
+		}
+		peerUser, err2 = users.GetUnsafeUser(c.MD.UserId, peer.PeerId)
+		if err2 != nil {
+			c.Logger.Errorf("account.updateNotifySettings - make user error: %v", err2)
+			return nil, mtproto.ErrPeerIdInvalid
 		}
 	case mtproto.PEER_CHAT:
 		peerChat2, err2 := c.svcCtx.Dao.ChatClient.ChatGetMutableChat(c.ctx, &chat.TLChatGetMutableChat{
@@ -104,10 +122,6 @@ func (c *NotificationCore) AccountUpdateNotifySettings(in *mtproto.TLAccountUpda
 				c.Logger.Errorf("account.updateNotifySettings - error: %v", err)
 				return nil, err
 			}
-		} else {
-			c.Logger.Errorf("account.updateNotifySettings blocked, License key from https://teamgram.net required to unlock enterprise features.")
-
-			return nil, mtproto.ErrEnterpriseIsBlocked
 		}
 	default:
 		err = mtproto.ErrPeerIdInvalid
@@ -115,13 +129,18 @@ func (c *NotificationCore) AccountUpdateNotifySettings(in *mtproto.TLAccountUpda
 		return nil, err
 	}
 
-	_, err = c.svcCtx.Dao.UserClient.UserSetNotifySettings(c.ctx, &userpb.TLUserSetNotifySettings{
+	result, err := c.svcCtx.Dao.UserClient.UserSetNotifySettings(c.ctx, &userpb.TLUserSetNotifySettings{
 		UserId:   c.MD.UserId,
 		PeerType: peer.PeerType,
 		PeerId:   peer.PeerId,
 		Settings: settings,
 	})
 	if err != nil {
+		c.Logger.Errorf("account.updateNotifySettings - error: %v", err)
+		return nil, err
+	}
+	if result == nil || result.GetPredicateName() != mtproto.Predicate_boolTrue {
+		err = mtproto.ErrInternalServerError
 		c.Logger.Errorf("account.updateNotifySettings - error: %v", err)
 		return nil, err
 	}
@@ -141,11 +160,14 @@ func (c *NotificationCore) AccountUpdateNotifySettings(in *mtproto.TLAccountUpda
 		syncNotMeUpdates.AddSafeChat(peerChannel)
 	}
 
-	c.svcCtx.Dao.SyncClient.SyncUpdatesNotMe(c.ctx, &sync.TLSyncUpdatesNotMe{
+	if _, err = c.svcCtx.Dao.SyncClient.SyncUpdatesNotMe(c.ctx, &sync.TLSyncUpdatesNotMe{
 		UserId:        c.MD.UserId,
 		PermAuthKeyId: c.MD.PermAuthKeyId,
 		Updates:       syncNotMeUpdates,
-	})
+	}); err != nil {
+		c.Logger.Errorf("account.updateNotifySettings - sync update: %v", err)
+		return nil, err
+	}
 
 	// return
 	return mtproto.BoolTrue, nil

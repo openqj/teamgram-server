@@ -14,6 +14,7 @@
 // limitations under the License.
 //
 // Author: teamgramio (teamgram.io@gmail.com)
+//
 
 package core
 
@@ -24,8 +25,5 @@ import (
 // MessagesComposeRichMessageWithAI
 // messages.composeRichMessageWithAI#8d7ae6af flags:# proofread:flags.0?true emojify:flags.3?true text:flags.4?InputRichMessage translate_to_lang:flags.1?string tone:flags.2?InputAiComposeTone = messages.ComposedRichMessageWithAI;
 func (c *MessagesCore) MessagesComposeRichMessageWithAI(in *mtproto.TLMessagesComposeRichMessageWithAI) (*mtproto.Messages_ComposedRichMessageWithAI, error) {
-	// TODO: not impl
-	c.Logger.Errorf("messages.composeRichMessageWithAI blocked, License key from https://teamgram.net required to unlock enterprise features.")
-
-	return nil, mtproto.ErrEnterpriseIsBlocked
+	return nil, mtproto.ErrMethodNotImpl
 }

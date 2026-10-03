@@ -19,14 +19,32 @@
 package core
 
 import (
+	"encoding/json"
+
 	"github.com/teamgram/proto/mtproto"
+	"github.com/teamgram/teamgram-server/app/bff/apifull/persist"
 )
 
 // ChannelsSetMainProfileTab
 // channels.setMainProfileTab#3583fcb1 channel:InputChannel tab:ProfileTab = Bool;
 func (c *UserChannelProfilesCore) ChannelsSetMainProfileTab(in *mtproto.TLChannelsSetMainProfileTab) (*mtproto.Bool, error) {
-	// TODO: not impl
-	c.Logger.Errorf("channels.setMainProfileTab blocked, License key from https://teamgram.net required to unlock enterprise features.")
-
-	return nil, mtproto.ErrEnterpriseIsBlocked
+	channelID, err := c.requireChannelAdmin(in.GetChannel())
+	if err != nil {
+		c.Logger.Errorf("channels.setMainProfileTab - error: %v", err)
+		return nil, err
+	}
+	if in.GetTab() == nil {
+		c.Logger.Errorf("channels.setMainProfileTab - error: empty tab")
+		return nil, mtproto.ErrChannelInvalid
+	}
+	raw, err := json.Marshal(in.GetTab())
+	if err != nil {
+		c.Logger.Errorf("channels.setMainProfileTab - error: %v", err)
+		return nil, err
+	}
+	if err = persist.Default.Set(profileTabKey(channelID), string(raw)); err != nil {
+		c.Logger.Errorf("channels.setMainProfileTab - error: %v", err)
+		return nil, err
+	}
+	return mtproto.BoolTrue, nil
 }

@@ -11,14 +11,32 @@ package core
 
 import (
 	"github.com/teamgram/proto/mtproto"
+	"github.com/teamgram/teamgram-server/app/service/dfs/dfs"
 	"github.com/teamgram/teamgram-server/app/service/media/media"
 )
 
 // MediaUploadWallPaperFile
 // media.uploadWallPaperFile owner_id:long file:InputFile mime_type:string admin:Bool = Document;
 func (c *MediaCore) MediaUploadWallPaperFile(in *media.TLMediaUploadWallPaperFile) (*mtproto.Document, error) {
-	// TODO: not impl
-	c.Logger.Errorf("media.uploadWallPaperFile blocked, License key from https://teamgram.net required to unlock enterprise features.")
+	if in == nil || in.GetFile() == nil {
+		return nil, mtproto.ErrWallpaperFileInvalid
+	}
 
-	return nil, mtproto.ErrEnterpriseIsBlocked
+	document, err := c.svcCtx.Dao.DfsClient.DfsUploadWallPaperFile(c.ctx, &dfs.TLDfsUploadWallPaperFile{
+		Creator:  in.GetOwnerId(),
+		File:     in.GetFile(),
+		MimeType: in.GetMimeType(),
+		Admin:    in.GetAdmin(),
+	})
+	if err != nil {
+		c.Logger.Errorf("media.uploadWallPaperFile - error: %v", err)
+		return nil, err
+	}
+	if document == nil {
+		return nil, mtproto.ErrMediaInvalid
+	}
+	if err = c.svcCtx.Dao.SaveDocumentV2(c.ctx, in.GetFile().GetName(), document); err != nil {
+		return nil, err
+	}
+	return document, nil
 }

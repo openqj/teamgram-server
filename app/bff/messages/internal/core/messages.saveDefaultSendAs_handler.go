@@ -19,14 +19,30 @@
 package core
 
 import (
+	"fmt"
+
 	"github.com/teamgram/proto/mtproto"
+	"github.com/teamgram/teamgram-server/app/bff/apifull/persist"
 )
 
 // MessagesSaveDefaultSendAs
 // messages.saveDefaultSendAs#ccfddf96 peer:InputPeer send_as:InputPeer = Bool;
 func (c *MessagesCore) MessagesSaveDefaultSendAs(in *mtproto.TLMessagesSaveDefaultSendAs) (*mtproto.Bool, error) {
-	// TODO: not impl
-	c.Logger.Errorf("messages.saveDefaultSendAs blocked, License key from https://teamgram.net required to unlock enterprise features.")
+	if in.GetPeer() == nil || in.GetSendAs() == nil {
+		c.Logger.Errorf("messages.saveDefaultSendAs - error: %v", mtproto.ErrPeerIdInvalid)
+		return nil, mtproto.ErrPeerIdInvalid
+	}
+	peer := mtproto.FromInputPeer2(c.MD.UserId, in.Peer)
+	sendAs := mtproto.FromInputPeer2(c.MD.UserId, in.SendAs)
+	if !peer.IsUserOrChatOrChannel() || peer.PeerId == 0 || !sendAs.IsUserOrChatOrChannel() || sendAs.PeerId == 0 {
+		c.Logger.Errorf("messages.saveDefaultSendAs - error: %v", mtproto.ErrPeerIdInvalid)
+		return nil, mtproto.ErrPeerIdInvalid
+	}
 
-	return nil, mtproto.ErrEnterpriseIsBlocked
+	key := fmt.Sprintf("default_send_as:%d:%d:%d", c.MD.UserId, peer.PeerType, peer.PeerId)
+	if err := persist.Default.Set(key, fmt.Sprintf("%d:%d", sendAs.PeerType, sendAs.PeerId)); err != nil {
+		c.Logger.Errorf("messages.saveDefaultSendAs - error: %v", err)
+		return nil, err
+	}
+	return mtproto.BoolTrue, nil
 }

@@ -61,6 +61,7 @@ const (
 	RPCDialog_DialogGetSavedDialogs_FullMethodName                   = "/dialog.RPCDialog/dialog_getSavedDialogs"
 	RPCDialog_DialogGetPinnedSavedDialogs_FullMethodName             = "/dialog.RPCDialog/dialog_getPinnedSavedDialogs"
 	RPCDialog_DialogToggleSavedDialogPin_FullMethodName              = "/dialog.RPCDialog/dialog_toggleSavedDialogPin"
+	RPCDialog_DialogMarkSavedHistoryRead_FullMethodName              = "/dialog.RPCDialog/dialog_markSavedHistoryRead"
 	RPCDialog_DialogReorderPinnedSavedDialogs_FullMethodName         = "/dialog.RPCDialog/dialog_reorderPinnedSavedDialogs"
 	RPCDialog_DialogGetDialogFilter_FullMethodName                   = "/dialog.RPCDialog/dialog_getDialogFilter"
 	RPCDialog_DialogGetDialogFilterBySlug_FullMethodName             = "/dialog.RPCDialog/dialog_getDialogFilterBySlug"
@@ -107,6 +108,7 @@ type RPCDialogClient interface {
 	DialogGetSavedDialogs(ctx context.Context, in *TLDialogGetSavedDialogs, opts ...grpc.CallOption) (*SavedDialogList, error)
 	DialogGetPinnedSavedDialogs(ctx context.Context, in *TLDialogGetPinnedSavedDialogs, opts ...grpc.CallOption) (*SavedDialogList, error)
 	DialogToggleSavedDialogPin(ctx context.Context, in *TLDialogToggleSavedDialogPin, opts ...grpc.CallOption) (*mtproto.Bool, error)
+	DialogMarkSavedHistoryRead(ctx context.Context, in *TLDialogInsertOrUpdateDialog, opts ...grpc.CallOption) (*mtproto.Bool, error)
 	DialogReorderPinnedSavedDialogs(ctx context.Context, in *TLDialogReorderPinnedSavedDialogs, opts ...grpc.CallOption) (*mtproto.Bool, error)
 	DialogGetDialogFilter(ctx context.Context, in *TLDialogGetDialogFilter, opts ...grpc.CallOption) (*DialogFilterExt, error)
 	DialogGetDialogFilterBySlug(ctx context.Context, in *TLDialogGetDialogFilterBySlug, opts ...grpc.CallOption) (*DialogFilterExt, error)
@@ -445,6 +447,16 @@ func (c *rPCDialogClient) DialogToggleSavedDialogPin(ctx context.Context, in *TL
 	return out, nil
 }
 
+func (c *rPCDialogClient) DialogMarkSavedHistoryRead(ctx context.Context, in *TLDialogInsertOrUpdateDialog, opts ...grpc.CallOption) (*mtproto.Bool, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(mtproto.Bool)
+	err := c.cc.Invoke(ctx, RPCDialog_DialogMarkSavedHistoryRead_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *rPCDialogClient) DialogReorderPinnedSavedDialogs(ctx context.Context, in *TLDialogReorderPinnedSavedDialogs, opts ...grpc.CallOption) (*mtproto.Bool, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(mtproto.Bool)
@@ -561,6 +573,7 @@ type RPCDialogServer interface {
 	DialogGetSavedDialogs(context.Context, *TLDialogGetSavedDialogs) (*SavedDialogList, error)
 	DialogGetPinnedSavedDialogs(context.Context, *TLDialogGetPinnedSavedDialogs) (*SavedDialogList, error)
 	DialogToggleSavedDialogPin(context.Context, *TLDialogToggleSavedDialogPin) (*mtproto.Bool, error)
+	DialogMarkSavedHistoryRead(context.Context, *TLDialogInsertOrUpdateDialog) (*mtproto.Bool, error)
 	DialogReorderPinnedSavedDialogs(context.Context, *TLDialogReorderPinnedSavedDialogs) (*mtproto.Bool, error)
 	DialogGetDialogFilter(context.Context, *TLDialogGetDialogFilter) (*DialogFilterExt, error)
 	DialogGetDialogFilterBySlug(context.Context, *TLDialogGetDialogFilterBySlug) (*DialogFilterExt, error)
@@ -673,6 +686,9 @@ func (UnimplementedRPCDialogServer) DialogGetPinnedSavedDialogs(context.Context,
 }
 func (UnimplementedRPCDialogServer) DialogToggleSavedDialogPin(context.Context, *TLDialogToggleSavedDialogPin) (*mtproto.Bool, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method DialogToggleSavedDialogPin not implemented")
+}
+func (UnimplementedRPCDialogServer) DialogMarkSavedHistoryRead(context.Context, *TLDialogInsertOrUpdateDialog) (*mtproto.Bool, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method DialogMarkSavedHistoryRead not implemented")
 }
 func (UnimplementedRPCDialogServer) DialogReorderPinnedSavedDialogs(context.Context, *TLDialogReorderPinnedSavedDialogs) (*mtproto.Bool, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method DialogReorderPinnedSavedDialogs not implemented")
@@ -1294,6 +1310,24 @@ func _RPCDialog_DialogToggleSavedDialogPin_Handler(srv interface{}, ctx context.
 	return interceptor(ctx, in, info, handler)
 }
 
+func _RPCDialog_DialogMarkSavedHistoryRead_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(TLDialogInsertOrUpdateDialog)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RPCDialogServer).DialogMarkSavedHistoryRead(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RPCDialog_DialogMarkSavedHistoryRead_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RPCDialogServer).DialogMarkSavedHistoryRead(ctx, req.(*TLDialogInsertOrUpdateDialog))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _RPCDialog_DialogReorderPinnedSavedDialogs_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(TLDialogReorderPinnedSavedDialogs)
 	if err := dec(in); err != nil {
@@ -1572,6 +1606,10 @@ var RPCDialog_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "dialog_toggleSavedDialogPin",
 			Handler:    _RPCDialog_DialogToggleSavedDialogPin_Handler,
+		},
+		{
+			MethodName: "dialog_markSavedHistoryRead",
+			Handler:    _RPCDialog_DialogMarkSavedHistoryRead_Handler,
 		},
 		{
 			MethodName: "dialog_reorderPinnedSavedDialogs",

@@ -19,6 +19,8 @@
 package core
 
 import (
+	"fmt"
+
 	"github.com/teamgram/proto/mtproto"
 	userpb "github.com/teamgram/teamgram-server/app/service/biz/user/user"
 )
@@ -31,6 +33,11 @@ func (c *PrivacySettingsCore) AccountGetGlobalPrivacySettings(in *mtproto.TLAcco
 		UserId: c.MD.UserId,
 	})
 	if err != nil {
+		c.Logger.Errorf("account.getGlobalPrivacySettings - error: %v", err)
+		return nil, fmt.Errorf("account.getGlobalPrivacySettings: load settings: %w", err)
+	}
+	if globalPrivacySettings == nil {
+		err = fmt.Errorf("account.getGlobalPrivacySettings: user service returned nil settings")
 		c.Logger.Errorf("account.getGlobalPrivacySettings - error: %v", err)
 		return nil, err
 	}

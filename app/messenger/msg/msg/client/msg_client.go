@@ -33,6 +33,7 @@ type MsgClient interface {
 	MsgDeleteChatHistory(ctx context.Context, in *msg.TLMsgDeleteChatHistory) (*mtproto.Bool, error)
 	MsgReadHistory(ctx context.Context, in *msg.TLMsgReadHistory) (*mtproto.Messages_AffectedMessages, error)
 	MsgReadHistoryV2(ctx context.Context, in *msg.TLMsgReadHistoryV2) (*mtproto.Messages_AffectedMessages, error)
+	MsgReadMentions(ctx context.Context, in *msg.TLMsgReadMentions) (*mtproto.Messages_AffectedHistory, error)
 	MsgUpdatePinnedMessage(ctx context.Context, in *msg.TLMsgUpdatePinnedMessage) (*mtproto.Updates, error)
 	MsgUnpinAllMessages(ctx context.Context, in *msg.TLMsgUnpinAllMessages) (*mtproto.Messages_AffectedHistory, error)
 }
@@ -155,6 +156,17 @@ func (m *defaultMsgClient) MsgReadHistoryV2(ctx context.Context, in *msg.TLMsgRe
 	}
 	client := msg.NewRPCMsgClient(m.cli.Conn())
 	return client.MsgReadHistoryV2(ctx, in)
+}
+
+// MsgReadMentions
+// msg.readMentions user_id:long auth_key_id:long peer_type:int peer_id:long top_msg_id:flags.0?int = messages.AffectedHistory;
+func (m *defaultMsgClient) MsgReadMentions(ctx context.Context, in *msg.TLMsgReadMentions) (*mtproto.Messages_AffectedHistory, error) {
+	md := metadata.RpcMetadataFromIncoming(ctx)
+	if md != nil {
+		ctx, _ = metadata.RpcMetadataToOutgoing(ctx, md)
+	}
+	client := msg.NewRPCMsgClient(m.cli.Conn())
+	return client.MsgReadMentions(ctx, in)
 }
 
 // MsgUpdatePinnedMessage

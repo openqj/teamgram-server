@@ -20,6 +20,7 @@ package core
 
 import (
 	"github.com/teamgram/proto/mtproto"
+	"github.com/teamgram/teamgram-server/app/bff/apifull/channelview"
 	chatpb "github.com/teamgram/teamgram-server/app/service/biz/chat/chat"
 	userpb "github.com/teamgram/teamgram-server/app/service/biz/user/user"
 )
@@ -31,35 +32,62 @@ func (c *ChatInvitesCore) MessagesEditExportedChatInvite(in *mtproto.TLMessagesE
 		peer    = mtproto.FromInputPeer2(c.MD.UserId, in.Peer)
 		invites []*mtproto.ExportedChatInvite
 		rValue  *mtproto.Messages_ExportedChatInvite
+		err     error
 	)
 
-	if !peer.IsChat() {
+	if !peer.IsChat() && !peer.IsChannel() {
 		err := mtproto.ErrPeerIdInvalid
 		c.Logger.Errorf("messages.editExportedChatInvite - error: ", err)
 		return nil, err
 	}
 
-	chatInvites, err := c.svcCtx.Dao.ChatClient.ChatEditExportedChatInvite(c.ctx, &chatpb.TLChatEditExportedChatInvite{
-		SelfId:        c.MD.UserId,
-		ChatId:        peer.PeerId,
-		Revoked:       in.Revoked,
-		Link:          in.Link,
-		ExpireDate:    in.ExpireDate,
-		UsageLimit:    in.UsageLimit,
-		RequestNeeded: in.RequestNeeded,
-		Title:         in.Title,
-	})
-	if err != nil {
-		c.Logger.Errorf("messages.editExportedChatInvite - error: %v", err)
-		return nil, err
+	if peer.IsChannel() {
+		if _, err := channelview.ValidateInputPeer(c.MD.UserId, in.Peer); err != nil {
+			return nil, err
+		}
+		update := channelview.InviteUpdate{Revoked: in.Revoked}
+		if in.ExpireDate != nil {
+			value := in.ExpireDate.Value
+			update.ExpireDate = &value
+		}
+		if in.UsageLimit != nil {
+			value := in.UsageLimit.Value
+			update.UsageLimit = &value
+		}
+		if in.RequestNeeded != nil {
+			value := mtproto.FromBool(in.RequestNeeded)
+			update.RequestNeeded = &value
+		}
+		if in.Title != nil {
+			value := in.Title.Value
+			update.Title = &value
+		}
+		invites, err = channelview.EditExportedInvite(c.MD.UserId, peer.PeerId, in.Link, update)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		chatInvites, err := c.svcCtx.Dao.ChatClient.ChatEditExportedChatInvite(c.ctx, &chatpb.TLChatEditExportedChatInvite{
+			SelfId:        c.MD.UserId,
+			ChatId:        peer.PeerId,
+			Revoked:       in.Revoked,
+			Link:          in.Link,
+			ExpireDate:    in.ExpireDate,
+			UsageLimit:    in.UsageLimit,
+			RequestNeeded: in.RequestNeeded,
+			Title:         in.Title,
+		})
+		if err != nil {
+			c.Logger.Errorf("messages.editExportedChatInvite - error: %v", err)
+			return nil, err
+		}
+		invites = chatInvites.Datas
 	}
-	if len(chatInvites.Datas) == 0 || len(chatInvites.Datas) > 2 {
+	if len(invites) == 0 || len(invites) > 2 {
 		err = mtproto.ErrInternalServerError
 		c.Logger.Errorf("messages.editExportedChatInvite - error: %v", err)
 		return nil, err
 	}
-
-	invites = chatInvites.Datas
 
 	users, err2 := c.svcCtx.Dao.UserClient.UserGetMutableUsers(c.ctx, &userpb.TLUserGetMutableUsers{
 		Id: []int64{c.MD.UserId, invites[0].AdminId},

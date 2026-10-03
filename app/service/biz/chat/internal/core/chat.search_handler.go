@@ -31,31 +31,42 @@ func (c *ChatCore) ChatSearch(in *chat.TLChatSearch) (*chat.Vector_MutableChat, 
 			Datas: []*mtproto.MutableChat{},
 		}
 	)
+	if in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if in.GetSelfId() <= 0 {
+		return nil, mtproto.ErrUserIdInvalid
+	}
+	if in.GetOffset() < 0 {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
 
 	// Check query string and limit
-	if len(in.Q) < 3 || in.Limit <= 0 {
+	if len(in.GetQ()) < 3 || in.GetLimit() <= 0 {
 		return chatList, nil
 	}
 
-	if in.Limit > 50 {
-		in.Limit = 50
+	limit := in.GetLimit()
+	if limit > 50 {
+		limit = 50
 	}
 
-	// 构造模糊查询字符串
-	q := "%" + in.Q + "%"
-
-	c.svcCtx.Dao.ChatsDAO.SearchByQueryStringWithCB(
-		c.ctx,
-		q,
-		in.Limit,
-		func(sz, i int, v int64) {
-			chat, err := c.svcCtx.Dao.GetExcludeParticipantsMutableChat(c.ctx, v)
-			if err != nil {
-				c.Logger.Errorf("chat.search - error: %v", err)
-			} else if chat != nil {
-				chatList.Datas = append(chatList.Datas, chat)
-			}
-		})
+	ids, err := c.svcCtx.Dao.ChatsDAO.SearchByQueryStringForUserOffset(c.ctx, in.GetSelfId(), "%"+in.GetQ()+"%", in.GetOffset(), limit)
+	if err != nil {
+		c.Logger.Errorf("chat.search - search error: %v", err)
+		return nil, err
+	}
+	for _, id := range ids {
+		mutableChat, err := c.svcCtx.Dao.GetExcludeParticipantsMutableChat(c.ctx, id)
+		if err != nil {
+			c.Logger.Errorf("chat.search - chat hydration error: %v", err)
+			return nil, err
+		}
+		if mutableChat == nil || mutableChat.GetChat() == nil || mutableChat.GetChat().GetId() != id {
+			return nil, mtproto.ErrInternalServerError
+		}
+		chatList.Datas = append(chatList.Datas, mutableChat)
+	}
 
 	return chatList, nil
 }

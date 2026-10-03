@@ -27,24 +27,32 @@ import (
 // DialogSetChatTheme
 // dialog.setChatTheme user_id:long peer_type:int peer_id:long theme_emoticon:string = Bool;
 func (c *DialogCore) DialogSetChatTheme(in *dialog.TLDialogSetChatTheme) (*mtproto.Bool, error) {
-	sqlx.TxWrapper(c.ctx, c.svcCtx.Dao.DB, func(tx *sqlx.Tx, result *sqlx.StoreResult) {
-		_, _ = c.svcCtx.Dao.DialogsDAO.UpdateCustomMapTx(
+	result := sqlx.TxWrapper(c.ctx, c.svcCtx.Dao.DB, func(tx *sqlx.Tx, result *sqlx.StoreResult) {
+		if _, result.Err = c.svcCtx.Dao.DialogsDAO.UpdateCustomMapTx(
 			tx,
 			map[string]interface{}{
 				"theme_emoticon": in.ThemeEmoticon,
 			},
 			in.UserId,
 			in.PeerType,
-			in.PeerId)
-		_, _ = c.svcCtx.Dao.DialogsDAO.UpdateCustomMapTx(
+			in.PeerId); result.Err != nil {
+			return
+		}
+		if _, result.Err = c.svcCtx.Dao.DialogsDAO.UpdateCustomMapTx(
 			tx,
 			map[string]interface{}{
 				"theme_emoticon": in.ThemeEmoticon,
 			},
 			in.PeerId,
 			in.PeerType,
-			in.UserId)
+			in.UserId); result.Err != nil {
+			return
+		}
 	})
+	if result.Err != nil {
+		c.Logger.Errorf("dialog.setChatTheme - error: %v", result.Err)
+		return nil, result.Err
+	}
 
 	return mtproto.BoolTrue, nil
 }

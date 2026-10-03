@@ -20,6 +20,7 @@ package core
 
 import (
 	"github.com/teamgram/proto/mtproto"
+	"github.com/teamgram/teamgram-server/app/bff/apifull/channelview"
 	chatpb "github.com/teamgram/teamgram-server/app/service/biz/chat/chat"
 	userpb "github.com/teamgram/teamgram-server/app/service/biz/user/user"
 )
@@ -41,6 +42,9 @@ func (c *ChatInvitesCore) MessagesCheckChatInvite(in *mtproto.TLMessagesCheckCha
 		err := mtproto.ErrInviteHashInvalid
 		c.Logger.Errorf("messages.checkChatInvite - error: %v", err)
 		return nil, err
+	}
+	if chatpb.IsChannelInviteHash(in.Hash) {
+		return channelview.CheckInvite(c.MD.UserId, in.Hash)
 	}
 	if !chatpb.IsChatInviteHash(in.Hash) {
 		err := mtproto.ErrInviteHashInvalid

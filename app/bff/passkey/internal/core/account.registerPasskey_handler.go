@@ -19,14 +19,84 @@
 package core
 
 import (
+	"context"
+	"encoding/base64"
+	"encoding/json"
+	"errors"
+
+	"github.com/go-webauthn/webauthn/protocol"
+	webauthn "github.com/go-webauthn/webauthn/webauthn"
 	"github.com/teamgram/proto/mtproto"
+	"github.com/teamgram/teamgram-server/app/bff/passkey/internal/dao"
 )
 
 // AccountRegisterPasskey
 // account.registerPasskey#55b41fd6 credential:InputPasskeyCredential = Passkey;
 func (c *PasskeyCore) AccountRegisterPasskey(in *mtproto.TLAccountRegisterPasskey) (*mtproto.Passkey, error) {
-	// TODO: not impl
-	c.Logger.Errorf("account.registerPasskey blocked, License key from https://teamgram.net required to unlock enterprise features.")
-
-	return nil, mtproto.ErrEnterpriseIsBlocked
+	userID, err := passkeyRequireUser(c)
+	if err != nil {
+		return nil, err
+	}
+	if in == nil || in.GetCredential() == nil {
+		return nil, mtproto.ErrAuthTokenInvalid
+	}
+	if err = c.requireProvider(); err != nil {
+		return nil, err
+	}
+	if c.svcCtx.Dao == nil {
+		return nil, mtproto.ErrMethodNotImpl
+	}
+	payload, err := credentialResponsePayload(in.GetCredential(), true)
+	if err != nil {
+		return nil, err
+	}
+	parsed, err := protocol.ParseCredentialCreationResponseBytes(payload)
+	if err != nil {
+		return nil, mapPasskeyVerificationError(err)
+	}
+	challenge := sessionChallengeRegistration(parsed)
+	record, err := c.svcCtx.Dao.GetSession(c.ctx, challenge, dao.SessionRegistration)
+	if err != nil {
+		return nil, passkeyStorageError(err)
+	}
+	if record.UserID != userID {
+		return nil, mtproto.ErrAuthTokenInvalid
+	}
+	var session webauthn.SessionData
+	if err = json.Unmarshal(record.Data, &session); err != nil {
+		return nil, mtproto.ErrInternalServerError
+	}
+	user, err := c.loadUser(c.ctx, userID)
+	if err != nil {
+		return nil, passkeyStorageError(err)
+	}
+	w, err := c.webAuthn()
+	if err != nil {
+		return nil, passkeyStorageError(err)
+	}
+	credential, err := w.CreateCredential(user, session, parsed)
+	if err != nil {
+		return nil, mapPasskeyVerificationError(err)
+	}
+	if credential == nil || len(credential.ID) == 0 || len(credential.PublicKey) == 0 {
+		return nil, mtproto.ErrAuthTokenInvalid
+	}
+	stored, err := recordFromCredential(userID, credential, "Passkey")
+	if err != nil {
+		return nil, mtproto.ErrInternalServerError
+	}
+	if err = c.svcCtx.Dao.ConsumeAndInsertCredential(c.ctx, challenge, dao.SessionRegistration, &stored); err != nil {
+		// A duplicate credential is an invalid replay, never a successful
+		// registration response.
+		if errors.Is(err, context.DeadlineExceeded) {
+			return nil, mtproto.ErrInternalServerError
+		}
+		return nil, mtproto.ErrAuthTokenInvalid
+	}
+	return mtproto.MakeTLPasskey(&mtproto.Passkey{
+		Id:            base64.RawURLEncoding.EncodeToString(credential.ID),
+		Name:          stored.Name,
+		Date:          int32(stored.Date),
+		LastUsageDate: nil,
+	}).To_Passkey(), nil
 }

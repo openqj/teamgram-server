@@ -19,11 +19,13 @@
 package core
 
 import (
+	"math"
+
 	"github.com/teamgram/proto/mtproto"
+	"github.com/teamgram/teamgram-server/app/bff/apifull/channelview"
 	chatpb "github.com/teamgram/teamgram-server/app/service/biz/chat/chat"
 	messagepb "github.com/teamgram/teamgram-server/app/service/biz/message/message"
 	userpb "github.com/teamgram/teamgram-server/app/service/biz/user/user"
-	"math"
 )
 
 // MessagesSearchGlobal
@@ -31,32 +33,44 @@ import (
 func (c *MessagesCore) MessagesSearchGlobal(in *mtproto.TLMessagesSearchGlobal) (*mtproto.Messages_Messages, error) {
 	// 400	BOT_METHOD_INVALID	This method can't be used by a bot
 	// 400	SEARCH_QUERY_EMPTY	The search query is empty
+	if c == nil || c.MD == nil || c.MD.UserId <= 0 {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
 	if c.MD.IsBot {
 		err := mtproto.ErrBotMethodInvalid
 		c.Logger.Errorf("messages.searchGlobal - error: %v", err)
 		return nil, err
 	}
 
-	if in.Q == "" {
+	if in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+
+	if in.GetQ() == "" {
 		err := mtproto.ErrSearchQueryEmpty
+		c.Logger.Errorf("messages.searchGlobal - error: %v", err)
+		return nil, err
+	}
+	if err := validateSearchGlobalOptions(in); err != nil {
 		c.Logger.Errorf("messages.searchGlobal - error: %v", err)
 		return nil, err
 	}
 
 	var (
-		offsetId = in.OffsetId
-		limit    = in.Limit
+		offset = int32(math.MaxInt32)
+		limit  = in.GetLimit()
 	)
-
-	if offsetId == 0 {
-		offsetId = math.MaxInt32
-	}
 
 	if limit > 50 {
 		limit = 50
 	}
+	if limit < 0 {
+		return nil, mtproto.ErrLimitInvalid
+	}
+	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.MessageClient == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
 
-	// TODO(@benqi): Impl MessagesSearchGlobal logic
 	rValues := mtproto.MakeTLMessagesMessages(&mtproto.Messages_Messages{
 		Messages: []*mtproto.Message{},
 		Chats:    []*mtproto.Chat{},
@@ -67,43 +81,114 @@ func (c *MessagesCore) MessagesSearchGlobal(in *mtproto.TLMessagesSearchGlobal) 
 		c.ctx,
 		&messagepb.TLMessageSearchGlobal{
 			UserId: c.MD.UserId,
-			Q:      in.Q,
-			Offset: offsetId,
+			Q:      in.GetQ(),
+			Offset: offset,
 			Limit:  limit,
 		})
 	if err != nil {
 		c.Logger.Errorf("messages.searchGlobal - error: %v", err)
-		return rValues, nil
+		return nil, err
+	}
+	if boxList == nil {
+		err = mtproto.ErrInternalServerError
+		c.Logger.Errorf("messages.searchGlobal - error: %v", err)
+		return nil, err
 	}
 
+	var hydrationErr error
 	boxList.Visit(c.MD.UserId,
 		func(messageList []*mtproto.Message) {
 			rValues.Messages = messageList
 		},
 		func(userIdList []int64) {
-			mUsers, _ := c.svcCtx.Dao.UserClient.UserGetMutableUsers(c.ctx,
+			if hydrationErr != nil || len(userIdList) == 0 {
+				return
+			}
+			if c.svcCtx.Dao.UserClient == nil {
+				hydrationErr = mtproto.ErrInternalServerError
+				return
+			}
+			mUsers, err := c.svcCtx.Dao.UserClient.UserGetMutableUsers(c.ctx,
 				&userpb.TLUserGetMutableUsers{
 					Id: userIdList,
 				})
+			if err != nil {
+				hydrationErr = err
+				return
+			}
+			if mUsers == nil {
+				hydrationErr = mtproto.ErrInternalServerError
+				return
+			}
 			rValues.Users = append(rValues.Users, mUsers.GetUserListByIdList(c.MD.UserId, userIdList...)...)
 		},
 		func(chatIdList []int64) {
-			mChats, _ := c.svcCtx.Dao.ChatClient.Client().ChatGetChatListByIdList(c.ctx,
+			if hydrationErr != nil || len(chatIdList) == 0 {
+				return
+			}
+			if c.svcCtx.Dao.ChatClient == nil || c.svcCtx.Dao.ChatClient.Client() == nil {
+				hydrationErr = mtproto.ErrInternalServerError
+				return
+			}
+			mChats, err := c.svcCtx.Dao.ChatClient.Client().ChatGetChatListByIdList(c.ctx,
 				&chatpb.TLChatGetChatListByIdList{
 					IdList: chatIdList,
 				})
+			if err != nil {
+				hydrationErr = err
+				return
+			}
+			if mChats == nil {
+				hydrationErr = mtproto.ErrInternalServerError
+				return
+			}
 			rValues.Chats = append(rValues.Chats, mChats.GetChatListByIdList(c.MD.UserId, chatIdList...)...)
 		},
 		func(channelIdList []int64) {
-			//mChannels, _ := c.svcCtx.Dao.ChannelClient.ChannelGetChannelListByIdList(c.ctx,
-			//	&channelpb.TLChannelGetChannelListByIdList{
-			//		SelfUserId: c.MD.UserId,
-			//		Id:         channelIdList,
-			//	})
-			//if len(mChannels.GetDatas()) > 0 {
-			//	rValues.Chats = append(rValues.Chats, mChannels.GetDatas()...)
-			//}
+			if hydrationErr != nil || len(channelIdList) == 0 {
+				return
+			}
+			chats := channelview.ChatsByID(c.MD.UserId, channelIdList)
+			if len(chats) != len(channelIdList) {
+				hydrationErr = mtproto.ErrMethodNotImpl
+				return
+			}
+			rValues.Chats = append(rValues.Chats, chats...)
 		})
+	if hydrationErr != nil {
+		c.Logger.Errorf("messages.searchGlobal - hydration error: %v", hydrationErr)
+		return nil, hydrationErr
+	}
 
 	return rValues, nil
+}
+
+func validateSearchGlobalOptions(in *mtproto.TLMessagesSearchGlobal) error {
+	filter := in.GetFilter()
+	if filter == nil {
+		return mtproto.ErrInputFilterInvalid
+	}
+	filterType := mtproto.FromMessagesFilter(filter)
+	if filterType == mtproto.FilterEmpty {
+		if filter.GetPredicateName() != mtproto.Predicate_inputMessagesFilterEmpty {
+			return mtproto.ErrInputFilterInvalid
+		}
+	} else {
+		return mtproto.ErrMethodNotImpl
+	}
+
+	offsetPeer := in.GetOffsetPeer()
+	if offsetPeer == nil {
+		return mtproto.ErrOffsetPeerIdInvalid
+	}
+	if offsetPeer.GetPredicateName() != mtproto.Predicate_inputPeerEmpty {
+		return mtproto.ErrMethodNotImpl
+	}
+
+	if in.GetFolderId() != nil || in.GetCommunity() != nil || in.GetBroadcastsOnly() || in.GetGroupsOnly() || in.GetUsersOnly() ||
+		in.GetMinDate() != 0 || in.GetMaxDate() != 0 || in.GetOffsetRate() != 0 || in.GetOffsetId() != 0 {
+		return mtproto.ErrMethodNotImpl
+	}
+
+	return nil
 }

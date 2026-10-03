@@ -20,13 +20,42 @@ package core
 
 import (
 	"github.com/teamgram/proto/mtproto"
+	userpb "github.com/teamgram/teamgram-server/app/service/biz/user/user"
 )
 
 // ContactsResetSaved
 // contacts.resetSaved#879537f1 = Bool;
 func (c *ContactsCore) ContactsResetSaved(in *mtproto.TLContactsResetSaved) (*mtproto.Bool, error) {
-	// TODO: not impl
-	// c.Logger.Errorf("contacts.resetSaved blocked, License key from https://teamgram.net required to unlock enterprise features.")
+	if in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if c.MD == nil || c.MD.UserId <= 0 {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
+	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.UserClient == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
+
+	// The user service reserves id=0 for an atomic full contact-book reset.
+	deleted, err := c.svcCtx.Dao.UserClient.UserDeleteContact(c.ctx, &userpb.TLUserDeleteContact{
+		UserId: c.MD.UserId,
+		Id:     0,
+	})
+	if err != nil {
+		c.Logger.Errorf("contacts.resetSaved - reset user contacts error: %v", err)
+		return nil, err
+	}
+	if deleted == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
+	if !mtproto.FromBool(deleted) {
+		return mtproto.BoolFalse, nil
+	}
+
+	if err = saveSavedContacts(c.MD.UserId, []savedPhoneContact{}); err != nil {
+		c.Logger.Errorf("contacts.resetSaved - error: %v", err)
+		return nil, err
+	}
 
 	return mtproto.BoolTrue, nil
 }

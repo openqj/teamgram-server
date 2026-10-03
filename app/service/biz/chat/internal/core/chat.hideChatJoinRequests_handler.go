@@ -27,45 +27,119 @@ import (
 // ChatHideChatJoinRequests
 // chat.hideChatJoinRequests flags:# self_id:long chat_id:long approved:flags.0?true link:flags.1?string user_id:flags.2?long = RecentChatInviteRequesters;
 func (c *ChatCore) ChatHideChatJoinRequests(in *chat.TLChatHideChatJoinRequests) (*chat.RecentChatInviteRequesters, error) {
+	selfID, err := c.requireInviteSelf(in.GetSelfId())
+	if err != nil {
+		return nil, err
+	}
+	if in.GetChatId() <= 0 {
+		return nil, mtproto.ErrChatIdInvalid
+	}
+	if link := in.GetLink(); link != nil && link.GetValue() == "" {
+		return nil, mtproto.ErrInviteHashInvalid
+	}
 	if in.GetUserId() == nil {
-		// TODO: not impl
 		c.Logger.Errorf("chat.hideChatJoinRequests - error: method ChatHideChatJoinRequests not impl")
 		return nil, mtproto.ErrMethodNotImpl
 	}
 
-	var (
-		joinId = in.GetUserId().GetValue()
-	)
+	joinId := in.GetUserId().GetValue()
+	if joinId <= 0 {
+		return nil, mtproto.ErrUserIdInvalid
+	}
+	linkHash := ""
+	var requests []dataobject.ChatInviteParticipantsDO
+	if link := in.GetLink(); link != nil {
+		linkHash = chat.GetInviteHashByLink(link.GetValue())
+		if linkHash == "" {
+			return nil, mtproto.ErrInviteHashInvalid
+		}
+		if _, err = c.requireInviteLinkPermission(in.GetChatId(), selfID, link.GetValue()); err != nil {
+			return nil, err
+		}
+		requests, err = c.svcCtx.Dao.ChatInviteParticipantsDAO.SelectListByLink(c.ctx, linkHash, 1)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		if _, err = c.requireInvitePermission(in.GetChatId(), selfID, 0); err != nil {
+			return nil, err
+		}
+		requests, err = c.svcCtx.Dao.ChatInviteParticipantsDAO.SelectRecentRequestedList(c.ctx, in.GetChatId())
+		if err != nil {
+			return nil, err
+		}
+	}
 
-	requesters := chat.MakeTLRecentChatInviteRequesters(&chat.RecentChatInviteRequesters{
-		RequestsPending:  0,
-		RecentRequesters: []int64{},
-	}).To_RecentChatInviteRequesters()
+	matched := false
+	for i := range requests {
+		if requests[i].ChatId == in.ChatId && requests[i].UserId == joinId && requests[i].Requested {
+			matched = true
+			break
+		}
+	}
+	if !matched {
+		return c.recentChatInviteRequesters(in.ChatId, linkHash)
+	}
 
 	if in.GetApproved() {
-		_, err := c.ChatAddChatUser(&chat.TLChatAddChatUser{
+		_, err = c.ChatAddChatUser(&chat.TLChatAddChatUser{
 			ChatId:    in.ChatId,
-			InviterId: in.SelfId,
+			InviterId: selfID,
 			UserId:    joinId,
 		})
 		if err != nil {
 			c.Logger.Errorf("chat.importChatInvite - error: %v", err)
 			return nil, err
 		}
-		c.svcCtx.Dao.ChatInviteParticipantsDAO.UpdateApprovedBy(c.ctx, in.SelfId, in.ChatId, joinId)
+		if linkHash == "" {
+			if _, err := c.svcCtx.Dao.ChatInviteParticipantsDAO.UpdateApprovedBy(c.ctx, selfID, in.ChatId, joinId); err != nil {
+				return nil, err
+			}
+		} else if _, err := c.svcCtx.Dao.ChatInviteParticipantsDAO.UpdateApprovedByLink(c.ctx, selfID, in.ChatId, joinId, linkHash); err != nil {
+			return nil, err
+		}
 	} else {
-		c.svcCtx.Dao.ChatInviteParticipantsDAO.Delete(c.ctx, in.ChatId, joinId)
+		if linkHash == "" {
+			if _, err := c.svcCtx.Dao.ChatInviteParticipantsDAO.Delete(c.ctx, in.ChatId, joinId); err != nil {
+				return nil, err
+			}
+		} else if _, err := c.svcCtx.Dao.ChatInviteParticipantsDAO.DeleteByLink(c.ctx, in.ChatId, joinId, linkHash); err != nil {
+			return nil, err
+		}
 	}
 
-	c.svcCtx.Dao.ChatInviteParticipantsDAO.SelectRecentRequestedListWithCB(
-		c.ctx,
-		in.ChatId,
-		func(sz, i int, v *dataobject.ChatInviteParticipantsDO) {
-			if joinId != v.UserId {
-				requesters.RequestsPending += 1
-				requesters.RecentRequesters = append(requesters.RecentRequesters, v.UserId)
+	return c.recentChatInviteRequesters(in.ChatId, linkHash)
+}
+
+func (c *ChatCore) recentChatInviteRequesters(chatId int64, linkHash string) (*chat.RecentChatInviteRequesters, error) {
+	var (
+		requestList []dataobject.ChatInviteParticipantsDO
+		err         error
+	)
+	if linkHash != "" {
+		requestList, err = c.svcCtx.Dao.ChatInviteParticipantsDAO.SelectListByLink(c.ctx, linkHash, 1)
+	} else {
+		requestList, err = c.svcCtx.Dao.ChatInviteParticipantsDAO.SelectRecentRequestedList(c.ctx, chatId)
+	}
+	if err != nil {
+		return nil, err
+	}
+	if linkHash != "" {
+		filtered := requestList[:0]
+		for _, request := range requestList {
+			if request.ChatId == chatId && request.Requested {
+				filtered = append(filtered, request)
 			}
-		})
+		}
+		requestList = filtered
+	}
+	requesters := chat.MakeTLRecentChatInviteRequesters(&chat.RecentChatInviteRequesters{
+		RequestsPending:  int32(len(requestList)),
+		RecentRequesters: make([]int64, 0, len(requestList)),
+	}).To_RecentChatInviteRequesters()
+	for _, request := range requestList {
+		requesters.RecentRequesters = append(requesters.RecentRequesters, request.UserId)
+	}
 
 	return requesters, nil
 }

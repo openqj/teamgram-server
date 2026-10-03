@@ -20,6 +20,7 @@ package core
 
 import (
 	"github.com/teamgram/proto/mtproto"
+	"github.com/teamgram/teamgram-server/app/bff/apifull/channelview"
 	chatpb "github.com/teamgram/teamgram-server/app/service/biz/chat/chat"
 	userpb "github.com/teamgram/teamgram-server/app/service/biz/user/user"
 )
@@ -31,23 +32,36 @@ func (c *ChatInvitesCore) MessagesGetAdminsWithInvites(in *mtproto.TLMessagesGet
 		peer = mtproto.FromInputPeer2(c.MD.UserId, in.Peer)
 	)
 
-	if !peer.IsChat() {
+	if !peer.IsChat() && !peer.IsChannel() {
 		err := mtproto.ErrPeerIdInvalid
 		c.Logger.Errorf("messages.getAdminsWithInvites - error: ", err)
 		return nil, err
 	}
 
-	rAdmins, err := c.svcCtx.Dao.ChatClient.ChatGetAdminsWithInvites(c.ctx, &chatpb.TLChatGetAdminsWithInvites{
-		SelfId: c.MD.UserId,
-		ChatId: peer.PeerId,
-	})
-	if err != nil {
-		c.Logger.Errorf("messages.getAdminsWithInvites - error: %v", err)
-		return nil, err
+	var admins []*mtproto.ChatAdminWithInvites
+	if peer.IsChannel() {
+		if _, err := channelview.ValidateInputPeer(c.MD.UserId, in.Peer); err != nil {
+			return nil, err
+		}
+		var err error
+		admins, err = channelview.InviteAdmins(c.MD.UserId, peer.PeerId)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		rAdmins, err := c.svcCtx.Dao.ChatClient.ChatGetAdminsWithInvites(c.ctx, &chatpb.TLChatGetAdminsWithInvites{
+			SelfId: c.MD.UserId,
+			ChatId: peer.PeerId,
+		})
+		if err != nil {
+			c.Logger.Errorf("messages.getAdminsWithInvites - error: %v", err)
+			return nil, err
+		}
+		admins = rAdmins.GetDatas()
 	}
 
 	rValues := mtproto.MakeTLMessagesChatAdminsWithInvites(&mtproto.Messages_ChatAdminsWithInvites{
-		Admins: rAdmins.GetDatas(),
+		Admins: admins,
 		Users:  []*mtproto.User{},
 	}).To_Messages_ChatAdminsWithInvites()
 

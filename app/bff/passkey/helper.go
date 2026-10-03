@@ -17,7 +17,9 @@ import (
 )
 
 type (
-	Config = config.Config
+	Config         = config.Config
+	ProviderConfig = config.ProviderConfig
+	TrustedApp     = config.TrustedApp
 )
 
 func New(c Config) *service.Service {

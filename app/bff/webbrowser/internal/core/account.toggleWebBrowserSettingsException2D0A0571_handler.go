@@ -24,8 +24,11 @@ import (
 // AccountToggleWebBrowserSettingsException2D0A0571
 // account.toggleWebBrowserSettingsException#2d0a0571 flags:# delete:flags.1?true open_external_browser:flags.0?Bool url:string = Bool;
 func (c *WebBrowserCore) AccountToggleWebBrowserSettingsException2D0A0571(in *mtproto.TLAccountToggleWebBrowserSettingsException2D0A0571) (*mtproto.Bool, error) {
-	// TODO: not impl
-	c.Logger.Errorf("account.toggleWebBrowserSettingsException2D0A0571 blocked, License key from https://teamgram.net required to unlock enterprise features.")
-
-	return nil, mtproto.ErrEnterpriseIsBlocked
+	if in == nil {
+		return nil, mtproto.ErrUrlInvalid
+	}
+	if _, _, _, err := c.toggleWebBrowserException(in.GetDelete(), in.GetOpenExternalBrowser(), in.GetUrl()); err != nil {
+		return nil, err
+	}
+	return mtproto.BoolTrue, nil
 }

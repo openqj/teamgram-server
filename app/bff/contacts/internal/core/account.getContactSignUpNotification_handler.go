@@ -31,7 +31,11 @@ func (c *ContactsCore) AccountGetContactSignUpNotification(in *mtproto.TLAccount
 	})
 	if err != nil {
 		c.Logger.Errorf("account.getContactSignUpNotification - error: %v", err)
-		return mtproto.BoolFalse, nil
+		return nil, err
+	}
+	if rValue == nil {
+		c.Logger.Errorf("account.getContactSignUpNotification - error: nil response")
+		return nil, mtproto.ErrInternalServerError
 	}
 
 	return rValue, nil

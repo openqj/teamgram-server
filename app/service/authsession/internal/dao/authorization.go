@@ -60,7 +60,7 @@ func (d *Dao) GetAuthorization(ctx context.Context, authKeyId int64) (*mtproto.A
 	return mtproto.MakeTLAuthorization(&mtproto.Authorization{
 		Current:         false,
 		OfficialApp:     true,
-		Hash:            0,
+		Hash:            cData.Hash(),
 		PasswordPending: false,
 		DeviceModel:     cData.DeviceModel(),
 		Platform:        "",
@@ -68,8 +68,8 @@ func (d *Dao) GetAuthorization(ctx context.Context, authKeyId int64) (*mtproto.A
 		ApiId:           cData.ApiId(),
 		AppName:         cData.LangPack(),
 		AppVersion:      cData.AppVersion(),
-		DateCreated:     0,
-		DateActive:      0,
+		DateCreated:     int32(cData.DateCreated()),
+		DateActive:      int32(cData.DateActivated()),
 		Ip:              cData.ClientIp(),
 		Country:         country,
 		Region:          region,
@@ -132,14 +132,14 @@ func (d *Dao) GetAuthorizations(ctx context.Context, userId int64, excludeAuthKe
 	return removeAllNil(authorizations)
 }
 
-func (d *Dao) ResetAuthorization(ctx context.Context, userId int64, authKeyId, hash int64) []int64 {
+func (d *Dao) ResetAuthorization(ctx context.Context, userId int64, authKeyId, hash int64) ([]int64, error) {
 	var (
 		cacheKeyIdList []string
 		hashList       []int64
 		keyIdList      []int64
 	)
 
-	_, _ = d.AuthUsersDAO.SelectListByUserIdWithCB(
+	_, err := d.AuthUsersDAO.SelectListByUserIdWithCB(
 		ctx,
 		userId,
 		func(sz, i int, v *dataobject.AuthUsersDO) {
@@ -158,17 +158,24 @@ func (d *Dao) ResetAuthorization(ctx context.Context, userId int64, authKeyId, h
 				}
 			}
 		})
+	if err != nil {
+		return nil, err
+	}
 	if len(keyIdList) == 0 {
-		return keyIdList
+		return keyIdList, nil
 	}
 
-	_, _, _ = d.CachedConn.Exec(
+	_, _, err = d.CachedConn.Exec(
 		ctx,
 		func(ctx context.Context, conn *sqlx.DB) (int64, int64, error) {
-			_, _ = d.AuthUsersDAO.DeleteByHashList(ctx, hashList)
-			return 0, 0, nil
+			rowsAffected, err := d.AuthUsersDAO.DeleteByHashList(ctx, hashList)
+			return 0, rowsAffected, err
 		},
 		cacheKeyIdList...)
 
-	return keyIdList
+	if err != nil {
+		return nil, err
+	}
+
+	return keyIdList, nil
 }

@@ -89,15 +89,15 @@ func (dao *UserPeerBlocksDAO) InsertOrUpdateTx(tx *sqlx.Tx, do *dataobject.UserP
 }
 
 // SelectList
-// select user_id, peer_type, peer_id, `date` from user_peer_blocks where user_id = :user_id and deleted = 0 order by id asc limit :limit
-func (dao *UserPeerBlocksDAO) SelectList(ctx context.Context, userId int64, limit int32) (rList []dataobject.UserPeerBlocksDO, err error) {
+// select user_id, peer_type, peer_id, `date` from user_peer_blocks where user_id = :user_id and deleted = 0 order by id asc limit :offset, :limit
+func (dao *UserPeerBlocksDAO) SelectList(ctx context.Context, userId int64, offset, limit int32) (rList []dataobject.UserPeerBlocksDO, err error) {
 	var (
 		query  string
 		values []dataobject.UserPeerBlocksDO
 	)
-	query = "select user_id, peer_type, peer_id, `date` from user_peer_blocks where user_id = ? and deleted = 0 order by id asc limit ?"
+	query = "select user_id, peer_type, peer_id, `date` from user_peer_blocks where user_id = ? and deleted = 0 order by id asc limit ?, ?"
 
-	err = dao.db.QueryRowsPartial(ctx, &values, query, userId, limit)
+	err = dao.db.QueryRowsPartial(ctx, &values, query, userId, offset, limit)
 
 	if err != nil {
 		logx.WithContext(ctx).Errorf("queryx in SelectList(_), error: %v", err)
@@ -109,16 +109,31 @@ func (dao *UserPeerBlocksDAO) SelectList(ctx context.Context, userId int64, limi
 	return
 }
 
+// SelectCount returns the number of active peer blocks for a user.
+func (dao *UserPeerBlocksDAO) SelectCount(ctx context.Context, userId int64) (count int32, err error) {
+	var result struct {
+		TotalCount int32 `db:"total_count"`
+	}
+	query := "select count(*) as total_count from user_peer_blocks where user_id = ? and deleted = 0"
+	err = dao.db.QueryRowPartial(ctx, &result, query, userId)
+	if err != nil {
+		logx.WithContext(ctx).Errorf("queryx in SelectCount(_), error: %v", err)
+		return
+	}
+	count = result.TotalCount
+	return
+}
+
 // SelectListWithCB
-// select user_id, peer_type, peer_id, `date` from user_peer_blocks where user_id = :user_id and deleted = 0 order by id asc limit :limit
-func (dao *UserPeerBlocksDAO) SelectListWithCB(ctx context.Context, userId int64, limit int32, cb func(sz, i int, v *dataobject.UserPeerBlocksDO)) (rList []dataobject.UserPeerBlocksDO, err error) {
+// select user_id, peer_type, peer_id, `date` from user_peer_blocks where user_id = :user_id and deleted = 0 order by id asc limit :offset, :limit
+func (dao *UserPeerBlocksDAO) SelectListWithCB(ctx context.Context, userId int64, offset, limit int32, cb func(sz, i int, v *dataobject.UserPeerBlocksDO)) (rList []dataobject.UserPeerBlocksDO, err error) {
 	var (
 		query  string
 		values []dataobject.UserPeerBlocksDO
 	)
-	query = "select user_id, peer_type, peer_id, `date` from user_peer_blocks where user_id = ? and deleted = 0 order by id asc limit ?"
+	query = "select user_id, peer_type, peer_id, `date` from user_peer_blocks where user_id = ? and deleted = 0 order by id asc limit ?, ?"
 
-	err = dao.db.QueryRowsPartial(ctx, &values, query, userId, limit)
+	err = dao.db.QueryRowsPartial(ctx, &values, query, userId, offset, limit)
 
 	if err != nil {
 		logx.WithContext(ctx).Errorf("queryx in SelectList(_), error: %v", err)

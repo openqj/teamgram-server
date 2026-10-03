@@ -26,8 +26,5 @@ import (
 // MsgDeleteChatHistory
 // msg.deleteChatHistory chat_id:long delete_user_id:long = Bool;
 func (c *MsgCore) MsgDeleteChatHistory(in *msg.TLMsgDeleteChatHistory) (*mtproto.Bool, error) {
-	// TODO: not impl
-	c.Logger.Errorf("msg.deleteChatHistory - error: method MsgDeleteChatHistory not impl")
-
-	return nil, mtproto.ErrMethodNotImpl
+	return c.deleteChatHistory(in)
 }

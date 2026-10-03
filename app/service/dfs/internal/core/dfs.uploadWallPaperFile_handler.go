@@ -29,6 +29,10 @@ import (
 // DfsUploadWallPaperFile
 // dfs.uploadWallPaperFile creator:long file:InputFile mime_type:string admin:Bool = Document;
 func (c *DfsCore) DfsUploadWallPaperFile(in *dfs.TLDfsUploadWallPaperFile) (*mtproto.Document, error) {
+	if in == nil || in.GetFile() == nil {
+		return nil, mtproto.ErrWallpaperFileInvalid
+	}
+
 	var (
 		documentId = c.svcCtx.Dao.IDGenClient2.NextId(c.ctx)
 		path       string
@@ -49,11 +53,6 @@ func (c *DfsCore) DfsUploadWallPaperFile(in *dfs.TLDfsUploadWallPaperFile) (*mtp
 		// extType2 = model.GetStorageFileTypeConstructor(ext2)
 		// secretId = int64(extType2)<<32 | int64(rand.Uint32())
 	)
-
-	if file == nil {
-		c.Logger.Errorf("dfs.uploadWallPaperFile - ErrInputRequestInvalid")
-		return nil, mtproto.ErrWallpaperFileInvalid
-	}
 
 	if err = model.CheckFileParts(file.Parts); err != nil {
 		c.Logger.Errorf("dfs.uploadWallPaperFile - %v", err)

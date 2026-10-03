@@ -17,10 +17,17 @@ import (
 // UserUpdateProfilePhoto
 // user.updateProfilePhoto user_id:long id:long = Int64;
 func (c *UserCore) UserUpdateProfilePhoto(in *user.TLUserUpdateProfilePhoto) (*mtproto.Int64, error) {
-	rV := c.svcCtx.Dao.UpdateProfilePhoto(
+	if in == nil || in.GetUserId() <= 0 || in.GetId() < 0 {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	rV, err := c.svcCtx.Dao.UpdateProfilePhoto(
 		c.ctx,
 		in.GetUserId(),
 		in.GetId())
+	if err != nil {
+		c.Logger.Errorf("user.updateProfilePhoto - error: %v", err)
+		return nil, err
+	}
 
 	return &mtproto.Int64{
 		V: rV,

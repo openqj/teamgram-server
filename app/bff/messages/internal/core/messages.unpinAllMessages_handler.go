@@ -20,20 +20,36 @@ package core
 
 import (
 	"github.com/teamgram/proto/mtproto"
+	"github.com/teamgram/teamgram-server/app/bff/apifull/channelview"
 	msgpb "github.com/teamgram/teamgram-server/app/messenger/msg/msg/msg"
 )
 
 // MessagesUnpinAllMessages
 // messages.unpinAllMessages#f025bc8b peer:InputPeer = messages.AffectedHistory;
 func (c *MessagesCore) MessagesUnpinAllMessages(in *mtproto.TLMessagesUnpinAllMessages) (*mtproto.Messages_AffectedHistory, error) {
+	if c == nil || c.MD == nil || c.MD.UserId <= 0 {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
+	if in == nil || in.GetPeer() == nil {
+		return nil, mtproto.ErrPeerIdInvalid
+	}
 	var (
 		peer = mtproto.FromInputPeer2(c.MD.UserId, in.Peer)
 	)
+	if peer == nil {
+		return nil, mtproto.ErrPeerIdInvalid
+	}
+	if peer.IsChannel() {
+		channelID, err := channelview.ValidateInputPeer(c.MD.UserId, in.GetPeer())
+		if err != nil {
+			return nil, err
+		}
+		return channelview.UnpinAll(c.MD.UserId, channelID)
+	}
 	switch peer.PeerType {
 	case mtproto.PEER_SELF:
 	case mtproto.PEER_USER:
 	case mtproto.PEER_CHAT:
-	case mtproto.PEER_CHANNEL:
 	default:
 		c.Logger.Errorf("invalid peer: %v", in.Peer)
 		err := mtproto.ErrPeerIdInvalid

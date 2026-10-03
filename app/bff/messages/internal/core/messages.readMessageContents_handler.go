@@ -28,16 +28,102 @@ import (
 	"github.com/teamgram/teamgram-server/app/service/biz/message/message"
 )
 
+type readMessageContentsPeer struct {
+	peerType int32
+	peerID   int64
+}
+
+type readMessageContentsGroup struct {
+	peer     readMessageContentsPeer
+	contents []*msgpb.ContentMessage
+}
+
+func groupReadMessageContents(userID int64, messages []*mtproto.MessageBox) ([]readMessageContentsGroup, error) {
+	groups := make([]readMessageContentsGroup, 0)
+	groupIndexes := make(map[readMessageContentsPeer]int)
+	for _, m := range messages {
+		if m == nil {
+			return nil, mtproto.ErrPeerIdInvalid
+		}
+
+		peer := readMessageContentsPeer{}
+		switch m.PeerType {
+		case mtproto.PEER_CHAT:
+			peer = readMessageContentsPeer{peerType: mtproto.PEER_CHAT, peerID: m.GetMessage().GetPeerId().GetChatId()}
+		case mtproto.PEER_USER:
+			peerID := m.PeerId
+			if m.SenderUserId != userID {
+				peerID = m.SenderUserId
+			}
+			peer = readMessageContentsPeer{peerType: mtproto.PEER_USER, peerID: peerID}
+		default:
+			return nil, mtproto.ErrPeerIdInvalid
+		}
+		if peer.peerID <= 0 {
+			return nil, mtproto.ErrPeerIdInvalid
+		}
+
+		groupIndex, ok := groupIndexes[peer]
+		if !ok {
+			groupIndex = len(groups)
+			groupIndexes[peer] = groupIndex
+			groups = append(groups, readMessageContentsGroup{peer: peer})
+		}
+		group := &groups[groupIndex]
+		if m.Message.GetMentioned() {
+			group.contents = append(group.contents, &msgpb.ContentMessage{
+				Id:              m.MessageId,
+				SendUserId:      m.SenderUserId,
+				DialogMessageId: m.DialogMessageId,
+				Mentioned:       true,
+			})
+		} else if m.Message.GetMediaUnread() {
+			group.contents = append(group.contents, &msgpb.ContentMessage{
+				Id:              m.MessageId,
+				SendUserId:      m.SenderUserId,
+				DialogMessageId: m.DialogMessageId,
+				MediaUnread:     true,
+			})
+		} else if m.GetMessage().GetReactions() != nil {
+			group.contents = append(group.contents, &msgpb.ContentMessage{
+				Id:              m.MessageId,
+				SendUserId:      m.SenderUserId,
+				DialogMessageId: m.DialogMessageId,
+				Reaction:        true,
+			})
+		}
+	}
+
+	return groups, nil
+}
+
 // MessagesReadMessageContents
 // messages.readMessageContents#36a73f77 id:Vector<int> = messages.AffectedMessages;
 func (c *MessagesCore) MessagesReadMessageContents(in *mtproto.TLMessagesReadMessageContents) (*mtproto.Messages_AffectedMessages, error) {
+	if c == nil || c.MD == nil || c.MD.UserId <= 0 {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
+	if in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	for _, id := range in.GetId() {
+		if id <= 0 {
+			return nil, mtproto.ErrMessageIdInvalid
+		}
+	}
+	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.MessageClient == nil || c.svcCtx.Dao.MsgClient == nil || c.svcCtx.Dao.SyncClient == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
+
 	messages, err := c.svcCtx.Dao.MessageClient.MessageGetUserMessageList(c.ctx, &message.TLMessageGetUserMessageList{
 		UserId: c.MD.UserId,
-		IdList: in.Id,
+		IdList: in.GetId(),
 	})
 	if err != nil {
 		c.Logger.Errorf("messages.readMessageContents - error: %v", err)
 		return nil, err
+	} else if messages == nil {
+		return nil, mtproto.ErrInternalServerError
 	} else if messages.Length() == 0 {
 		c.Logger.Errorf("messages.readMessageContents - error: missing messages")
 		return mtproto.MakeTLMessagesAffectedMessages(&mtproto.Messages_AffectedMessages{
@@ -46,64 +132,40 @@ func (c *MessagesCore) MessagesReadMessageContents(in *mtproto.TLMessagesReadMes
 		}).To_Messages_AffectedMessages(), nil
 	}
 
-	// TODO(@benqi): check peer??
-	var (
-		peer *mtproto.PeerUtil
-	)
-	if messages.Datas[0].PeerType == mtproto.PEER_CHAT {
-		peer = mtproto.MakeChatPeerUtil(messages.Datas[0].Message.GetPeerId().GetChatId())
-	} else {
-		if messages.Datas[0].SenderUserId == c.MD.UserId {
-			peer = mtproto.MakeUserPeerUtil(messages.Datas[0].PeerId)
-		} else {
-			peer = mtproto.MakeUserPeerUtil(messages.Datas[0].SenderUserId)
-		}
-	}
-	contents := make([]*msgpb.ContentMessage, 0, len(messages.GetDatas()))
-	for _, m := range messages.GetDatas() {
-		// TODO(@benqi): check peer??
-		// peer := model.FromPeer(m.Message.ToId)
-		if m.Message.GetMentioned() {
-			contents = append(contents, &msgpb.ContentMessage{
-				Id:              m.MessageId,
-				SendUserId:      m.SenderUserId,
-				DialogMessageId: m.DialogMessageId,
-				Mentioned:       true,
-			})
-		} else if m.Message.GetMediaUnread() {
-			contents = append(contents, &msgpb.ContentMessage{
-				Id:              m.MessageId,
-				SendUserId:      m.SenderUserId,
-				DialogMessageId: m.DialogMessageId,
-				MediaUnread:     true,
-			})
-		} else if m.GetMessage().GetReactions() != nil {
-			contents = append(contents, &msgpb.ContentMessage{
-				Id:              m.MessageId,
-				SendUserId:      m.SenderUserId,
-				DialogMessageId: m.DialogMessageId,
-				Reaction:        true,
-			})
-		} else {
-			c.Logger.Infof("content has readed")
-		}
-	}
-
-	affected, err := c.svcCtx.Dao.MsgClient.MsgReadMessageContents(c.ctx, &msgpb.TLMsgReadMessageContents{
-		UserId:    c.MD.UserId,
-		AuthKeyId: c.MD.PermAuthKeyId,
-		PeerType:  peer.PeerType,
-		PeerId:    peer.PeerId,
-		Id:        contents,
-	})
+	groups, err := groupReadMessageContents(c.MD.UserId, messages.GetDatas())
 	if err != nil {
-		c.Logger.Errorf("messages.readMessageContents - %v", err)
+		c.Logger.Errorf("messages.readMessageContents - invalid peer in message list: %v", err)
 		return nil, err
 	}
+	var (
+		affected *mtproto.Messages_AffectedMessages
+		ptsCount int32
+	)
+	for _, group := range groups {
+		affected, err = c.svcCtx.Dao.MsgClient.MsgReadMessageContents(c.ctx, &msgpb.TLMsgReadMessageContents{
+			UserId:    c.MD.UserId,
+			AuthKeyId: c.MD.PermAuthKeyId,
+			PeerType:  group.peer.peerType,
+			PeerId:    group.peer.peerID,
+			Id:        group.contents,
+		})
+		if err != nil {
+			c.Logger.Errorf("messages.readMessageContents - %v", err)
+			return nil, err
+		}
+		if affected == nil {
+			return nil, mtproto.ErrInternalServerError
+		}
+		ptsCount += affected.PtsCount
+	}
+	result := mtproto.MakeTLMessagesAffectedMessages(&mtproto.Messages_AffectedMessages{
+		Pts:      affected.Pts,
+		PtsCount: ptsCount,
+	}).To_Messages_AffectedMessages()
 
 	return threading2.WrapperGoFunc(
 		c.ctx,
-		affected,
+		result,
 		func(ctx context.Context) {
 			c.svcCtx.Dao.SyncClient.SyncUpdatesNotMe(ctx, &sync.TLSyncUpdatesNotMe{
 				UserId:        c.MD.UserId,
@@ -111,7 +173,7 @@ func (c *MessagesCore) MessagesReadMessageContents(in *mtproto.TLMessagesReadMes
 				Updates: mtproto.MakeUpdatesByUpdates(mtproto.MakeTLUpdateReadMessagesContents(&mtproto.Update{
 					Messages:  in.Id,
 					Pts_INT32: affected.Pts,
-					PtsCount:  affected.PtsCount,
+					PtsCount:  ptsCount,
 				}).To_Update()),
 			})
 		}).(*mtproto.Messages_AffectedMessages), nil

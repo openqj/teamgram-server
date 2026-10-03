@@ -25,9 +25,19 @@ import (
 // ContactsGetSponsoredPeers
 // contacts.getSponsoredPeers#b6c8c393 q:string = contacts.SponsoredPeers;
 func (c *SponsoredMessagesCore) ContactsGetSponsoredPeers(in *mtproto.TLContactsGetSponsoredPeers) (*mtproto.Contacts_SponsoredPeers, error) {
-	// disable SponsoredMessages
+	if _, err := c.requireSponsoredUser(); err != nil {
+		return nil, err
+	}
+	if in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
 
+	// Sponsored peers are optional inventory. Until an ad provider is
+	// configured, report the protocol's empty result instead of failing every
+	// contact search with METHOD_NOT_IMPL.
 	return mtproto.MakeTLContactsSponsoredPeersEmpty(&mtproto.Contacts_SponsoredPeers{
-		//
+		Peers: []*mtproto.SponsoredPeer{},
+		Chats: []*mtproto.Chat{},
+		Users: []*mtproto.User{},
 	}).To_Contacts_SponsoredPeers(), nil
 }

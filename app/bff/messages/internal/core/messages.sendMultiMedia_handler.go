@@ -31,6 +31,19 @@ import (
 // MessagesSendMultiMedia
 // messages.sendMultiMedia#f803138f flags:# silent:flags.5?true background:flags.6?true clear_draft:flags.7?true noforwards:flags.14?true peer:InputPeer reply_to_msg_id:flags.0?int multi_media:Vector<InputSingleMedia> schedule_date:flags.10?int send_as:flags.13?InputPeer = Updates;
 func (c *MessagesCore) MessagesSendMultiMedia(in *mtproto.TLMessagesSendMultiMedia) (*mtproto.Updates, error) {
+	if c == nil || c.MD == nil || c.MD.UserId <= 0 {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
+	if in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if in.GetPeer() == nil {
+		return nil, mtproto.ErrPeerIdInvalid
+	}
+	if len(in.GetMultiMedia()) == 0 {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+
 	// peer
 	var (
 		peer       *mtproto.PeerUtil
@@ -39,6 +52,9 @@ func (c *MessagesCore) MessagesSendMultiMedia(in *mtproto.TLMessagesSendMultiMed
 	)
 
 	peer = mtproto.FromInputPeer2(c.MD.UserId, in.Peer)
+	if peer == nil || peer.PeerId <= 0 {
+		return nil, mtproto.ErrPeerIdInvalid
+	}
 	switch peer.PeerType {
 	case mtproto.PEER_SELF:
 		peer.PeerType = mtproto.PEER_USER
@@ -56,6 +72,42 @@ func (c *MessagesCore) MessagesSendMultiMedia(in *mtproto.TLMessagesSendMultiMed
 		c.Logger.Errorf("invalid peer: %v", in.Peer)
 		err = mtproto.ErrPeerIdInvalid
 		return nil, err
+	}
+
+	for _, media := range in.GetMultiMedia() {
+		if media == nil {
+			return nil, mtproto.ErrInputRequestInvalid
+		}
+		if len(media.GetMessage()) > 4000 {
+			err = mtproto.ErrMediaCaptionTooLong
+			c.Logger.Errorf("messages.sendMultiMedia: %v", err)
+			return nil, err
+		}
+	}
+	for _, media := range in.GetMultiMedia() {
+		if media.GetMedia() == nil {
+			return nil, mtproto.ErrMediaInvalid
+		}
+	}
+	if in.GetScheduleDate().GetValue() != 0 && (in.GetReplyToMsgId() != nil || in.GetReplyTo() != nil) {
+		return nil, mtproto.ErrMethodNotImpl
+	}
+	replyToPeer, err := c.resolveMessageReplyPeer(peer, in.GetReplyTo(), in.GetReplyToMsgId())
+	if err != nil {
+		return nil, err
+	}
+	replyToMsgID, replyToTopID := storedReplyIDs(in.GetReplyTo(), in.GetReplyToMsgId())
+	if up, handled, err := c.deliverStored(in.GetPeer(), peer, in.GetScheduleDate().GetValue(), joinCaptions(in), replyToMsgID, replyToTopID); handled {
+		if err != nil {
+			c.Logger.Errorf("messages.sendMultiMedia stored: %v", err)
+		}
+		return up, err
+	}
+	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.MsgClient == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
+	if !c.svcCtx.Dao.IDGenClient2.Available() {
+		return nil, mtproto.ErrInternalServerError
 	}
 
 	// 1. draft
@@ -80,6 +132,9 @@ func (c *MessagesCore) MessagesSendMultiMedia(in *mtproto.TLMessagesSendMultiMed
 	*/
 
 	groupedId := c.svcCtx.Dao.IDGenClient2.NextId(c.ctx)
+	if groupedId <= 0 {
+		return nil, mtproto.ErrInternalServerError
+	}
 	//, &idgen.TLIdgenNextId{
 	//	Constructor:          0,
 	//	XXX_NoUnkeyedLiteral: struct{}{},
@@ -146,7 +201,7 @@ func (c *MessagesCore) MessagesSendMultiMedia(in *mtproto.TLMessagesSendMultiMed
 		}
 
 		// Fix ReplyToMsgId
-		if in.GetReplyToMsgId() != nil {
+		if in.GetReplyToMsgId() != nil && in.GetReplyTo() == nil {
 			outMessage.ReplyTo = mtproto.MakeTLMessageReplyHeader(&mtproto.MessageReplyHeader{
 				ReplyToMsgId:           in.GetReplyToMsgId().GetValue(),
 				ReplyToMsgId_INT32:     in.GetReplyToMsgId().GetValue(),
@@ -161,7 +216,7 @@ func (c *MessagesCore) MessagesSendMultiMedia(in *mtproto.TLMessagesSendMultiMed
 					ReplyToMsgId:           in.GetReplyTo().GetReplyToMsgId(),
 					ReplyToMsgId_INT32:     in.GetReplyTo().GetReplyToMsgId(),
 					ReplyToMsgId_FLAGINT32: mtproto.MakeFlagsInt32(in.GetReplyTo().GetReplyToMsgId()),
-					ReplyToPeerId:          nil,
+					ReplyToPeerId:          replyToPeer,
 					ReplyToTopId:           nil,
 				}).To_MessageReplyHeader()
 				if in.GetReplyTo().GetQuoteText() != nil {
@@ -171,7 +226,7 @@ func (c *MessagesCore) MessagesSendMultiMedia(in *mtproto.TLMessagesSendMultiMed
 					outMessage.ReplyTo.QuoteOffset = in.GetReplyTo().GetQuoteOffset()
 				}
 			case mtproto.Predicate_inputReplyToStory:
-				// TODO:
+				return nil, mtproto.ErrMethodNotImpl
 			}
 		}
 
@@ -225,6 +280,9 @@ func (c *MessagesCore) MessagesSendMultiMedia(in *mtproto.TLMessagesSendMultiMed
 	if err != nil {
 		c.Logger.Errorf("messages.sendMedia#c8f16791 - error: %v", err)
 		return nil, err
+	}
+	if rUpdate == nil {
+		return nil, mtproto.ErrInternalServerError
 	}
 
 	if in.ClearDraft {

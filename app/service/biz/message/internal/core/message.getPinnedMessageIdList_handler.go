@@ -17,8 +17,31 @@ import (
 // MessageGetPinnedMessageIdList
 // message.getPinnedMessageIdList user_id:long peer_type:int peer_id:long = Vector<int>;
 func (c *MessageCore) MessageGetPinnedMessageIdList(in *message.TLMessageGetPinnedMessageIdList) (*message.Vector_Int, error) {
-	// TODO: not impl
-	c.Logger.Errorf("message.getPinnedMessageIdList - error: method MessageGetPinnedMessageIdList not impl")
+	if in == nil || in.GetUserId() <= 0 || in.GetPeerId() <= 0 {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
 
-	return nil, mtproto.ErrMethodNotImpl
+	switch in.GetPeerType() {
+	case mtproto.PEER_SELF, mtproto.PEER_USER, mtproto.PEER_CHAT:
+		peerDialogId := mtproto.MakeDialogId(in.GetUserId(), in.GetPeerType(), in.GetPeerId())
+		idList, err := c.svcCtx.Dao.MessagesDAO.SelectPinnedMessageIdList(
+			c.ctx,
+			in.GetUserId(),
+			peerDialogId.A,
+			peerDialogId.B)
+		if err != nil {
+			c.Logger.Errorf("message.getPinnedMessageIdList - error: %v", err)
+			return nil, err
+		}
+		if idList == nil {
+			idList = make([]int32, 0)
+		}
+		return &message.Vector_Int{Datas: idList}, nil
+	case mtproto.PEER_CHANNEL:
+		// Channel messages use the native channel store rather than this
+		// per-user messages table; do not report an empty successful result.
+		return nil, mtproto.ErrMethodNotImpl
+	default:
+		return nil, mtproto.ErrPeerIdInvalid
+	}
 }

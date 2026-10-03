@@ -19,8 +19,8 @@
 package core
 
 import (
+	"context"
 	"encoding/binary"
-	"strconv"
 	"time"
 
 	"github.com/teamgram/proto/mtproto"
@@ -32,18 +32,36 @@ import (
 	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
+type qrAuthKeyBinder interface {
+	AuthsessionGetUserId(context.Context, *authsession.TLAuthsessionGetUserId) (*mtproto.Int64, error)
+	AuthsessionBindAuthKeyUser(context.Context, *authsession.TLAuthsessionBindAuthKeyUser) (*mtproto.Int64, error)
+}
+
 // AuthAcceptLoginToken
 // auth.acceptLoginToken#e894ad4d token:bytes = Authorization;
 func (c *QrCodeCore) AuthAcceptLoginToken(in *mtproto.TLAuthAcceptLoginToken) (*mtproto.Authorization, error) {
+	c.ensureLogger()
 	// 8 + 16
-	if len(in.Token) != 24 {
+	if in == nil || len(in.GetToken()) != 24 {
 		err := mtproto.ErrAuthTokenInvalid
-		c.Logger.Errorf("auth.acceptLoginToken - error: %v", err)
+		if c != nil {
+			c.Logger.Errorf("auth.acceptLoginToken - error: %v", err)
+		}
 		return nil, err
 	}
+	if c == nil || c.svcCtx == nil || c.svcCtx.Dao == nil {
+		return nil, mtproto.ErrMethodNotImpl
+	}
+	if c.MD == nil || c.MD.GetUserId() <= 0 {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
+	if c.svcCtx.Dao.AuthsessionClient == nil || c.svcCtx.Dao.UserClient == nil || c.svcCtx.Dao.SyncClient == nil {
+		return nil, mtproto.ErrMethodNotImpl
+	}
 
+	token := in.GetToken()
 	var (
-		keyId = int64(binary.BigEndian.Uint64(in.Token))
+		keyId = int64(binary.BigEndian.Uint64(token))
 	)
 
 	qrCode, err := c.svcCtx.Dao.GetCacheQRLoginCode(c.ctx, keyId)
@@ -53,25 +71,23 @@ func (c *QrCodeCore) AuthAcceptLoginToken(in *mtproto.TLAuthAcceptLoginToken) (*
 		return nil, err
 	}
 
-	c.Logger.Infof("auth.acceptLoginToken - qrCode: %#v", qrCode)
+	c.Logger.Infof("auth.acceptLoginToken - state=%d expires_at=%d", qrCode.State, qrCode.ExpireAt)
 
-	if !qrCode.CheckByToken(in.Token) {
+	if !qrCode.CheckByToken(token) {
 		err := mtproto.ErrAuthTokenInvalid
 		c.Logger.Errorf("auth.acceptLoginToken - error: %v", err)
 		return nil, err
 	}
 
-	if qrCode.ExpireAt >= time.Now().Unix() {
-		//s.AuthCore.DeleteQRCode(ctx, keyId)
-		//err := mtproto.ErrAuthTokenExpired
-		//log.Errorf("auth.acceptLoginToken - error: %v", err)
-		//return nil, err
+	now := time.Now().Unix()
+	if qrCode.ExpireAt < now {
+		return nil, mtproto.ErrAuthTokenExpired
 	}
 
 	switch qrCode.State {
-	case model.QRCodeStateNew:
+	case model.QRCodeStateNew, model.QRCodeStateAccepted:
 		// ok
-	case model.QRCodeStateAccepted, model.QRCodeStateSuccess:
+	case model.QRCodeStateSuccess:
 		err := mtproto.ErrAuthTokenAccepted
 		c.Logger.Errorf("auth.acceptLoginToken - error: %v", err)
 		return nil, err
@@ -81,28 +97,59 @@ func (c *QrCodeCore) AuthAcceptLoginToken(in *mtproto.TLAuthAcceptLoginToken) (*
 		return nil, err
 	}
 
-	c.svcCtx.Dao.UpdateCacheQRLoginCode(c.ctx, keyId, map[string]string{
-		"user_id": strconv.FormatInt(c.MD.UserId, 10),
-		"state":   strconv.Itoa(model.QRCodeStateAccepted),
-	})
+	userID := c.MD.GetUserId()
+	if userID <= 0 {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
+	if err = checkQRLoginExceptIDs(qrCode, userID); err != nil {
+		return nil, err
+	}
 
 	user, err := c.svcCtx.Dao.UserClient.UserGetImmutableUser(c.ctx, &userpb.TLUserGetImmutableUser{
-		Id: c.MD.UserId,
+		Id: userID,
 	})
 	if err != nil {
 		c.Logger.Errorf("auth.acceptLoginToken - error: %v", err)
 		return nil, err
+	}
+	if user == nil || user.Id() != userID {
+		return nil, mtproto.ErrUserIdInvalid
 	}
 
-	// Bind authKeyId and userId
-	hash, err := c.svcCtx.Dao.AuthsessionClient.AuthsessionBindAuthKeyUser(c.ctx, &authsession.TLAuthsessionBindAuthKeyUser{
-		AuthKeyId: qrCode.AuthKeyId,
-		UserId:    user.Id(),
-	})
+	acceptResult, err := c.svcCtx.Dao.AcceptCacheQRLoginCode(c.ctx, keyId, qrCode.CodeHash, userID, now)
 	if err != nil {
-		c.Logger.Errorf("auth.acceptLoginToken - error: %v", err)
+		c.Logger.Errorf("auth.acceptLoginToken - claim error: %v", err)
 		return nil, err
 	}
+	switch acceptResult {
+	case 1:
+		// The QR transaction is now claimed by exactly this account.
+	case 2:
+		// A previous bind attempt had an ambiguous result. The same account can
+		// resume it until authsession ownership is confirmed.
+	case 0:
+		return nil, mtproto.ErrAuthTokenAccepted
+	case -1:
+		return nil, mtproto.ErrAuthTokenInvalid
+	case -2:
+		return nil, mtproto.ErrAuthTokenExpired
+	default:
+		return nil, mtproto.ErrInternalServerError
+	}
+
+	if err = ensureQRLoginAuthKeyBinding(c.ctx, c.svcCtx.Dao.AuthsessionClient, qrCode.AuthKeyId, user.Id()); err != nil {
+		c.Logger.Errorf("auth.acceptLoginToken - bind pending: %v", err)
+		return nil, err
+	}
+	commitResult, err := c.svcCtx.Dao.CommitCacheQRLoginCode(c.ctx, keyId, qrCode.CodeHash, userID)
+	if err != nil {
+		c.Logger.Errorf("auth.acceptLoginToken - commit error: %v", err)
+		return nil, err
+	}
+	if commitResult != 1 && commitResult != 2 {
+		return nil, mtproto.ErrAuthTokenInvalid
+	}
+
 	authorization, err := c.svcCtx.Dao.AuthsessionClient.AuthsessionGetAuthorization(c.ctx, &authsession.TLAuthsessionGetAuthorization{
 		AuthKeyId: qrCode.AuthKeyId,
 	})
@@ -110,12 +157,17 @@ func (c *QrCodeCore) AuthAcceptLoginToken(in *mtproto.TLAuthAcceptLoginToken) (*
 		c.Logger.Errorf("auth.acceptLoginToken - error: %v", err)
 		return nil, err
 	}
+	if authorization == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
 
 	authorization.DateCreated = int32(time.Now().Unix())
 	authorization.DateActive = authorization.DateCreated
-	authorization.Hash = hash.V
 
-	c.svcCtx.Dao.SyncClient.SyncUpdatesMe(
+	if c.svcCtx.Dao.SyncClient == nil {
+		return nil, mtproto.ErrMethodNotImpl
+	}
+	if _, err = c.svcCtx.Dao.SyncClient.SyncUpdatesMe(
 		c.ctx,
 		&sync.TLSyncUpdatesMe{
 			UserId:        user.Id(),
@@ -127,7 +179,46 @@ func (c *QrCodeCore) AuthAcceptLoginToken(in *mtproto.TLAuthAcceptLoginToken) (*
 				Update: mtproto.MakeTLUpdateLoginToken(nil).To_Update(),
 				Date:   int32(time.Now().Unix()),
 			}).To_Updates(),
-		})
+		}); err != nil {
+		c.Logger.Errorf("auth.acceptLoginToken - sync error: %v", err)
+		return nil, err
+	}
 
 	return authorization, nil
+}
+
+func ensureQRLoginAuthKeyBinding(ctx context.Context, binder qrAuthKeyBinder, authKeyID, userID int64) error {
+	boundUser, err := binder.AuthsessionGetUserId(ctx, &authsession.TLAuthsessionGetUserId{AuthKeyId: authKeyID})
+	if err != nil {
+		return err
+	}
+	if boundUser != nil && boundUser.GetV() == userID {
+		return nil
+	}
+	if boundUser != nil && boundUser.GetV() != 0 {
+		return mtproto.ErrAuthTokenInvalid
+	}
+
+	_, bindErr := binder.AuthsessionBindAuthKeyUser(ctx, &authsession.TLAuthsessionBindAuthKeyUser{
+		AuthKeyId: authKeyID,
+		UserId:    userID,
+	})
+	if bindErr == nil {
+		return nil
+	}
+
+	// A transport error can arrive after authsession committed. Confirm the
+	// owner before leaving the Redis claim pending for an idempotent retry.
+	boundUser, confirmErr := binder.AuthsessionGetUserId(ctx, &authsession.TLAuthsessionGetUserId{AuthKeyId: authKeyID})
+	if confirmErr == nil && boundUser != nil && boundUser.GetV() == userID {
+		return nil
+	}
+	return bindErr
+}
+
+func checkQRLoginExceptIDs(qrCode *model.QRCodeTransaction, userID int64) error {
+	if qrCode.ExcludesUser(userID) {
+		return mtproto.ErrAuthTokenInvalid
+	}
+	return nil
 }

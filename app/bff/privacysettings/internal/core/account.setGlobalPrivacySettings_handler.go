@@ -19,6 +19,8 @@
 package core
 
 import (
+	"fmt"
+
 	"github.com/teamgram/proto/mtproto"
 	userpb "github.com/teamgram/teamgram-server/app/service/biz/user/user"
 )
@@ -26,13 +28,23 @@ import (
 // AccountSetGlobalPrivacySettings
 // account.setGlobalPrivacySettings#1edaaac2 settings:GlobalPrivacySettings = GlobalPrivacySettings;
 func (c *PrivacySettingsCore) AccountSetGlobalPrivacySettings(in *mtproto.TLAccountSetGlobalPrivacySettings) (*mtproto.GlobalPrivacySettings, error) {
+	if in == nil || in.GetSettings() == nil {
+		err := fmt.Errorf("account.setGlobalPrivacySettings: settings is required")
+		c.Logger.Errorf("account.setGlobalPrivacySettings - error: %v", err)
+		return nil, err
+	}
 	rSettings := in.GetSettings()
 
-	_, err := c.svcCtx.Dao.UserClient.UserSetGlobalPrivacySettings(c.ctx, &userpb.TLUserSetGlobalPrivacySettings{
+	saved, err := c.svcCtx.Dao.UserClient.UserSetGlobalPrivacySettings(c.ctx, &userpb.TLUserSetGlobalPrivacySettings{
 		UserId:   c.MD.UserId,
 		Settings: rSettings,
 	})
 	if err != nil {
+		c.Logger.Errorf("account.setGlobalPrivacySettings - error: %v", err)
+		return nil, fmt.Errorf("account.setGlobalPrivacySettings: save settings: %w", err)
+	}
+	if saved == nil || saved.GetPredicateName() != mtproto.Predicate_boolTrue {
+		err = fmt.Errorf("account.setGlobalPrivacySettings: user service did not acknowledge the write")
 		c.Logger.Errorf("account.setGlobalPrivacySettings - error: %v", err)
 		return nil, err
 	}

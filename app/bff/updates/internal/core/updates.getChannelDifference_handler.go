@@ -20,13 +20,47 @@ package core
 
 import (
 	"github.com/teamgram/proto/mtproto"
+	"github.com/teamgram/teamgram-server/app/service/authsession/authsession"
+	"github.com/teamgram/teamgram-server/app/service/biz/updates/updates"
 )
 
 // UpdatesGetChannelDifference
 // updates.getChannelDifference#3173d78 flags:# force:flags.0?true channel:InputChannel filter:ChannelMessagesFilter pts:int limit:int = updates.ChannelDifference;
 func (c *UpdatesCore) UpdatesGetChannelDifference(in *mtproto.TLUpdatesGetChannelDifference) (*mtproto.Updates_ChannelDifference, error) {
-	// TODO: not impl
-	c.Logger.Errorf("updates.getChannelDifference blocked, License key from https://teamgram.net required to unlock enterprise features.")
+	channel := in.GetChannel()
+	if channel == nil || channel.GetPredicateName() == mtproto.Predicate_inputChannelEmpty || channel.GetChannelId() == 0 {
+		c.Logger.Errorf("updates.getChannelDifference - error: channel invalid")
+		return nil, mtproto.ErrChannelInvalid
+	}
 
-	return nil, mtproto.ErrEnterpriseIsBlocked
+	keyId, err := c.svcCtx.Dao.AuthsessionClient.AuthsessionGetPermAuthKeyId(c.ctx, &authsession.TLAuthsessionGetPermAuthKeyId{
+		AuthKeyId: c.MD.PermAuthKeyId,
+	})
+	if err != nil {
+		c.Logger.Errorf("updates.getChannelDifference - error: %v", err)
+		return nil, err
+	}
+
+	diff, err := c.svcCtx.Dao.UpdatesClient.UpdatesGetChannelDifferenceV2(c.ctx, &updates.TLUpdatesGetChannelDifferenceV2{
+		AuthKeyId: keyId.GetV(),
+		UserId:    c.MD.UserId,
+		ChannelId: channel.GetChannelId(),
+		Pts:       in.GetPts(),
+		Limit:     in.GetLimit(),
+	})
+	if err != nil {
+		c.Logger.Errorf("updates.getChannelDifference - error: %v", err)
+		return nil, err
+	}
+	if diff == nil {
+		c.Logger.Errorf("updates.getChannelDifference - error: empty difference")
+		return nil, mtproto.ErrInternalServerError
+	}
+
+	return mtproto.MakeTLUpdatesChannelDifference(&mtproto.Updates_ChannelDifference{
+		Final:        diff.GetFinal(),
+		Pts:          diff.GetPts(),
+		NewMessages:  diff.GetNewMessages(),
+		OtherUpdates: diff.GetOtherUpdates(),
+	}).To_Updates_ChannelDifference(), nil
 }

@@ -19,13 +19,12 @@
 package core
 
 import (
-	"context"
-
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/bff/authorization/model"
 	userpb "github.com/teamgram/teamgram-server/app/service/biz/user/user"
 	"github.com/teamgram/teamgram-server/pkg/phonenumber"
 
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
 
@@ -49,6 +48,10 @@ import (
 // AccountSendChangePhoneCode
 // account.sendChangePhoneCode#82574ae5 phone_number:string settings:CodeSettings = auth.SentCode;
 func (c *AccountCore) AccountSendChangePhoneCode(in *mtproto.TLAccountSendChangePhoneCode) (*mtproto.Auth_SentCode, error) {
+	if in == nil || in.GetSettings() == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	settings := in.GetSettings()
 	// ## Possible errors
 	// Code	Type	Description
 	// 406	FRESH_CHANGE_PHONE_FORBIDDEN	You can't change phone number right after logging in, please wait at least 24 hours.
@@ -84,11 +87,9 @@ func (c *AccountCore) AccountSendChangePhoneCode(in *mtproto.TLAccountSendChange
 	if user, err = c.svcCtx.Dao.UserClient.UserGetImmutableUserByPhone(c.ctx, &userpb.TLUserGetImmutableUserByPhone{
 		Phone: phoneNumber,
 	}); err != nil {
-		if nErr, ok := status.FromError(err); ok {
-			// TODO: check if the error is mtproto.ErrPhoneNumberUnoccupied
-			// mtproto.ErrPhoneNumberUnoccupied
-			c.Logger.Errorf("checkPhoneNumberExist error: %v", err)
-			_ = nErr
+		nErr, ok := status.FromError(err)
+		if ok && (nErr.Code() == codes.NotFound ||
+			(nErr.Code() == status.Code(mtproto.ErrPhoneNumberUnoccupied) && nErr.Message() == status.Convert(mtproto.ErrPhoneNumberUnoccupied).Message())) {
 			err = nil
 		} else {
 			c.Logger.Errorf("checkPhoneNumberExist error: %v", err)
@@ -147,78 +148,10 @@ func (c *AccountCore) AccountSendChangePhoneCode(in *mtproto.TLAccountSendChange
 		c.MD.PermAuthKeyId,
 		c.MD.SessionId,
 		phoneNumber,
-		in.Settings.AllowFlashcall,
-		in.Settings.CurrentNumber,
+		settings.GetAllowFlashcall(),
+		settings.GetCurrentNumber(),
 		func(codeData2 *model.PhoneCodeTransaction) error {
-			if codeData2.State == model.CodeStateSent {
-				c.Logger.Infof("codeSent")
-				return nil
-			}
-
-			c.Logger.Infof("send code by sms")
-			extraData, err2 := c.svcCtx.AuthLogic.VerifyCodeInterface.SendSmsVerifyCode(
-				context.Background(),
-				phoneNumber,
-				codeData2.PhoneCode,
-				codeData2.PhoneCodeHash)
-			if err2 != nil {
-				c.Logger.Errorf("send sms code error: %v", err2)
-				return err2
-			} else {
-				// codeData2.SentCodeType = model.CodeTypeSms
-				codeData2.SentCodeType = model.SentCodeTypeSms
-				codeData2.PhoneCodeExtraData = extraData
-			}
-
-			//if user.User.UserType == userpb.UserTypeTest {
-			//	c.Logger.Infof("test user: %s, %s", phoneNumber, user)
-			//	codeData2.SentCodeType = model.CodeTypeApp
-			//	codeData2.PhoneCode = "12345"
-			//	codeData2.PhoneCodeExtraData = "12345"
-			//	go func() {
-			//		// c.pushSignInMessage(context.Background(), user.Id, codeData2.PhoneCode)
-			//	}()
-			//} else {
-			//	var (
-			//		online = false
-			//	)
-			//
-			//	if phoneRegistered {
-			//		if status, _ := c.svcCtx.StatusClient.StatusGetUserOnlineSessions(c.ctx, &status.TLStatusGetUserOnlineSessions{
-			//			UserId: user.User.Id,
-			//		}); len(status.GetUserSessions()) > 0 {
-			//			c.Logger.Infof("user online")
-			//			online = true
-			//
-			//			codeData2.SentCodeType = model.CodeTypeApp
-			//			codeData2.PhoneCodeExtraData = codeData2.PhoneCode
-			//			go func() {
-			//				// s.pushSignInMessage(context.Background(), user.Id, codeData2.PhoneCode)
-			//			}()
-			//		}
-			//		// &&
-			//	}
-			//
-			//	if !phoneRegistered || !online {
-			//		c.Logger.Infof("send code by sms")
-			//		if extraData, err := c.svcCtx.AuthLogic.VerifyCodeInterface.SendSmsVerifyCode(
-			//			context.Background(),
-			//			phoneNumber,
-			//			codeData2.PhoneCode,
-			//			codeData2.PhoneCodeHash); err != nil {
-			//			return err
-			//		} else {
-			//			codeData2.SentCodeType = model.CodeTypeSms
-			//			codeData2.PhoneCodeExtraData = extraData
-			//		}
-			//	}
-			//}
-
-			codeData2.NextCodeType = model.CodeTypeSms
-			codeData2.State = model.CodeStateSent
-			// codeData2.PhoneNumberRegistered = phoneRegistered
-
-			return nil
+			return c.issueSMSChallenge(codeData2, challengePurposeChangePhone)
 		})
 
 	if err2 != nil {

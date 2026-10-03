@@ -20,13 +20,17 @@ import (
 // DialogDeleteDialogFilter
 // dialog.deleteDialogFilter user_id:long id:int = Bool;
 func (c *DialogCore) DialogDeleteDialogFilter(in *dialog.TLDialogDeleteDialogFilter) (*mtproto.Bool, error) {
-	c.svcCtx.Dao.CachedConn.Exec(
+	_, _, err := c.svcCtx.Dao.CachedConn.Exec(
 		c.ctx,
 		func(ctx context.Context, conn *sqlx.DB) (int64, int64, error) {
 			_, err := c.svcCtx.Dao.DialogFiltersDAO.Clear(ctx, in.UserId, in.Id)
 			return 0, 0, err
 		},
 		dialog.GetDialogFilterCacheKey(in.UserId))
+	if err != nil {
+		c.Logger.Errorf("dialog.deleteDialogFilter - delete filter error: %v", err)
+		return nil, err
+	}
 
 	return mtproto.BoolTrue, nil
 }

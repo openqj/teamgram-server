@@ -18,15 +18,6 @@
 
 package core
 
-import (
-	"github.com/teamgram/proto/mtproto"
-)
-
 // AccountAcceptAuthorization
 // account.acceptAuthorization#f3ed4c73 bot_id:long scope:string public_key:string value_hashes:Vector<SecureValueHash> credentials:SecureCredentialsEncrypted = Bool;
-func (c *PassportCore) AccountAcceptAuthorization(in *mtproto.TLAccountAcceptAuthorization) (*mtproto.Bool, error) {
-	// TODO: not impl
-	c.Logger.Errorf("account.acceptAuthorization blocked, License key from https://teamgram.net required to unlock enterprise features.")
-
-	return nil, mtproto.ErrEnterpriseIsBlocked
-}
+// Implemented in passport_impl.go.

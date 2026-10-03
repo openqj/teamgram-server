@@ -20,6 +20,7 @@ package core
 
 import (
 	"github.com/teamgram/proto/mtproto"
+	"github.com/teamgram/teamgram-server/app/bff/apifull/channelview"
 	chatpb "github.com/teamgram/teamgram-server/app/service/biz/chat/chat"
 )
 
@@ -32,10 +33,25 @@ func (c *ChatInvitesCore) MessagesExportChatInvite(in *mtproto.TLMessagesExportC
 		exportedChatInvite *mtproto.ExportedChatInvite
 	)
 
-	if !peer.IsChat() {
+	if !peer.IsChat() && !peer.IsChannel() {
 		err = mtproto.ErrPeerIdInvalid
 		c.Logger.Errorf("messages.exportChatInvite - error: ", err)
 		return nil, err
+	}
+	if peer.IsChannel() {
+		if _, err = channelview.ValidateInputPeer(c.MD.UserId, in.Peer); err != nil {
+			return nil, err
+		}
+		return channelview.ExportInvite(c.MD.UserId, peer.PeerId, channelview.InviteOptions{
+			RequestNeeded: in.RequestNeeded,
+			ExpireDate:    in.GetExpireDate().GetValue(),
+			UsageLimit:    in.GetUsageLimit().GetValue(),
+			Title:         in.GetTitle().GetValue(),
+		})
+	} else {
+		if err = c.requireInvitePermission(peer.PeerId, 0); err != nil {
+			return nil, err
+		}
 	}
 
 	exportedChatInvite, err = c.svcCtx.Dao.ChatClient.ChatExportChatInvite(c.ctx, &chatpb.TLChatExportChatInvite{

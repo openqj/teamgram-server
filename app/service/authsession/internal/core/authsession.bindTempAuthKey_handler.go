@@ -10,9 +10,12 @@
 package core
 
 import (
+	"errors"
+
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/proto/mtproto/crypto"
 	"github.com/teamgram/teamgram-server/app/service/authsession/authsession"
+	"github.com/teamgram/teamgram-server/app/service/authsession/internal/dao"
 
 	status2 "google.golang.org/grpc/status"
 )
@@ -103,6 +106,18 @@ func (c *AuthsessionCore) AuthsessionBindTempAuthKey(in *authsession.TLAuthsessi
 	// -503	Timeout	Timeout while fetching data
 	//
 
+	// The encrypted payload contains an 8-byte auth key id, a 16-byte
+	// message key, and at least one 32-byte encrypted MTProto message. AES-IGE
+	// also requires the ciphertext to be block aligned; rejecting malformed
+	// framing here avoids indexing into a short decrypted buffer.
+	if in == nil {
+		return nil, mtproto.ErrEncryptedMessageInvalid
+	}
+	encryptedMessageLen := len(in.GetEncryptedMessage())
+	if in.GetPermAuthKeyId() == 0 || encryptedMessageLen < 56 || (encryptedMessageLen-24)%16 != 0 {
+		return nil, mtproto.ErrEncryptedMessageInvalid
+	}
+
 	keyData, err := c.svcCtx.Dao.QueryAuthKeyV2(c.ctx, in.GetPermAuthKeyId())
 	if err != nil {
 		c.Logger.Errorf("auth.bindTempAuthKey - error: %v", err)
@@ -112,11 +127,18 @@ func (c *AuthsessionCore) AuthsessionBindTempAuthKey(in *authsession.TLAuthsessi
 
 		return nil, err
 	}
+	if keyData.AuthKeyType != mtproto.AuthKeyTypePerm {
+		return nil, mtproto.ErrEncryptedMessageInvalid
+	}
 
 	permAuthKey := crypto.NewAuthKey(in.PermAuthKeyId, keyData.AuthKey)
 	innerData, err := permAuthKey.AesIgeDecryptV1(in.EncryptedMessage[8:8+16], in.EncryptedMessage[8+16:])
 	if err != nil {
 		c.Logger.Errorf("auth.bindTempAuthKey - error: %v", err)
+		return nil, mtproto.ErrEncryptedMessageInvalid
+	}
+	if len(innerData) < 32 {
+		c.Logger.Errorf("auth.bindTempAuthKey - decrypted message is too short: %d", len(innerData))
 		return nil, mtproto.ErrEncryptedMessageInvalid
 	}
 
@@ -138,25 +160,31 @@ func (c *AuthsessionCore) AuthsessionBindTempAuthKey(in *authsession.TLAuthsessi
 		// bind_auth_key_inner#75a3f765 nonce:long temp_auth_key_id:long perm_auth_key_id:long temp_session_id:long expires_at:int = BindAuthKeyInner;
 		// bind
 		c.Logger.Infof("auth.bindTempAuthKey - bind_auth_key_inner: %s", bindAuthKeyInner)
+		if bindAuthKeyInner.GetPermAuthKeyId() != in.GetPermAuthKeyId() ||
+			bindAuthKeyInner.GetNonce() != in.GetNonce() ||
+			bindAuthKeyInner.GetExpiresAt() != in.GetExpiresAt() {
+			c.Logger.Errorf("auth.bindTempAuthKey - outer and inner handshake fields do not match")
+			return nil, mtproto.ErrEncryptedMessageInvalid
+		}
+		if bindAuthKeyInner.GetTempAuthKeyId() == 0 {
+			return nil, mtproto.ErrEncryptedMessageInvalid
+		}
 		tempKeyData, err2 := c.svcCtx.Dao.QueryAuthKeyV2(c.ctx, bindAuthKeyInner.GetTempAuthKeyId())
 		if err2 != nil {
 			c.Logger.Errorf("auth.bindTempAuthKey - invalid innerData")
 			return nil, mtproto.ErrEncryptedMessageInvalid
 		}
 
-		// TODO: tx wrapper
-		// bindTemp
-		c.svcCtx.Dao.UnsafeBindKeyIdV2(c.ctx,
+		if err := c.svcCtx.Dao.BindTempAuthKeyV2(c.ctx,
 			bindAuthKeyInner.GetPermAuthKeyId(),
-			tempKeyData.AuthKeyType,
-			bindAuthKeyInner.GetTempAuthKeyId())
-
-		// TODO: expiredIn int32
-		// bindPerm
-		c.svcCtx.Dao.UnsafeBindKeyIdV2(c.ctx,
 			bindAuthKeyInner.GetTempAuthKeyId(),
-			mtproto.AuthKeyTypePerm,
-			bindAuthKeyInner.GetPermAuthKeyId())
+			tempKeyData.AuthKeyType); err != nil {
+			if errors.Is(err, dao.ErrTempAuthKeyAlreadyBound) {
+				return nil, mtproto.ErrTempAuthKeyAlreadyBound
+			}
+			c.Logger.Errorf("auth.bindTempAuthKey - persist binding: %v", err)
+			return nil, mtproto.ErrInternalServerError
+		}
 	}
 
 	return mtproto.BoolTrue, nil

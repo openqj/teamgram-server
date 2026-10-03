@@ -97,13 +97,17 @@ func (c *DialogCore) DialogInsertOrUpdateDialog(in *dialog.TLDialogInsertOrUpdat
 			dlgDO.PinnedMsgId = in.GetPinnedMsgId().GetValue()
 		}
 
-		c.svcCtx.Dao.CachedConn.Exec(
+		_, _, err = c.svcCtx.Dao.CachedConn.Exec(
 			c.ctx,
 			func(ctx context.Context, conn *sqlx.DB) (int64, int64, error) {
 				_, _, err2 := c.svcCtx.Dao.DialogsDAO.InsertIgnore(c.ctx, dlgDO)
 				return 0, 0, err2
 			},
 			dialog.GetCacheKeyByPeerType(dlgDO.UserId, dlgDO.PeerType))
+		if err != nil {
+			c.Logger.Errorf("dialog.insertOrUpdateDialog - insert missing dialog error: %v", err)
+			return nil, err
+		}
 	}
 
 	return mtproto.BoolTrue, nil

@@ -20,43 +20,113 @@ package core
 
 import (
 	"github.com/teamgram/proto/mtproto"
+	chatpb "github.com/teamgram/teamgram-server/app/service/biz/chat/chat"
 	userpb "github.com/teamgram/teamgram-server/app/service/biz/user/user"
 )
 
 // AccountGetNotifySettings
 // account.getNotifySettings#12b3ad31 peer:InputNotifyPeer = PeerNotifySettings;
 func (c *NotificationCore) AccountGetNotifySettings(in *mtproto.TLAccountGetNotifySettings) (*mtproto.PeerNotifySettings, error) {
-	var (
-		err      error
-		settings *mtproto.PeerNotifySettings
-	)
+	if in == nil || in.GetPeer() == nil {
+		err := mtproto.ErrPeerIdInvalid
+		c.Logger.Errorf("account.getNotifySettings - error: %v", err)
+		return nil, err
+	}
 
-	peer := mtproto.FromInputNotifyPeer(c.MD.UserId, in.Peer)
+	peer := mtproto.FromInputNotifyPeer(c.MD.UserId, in.GetPeer())
 	switch peer.PeerType {
-	case mtproto.PEER_USER:
-		// TODO(@benqi): check peerUser Exists
+	case mtproto.PEER_SELF, mtproto.PEER_USER:
+		if peer.PeerId <= 0 {
+			err := mtproto.ErrPeerIdInvalid
+			c.Logger.Errorf("account.getNotifySettings - error: %v", err)
+			return nil, err
+		}
+		users, err := c.svcCtx.Dao.UserClient.UserGetMutableUsers(c.ctx, &userpb.TLUserGetMutableUsers{
+			Id: []int64{c.MD.UserId, peer.PeerId},
+		})
+		if err != nil {
+			c.Logger.Errorf("account.getNotifySettings - load user error: %v", err)
+			return nil, err
+		}
+		user, ok := users.GetImmutableUser(peer.PeerId)
+		if !ok || user == nil {
+			err = mtproto.ErrPeerIdInvalid
+			c.Logger.Errorf("account.getNotifySettings - error: %v", err)
+			return nil, err
+		}
+		if user.Deleted() {
+			err = mtproto.ErrInputUserDeactivated
+			c.Logger.Errorf("account.getNotifySettings - error: %v", err)
+			return nil, err
+		}
 	case mtproto.PEER_CHAT:
-		// TODO(@benqi): check peerChat exists
+		if peer.PeerId <= 0 {
+			err := mtproto.ErrPeerIdInvalid
+			c.Logger.Errorf("account.getNotifySettings - error: %v", err)
+			return nil, err
+		}
+		group, err := c.svcCtx.Dao.ChatClient.ChatGetMutableChat(c.ctx, &chatpb.TLChatGetMutableChat{
+			ChatId: peer.PeerId,
+		})
+		if err != nil {
+			c.Logger.Errorf("account.getNotifySettings - load chat error: %v", err)
+			return nil, mtproto.ErrPeerIdInvalid
+		}
+		if group == nil {
+			err = mtproto.ErrPeerIdInvalid
+			c.Logger.Errorf("account.getNotifySettings - error: %v", err)
+			return nil, err
+		}
+		member, ok := group.GetImmutableChatParticipant(c.MD.UserId)
+		if !ok || member == nil || !member.IsChatMemberStateNormal() {
+			err = mtproto.ErrPeerIdInvalid
+			c.Logger.Errorf("account.getNotifySettings - error: %v", err)
+			return nil, err
+		}
 	case mtproto.PEER_CHANNEL:
-		// TODO(@benqi): check peerChannel exists
+		if peer.PeerId <= 0 || c.svcCtx.Plugin == nil {
+			err := mtproto.ErrPeerIdInvalid
+			c.Logger.Errorf("account.getNotifySettings - error: %v", err)
+			return nil, err
+		}
+		channel, err := c.svcCtx.Plugin.GetChannelById(c.ctx, c.MD.UserId, peer.PeerId)
+		if err != nil {
+			c.Logger.Errorf("account.getNotifySettings - load channel error: %v", err)
+			return nil, err
+		}
+		if channel == nil {
+			err = mtproto.ErrPeerIdInvalid
+			c.Logger.Errorf("account.getNotifySettings - error: %v", err)
+			return nil, err
+		}
+		if channel.GetPredicateName() == mtproto.Predicate_channelForbidden {
+			err = mtproto.ErrChannelPrivate
+			c.Logger.Errorf("account.getNotifySettings - error: %v", err)
+			return nil, err
+		}
+		if channel.GetPredicateName() != mtproto.Predicate_channel {
+			err = mtproto.ErrPeerIdInvalid
+			c.Logger.Errorf("account.getNotifySettings - error: %v", err)
+			return nil, err
+		}
 	case mtproto.PEER_USERS:
 	case mtproto.PEER_CHATS:
 	case mtproto.PEER_BROADCASTS:
 	default:
-		err = mtproto.ErrPeerIdInvalid
-		c.Logger.Errorf("account.updateNotifySettings - error: %v", err)
+		err := mtproto.ErrPeerIdInvalid
+		c.Logger.Errorf("account.getNotifySettings - error: %v", err)
 		return nil, err
 	}
 
-	settings, err = c.svcCtx.Dao.UserClient.UserGetNotifySettings(c.ctx, &userpb.TLUserGetNotifySettings{
+	settings, err := c.svcCtx.Dao.UserClient.UserGetNotifySettings(c.ctx, &userpb.TLUserGetNotifySettings{
 		UserId:   c.MD.UserId,
 		PeerType: peer.PeerType,
 		PeerId:   peer.PeerId,
 	})
 	if err != nil {
-		c.Logger.Errorf("getNotifySettings error - %v", err)
+		c.Logger.Errorf("account.getNotifySettings - error: %v", err)
 		return nil, err
 	}
 
-	return settings, err
+	return settings, nil
 }

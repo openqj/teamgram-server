@@ -26,17 +26,27 @@ import (
 // ChatGetRecentChatInviteRequesters
 // chat.getRecentChatInviteRequesters self_id:long chat_id:long = RecentChatInviteRequesters;
 func (c *ChatCore) ChatGetRecentChatInviteRequesters(in *chat.TLChatGetRecentChatInviteRequesters) (*chat.RecentChatInviteRequesters, error) {
+	selfID, err := c.requireInviteSelf(in.GetSelfId())
+	if err != nil {
+		return nil, err
+	}
+	if _, err = c.requireInvitePermission(in.GetChatId(), selfID, 0); err != nil {
+		return nil, err
+	}
 	rValue := chat.MakeTLRecentChatInviteRequesters(&chat.RecentChatInviteRequesters{
 		RequestsPending:  0,
 		RecentRequesters: []int64{},
 	}).To_RecentChatInviteRequesters()
 
-	doList, _ := c.svcCtx.Dao.ChatInviteParticipantsDAO.SelectRecentRequestedListWithCB(
+	doList, err := c.svcCtx.Dao.ChatInviteParticipantsDAO.SelectRecentRequestedListWithCB(
 		c.ctx,
 		in.GetChatId(),
 		func(sz, i int, v *dataobject.ChatInviteParticipantsDO) {
 			rValue.RecentRequesters = append(rValue.RecentRequesters, v.UserId)
 		})
+	if err != nil {
+		return nil, err
+	}
 
 	rValue.RequestsPending = int32(len(doList))
 

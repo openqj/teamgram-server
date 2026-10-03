@@ -10,6 +10,8 @@
 package core
 
 import (
+	"fmt"
+
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/service/biz/user/user"
 )
@@ -17,6 +19,10 @@ import (
 // UserGetGlobalPrivacySettings
 // user.getGlobalPrivacySettings user_id:int = GlobalPrivacySettings;
 func (c *UserCore) UserGetGlobalPrivacySettings(in *user.TLUserGetGlobalPrivacySettings) (*mtproto.GlobalPrivacySettings, error) {
+	if in == nil {
+		return nil, fmt.Errorf("user.getGlobalPrivacySettings: request is nil")
+	}
+
 	var (
 		rV = mtproto.MakeTLGlobalPrivacySettings(&mtproto.GlobalPrivacySettings{
 			ArchiveAndMuteNewNoncontactPeers_FLAGBOOLEAN: false,
@@ -37,10 +43,15 @@ func (c *UserCore) UserGetGlobalPrivacySettings(in *user.TLUserGetGlobalPrivacyS
 	do, err := c.svcCtx.Dao.UserGlobalPrivacySettingsDAO.Select(c.ctx, in.UserId)
 	if err != nil {
 		c.Logger.Errorf("user.getGlobalPrivacySettings - error: %v", err)
-		return rV, nil
+		return nil, fmt.Errorf("user.getGlobalPrivacySettings: load settings: %w", err)
 	} else if do == nil {
 		c.Logger.Infof("user.getGlobalPrivacySettings - not found by %d", in.UserId)
 		return rV, nil
+	}
+	disallowedGifts, err := decodeGlobalPrivacyDisallowedGifts(do.DisallowedGiftsJSON)
+	if err != nil {
+		c.Logger.Errorf("user.getGlobalPrivacySettings - error: %v", err)
+		return nil, fmt.Errorf("user.getGlobalPrivacySettings: decode settings: %w", err)
 	}
 
 	return mtproto.MakeTLGlobalPrivacySettings(&mtproto.GlobalPrivacySettings{
@@ -50,5 +61,8 @@ func (c *UserCore) UserGetGlobalPrivacySettings(in *user.TLUserGetGlobalPrivacyS
 		KeepArchivedFolders:                          do.KeepArchivedFolders,
 		HideReadMarks:                                do.HideReadMarks,
 		NewNoncontactPeersRequirePremium:             do.NewNoncontactPeersRequirePremium,
+		DisplayGiftsButton:                           do.DisplayGiftsButton,
+		NoncontactPeersPaidStars:                     globalPrivacyPaidStarsValue(do.NoncontactPeersPaidStars),
+		DisallowedGifts:                              disallowedGifts,
 	}).To_GlobalPrivacySettings(), nil
 }

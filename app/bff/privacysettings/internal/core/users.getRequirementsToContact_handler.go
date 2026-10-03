@@ -19,14 +19,154 @@
 package core
 
 import (
+	"time"
+
 	"github.com/teamgram/proto/mtproto"
+	userpb "github.com/teamgram/teamgram-server/app/service/biz/user/user"
 )
 
 // UsersGetRequirementsToContact
 // users.getRequirementsToContact#d89a83a3 id:Vector<InputUser> = Vector<RequirementToContact>;
 func (c *PrivacySettingsCore) UsersGetRequirementsToContact(in *mtproto.TLUsersGetRequirementsToContact) (*mtproto.Vector_RequirementToContact, error) {
-	// TODO: not impl
-	c.Logger.Errorf("users.getRequirementsToContact blocked, License key from https://teamgram.net required to unlock enterprise features.")
+	if c == nil || c.MD == nil || c.MD.UserId <= 0 {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
+	if in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	selfPremium, premiumKnown, err := c.selfPremiumKnown()
+	if err != nil {
+		c.Logger.Errorf("users.getRequirementsToContact - error: %v", err)
+		return nil, err
+	}
+	datas := make([]*mtproto.RequirementToContact, 0, len(in.GetId()))
+	for _, id := range in.GetId() {
+		requirement, err := c.requirementToContact(id, selfPremium, premiumKnown)
+		if err != nil {
+			c.Logger.Errorf("users.getRequirementsToContact - error: %v", err)
+			return nil, err
+		}
+		datas = append(datas, requirement)
+	}
+	return &mtproto.Vector_RequirementToContact{Datas: datas}, nil
+}
 
-	return nil, mtproto.ErrEnterpriseIsBlocked
+func (c *PrivacySettingsCore) selfPremiumKnown() (premium bool, known bool, err error) {
+	me, err := c.svcCtx.Dao.UserGetUserDataById(c.ctx, &userpb.TLUserGetUserDataById{
+		UserId: c.MD.UserId,
+	})
+	if err != nil {
+		return false, false, err
+	}
+	if me == nil {
+		return false, false, mtproto.ErrInternalServerError
+	}
+	if !me.GetPremium() {
+		return false, true, nil
+	}
+	exp := me.GetPremiumExpireDate().GetValue()
+	if exp == 0 {
+		return true, true, nil
+	}
+	return time.Now().Unix() < exp, true, nil
+}
+
+func (c *PrivacySettingsCore) requirementToContact(id *mtproto.InputUser, selfPremium, premiumKnown bool) (*mtproto.RequirementToContact, error) {
+	empty := mtproto.MakeTLRequirementToContactEmpty(&mtproto.RequirementToContact{}).To_RequirementToContact()
+	if id == nil {
+		return nil, mtproto.ErrUserIdInvalid
+	}
+	peer := mtproto.FromInputUser(c.MD.UserId, id)
+	if peer == nil || !peer.IsUser() || peer.IsSelf() || peer.PeerId == 0 || peer.PeerId == c.MD.UserId {
+		return empty, nil
+	}
+
+	// Same getPrivacy path as account.getPrivacy (user.getPrivacy).
+	rules, err := c.svcCtx.Dao.UserClient.UserGetPrivacy(c.ctx, &userpb.TLUserGetPrivacy{
+		UserId:  peer.PeerId,
+		KeyType: int32(mtproto.NO_PAID_MESSAGES),
+	})
+	if err != nil {
+		return nil, err
+	}
+	settings, err := c.svcCtx.Dao.UserGetGlobalPrivacySettings(c.ctx, &userpb.TLUserGetGlobalPrivacySettings{
+		UserId: peer.PeerId,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if settings == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
+
+	stars := settings.GetNoncontactPeersPaidStars().GetValue()
+	needPremium := settings.GetNewNoncontactPeersRequirePremium()
+	if stars <= 0 && !needPremium {
+		return empty, nil
+	}
+
+	contact, err := c.svcCtx.Dao.UserCheckContact(c.ctx, &userpb.TLUserCheckContact{
+		UserId: peer.PeerId,
+		Id:     c.MD.UserId,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if contact == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
+	if mtproto.FromBool(contact) {
+		return empty, nil
+	}
+
+	if stars > 0 {
+		if paidRulesNeedPremium(rules.GetDatas()) && !premiumKnown {
+			return empty, nil
+		}
+		if paidMessagesExempt(rules.GetDatas(), c.MD.UserId, selfPremium) {
+			return empty, nil
+		}
+		return mtproto.MakeTLRequirementToContactPaidMessages(&mtproto.RequirementToContact{
+			StarsAmount: stars,
+		}).To_RequirementToContact(), nil
+	}
+
+	if needPremium {
+		if !premiumKnown {
+			return empty, nil
+		}
+		if !selfPremium {
+			return mtproto.MakeTLRequirementToContactPremium(&mtproto.RequirementToContact{}).To_RequirementToContact(), nil
+		}
+	}
+	return empty, nil
+}
+
+func paidRulesNeedPremium(rules []*mtproto.PrivacyRule) bool {
+	for _, r := range rules {
+		if r.GetPredicateName() == mtproto.Predicate_privacyValueAllowPremium {
+			return true
+		}
+	}
+	return false
+}
+
+func paidMessagesExempt(rules []*mtproto.PrivacyRule, selfId int64, selfPremium bool) bool {
+	for _, r := range rules {
+		switch r.GetPredicateName() {
+		case mtproto.Predicate_privacyValueAllowAll:
+			return true
+		case mtproto.Predicate_privacyValueAllowPremium:
+			if selfPremium {
+				return true
+			}
+		case mtproto.Predicate_privacyValueAllowUsers:
+			for _, id := range r.GetUsers() {
+				if id == selfId {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }

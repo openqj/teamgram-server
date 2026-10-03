@@ -11,14 +11,27 @@ package core
 
 import (
 	"github.com/teamgram/proto/mtproto"
+	"github.com/teamgram/teamgram-server/app/service/dfs/dfs"
 	"github.com/teamgram/teamgram-server/app/service/media/media"
 )
 
 // MediaUploadEncryptedFile
 // media.uploadEncryptedFile owner_id:long file:InputEncryptedFile = EncryptedFile;
 func (c *MediaCore) MediaUploadEncryptedFile(in *media.TLMediaUploadEncryptedFile) (*mtproto.EncryptedFile, error) {
-	// TODO: not impl
-	c.Logger.Errorf("media.uploadEncryptedFile blocked, License key from https://teamgram.net required to unlock enterprise features.")
+	if in == nil || in.GetFile() == nil {
+		return nil, mtproto.ErrMediaInvalid
+	}
 
-	return nil, mtproto.ErrEnterpriseIsBlocked
+	file, err := c.svcCtx.Dao.DfsClient.DfsUploadEncryptedFileV2(c.ctx, &dfs.TLDfsUploadEncryptedFileV2{
+		Creator: in.GetOwnerId(),
+		File:    in.GetFile(),
+	})
+	if err != nil {
+		c.Logger.Errorf("media.uploadEncryptedFile - error: %v", err)
+		return nil, err
+	}
+	if file == nil {
+		return nil, mtproto.ErrMediaInvalid
+	}
+	return file, nil
 }

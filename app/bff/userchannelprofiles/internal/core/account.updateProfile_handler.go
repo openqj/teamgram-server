@@ -34,6 +34,9 @@ func (c *UserChannelProfilesCore) AccountUpdateProfile(in *mtproto.TLAccountUpda
 		c.Logger.Errorf("account.updateProfile - error: %v", err)
 		return nil, mtproto.ErrUserInvalid
 	}
+	if me == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
 
 	if in.GetAbout() != nil {
 		//// About长度 < 128 并且可以为 empty
@@ -49,6 +52,7 @@ func (c *UserChannelProfilesCore) AccountUpdateProfile(in *mtproto.TLAccountUpda
 				About:  in.GetAbout().GetValue(),
 			}); err != nil {
 				c.Logger.Errorf("account.updateProfile - error: %v", err)
+				return nil, err
 			} else {
 				me.SetAbout(in.GetAbout().GetValue())
 			}
@@ -63,12 +67,12 @@ func (c *UserChannelProfilesCore) AccountUpdateProfile(in *mtproto.TLAccountUpda
 			LastName:  in.GetLastName().GetValue(),
 		}); err != nil {
 			c.Logger.Errorf("account.updateProfile - error: %v", err)
-		} else {
-			me.SetFirstName(in.GetFirstName().GetValue())
-			me.SetLastName(in.GetLastName().GetValue())
+			return nil, err
 		}
+		me.SetFirstName(in.GetFirstName().GetValue())
+		me.SetLastName(in.GetLastName().GetValue())
 
-		c.svcCtx.Dao.SyncClient.SyncUpdatesNotMe(c.ctx, &sync.TLSyncUpdatesNotMe{
+		if _, err = c.svcCtx.Dao.SyncClient.SyncUpdatesNotMe(c.ctx, &sync.TLSyncUpdatesNotMe{
 			UserId:        c.MD.UserId,
 			PermAuthKeyId: c.MD.PermAuthKeyId,
 			Updates: mtproto.MakeUpdatesByUpdates(mtproto.MakeTLUpdateUserName(&mtproto.Update{
@@ -77,7 +81,10 @@ func (c *UserChannelProfilesCore) AccountUpdateProfile(in *mtproto.TLAccountUpda
 				LastName:  in.GetLastName().GetValue(),
 				Username:  me.Username(),
 			}).To_Update()),
-		})
+		}); err != nil {
+			c.Logger.Errorf("account.updateProfile - sync update: %v", err)
+			return nil, err
+		}
 	}
 
 	return me.ToSelfUser(), nil

@@ -26,7 +26,14 @@ import (
 // MessagesDeleteMessages
 // messages.deleteMessages#e58e95d2 flags:# revoke:flags.0?true id:Vector<int> = messages.AffectedMessages;
 func (c *MessagesCore) MessagesDeleteMessages(in *mtproto.TLMessagesDeleteMessages) (*mtproto.Messages_AffectedMessages, error) {
-	// TODO(@benqi): Check message service.
+	if in == nil || len(in.GetId()) == 0 {
+		return nil, mtproto.ErrMessageIdsEmpty
+	}
+	for _, id := range in.GetId() {
+		if id <= 0 {
+			return nil, mtproto.ErrMessageIdInvalid
+		}
+	}
 	affectedMessages, err := c.svcCtx.Dao.MsgClient.MsgDeleteMessages(c.ctx, &msgpb.TLMsgDeleteMessages{
 		UserId:    c.MD.UserId,
 		AuthKeyId: c.MD.PermAuthKeyId,
@@ -39,6 +46,9 @@ func (c *MessagesCore) MessagesDeleteMessages(in *mtproto.TLMessagesDeleteMessag
 	if err != nil {
 		c.Logger.Errorf("messages.deleteMessages - error: %v", err)
 		return nil, err
+	}
+	if affectedMessages == nil {
+		return nil, mtproto.ErrInternalServerError
 	}
 
 	return affectedMessages, nil

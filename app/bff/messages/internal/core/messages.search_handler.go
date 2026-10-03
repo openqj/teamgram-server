@@ -30,6 +30,12 @@ import (
 // MessagesSearch
 // messages.search#a0fda762 flags:# peer:InputPeer q:string from_id:flags.0?InputPeer top_msg_id:flags.1?int filter:MessagesFilter min_date:int max_date:int offset_id:int add_offset:int limit:int max_id:int min_id:int hash:long = messages.Messages;
 func (c *MessagesCore) MessagesSearch(in *mtproto.TLMessagesSearch) (*mtproto.Messages_Messages, error) {
+	if c == nil || c.MD == nil || c.MD.UserId <= 0 {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
+	if in == nil || in.GetPeer() == nil {
+		return nil, mtproto.ErrPeerIdInvalid
+	}
 	// 400	BOT_METHOD_INVALID	This method can't be used by a bot
 	if c.MD.IsBot {
 		err := mtproto.ErrBotMethodInvalid
@@ -56,9 +62,15 @@ func (c *MessagesCore) MessagesSearch(in *mtproto.TLMessagesSearch) (*mtproto.Me
 
 	peer := mtproto.FromInputPeer2(c.MD.UserId, in.Peer)
 	if peer.IsChannel() {
-		// TODO: not impl
-		c.Logger.Errorf("messages.search blocked, License key from https://teamgram.net required to unlock enterprise features.")
-		return nil, mtproto.ErrEnterpriseIsBlocked
+		found, err := c.searchChannel(in, offsetId, limit)
+		if err != nil {
+			return nil, err
+		}
+		if found == nil {
+			c.Logger.Errorf("messages.search - channel search returned nil result")
+			return nil, mtproto.ErrInternalServerError
+		}
+		return found, nil
 	}
 
 	if in.GetFromId() != nil {
@@ -88,11 +100,24 @@ func (c *MessagesCore) MessagesSearch(in *mtproto.TLMessagesSearch) (*mtproto.Me
 	}).To_Messages_Messages()
 
 	if in.SavedPeerId != nil {
-		// TODO: not impl
-		return rValues, nil
+		found, err := c.searchSavedPeer(in, rValues, fromId, offsetId, limit)
+		if err != nil {
+			return nil, err
+		}
+		if found == nil {
+			c.Logger.Errorf("messages.search - saved-peer search returned nil result")
+			return nil, mtproto.ErrInternalServerError
+		}
+		return found, nil
+	}
+	if in.GetFilter() == nil {
+		return nil, mtproto.ErrInputFilterInvalid
 	}
 
 	filterType := mtproto.FromMessagesFilter(in.Filter)
+	if filterType == mtproto.FilterEmpty && in.Filter.GetPredicateName() != mtproto.Predicate_inputMessagesFilterEmpty {
+		return nil, mtproto.ErrInputFilterInvalid
+	}
 	switch filterType {
 	case mtproto.FilterPhotos:
 		boxList, err = c.svcCtx.Dao.MessageClient.MessageSearchByMediaType(c.ctx, &message.TLMessageSearchByMediaType{
@@ -105,7 +130,7 @@ func (c *MessagesCore) MessagesSearch(in *mtproto.TLMessagesSearch) (*mtproto.Me
 		})
 		if err != nil {
 			c.Logger.Errorf("messages.search - error: %v", err)
-			return rValues, nil
+			return nil, err
 		}
 	case mtproto.FilterVideo:
 		boxList, err = c.svcCtx.Dao.MessageClient.MessageSearchByMediaType(c.ctx, &message.TLMessageSearchByMediaType{
@@ -118,7 +143,7 @@ func (c *MessagesCore) MessagesSearch(in *mtproto.TLMessagesSearch) (*mtproto.Me
 		})
 		if err != nil {
 			c.Logger.Errorf("messages.search - error: %v", err)
-			return rValues, nil
+			return nil, err
 		}
 	case mtproto.FilterPhotoVideo:
 		boxList, err = c.svcCtx.Dao.MessageClient.MessageSearchByMediaType(c.ctx, &message.TLMessageSearchByMediaType{
@@ -131,7 +156,7 @@ func (c *MessagesCore) MessagesSearch(in *mtproto.TLMessagesSearch) (*mtproto.Me
 		})
 		if err != nil {
 			c.Logger.Errorf("messages.search - error: %v", err)
-			return rValues, nil
+			return nil, err
 		}
 	case mtproto.FilterDocument:
 		boxList, err = c.svcCtx.Dao.MessageClient.MessageSearchByMediaType(c.ctx, &message.TLMessageSearchByMediaType{
@@ -144,7 +169,7 @@ func (c *MessagesCore) MessagesSearch(in *mtproto.TLMessagesSearch) (*mtproto.Me
 		})
 		if err != nil {
 			c.Logger.Errorf("messages.search - error: %v", err)
-			return rValues, nil
+			return nil, err
 		}
 	case mtproto.FilterUrl:
 		boxList, err = c.svcCtx.Dao.MessageClient.MessageSearchByMediaType(c.ctx, &message.TLMessageSearchByMediaType{
@@ -157,7 +182,7 @@ func (c *MessagesCore) MessagesSearch(in *mtproto.TLMessagesSearch) (*mtproto.Me
 		})
 		if err != nil {
 			c.Logger.Errorf("messages.search - error: %v", err)
-			return rValues, nil
+			return nil, err
 		}
 	case mtproto.FilterGif:
 		boxList, err = c.svcCtx.Dao.MessageClient.MessageSearchByMediaType(c.ctx, &message.TLMessageSearchByMediaType{
@@ -170,11 +195,21 @@ func (c *MessagesCore) MessagesSearch(in *mtproto.TLMessagesSearch) (*mtproto.Me
 		})
 		if err != nil {
 			c.Logger.Errorf("messages.search - error: %v", err)
-			return rValues, nil
+			return nil, err
 		}
 	case mtproto.FilterVoice:
-		c.Logger.Errorf("messages.search - invalid filter: %s", in)
-		return rValues, nil
+		boxList, err = c.svcCtx.Dao.MessageClient.MessageSearchByMediaType(c.ctx, &message.TLMessageSearchByMediaType{
+			UserId:    c.MD.UserId,
+			PeerType:  peer.PeerType,
+			PeerId:    peer.PeerId,
+			MediaType: mtproto.MEDIA_VOICE_FILE,
+			Offset:    offsetId,
+			Limit:     limit,
+		})
+		if err != nil {
+			c.Logger.Errorf("messages.search - error: %v", err)
+			return nil, err
+		}
 	case mtproto.FilterMusic:
 		boxList, err = c.svcCtx.Dao.MessageClient.MessageSearchByMediaType(c.ctx, &message.TLMessageSearchByMediaType{
 			UserId:    c.MD.UserId,
@@ -186,7 +221,7 @@ func (c *MessagesCore) MessagesSearch(in *mtproto.TLMessagesSearch) (*mtproto.Me
 		})
 		if err != nil {
 			c.Logger.Errorf("messages.search - error: %v", err)
-			return rValues, nil
+			return nil, err
 		}
 	case mtproto.FilterChatPhotos:
 		boxList, err = c.svcCtx.Dao.MessageClient.MessageSearchByMediaType(c.ctx, &message.TLMessageSearchByMediaType{
@@ -199,7 +234,7 @@ func (c *MessagesCore) MessagesSearch(in *mtproto.TLMessagesSearch) (*mtproto.Me
 		})
 		if err != nil {
 			c.Logger.Errorf("messages.search - error: %v", err)
-			return rValues, nil
+			return nil, err
 		}
 	case mtproto.FilterPhoneCalls:
 		boxList, err = c.svcCtx.Dao.MessageClient.MessageSearchByMediaType(c.ctx, &message.TLMessageSearchByMediaType{
@@ -212,7 +247,7 @@ func (c *MessagesCore) MessagesSearch(in *mtproto.TLMessagesSearch) (*mtproto.Me
 		})
 		if err != nil {
 			c.Logger.Errorf("messages.search - error: %v", err)
-			return rValues, nil
+			return nil, err
 		}
 	case mtproto.FilterRoundVoice:
 		boxList, err = c.svcCtx.Dao.MessageClient.MessageSearchByMediaType(c.ctx, &message.TLMessageSearchByMediaType{
@@ -225,20 +260,30 @@ func (c *MessagesCore) MessagesSearch(in *mtproto.TLMessagesSearch) (*mtproto.Me
 		})
 		if err != nil {
 			c.Logger.Errorf("messages.search - error: %v", err)
-			return rValues, nil
+			return nil, err
 		}
 	case mtproto.FilterRoundVideo:
-		c.Logger.Errorf("messages.search - invalid filter: %s", in)
-		return rValues, nil
+		boxList, err = c.svcCtx.Dao.MessageClient.MessageSearchByMediaType(c.ctx, &message.TLMessageSearchByMediaType{
+			UserId:    c.MD.UserId,
+			PeerType:  peer.PeerType,
+			PeerId:    peer.PeerId,
+			MediaType: mtproto.MEDIA_ROUND_FILE,
+			Offset:    offsetId,
+			Limit:     limit,
+		})
+		if err != nil {
+			c.Logger.Errorf("messages.search - error: %v", err)
+			return nil, err
+		}
 	case mtproto.FilterMyMentions:
 		c.Logger.Errorf("messages.search - invalid filter: %s", in)
-		return rValues, nil
+		return nil, mtproto.ErrInputFilterInvalid
 	case mtproto.FilterGeo:
 		c.Logger.Errorf("messages.search - invalid filter: %s", in)
-		return rValues, nil
+		return nil, mtproto.ErrInputFilterInvalid
 	case mtproto.FilterContacts:
 		c.Logger.Errorf("messages.search - invalid filter: %s", in)
-		return rValues, nil
+		return nil, mtproto.ErrInputFilterInvalid
 	case mtproto.FilterPinned:
 		boxList, err = c.svcCtx.Dao.MessageClient.MessageSearchByPinned(c.ctx, &message.TLMessageSearchByPinned{
 			UserId:   c.MD.UserId,
@@ -247,7 +292,7 @@ func (c *MessagesCore) MessagesSearch(in *mtproto.TLMessagesSearch) (*mtproto.Me
 		})
 		if err != nil {
 			c.Logger.Errorf("messages.search - error: %v", err)
-			return rValues, nil
+			return nil, err
 		}
 	case mtproto.FilterEmpty:
 		/*
@@ -299,12 +344,7 @@ func (c *MessagesCore) MessagesSearch(in *mtproto.TLMessagesSearch) (*mtproto.Me
 			})
 		if err != nil {
 			c.Logger.Errorf("messages.search - error: %v", err)
-			return rValues, nil
-		}
-
-		if boxList.Count > 0 {
-			rValues.Count = boxList.Count
-			rValues.PredicateName = mtproto.Predicate_messages_messagesSlice
+			return nil, err
 		}
 	default:
 		err = mtproto.ErrInputFilterInvalid
@@ -312,27 +352,68 @@ func (c *MessagesCore) MessagesSearch(in *mtproto.TLMessagesSearch) (*mtproto.Me
 		return nil, err
 	}
 
+	if boxList == nil {
+		c.Logger.Errorf("messages.search - search RPC returned nil result")
+		return nil, mtproto.ErrInternalServerError
+	}
+	if filterType == mtproto.FilterEmpty && boxList.Count > 0 {
+		rValues.Count = boxList.Count
+		rValues.PredicateName = mtproto.Predicate_messages_messagesSlice
+	}
+	if err := c.populateSearchResult(boxList, rValues); err != nil {
+		c.Logger.Errorf("messages.search - error: %v", err)
+		return nil, err
+	}
+
+	return rValues, nil
+}
+
+func (c *MessagesCore) populateSearchResult(boxList *mtproto.MessageBoxList, result *mtproto.Messages_Messages) error {
+	if boxList == nil {
+		return mtproto.ErrInternalServerError
+	}
+
+	var visitErr error
 	boxList.Visit(c.MD.UserId,
 		func(messageList []*mtproto.Message) {
-			rValues.Messages = messageList
+			result.Messages = messageList
 		},
 		func(userIdList []int64) {
-			mUsers, _ := c.svcCtx.Dao.UserClient.UserGetMutableUsers(c.ctx,
-				&userpb.TLUserGetMutableUsers{
-					Id: userIdList,
-				})
-			rValues.Users = append(rValues.Users, mUsers.GetUserListByIdList(c.MD.UserId, userIdList...)...)
+			if visitErr != nil {
+				return
+			}
+			mUsers, err := c.svcCtx.Dao.UserClient.UserGetMutableUsers(c.ctx, &userpb.TLUserGetMutableUsers{Id: userIdList})
+			if err != nil {
+				visitErr = err
+				return
+			}
+			if mUsers == nil {
+				visitErr = mtproto.ErrInternalServerError
+				return
+			}
+			result.Users = append(result.Users, mUsers.GetUserListByIdList(c.MD.UserId, userIdList...)...)
 		},
 		func(chatIdList []int64) {
-			mChats, _ := c.svcCtx.Dao.ChatClient.Client().ChatGetChatListByIdList(c.ctx,
-				&chatpb.TLChatGetChatListByIdList{
-					IdList: chatIdList,
-				})
-			rValues.Chats = append(rValues.Chats, mChats.GetChatListByIdList(c.MD.UserId, chatIdList...)...)
+			if visitErr != nil {
+				return
+			}
+			mChats, err := c.svcCtx.Dao.ChatClient.Client().ChatGetChatListByIdList(c.ctx, &chatpb.TLChatGetChatListByIdList{
+				SelfId: c.MD.UserId,
+				IdList: chatIdList,
+			})
+			if err != nil {
+				visitErr = err
+				return
+			}
+			if mChats == nil {
+				visitErr = mtproto.ErrInternalServerError
+				return
+			}
+			result.Chats = append(result.Chats, mChats.GetChatListByIdList(c.MD.UserId, chatIdList...)...)
 		},
 		func(channelIdList []int64) {
 			// ignore it
 		})
 
-	return rValues, nil
+	return visitErr
 }

@@ -14,6 +14,7 @@
 // limitations under the License.
 //
 // Author: teamgramio (teamgram.io@gmail.com)
+//
 
 package core
 
@@ -24,8 +25,5 @@ import (
 // MessagesTranslateRichMessage
 // messages.translateRichMessage#1a542004 flags:# peer:flags.0?InputPeer id:flags.0?Vector<int> text:flags.1?Vector<InputRichMessage> to_lang:string tone:flags.2?string = messages.TranslatedRichMessage;
 func (c *MessagesCore) MessagesTranslateRichMessage(in *mtproto.TLMessagesTranslateRichMessage) (*mtproto.Messages_TranslatedRichMessage, error) {
-	// TODO: not impl
-	c.Logger.Errorf("messages.translateRichMessage blocked, License key from https://teamgram.net required to unlock enterprise features.")
-
-	return nil, mtproto.ErrEnterpriseIsBlocked
+	return nil, mtproto.ErrMethodNotImpl
 }

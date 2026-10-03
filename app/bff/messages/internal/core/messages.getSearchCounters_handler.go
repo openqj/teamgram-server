@@ -26,19 +26,38 @@ import (
 // MessagesGetSearchCounters
 // messages.getSearchCounters#732eef00 peer:InputPeer filters:Vector<MessagesFilter> = Vector<messages.SearchCounter>;
 func (c *MessagesCore) MessagesGetSearchCounters(in *mtproto.TLMessagesGetSearchCounters) (*mtproto.Vector_Messages_SearchCounter, error) {
+	if c == nil || c.MD == nil || c.MD.UserId == 0 {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
+	if in == nil || in.GetPeer() == nil {
+		return nil, mtproto.ErrPeerIdInvalid
+	}
+	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.MessageClient == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
 	var (
 		peer = mtproto.FromInputPeer2(c.MD.UserId, in.GetPeer())
 	)
+	if peer == nil || peer.PeerType == mtproto.PEER_EMPTY || peer.PeerId == 0 {
+		return nil, mtproto.ErrPeerIdInvalid
+	}
 	counters := &mtproto.Vector_Messages_SearchCounter{
 		Datas: make([]*mtproto.Messages_SearchCounter, 0, len(in.GetFilters())),
 	}
 
 	if in.SavedPeerId != nil {
-		// TODO: not impl
-		return counters, nil
+		savedCounters, err := c.savedCounters(in.SavedPeerId, in.GetFilters())
+		if err != nil {
+			c.Logger.Errorf("messages.getSearchCounters - error: %v", err)
+			return nil, err
+		}
+		return savedCounters, nil
 	}
 
 	for _, filter := range in.GetFilters() {
+		if filter == nil {
+			return nil, mtproto.ErrInputFilterInvalid
+		}
 		/*
 			{
 			    "constructor": "CRC32_messages_getSearchCounters",
@@ -84,6 +103,10 @@ func (c *MessagesCore) MessagesGetSearchCounters(in *mtproto.TLMessagesGetSearch
 		)
 
 		switch fType {
+		case mtproto.FilterPhotos:
+			mType = mtproto.MEDIA_PHOTOS_ONLY
+		case mtproto.FilterVideo:
+			mType = mtproto.MEDIA_VIDEOS_ONLY
 		case mtproto.FilterPhotoVideo:
 			mType = mtproto.MEDIA_PHOTOVIDEO
 		case mtproto.FilterDocument:
@@ -96,31 +119,19 @@ func (c *MessagesCore) MessagesGetSearchCounters(in *mtproto.TLMessagesGetSearch
 			mType = mtproto.MEDIA_MUSIC
 		case mtproto.FilterRoundVoice:
 			mType = mtproto.MEDIA_AUDIO
+		case mtproto.FilterVoice:
+			mType = mtproto.MEDIA_VOICE_FILE
+		case mtproto.FilterRoundVideo:
+			mType = mtproto.MEDIA_ROUND_FILE
+		case mtproto.FilterPhoneCalls:
+			mType = mtproto.MEDIA_PHONE_CALL
 		case mtproto.FilterChatPhotos:
 			mType = mtproto.MEDIA_CHAT_PHOTO
 		default:
-			/*
-				[
-				    {
-				        "predicate_name": "inputMessagesFilterPhotos",
-				        "constructor": "CRC32_inputMessagesFilterPhotos"
-				    },
-				    {
-				        "predicate_name": "inputMessagesFilterVideo",
-				        "constructor": "CRC32_inputMessagesFilterVideo"
-				    }
-				]
-			*/
-			counter := mtproto.MakeTLMessagesSearchCounter(&mtproto.Messages_SearchCounter{
-				Inexact: false,
-				Filter:  filter,
-				Count:   0,
-			}).To_Messages_SearchCounter()
-			counters.Datas = append(counters.Datas, counter)
-			continue
+			return nil, mtproto.ErrMethodNotImpl
 		}
 
-		sz, _ := c.svcCtx.Dao.MessageClient.MessageGetSearchCounter(
+		sz, err := c.svcCtx.Dao.MessageClient.MessageGetSearchCounter(
 			c.ctx,
 			&message.TLMessageGetSearchCounter{
 				UserId:    c.MD.UserId,
@@ -128,6 +139,14 @@ func (c *MessagesCore) MessagesGetSearchCounters(in *mtproto.TLMessagesGetSearch
 				PeerId:    peer.PeerId,
 				MediaType: mType,
 			})
+		if err != nil {
+			c.Logger.Errorf("messages.getSearchCounters - error: %v", err)
+			return nil, err
+		}
+		if sz == nil {
+			c.Logger.Errorf("messages.getSearchCounters - counter RPC returned nil result")
+			return nil, mtproto.ErrInternalServerError
+		}
 
 		counter := mtproto.MakeTLMessagesSearchCounter(&mtproto.Messages_SearchCounter{
 			Inexact: false,

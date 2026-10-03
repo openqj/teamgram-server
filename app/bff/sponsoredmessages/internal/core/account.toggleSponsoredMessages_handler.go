@@ -25,8 +25,17 @@ import (
 // AccountToggleSponsoredMessages
 // account.toggleSponsoredMessages#b9d9a38d enabled:Bool = Bool;
 func (c *SponsoredMessagesCore) AccountToggleSponsoredMessages(in *mtproto.TLAccountToggleSponsoredMessages) (*mtproto.Bool, error) {
-	// TODO: not impl
-	c.Logger.Errorf("account.toggleSponsoredMessages blocked, License key from https://teamgram.net required to unlock enterprise features.")
-
-	return nil, mtproto.ErrEnterpriseIsBlocked
+	_, err := c.requireSponsoredUser()
+	if err != nil {
+		return nil, err
+	}
+	if in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	switch in.GetEnabled().GetPredicateName() {
+	case mtproto.Predicate_boolTrue, mtproto.Predicate_boolFalse:
+		return nil, mtproto.ErrMethodNotImpl
+	default:
+		return nil, mtproto.ErrInputRequestInvalid
+	}
 }

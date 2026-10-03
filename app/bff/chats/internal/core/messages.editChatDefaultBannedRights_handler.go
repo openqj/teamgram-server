@@ -28,6 +28,12 @@ import (
 // MessagesEditChatDefaultBannedRights
 // messages.editChatDefaultBannedRights#a5866b41 peer:InputPeer banned_rights:ChatBannedRights = Updates;
 func (c *ChatsCore) MessagesEditChatDefaultBannedRights(in *mtproto.TLMessagesEditChatDefaultBannedRights) (*mtproto.Updates, error) {
+	if c == nil || c.MD == nil {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
+	if in == nil || in.GetPeer() == nil || in.GetBannedRights() == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
 	var (
 		peer     = mtproto.FromInputPeer2(c.MD.UserId, in.Peer)
 		rUpdates *mtproto.Updates
@@ -35,7 +41,7 @@ func (c *ChatsCore) MessagesEditChatDefaultBannedRights(in *mtproto.TLMessagesEd
 	)
 
 	switch peer.PeerType {
-	case mtproto.PEER_CHAT:
+	case mtproto.PEER_CHAT, mtproto.PEER_CHANNEL:
 		chat, err := c.svcCtx.Dao.ChatClient.Client().ChatEditChatDefaultBannedRights(c.ctx, &chatpb.TLChatEditChatDefaultBannedRights{
 			ChatId:       peer.PeerId,
 			OperatorId:   c.MD.UserId,
@@ -44,6 +50,9 @@ func (c *ChatsCore) MessagesEditChatDefaultBannedRights(in *mtproto.TLMessagesEd
 		if err != nil {
 			c.Logger.Errorf("messages.editChatDefaultBannedRights - error: %v", err)
 			return nil, err
+		}
+		if chat == nil || chat.GetChat() == nil {
+			return nil, mtproto.ErrInternalServerError
 		}
 
 		defaultBannedUpdates := mtproto.MakeTLUpdateShort(&mtproto.Updates{
@@ -55,20 +64,41 @@ func (c *ChatsCore) MessagesEditChatDefaultBannedRights(in *mtproto.TLMessagesEd
 			Date: int32(date),
 		}).To_Updates()
 
-		c.svcCtx.Dao.SyncClient.SyncUpdatesNotMe(c.ctx, &sync.TLSyncUpdatesNotMe{
+		if reply, syncErr := c.svcCtx.Dao.SyncClient.SyncUpdatesNotMe(c.ctx, &sync.TLSyncUpdatesNotMe{
 			UserId:        c.MD.UserId,
 			PermAuthKeyId: c.MD.PermAuthKeyId,
 			Updates:       defaultBannedUpdates,
-		})
+		}); syncErr != nil {
+			return nil, syncErr
+		} else if reply == nil {
+			return nil, mtproto.ErrInternalServerError
+		}
+		var firstErr error
 		chat.Walk(func(userId int64, participant *mtproto.ImmutableChatParticipant) error {
+			if firstErr != nil {
+				return firstErr
+			}
+			if participant == nil {
+				firstErr = mtproto.ErrInternalServerError
+				return firstErr
+			}
 			if userId != c.MD.UserId {
-				c.svcCtx.Dao.SyncClient.SyncPushUpdates(c.ctx, &sync.TLSyncPushUpdates{
+				if reply, pushErr := c.svcCtx.Dao.SyncClient.SyncPushUpdates(c.ctx, &sync.TLSyncPushUpdates{
 					UserId:  userId,
 					Updates: defaultBannedUpdates,
-				})
+				}); pushErr != nil {
+					firstErr = pushErr
+					return firstErr
+				} else if reply == nil {
+					firstErr = mtproto.ErrInternalServerError
+					return firstErr
+				}
 			}
 			return nil
 		})
+		if firstErr != nil {
+			return nil, firstErr
+		}
 
 		rUpdates = mtproto.MakeTLUpdates(&mtproto.Updates{
 			Updates: []*mtproto.Update{},
@@ -77,10 +107,6 @@ func (c *ChatsCore) MessagesEditChatDefaultBannedRights(in *mtproto.TLMessagesEd
 			Date:    int32(date),
 			Seq:     0,
 		}).To_Updates()
-	case mtproto.PEER_CHANNEL:
-		c.Logger.Errorf("messages.editChatDefaultBannedRights blocked, License key from https://teamgram.net required to unlock enterprise features.")
-
-		return nil, mtproto.ErrEnterpriseIsBlocked
 	default:
 		err := mtproto.ErrPeerIdInvalid
 		c.Logger.Errorf("invalid peer type: {%v}")

@@ -25,8 +25,16 @@ import (
 // ContactsToggleTopPeers
 // contacts.toggleTopPeers#8514bdda enabled:Bool = Bool;
 func (c *ContactsCore) ContactsToggleTopPeers(in *mtproto.TLContactsToggleTopPeers) (*mtproto.Bool, error) {
-	// TODO: not impl
-	c.Logger.Errorf("contacts.toggleTopPeers blocked, License key from https://teamgram.net required to unlock enterprise features.")
-
+	st, err := loadTopPeersState(c.MD.UserId)
+	if err != nil {
+		c.Logger.Errorf("contacts.toggleTopPeers - error: %v", err)
+		return nil, err
+	}
+	enabled := mtproto.FromBool(in.GetEnabled())
+	st.Enabled = &enabled
+	if err = saveTopPeersState(c.MD.UserId, st); err != nil {
+		c.Logger.Errorf("contacts.toggleTopPeers - error: %v", err)
+		return nil, err
+	}
 	return mtproto.BoolTrue, nil
 }

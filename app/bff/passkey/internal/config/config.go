@@ -22,6 +22,23 @@ import (
 	"github.com/zeromicro/go-zero/zrpc"
 )
 
+type TrustedApp struct {
+	ApiId   int32
+	ApiHash string
+}
+
+type ProviderConfig struct {
+	RelyingPartyId          string
+	RelyingPartyDisplayName string
+	Origins                 []string
+	TrustedApps             []TrustedApp
+}
+
 type Config struct {
 	zrpc.RpcServerConf
+	Provider          ProviderConfig `json:",optional"`
+	MysqlDSN          string         `json:",optional"`
+	DcId              int32          `json:",optional"`
+	UserClient        zrpc.RpcClientConf
+	AuthSessionClient zrpc.RpcClientConf
 }

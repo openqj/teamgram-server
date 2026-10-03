@@ -18,15 +18,6 @@
 
 package core
 
-import (
-	"github.com/teamgram/proto/mtproto"
-)
-
 // AccountDeleteSecureValue
 // account.deleteSecureValue#b880bc4b types:Vector<SecureValueType> = Bool;
-func (c *PassportCore) AccountDeleteSecureValue(in *mtproto.TLAccountDeleteSecureValue) (*mtproto.Bool, error) {
-	// TODO: not impl
-	c.Logger.Errorf("account.deleteSecureValue blocked, License key from https://teamgram.net required to unlock enterprise features.")
-
-	return nil, mtproto.ErrEnterpriseIsBlocked
-}
+// Implemented in passport_impl.go.

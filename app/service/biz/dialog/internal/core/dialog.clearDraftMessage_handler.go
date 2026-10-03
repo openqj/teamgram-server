@@ -10,8 +10,10 @@
 package core
 
 import (
+	"context"
 	"time"
 
+	"github.com/teamgram/marmota/pkg/stores/sqlx"
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/service/biz/dialog/dialog"
 
@@ -40,13 +42,20 @@ func (c *DialogCore) DialogClearDraftMessage(in *dialog.TLDialogClearDraftMessag
 	}
 
 	if dlgDO != nil && dlgDO.DraftType == 2 {
-		_, err = c.svcCtx.Dao.DialogsDAO.SaveDraft(
+		_, _, err = c.svcCtx.Dao.CachedConn.Exec(
 			c.ctx,
-			1,
-			getEmptyDraftMessage(),
-			in.UserId,
-			in.PeerType,
-			in.PeerId)
+			func(ctx context.Context, conn *sqlx.DB) (int64, int64, error) {
+				_, err := c.svcCtx.Dao.DialogsDAO.SaveDraft(
+					ctx,
+					1,
+					getEmptyDraftMessage(),
+					in.UserId,
+					in.PeerType,
+					in.PeerId)
+				return 0, 0, err
+			},
+			dialog.GetDialogCacheKeyByPeer(in.UserId, in.PeerType, in.PeerId),
+			dialog.GetAllDraftIdListCacheKey(in.UserId))
 		if err != nil {
 			c.Logger.Errorf("dialog.clearDraftMessage - error: %v", err)
 			return nil, err

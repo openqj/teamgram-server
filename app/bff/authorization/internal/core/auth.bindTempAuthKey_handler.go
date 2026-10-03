@@ -20,13 +20,40 @@ package core
 
 import (
 	"github.com/teamgram/proto/mtproto"
+	"github.com/teamgram/teamgram-server/app/service/authsession/authsession"
 )
 
 // AuthBindTempAuthKey
 // auth.bindTempAuthKey#cdd42a05 perm_auth_key_id:long nonce:long expires_at:int encrypted_message:bytes = Bool;
 func (c *AuthorizationCore) AuthBindTempAuthKey(in *mtproto.TLAuthBindTempAuthKey) (*mtproto.Bool, error) {
-	// TODO: not impl
-	// c.Logger.Errorf("auth.bindTempAuthKey blocked, License key from https://teamgram.net required to unlock enterprise features.")
+	if c == nil || c.MD == nil {
+		return nil, mtproto.ErrAuthKeyInvalid
+	}
+	authID := c.MD.GetAuthId()
+	if authID == 0 || (c.MD.PermAuthKeyId != 0 && authID == c.MD.PermAuthKeyId) {
+		c.Logger.Errorf("auth.bindTempAuthKey - temp auth key empty")
+		return nil, mtproto.ErrTempAuthKeyEmpty
+	}
+	// authsession decrypts message[8:24] and message[24:]. Keep the same
+	// framing gate here so malformed requests never reach a lower-level slice.
+	if in == nil || in.GetPermAuthKeyId() == 0 || len(in.GetEncryptedMessage()) < 56 || (len(in.GetEncryptedMessage())-24)%16 != 0 {
+		c.Logger.Errorf("auth.bindTempAuthKey - encrypted message invalid")
+		return nil, mtproto.ErrEncryptedMessageInvalid
+	}
+	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.AuthsessionClient == nil {
+		c.Logger.Errorf("auth.bindTempAuthKey - authsession provider unavailable")
+		return nil, mtproto.ErrMethodNotImpl
+	}
 
-	return mtproto.BoolTrue, nil
+	ok, err := c.svcCtx.Dao.AuthsessionClient.AuthsessionBindTempAuthKey(c.ctx, &authsession.TLAuthsessionBindTempAuthKey{
+		PermAuthKeyId:    in.PermAuthKeyId,
+		Nonce:            in.Nonce,
+		ExpiresAt:        in.ExpiresAt,
+		EncryptedMessage: in.EncryptedMessage,
+	})
+	if err != nil {
+		c.Logger.Errorf("auth.bindTempAuthKey - error: %v", err)
+		return nil, err
+	}
+	return ok, nil
 }

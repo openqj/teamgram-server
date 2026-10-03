@@ -10,6 +10,8 @@
 package core
 
 import (
+	"fmt"
+
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/service/biz/user/internal/dal/dataobject"
 	"github.com/teamgram/teamgram-server/app/service/biz/user/user"
@@ -18,24 +20,43 @@ import (
 // UserSetGlobalPrivacySettings
 // user.setGlobalPrivacySettings user_id:int settings:GlobalPrivacySettings = Bool;
 func (c *UserCore) UserSetGlobalPrivacySettings(in *user.TLUserSetGlobalPrivacySettings) (*mtproto.Bool, error) {
+	if in == nil {
+		return nil, fmt.Errorf("user.setGlobalPrivacySettings: request is nil")
+	}
+	settings := in.GetSettings()
+	if settings == nil {
+		return nil, fmt.Errorf("user.setGlobalPrivacySettings: settings is nil")
+	}
+
 	var (
 		archiveAndMuteNewNoncontactPeers bool
 	)
 
-	if in.GetSettings().GetArchiveAndMuteNewNoncontactPeers_FLAGBOOL() != nil {
-		archiveAndMuteNewNoncontactPeers = mtproto.FromBool(in.GetSettings().GetArchiveAndMuteNewNoncontactPeers_FLAGBOOL())
+	if settings.GetArchiveAndMuteNewNoncontactPeers_FLAGBOOL() != nil {
+		archiveAndMuteNewNoncontactPeers = mtproto.FromBool(settings.GetArchiveAndMuteNewNoncontactPeers_FLAGBOOL())
 	} else {
-		archiveAndMuteNewNoncontactPeers = in.GetSettings().GetArchiveAndMuteNewNoncontactPeers_FLAGBOOLEAN()
+		archiveAndMuteNewNoncontactPeers = settings.GetArchiveAndMuteNewNoncontactPeers_FLAGBOOLEAN()
+	}
+	disallowedGifts, err := encodeGlobalPrivacyDisallowedGifts(settings.GetDisallowedGifts())
+	if err != nil {
+		c.Logger.Errorf("user.setGlobalPrivacySettings - error: %v", err)
+		return nil, fmt.Errorf("user.setGlobalPrivacySettings: encode settings: %w", err)
 	}
 
-	c.svcCtx.Dao.UserGlobalPrivacySettingsDAO.InsertOrUpdate(c.ctx, &dataobject.UserGlobalPrivacySettingsDO{
+	if _, _, err := c.svcCtx.Dao.UserGlobalPrivacySettingsDAO.InsertOrUpdate(c.ctx, &dataobject.UserGlobalPrivacySettingsDO{
 		UserId:                           in.UserId,
 		ArchiveAndMuteNewNoncontactPeers: archiveAndMuteNewNoncontactPeers,
-		KeepArchivedUnmuted:              in.GetSettings().GetKeepArchivedUnmuted(),
-		KeepArchivedFolders:              in.GetSettings().GetKeepArchivedFolders(),
-		HideReadMarks:                    in.GetSettings().GetHideReadMarks(),
-		NewNoncontactPeersRequirePremium: in.GetSettings().GetNewNoncontactPeersRequirePremium(),
-	})
+		KeepArchivedUnmuted:              settings.GetKeepArchivedUnmuted(),
+		KeepArchivedFolders:              settings.GetKeepArchivedFolders(),
+		HideReadMarks:                    settings.GetHideReadMarks(),
+		NewNoncontactPeersRequirePremium: settings.GetNewNoncontactPeersRequirePremium(),
+		DisplayGiftsButton:               settings.GetDisplayGiftsButton(),
+		NoncontactPeersPaidStars:         globalPrivacyPaidStars(settings),
+		DisallowedGiftsJSON:              disallowedGifts,
+	}); err != nil {
+		c.Logger.Errorf("user.setGlobalPrivacySettings - error: %v", err)
+		return nil, fmt.Errorf("user.setGlobalPrivacySettings: save settings: %w", err)
+	}
 
 	return mtproto.BoolTrue, nil
 }

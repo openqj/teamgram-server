@@ -19,14 +19,59 @@
 package core
 
 import (
+	"fmt"
+
 	"github.com/teamgram/proto/mtproto"
 )
 
 // ContactsResetTopPeerRating
 // contacts.resetTopPeerRating#1ae373ac category:TopPeerCategory peer:InputPeer = Bool;
 func (c *ContactsCore) ContactsResetTopPeerRating(in *mtproto.TLContactsResetTopPeerRating) (*mtproto.Bool, error) {
-	// TODO: not impl
-	c.Logger.Errorf("contacts.resetTopPeerRating blocked, License key from https://teamgram.net required to unlock enterprise features.")
+	if in.GetCategory() == nil || in.GetPeer() == nil {
+		c.Logger.Errorf("contacts.resetTopPeerRating - error: %v", mtproto.ErrInputRequestInvalid)
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	pred := in.GetCategory().GetPredicateName()
+	if !knownTopPeerCategory(pred) {
+		c.Logger.Errorf("contacts.resetTopPeerRating - error: %v", mtproto.ErrInputConstructorInvalid)
+		return nil, mtproto.ErrInputConstructorInvalid
+	}
 
+	peer := mtproto.FromInputPeer2(c.MD.UserId, in.Peer)
+	peerType := peer.PeerType
+	peerId := peer.PeerId
+	if peerType == mtproto.PEER_SELF {
+		peerType = mtproto.PEER_USER
+		if peerId == 0 {
+			peerId = peer.SelfId
+		}
+	}
+	switch peerType {
+	case mtproto.PEER_USER, mtproto.PEER_CHAT, mtproto.PEER_CHANNEL:
+		if peerId == 0 {
+			c.Logger.Errorf("contacts.resetTopPeerRating - error: %v", mtproto.ErrPeerIdInvalid)
+			return nil, mtproto.ErrPeerIdInvalid
+		}
+	default:
+		c.Logger.Errorf("contacts.resetTopPeerRating - error: %v", mtproto.ErrPeerIdInvalid)
+		return nil, mtproto.ErrPeerIdInvalid
+	}
+
+	st, err := loadTopPeersState(c.MD.UserId)
+	if err != nil {
+		c.Logger.Errorf("contacts.resetTopPeerRating - error: %v", err)
+		return nil, err
+	}
+	key := fmt.Sprintf("%d:%d", peerType, peerId)
+	for _, existing := range st.Hidden[pred] {
+		if existing == key {
+			return mtproto.BoolTrue, nil
+		}
+	}
+	st.Hidden[pred] = append(st.Hidden[pred], key)
+	if err = saveTopPeersState(c.MD.UserId, st); err != nil {
+		c.Logger.Errorf("contacts.resetTopPeerRating - error: %v", err)
+		return nil, err
+	}
 	return mtproto.BoolTrue, nil
 }

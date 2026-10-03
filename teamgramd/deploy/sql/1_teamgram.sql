@@ -121,6 +121,7 @@ CREATE TABLE `auth_users` (
   `country` varchar(64) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '',
   `region` varchar(64) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '',
   `deleted` tinyint(1) NOT NULL DEFAULT '0',
+  `active_auth_key_id` bigint(20) GENERATED ALWAYS AS ((case when (`deleted` = 0) then `auth_key_id` else NULL end)) STORED,
   `created_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -622,6 +623,9 @@ CREATE TABLE `user_global_privacy_settings` (
   `id` bigint(20) NOT NULL,
   `user_id` bigint(20) NOT NULL,
   `archive_and_mute_new_noncontact_peers` tinyint(1) NOT NULL DEFAULT '0',
+  `display_gifts_button` tinyint(1) NOT NULL DEFAULT '0',
+  `noncontact_peers_paid_stars` bigint(20) DEFAULT NULL,
+  `disallowed_gifts` text,
   `created_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -826,6 +830,7 @@ ALTER TABLE `auth_seq_updates`
 ALTER TABLE `auth_users`
   ADD PRIMARY KEY (`id`),
   ADD UNIQUE KEY `auth_key_id` (`auth_key_id`,`user_id`),
+  ADD UNIQUE KEY `auth_users_one_active_owner` (`active_auth_key_id`),
   ADD KEY `auth_key_id_2` (`auth_key_id`,`user_id`,`deleted`);
 
 --

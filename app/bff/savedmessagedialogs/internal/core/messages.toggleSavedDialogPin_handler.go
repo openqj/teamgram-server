@@ -29,12 +29,25 @@ import (
 // MessagesToggleSavedDialogPin
 // messages.toggleSavedDialogPin#ac81bbde flags:# pinned:flags.0?true peer:InputDialogPeer = Bool;
 func (c *SavedMessageDialogsCore) MessagesToggleSavedDialogPin(in *mtproto.TLMessagesToggleSavedDialogPin) (*mtproto.Bool, error) {
+	if c == nil || c.MD == nil || c.MD.UserId == 0 {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
+	if in == nil || in.GetPeer() == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if c.svcCtx == nil || c.svcCtx.Dao == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
+
 	var (
 		peer *mtproto.PeerUtil
 	)
 
 	switch in.GetPeer().GetPredicateName() {
 	case mtproto.Predicate_inputDialogPeer:
+		if in.GetPeer().GetPeer() == nil {
+			return nil, mtproto.ErrInputRequestInvalid
+		}
 		peer = mtproto.FromInputPeer2(c.MD.UserId, in.GetPeer().GetPeer())
 	case mtproto.Predicate_inputDialogPeerFolder:
 		// error
@@ -45,15 +58,37 @@ func (c *SavedMessageDialogsCore) MessagesToggleSavedDialogPin(in *mtproto.TLMes
 		c.Logger.Errorf("messages.toggleSavedDialogPin - error: %v", err)
 		return nil, err
 	}
+	if peer == nil || peer.PeerType == mtproto.PEER_EMPTY || peer.PeerId == 0 {
+		return nil, mtproto.ErrPeerIdInvalid
+	}
+	if c.svcCtx.Dao.DialogClient == nil || c.svcCtx.Dao.SyncClient == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
+	switch peer.PeerType {
+	case mtproto.PEER_USER:
+		if c.svcCtx.Dao.UserClient == nil {
+			return nil, mtproto.ErrInternalServerError
+		}
+	case mtproto.PEER_CHAT:
+		if c.svcCtx.Dao.ChatClient == nil {
+			return nil, mtproto.ErrInternalServerError
+		}
+	}
 
-	_, err := c.svcCtx.Dao.DialogClient.DialogToggleSavedDialogPin(c.ctx, &dialog.TLDialogToggleSavedDialogPin{
+	saved, err := c.svcCtx.Dao.DialogClient.DialogToggleSavedDialogPin(c.ctx, &dialog.TLDialogToggleSavedDialogPin{
 		UserId: c.MD.UserId,
 		Peer:   peer,
 		Pinned: mtproto.ToBool(in.Pinned),
 	})
 	if err != nil {
 		c.Logger.Errorf("messages.toggleSavedDialogPin - error: %v", err)
-		return mtproto.BoolFalse, nil
+		return nil, err
+	}
+	if saved == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
+	if !mtproto.FromBool(saved) {
+		return saved, nil
 	}
 
 	var (
@@ -69,27 +104,46 @@ func (c *SavedMessageDialogsCore) MessagesToggleSavedDialogPin(in *mtproto.TLMes
 	idHelper.PickByPeerUtil(peer.PeerType, peer.PeerId)
 	idHelper.Visit(
 		func(userIdList []int64) {
+			if c.svcCtx.Dao.UserClient == nil {
+				return
+			}
 			users, _ := c.svcCtx.Dao.UserClient.UserGetMutableUsers(c.ctx,
 				&userpb.TLUserGetMutableUsers{
 					Id: userIdList,
 				})
-			syncUpdates.PushUser(users.GetUserListByIdList(c.MD.UserId, userIdList...)...)
+			if users != nil {
+				syncUpdates.PushUser(users.GetUserListByIdList(c.MD.UserId, userIdList...)...)
+			}
 		},
 		func(chatIdList []int64) {
+			if c.svcCtx.Dao.ChatClient == nil {
+				return
+			}
 			chats, _ := c.svcCtx.Dao.ChatClient.ChatGetChatListByIdList(c.ctx,
 				&chatpb.TLChatGetChatListByIdList{
 					IdList: chatIdList,
 				})
-			syncUpdates.PushChat(chats.GetChatListByIdList(c.MD.UserId, chatIdList...)...)
+			if chats != nil {
+				syncUpdates.PushChat(chats.GetChatListByIdList(c.MD.UserId, chatIdList...)...)
+			}
 		},
 		func(channelIdList []int64) {
-			// TODO
+			if c.channelChatsByID != nil {
+				syncUpdates.PushChat(c.channelChatsByID(c.MD.UserId, channelIdList)...)
+			}
 		})
-	c.svcCtx.Dao.SyncClient.SyncUpdatesNotMe(c.ctx, &sync.TLSyncUpdatesNotMe{
+	synced, err := c.svcCtx.Dao.SyncClient.SyncUpdatesNotMe(c.ctx, &sync.TLSyncUpdatesNotMe{
 		UserId:        c.MD.UserId,
 		PermAuthKeyId: c.MD.PermAuthKeyId,
 		Updates:       syncUpdates,
 	})
+	if err != nil {
+		c.Logger.Errorf("messages.toggleSavedDialogPin - sync error: %v", err)
+		return nil, err
+	}
+	if synced == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
 
 	return mtproto.BoolTrue, nil
 }

@@ -20,6 +20,7 @@ package core
 
 import (
 	"github.com/teamgram/proto/mtproto"
+	"github.com/teamgram/teamgram-server/app/bff/apifull/channelview"
 	chatpb "github.com/teamgram/teamgram-server/app/service/biz/chat/chat"
 	"github.com/teamgram/teamgram-server/app/service/biz/message/message"
 	userpb "github.com/teamgram/teamgram-server/app/service/biz/user/user"
@@ -29,7 +30,15 @@ import (
 // MessagesGetHistory
 // messages.getHistory#4423e6c5 peer:InputPeer offset_id:int offset_date:int add_offset:int limit:int max_id:int min_id:int hash:long = messages.Messages;
 func (c *MessagesCore) MessagesGetHistory(in *mtproto.TLMessagesGetHistory) (*mtproto.Messages_Messages, error) {
-	// TODO(@benqi): 重复FromInputPeer2
+	if c == nil || c.MD == nil || c.MD.UserId <= 0 {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
+	if in == nil || in.GetPeer() == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.MessageClient == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
 	var (
 		err  error
 		peer = mtproto.FromInputPeer2(c.MD.UserId, in.GetPeer())
@@ -38,6 +47,9 @@ func (c *MessagesCore) MessagesGetHistory(in *mtproto.TLMessagesGetHistory) (*mt
 		//isChannel bool
 		limit = in.Limit
 	)
+	if peer == nil || peer.PeerId <= 0 {
+		return nil, mtproto.ErrPeerIdInvalid
+	}
 
 	if limit > 50 {
 		limit = 50
@@ -58,6 +70,10 @@ func (c *MessagesCore) MessagesGetHistory(in *mtproto.TLMessagesGetHistory) (*mt
 			_ = chat
 		}
 	case mtproto.PEER_CHANNEL:
+		if limit <= 0 {
+			limit = 20
+		}
+		return channelview.HistoryForInputPeer(c.MD.UserId, in.GetPeer(), in.OffsetId, limit)
 		//// 400	CHANNEL_INVALID	The provided channel is invalid
 		//// 400	CHANNEL_PRIVATE	You haven't joined this channel/supergroup
 		//channel, err = c.svcCtx.Dao.ChannelClient.ChannelGetMutableChannel(
@@ -78,7 +94,6 @@ func (c *MessagesCore) MessagesGetHistory(in *mtproto.TLMessagesGetHistory) (*mt
 		//	// minId = mathx.MaxInt(int(me.AvailableMinId), int(in.MinId))
 		//}
 		//
-		//isChannel = true
 	default:
 		err = mtproto.ErrPeerIdInvalid
 		c.Logger.Errorf("messages.getHistory - error: %v", err)
@@ -129,36 +144,69 @@ func (c *MessagesCore) MessagesGetHistory(in *mtproto.TLMessagesGetHistory) (*mt
 	if err != nil {
 		return nil, err
 	}
+	if boxList == nil || count == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
 
 	var (
-		messages []*mtproto.Message
-		users    []*mtproto.User
-		chats    []*mtproto.Chat
+		messages   []*mtproto.Message
+		users      []*mtproto.User
+		chats      []*mtproto.Chat
+		hydrateErr error
 	)
 	boxList.Visit(c.MD.UserId,
 		func(messageList []*mtproto.Message) {
 			messages = messageList
 		},
 		func(userIdList []int64) {
-			mUsers, _ := c.svcCtx.Dao.UserClient.UserGetMutableUsers(c.ctx,
+			if c.svcCtx.Dao.UserClient == nil {
+				hydrateErr = mtproto.ErrInternalServerError
+				return
+			}
+			mUsers, err := c.svcCtx.Dao.UserClient.UserGetMutableUsers(c.ctx,
 				&userpb.TLUserGetMutableUsers{
 					Id: userIdList,
 				})
+			if err != nil {
+				hydrateErr = err
+				return
+			}
+			if mUsers == nil {
+				hydrateErr = mtproto.ErrInternalServerError
+				return
+			}
 			users = append(users, mUsers.GetUserListByIdList(c.MD.UserId, userIdList...)...)
 		},
 		func(chatIdList []int64) {
-			mChats, _ := c.svcCtx.Dao.ChatClient.Client().ChatGetChatListByIdList(c.ctx,
+			if c.svcCtx.Dao.ChatClient == nil {
+				hydrateErr = mtproto.ErrInternalServerError
+				return
+			}
+			mChats, err := c.svcCtx.Dao.ChatClient.Client().ChatGetChatListByIdList(c.ctx,
 				&chatpb.TLChatGetChatListByIdList{
 					IdList: chatIdList,
 				})
+			if err != nil {
+				hydrateErr = err
+				return
+			}
+			if mChats == nil {
+				hydrateErr = mtproto.ErrInternalServerError
+				return
+			}
 			chats = append(chats, mChats.GetChatListByIdList(c.MD.UserId, chatIdList...)...)
 		},
 		func(channelIdList []int64) {
-			//// TODO: handler other...
-			//if channel != nil {
-			//	chats = append(chats, channel.ToUnsafeChat(c.MD.UserId))
-			//}
+			resolved := channelview.ChatsByID(c.MD.UserId, channelIdList)
+			if len(resolved) != len(channelIdList) {
+				hydrateErr = mtproto.ErrInternalServerError
+				return
+			}
+			chats = append(chats, resolved...)
 		})
+	if hydrateErr != nil {
+		return nil, hydrateErr
+	}
 
 	var (
 		rValues *mtproto.Messages_Messages

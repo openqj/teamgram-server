@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/teamgram/proto/mtproto"
+	"github.com/teamgram/teamgram-server/app/bff/apifull/channelview"
 	msgpb "github.com/teamgram/teamgram-server/app/messenger/msg/msg/msg"
 	"github.com/teamgram/teamgram-server/app/service/biz/message/message"
 
@@ -49,14 +50,23 @@ func (c *MessagesCore) MessagesEditMessage(in *mtproto.TLMessagesEditMessage) (*
 			//	hasBot = s.UserFacade.IsBot(ctx, peer.PeerId)
 			//}
 		}
-		editMessages, _ = c.svcCtx.MessageClient.MessageGetUserMessageList(c.ctx, &message.TLMessageGetUserMessageList{
+		editMessages, err = c.svcCtx.MessageClient.MessageGetUserMessageList(c.ctx, &message.TLMessageGetUserMessageList{
 			UserId: c.MD.UserId,
 			IdList: []int32{in.Id},
 		})
+		if err != nil {
+			return nil, err
+		}
 	case mtproto.PEER_CHANNEL:
-		c.Logger.Errorf("messages.editMessage blocked, License key from https://teamgram.net required to unlock enterprise features.")
-
-		return nil, mtproto.ErrEnterpriseIsBlocked
+		text := ""
+		if in.GetMessage() != nil {
+			text = in.GetMessage().GetValue()
+		}
+		if text == "" {
+			c.Logger.Errorf("messages.editMessage - empty channel text (%d)", in.Id)
+			return nil, mtproto.ErrMessageEmpty
+		}
+		return channelview.Edit(c.MD.UserId, peer.PeerId, in.Id, text)
 	default:
 		c.Logger.Errorf("invalid peer: %v", in.Peer)
 		err = mtproto.ErrPeerIdInvalid

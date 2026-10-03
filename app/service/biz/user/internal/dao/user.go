@@ -20,6 +20,8 @@ package dao
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"math/rand"
 	"strconv"
 	"time"
@@ -181,27 +183,96 @@ func (d *Dao) UpdateUserAbout(ctx context.Context, id int64, about string) bool 
 	return true
 }
 
-func (d *Dao) UpdateUserUsername(ctx context.Context, id int64, username string) bool {
+func (d *Dao) UpdateUserUsername(ctx context.Context, id int64, username string) error {
 	_, _, err := d.CachedConn.Exec(
 		ctx,
 		func(ctx context.Context, conn *sqlx.DB) (int64, int64, error) {
-			rowsAffected, err := d.UsersDAO.UpdateUser(ctx, map[string]interface{}{
-				"username": username,
-			}, id)
+			transaction := sqlx.TxWrapper(ctx, d.DB, func(tx *sqlx.Tx, result *sqlx.StoreResult) {
+				var current struct {
+					Username string `db:"username"`
+				}
+				result.Err = tx.QueryRowPartial(&current, "SELECT username FROM users WHERE id = ? FOR UPDATE", id)
+				if result.Err != nil {
+					if errors.Is(result.Err, sqlx.ErrNotFound) {
+						result.Err = mtproto.ErrUserIdInvalid
+					}
+					return
+				}
 
-			if err != nil {
-				return 0, 0, err
+				if username != "" {
+					var entry dataobject.UsernameDO
+					err := tx.QueryRowPartial(&entry,
+						"SELECT username, peer_type, peer_id FROM username WHERE username = ? FOR UPDATE", username)
+					if err != nil && !errors.Is(err, sqlx.ErrNotFound) {
+						result.Err = err
+						return
+					}
+					if err == nil {
+						if current.Username != username || entry.PeerType != mtproto.PEER_USER || entry.PeerId != id {
+							result.Err = mtproto.ErrUsernameOccupied
+							return
+						}
+					} else {
+						_, _, result.Err = d.UsernameDAO.InsertTx(tx, &dataobject.UsernameDO{
+							Username: username,
+							PeerType: mtproto.PEER_USER,
+							PeerId:   id,
+							Editable: true,
+							Active:   true,
+							Order2:   time.Now().Unix() << 32,
+						})
+						if result.Err != nil {
+							return
+						}
+					}
+				}
+
+				if current.Username != "" && current.Username != username {
+					var old dataobject.UsernameDO
+					err := tx.QueryRowPartial(&old,
+						"SELECT username, peer_type, peer_id FROM username WHERE username = ? FOR UPDATE", current.Username)
+					if err != nil && !errors.Is(err, sqlx.ErrNotFound) {
+						result.Err = err
+						return
+					}
+					if err == nil {
+						if old.PeerType != mtproto.PEER_USER || old.PeerId != id {
+							result.Err = mtproto.ErrInternalServerError
+							return
+						}
+						_, result.Err = tx.Exec("DELETE FROM username WHERE username = ? AND peer_type = ? AND peer_id = ?", current.Username, mtproto.PEER_USER, id)
+						if result.Err != nil {
+							return
+						}
+					}
+				}
+
+				if current.Username != username {
+					var rowsAffected int64
+					rowsAffected, result.Err = d.UsersDAO.UpdateUsernameTx(tx, username, id)
+					if result.Err != nil {
+						return
+					}
+					if rowsAffected != 1 {
+						result.Err = mtproto.ErrInternalServerError
+					}
+				}
+			})
+			if transaction.Err != nil {
+				return 0, 0, transaction.Err
 			}
-
-			return 0, rowsAffected, nil
+			return 0, 1, nil
 		},
-		genCacheUserDataCacheKey(id))
+		genCacheUserDataCacheKey(id), fmt.Sprintf("username_%d", id))
 	if err != nil {
+		if sqlx.IsDuplicate(err) {
+			return mtproto.ErrUsernameOccupied
+		}
 		logx.WithContext(ctx).Errorf("updateUserUsername - error: %v", err)
-		return false
+		return err
 	}
 
-	return true
+	return nil
 }
 
 //func (d *Dao) DeleteProfilePhoto(ctx context.Context, userId, photoId int64) int64 {
@@ -210,56 +281,108 @@ func (d *Dao) UpdateUserUsername(ctx context.Context, id int64, username string)
 //func (d *Dao) DeleteMainProfilePhoto(ctx context.Context, userId int64) int64 {
 //}
 
-func (d *Dao) UpdateProfilePhoto(ctx context.Context, userId, photoId int64) int64 {
-	var (
-		mainPhotoId = photoId
-	)
-
+func (d *Dao) UpdateProfilePhoto(ctx context.Context, userId, photoId int64) (int64, error) {
+	var mainPhotoId int64
 	_, _, err := d.CachedConn.Exec(
 		ctx,
 		func(ctx context.Context, conn *sqlx.DB) (int64, int64, error) {
-			var err error
-			if photoId == 0 {
-				mainPhotoId, _ = d.UsersDAO.SelectProfilePhoto(ctx, userId)
-				if mainPhotoId > 0 {
-					nextPhotoId, _ := d.UserProfilePhotosDAO.SelectNext(ctx, userId, []int64{mainPhotoId})
-					tR := sqlx.TxWrapper(ctx, d.DB, func(tx *sqlx.Tx, result *sqlx.StoreResult) {
-						_, result.Err = d.UserProfilePhotosDAO.DeleteTx(tx, userId, []int64{mainPhotoId})
-						if result.Err != nil {
+			transaction := sqlx.TxWrapper(ctx, d.DB, func(tx *sqlx.Tx, result *sqlx.StoreResult) {
+				var currentPhotoId int64
+				result.Err = tx.QueryRowPartial(&currentPhotoId, "SELECT photo_id FROM users WHERE id = ? FOR UPDATE", userId)
+				if result.Err != nil {
+					if errors.Is(result.Err, sqlx.ErrNotFound) {
+						result.Err = mtproto.ErrUserIdInvalid
+					}
+					return
+				}
+
+				mainPhotoId = photoId
+				if photoId == 0 {
+					if currentPhotoId > 0 {
+						if _, result.Err = d.UserProfilePhotosDAO.DeleteTx(tx, userId, []int64{currentPhotoId}); result.Err != nil {
 							return
 						}
-						_, result.Err = d.UsersDAO.UpdateProfilePhotoTx(tx, nextPhotoId, userId)
-					})
-					mainPhotoId = nextPhotoId
-					err = tR.Err
+						query := "SELECT photo_id FROM user_profile_photos WHERE user_id = ? AND photo_id <> ? AND deleted = 0 ORDER BY date2 DESC LIMIT 1 FOR UPDATE"
+						result.Err = tx.QueryRowPartial(&mainPhotoId, query, userId, currentPhotoId)
+						if errors.Is(result.Err, sqlx.ErrNotFound) {
+							mainPhotoId = 0
+							result.Err = nil
+						} else if result.Err != nil {
+							return
+						}
+					}
 				} else {
-					_, err = d.UsersDAO.UpdateProfilePhoto(ctx, 0, userId)
-					mainPhotoId = 0
-				}
-			} else {
-				tR := sqlx.TxWrapper(ctx, d.DB, func(tx *sqlx.Tx, result *sqlx.StoreResult) {
 					_, _, result.Err = d.UserProfilePhotosDAO.InsertOrUpdateTx(tx, &dataobject.UserProfilePhotosDO{
 						UserId:  userId,
-						PhotoId: mainPhotoId,
+						PhotoId: photoId,
 						Date2:   time.Now().Unix(),
 					})
 					if result.Err != nil {
 						return
 					}
-					_, result.Err = d.UsersDAO.UpdateProfilePhotoTx(tx, mainPhotoId, userId)
-				})
-				err = tR.Err
-			}
+				}
 
-			return 0, 0, err
+				_, result.Err = d.UsersDAO.UpdateProfilePhotoTx(tx, mainPhotoId, userId)
+			})
+			if transaction.Err != nil {
+				return 0, 0, transaction.Err
+			}
+			return 0, 1, nil
 		},
 		genCacheUserDataCacheKey(userId))
 	if err != nil {
 		logx.WithContext(ctx).Errorf("updateProfilePhoto - error: %v", err)
-		return 0
+		return 0, err
 	}
 
-	return mainPhotoId
+	return mainPhotoId, nil
+}
+
+func (d *Dao) DeleteProfilePhotos(ctx context.Context, userId int64, photoIds []int64) (int64, error) {
+	var mainPhotoId int64
+	_, _, err := d.CachedConn.Exec(
+		ctx,
+		func(ctx context.Context, conn *sqlx.DB) (int64, int64, error) {
+			transaction := sqlx.TxWrapper(ctx, d.DB, func(tx *sqlx.Tx, result *sqlx.StoreResult) {
+				result.Err = tx.QueryRowPartial(&mainPhotoId, "SELECT photo_id FROM users WHERE id = ? FOR UPDATE", userId)
+				if result.Err != nil {
+					if errors.Is(result.Err, sqlx.ErrNotFound) {
+						result.Err = mtproto.ErrUserIdInvalid
+					}
+					return
+				}
+				if len(photoIds) == 0 {
+					return
+				}
+
+				if _, result.Err = d.UserProfilePhotosDAO.DeleteTx(tx, userId, photoIds); result.Err != nil {
+					return
+				}
+				if !container2.ContainsInt64(photoIds, mainPhotoId) {
+					return
+				}
+
+				query := fmt.Sprintf("SELECT photo_id FROM user_profile_photos WHERE user_id = ? AND photo_id NOT IN (%s) AND deleted = 0 ORDER BY date2 DESC LIMIT 1 FOR UPDATE", sqlx.InInt64List(photoIds))
+				result.Err = tx.QueryRowPartial(&mainPhotoId, query, userId)
+				if errors.Is(result.Err, sqlx.ErrNotFound) {
+					mainPhotoId = 0
+					result.Err = nil
+				} else if result.Err != nil {
+					return
+				}
+				_, result.Err = d.UsersDAO.UpdateProfilePhotoTx(tx, mainPhotoId, userId)
+			})
+			if transaction.Err != nil {
+				return 0, 0, transaction.Err
+			}
+			return 0, 1, nil
+		},
+		genCacheUserDataCacheKey(userId))
+	if err != nil {
+		logx.WithContext(ctx).Errorf("deleteProfilePhotos - error: %v", err)
+		return 0, err
+	}
+	return mainPhotoId, nil
 }
 
 func (d *Dao) GetImmutableUser(ctx context.Context, id int64, privacy bool, contacts ...int64) (*mtproto.ImmutableUser, error) {
@@ -359,29 +482,70 @@ func (d *Dao) UpdateUserEmojiStatus(ctx context.Context, id int64, emojiStatusDo
 	return true
 }
 
-func (d *Dao) DeleteUser(ctx context.Context, id int64, phoneNumber string, reason string) bool {
-	_, _, err := d.CachedConn.Exec(
-		ctx,
-		func(ctx context.Context, conn *sqlx.DB) (int64, int64, error) {
-			rowsAffected, err := d.UsersDAO.Delete(
-				ctx,
-				"-"+strconv.FormatInt(id, 10), // hack
-				reason,
-				id)
-			if err != nil {
-				return 0, 0, err
-			}
-
-			return 0, rowsAffected, nil
-		},
-		genCacheUserDataCacheKey(id),
-		genCachePhoneUserKey(phoneNumber))
-	if err != nil {
-		logx.WithContext(ctx).Errorf("DeleteUser - error: %v", err)
-		return false
+// DeleteUser marks the account deleted and removes all user-owned data kept by
+// the user service. The operation is transactional so a failure cannot leave a
+// half-deleted profile that the BFF reports as successful.
+func (d *Dao) DeleteUser(ctx context.Context, id int64, phoneNumber string, reason string) (bool, error) {
+	if id <= 0 {
+		return false, mtproto.ErrUserIdInvalid
 	}
 
-	return true
+	result := sqlx.TxWrapper(ctx, d.DB, func(tx *sqlx.Tx, result *sqlx.StoreResult) {
+		// These tables contain data whose owner is the account being deleted.
+		// Keep the list explicit: message/chat data lives in other services and
+		// must be purged by their own authoritative providers.
+		cleanup := []struct {
+			query string
+			args  []interface{}
+		}{
+			{"DELETE FROM username WHERE peer_type = ? AND peer_id = ?", []interface{}{mtproto.PEER_USER, id}},
+			{"DELETE FROM user_contacts WHERE owner_user_id = ? OR contact_user_id = ?", []interface{}{id, id}},
+			{"DELETE FROM imported_contacts WHERE user_id = ? OR imported_user_id = ?", []interface{}{id, id}},
+			{"DELETE FROM unregistered_contacts WHERE importer_user_id = ?", []interface{}{id}},
+			{"DELETE FROM user_global_privacy_settings WHERE user_id = ?", []interface{}{id}},
+			{"DELETE FROM user_notify_settings WHERE user_id = ?", []interface{}{id}},
+			{"DELETE FROM user_peer_blocks WHERE user_id = ?", []interface{}{id}},
+			{"DELETE FROM user_peer_settings WHERE user_id = ?", []interface{}{id}},
+			{"DELETE FROM user_presences WHERE user_id = ?", []interface{}{id}},
+			{"DELETE FROM user_privacies WHERE user_id = ?", []interface{}{id}},
+			{"DELETE FROM user_profile_photos WHERE user_id = ?", []interface{}{id}},
+			{"DELETE FROM user_saved_music WHERE user_id = ?", []interface{}{id}},
+			{"DELETE FROM user_settings WHERE user_id = ?", []interface{}{id}},
+			{"DELETE FROM default_history_ttl WHERE user_id = ?", []interface{}{id}},
+			{"DELETE FROM bots WHERE creator_user_id = ?", []interface{}{id}},
+			{"DELETE FROM popular_contacts WHERE phone = ?", []interface{}{phoneNumber}},
+		}
+		for _, item := range cleanup {
+			if _, err := tx.Exec(item.query, item.args...); err != nil {
+				result.Err = err
+				return
+			}
+		}
+
+		rowsAffected, err := d.UsersDAO.DeleteTx(
+			tx,
+			"-"+strconv.FormatInt(id, 10), // preserve the historical phone tombstone format
+			reason,
+			id)
+		if err != nil {
+			result.Err = err
+			return
+		}
+		if rowsAffected != 1 {
+			result.Err = mtproto.ErrUserIdInvalid
+		}
+	})
+	if result.Err != nil {
+		logx.WithContext(ctx).Errorf("DeleteUser - error: %v", result.Err)
+		return false, result.Err
+	}
+
+	if err := d.CachedConn.DelCache(ctx, genCacheUserDataCacheKey(id), genCachePhoneUserKey(phoneNumber)); err != nil {
+		logx.WithContext(ctx).Errorf("DeleteUser - invalidate cache: %v", err)
+		return false, err
+	}
+
+	return true, nil
 }
 
 func (d *Dao) GetCacheImmutableUserList(ctx context.Context, idList2 []int64, contacts []int64) []*mtproto.ImmutableUser {

@@ -23,10 +23,16 @@ import (
 )
 
 // MessagesViewSponsoredMessage
-// messages.viewSponsoredMessage#673ad8f1 peer:InputPeer random_id:bytes = Bool;
+// messages.viewSponsoredMessage#269e3643 random_id:bytes = Bool;
 func (c *SponsoredMessagesCore) MessagesViewSponsoredMessage(in *mtproto.TLMessagesViewSponsoredMessage) (*mtproto.Bool, error) {
-	// TODO: not impl
-	c.Logger.Errorf("messages.viewSponsoredMessage blocked, License key from https://teamgram.net required to unlock enterprise features.")
-
-	return nil, mtproto.ErrEnterpriseIsBlocked
+	if _, err := c.requireSponsoredUser(); err != nil {
+		return nil, err
+	}
+	if in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if _, err := sponsoredRandom(in.GetRandomId()); err != nil {
+		return nil, err
+	}
+	return nil, mtproto.ErrMethodNotImpl
 }

@@ -27,6 +27,12 @@ import (
 // MessagesEditChatParticipantRank
 // messages.editChatParticipantRank#a00f32b0 peer:InputPeer participant:InputPeer rank:string = Updates;
 func (c *ChatsCore) MessagesEditChatParticipantRank(in *mtproto.TLMessagesEditChatParticipantRank) (*mtproto.Updates, error) {
+	if c == nil || c.MD == nil {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
+	if in == nil || in.GetPeer() == nil || in.GetParticipant() == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
 	var (
 		peer        = mtproto.FromInputPeer2(c.MD.UserId, in.Peer)
 		participant = mtproto.FromInputPeer2(c.MD.UserId, in.Participant)
@@ -54,6 +60,9 @@ func (c *ChatsCore) MessagesEditChatParticipantRank(in *mtproto.TLMessagesEditCh
 		c.Logger.Errorf("messages.editChatParticipantRank - error: %v", err)
 		return nil, err
 	}
+	if chat == nil || chat.GetChat() == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
 
 	var (
 		idList []int64
@@ -64,6 +73,9 @@ func (c *ChatsCore) MessagesEditChatParticipantRank(in *mtproto.TLMessagesEditCh
 	}).To_Update()
 
 	chat.Walk(func(userId int64, participant *mtproto.ImmutableChatParticipant) error {
+		if participant == nil {
+			return mtproto.ErrInternalServerError
+		}
 		if participant.IsChatMemberStateNormal() {
 			idList = append(idList, userId)
 		}
@@ -77,23 +89,43 @@ func (c *ChatsCore) MessagesEditChatParticipantRank(in *mtproto.TLMessagesEditCh
 		c.Logger.Errorf("messages.editChatParticipantRank - error: %v", err)
 		return nil, err
 	}
+	if mUsers == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
 
+	var firstErr error
 	chat.Walk(func(userId int64, participant *mtproto.ImmutableChatParticipant) error {
+		if firstErr != nil {
+			return firstErr
+		}
+		if participant == nil {
+			firstErr = mtproto.ErrInternalServerError
+			return firstErr
+		}
 		if !participant.IsChatMemberStateNormal() {
 			return nil
 		}
 
-		c.svcCtx.Dao.SyncClient.SyncPushUpdates(c.ctx,
+		if reply, pushErr := c.svcCtx.Dao.SyncClient.SyncPushUpdates(c.ctx,
 			&sync.TLSyncPushUpdates{
 				UserId: userId,
 				Updates: mtproto.MakeUpdatesByUpdatesUsersChats(
 					mUsers.GetUserListByIdList(userId, idList...),
 					[]*mtproto.Chat{chat.ToUnsafeChat(userId)},
 					updateChatParticipants),
-			})
+			}); pushErr != nil {
+			firstErr = pushErr
+			return firstErr
+		} else if reply == nil {
+			firstErr = mtproto.ErrInternalServerError
+			return firstErr
+		}
 
 		return nil
 	})
+	if firstErr != nil {
+		return nil, firstErr
+	}
 
 	return mtproto.MakeUpdatesByUpdatesUsersChats(
 		mUsers.GetUserListByIdList(c.MD.UserId, idList...),

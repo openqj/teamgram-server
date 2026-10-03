@@ -20,13 +20,24 @@ package core
 
 import (
 	"github.com/teamgram/proto/mtproto"
+	"github.com/teamgram/teamgram-server/app/bff/apifull/persist"
 )
 
 // AccountUnregisterDevice
 // account.unregisterDevice#6a0d3206 token_type:int token:string other_uids:Vector<long> = Bool;
 func (c *NotificationCore) AccountUnregisterDevice(in *mtproto.TLAccountUnregisterDevice) (*mtproto.Bool, error) {
-	// TODO: not impl
-	c.Logger.Errorf("account.unregisterDevice blocked, License key from https://teamgram.net required to unlock enterprise features.")
+	userID, err := deviceUserID(c)
+	if err != nil {
+		return nil, err
+	}
+	if err = validateDeviceOwnerIDs(userID, in.GetOtherUids()); err != nil {
+		return nil, err
+	}
+
+	if err := persist.Default.Set(deviceStoreKey(userID, in.GetTokenType(), in.GetToken()), ""); err != nil {
+		c.Logger.Errorf("account.unregisterDevice - error: %v", err)
+		return nil, err
+	}
 
 	return mtproto.BoolTrue, nil
 }

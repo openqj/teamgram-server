@@ -20,6 +20,7 @@ package config
 
 import (
 	kafka "github.com/teamgram/marmota/pkg/mq"
+	passkeyhelper "github.com/teamgram/teamgram-server/app/bff/passkey"
 	"github.com/teamgram/teamgram-server/pkg/code/conf"
 	"github.com/zeromicro/go-zero/core/stores/kv"
 	"github.com/zeromicro/go-zero/zrpc"
@@ -27,16 +28,25 @@ import (
 
 type Config struct {
 	zrpc.RpcServerConf
-	KV                        kv.KvConf
-	Code                      *conf.SmsVerifyCodeConfig
-	BizServiceClient          zrpc.RpcClientConf
-	AuthSessionClient         zrpc.RpcClientConf
-	MediaClient               zrpc.RpcClientConf
-	IdgenClient               zrpc.RpcClientConf
-	MsgClient                 zrpc.RpcClientConf
-	SyncClient                *kafka.KafkaProducerConf
-	DfsClient                 zrpc.RpcClientConf
-	StatusClient              zrpc.RpcClientConf
-	SignInServiceNotification []conf.MessageEntityConfig `json:",optional"`
-	SignInMessage             []conf.MessageEntityConfig `json:",optional"`
+	DcId                          int32   `json:",optional"`
+	KnownDcIds                    []int32 `json:",optional"`
+	KV                            kv.KvConf
+	Code                          *conf.SmsVerifyCodeConfig
+	BizServiceClient              zrpc.RpcClientConf
+	AuthSessionClient             zrpc.RpcClientConf
+	MediaClient                   zrpc.RpcClientConf
+	IdgenClient                   zrpc.RpcClientConf
+	MsgClient                     zrpc.RpcClientConf
+	SyncClient                    *kafka.KafkaProducerConf
+	DfsClient                     zrpc.RpcClientConf
+	StatusClient                  zrpc.RpcClientConf
+	MysqlDSN                      string                       `json:",optional"`
+	PaymentProviderEndpoint       string                       `json:",optional"`
+	PaymentProviderKey            string                       `json:",optional"`
+	PaymentProviderTimeoutSeconds int                          `json:",optional"`
+	TurnHost                      string                       `json:",optional"`
+	TurnPort                      int32                        `json:",optional"`
+	Passkey                       passkeyhelper.ProviderConfig `json:",optional"`
+	SignInServiceNotification     []conf.MessageEntityConfig   `json:",optional"`
+	SignInMessage                 []conf.MessageEntityConfig   `json:",optional"`
 }

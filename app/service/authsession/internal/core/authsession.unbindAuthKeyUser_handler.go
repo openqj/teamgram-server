@@ -17,6 +17,9 @@ import (
 // AuthsessionUnbindAuthKeyUser
 // authsession.unbindAuthKeyUser auth_key_id:long user_id:long = Bool;
 func (c *AuthsessionCore) AuthsessionUnbindAuthKeyUser(in *authsession.TLAuthsessionUnbindAuthKeyUser) (*mtproto.Bool, error) {
+	if in == nil || in.UserId <= 0 {
+		return nil, mtproto.ErrUserIdInvalid
+	}
 	var (
 		unBindKeyId = in.AuthKeyId
 	)
@@ -38,7 +41,10 @@ func (c *AuthsessionCore) AuthsessionUnbindAuthKeyUser(in *authsession.TLAuthses
 		unBindKeyId = keyData.PermAuthKeyId
 	}
 
-	c.svcCtx.Dao.UnbindAuthUser(c.ctx, unBindKeyId, in.UserId)
+	if err := c.svcCtx.Dao.UnbindAuthUser(c.ctx, unBindKeyId, in.UserId); err != nil {
+		c.Logger.Errorf("unbindAuthUser(%d, %d) is error: %v", unBindKeyId, in.UserId, err)
+		return nil, err
+	}
 
 	return mtproto.BoolTrue, nil
 }

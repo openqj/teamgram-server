@@ -42,11 +42,18 @@ func (c *MediaCore) MediaUploadedDocumentMedia(in *media.TLMediaUploadedDocument
 			c.Logger.Errorf("media.uploadedDocumentMedia - error: %v", err)
 			return nil, err
 		}
+		if document == nil {
+			return nil, mtproto.ErrMediaInvalid
+		}
 
 		if len(document.GetThumbs()) > 0 {
-			c.svcCtx.Dao.SavePhotoSizeV2(c.ctx, document.GetId(), document.GetThumbs())
+			if err = c.svcCtx.Dao.SavePhotoSizeV2(c.ctx, document.GetId(), document.GetThumbs()); err != nil {
+				return nil, err
+			}
 		}
-		c.svcCtx.Dao.SaveDocumentV2(c.ctx, media.GetFile().GetName(), document)
+		if err = c.svcCtx.Dao.SaveDocumentV2(c.ctx, media.GetFile().GetName(), document); err != nil {
+			return nil, err
+		}
 	} else if in.GetMedia().GetMimeType() == "video/mp4" {
 		document, err = c.svcCtx.Dao.DfsClient.DfsUploadMp4DocumentMedia(c.ctx, &dfs.TLDfsUploadMp4DocumentMedia{
 			Creator: ownerId,
@@ -56,11 +63,18 @@ func (c *MediaCore) MediaUploadedDocumentMedia(in *media.TLMediaUploadedDocument
 			c.Logger.Errorf("media.uploadedDocumentMedia - error: %v", err)
 			return nil, err
 		}
+		if document == nil {
+			return nil, mtproto.ErrMediaInvalid
+		}
 
 		if len(document.GetThumbs()) > 0 {
-			c.svcCtx.Dao.SavePhotoSizeV2(c.ctx, document.GetId(), document.GetThumbs())
+			if err = c.svcCtx.Dao.SavePhotoSizeV2(c.ctx, document.GetId(), document.GetThumbs()); err != nil {
+				return nil, err
+			}
 		}
-		c.svcCtx.Dao.SaveDocumentV2(c.ctx, media.GetFile().GetName(), document)
+		if err = c.svcCtx.Dao.SaveDocumentV2(c.ctx, media.GetFile().GetName(), document); err != nil {
+			return nil, err
+		}
 	} else {
 		document, err = c.svcCtx.Dao.DfsClient.DfsUploadDocumentFileV2(c.ctx, &dfs.TLDfsUploadDocumentFileV2{
 			Creator: ownerId,
@@ -70,11 +84,18 @@ func (c *MediaCore) MediaUploadedDocumentMedia(in *media.TLMediaUploadedDocument
 			c.Logger.Errorf("media.uploadedDocumentMedia - error: %v", err)
 			return nil, err
 		}
+		if document == nil {
+			return nil, mtproto.ErrMediaInvalid
+		}
 
 		if len(document.GetThumbs()) > 0 {
-			c.svcCtx.Dao.SavePhotoSizeV2(c.ctx, document.GetId(), document.GetThumbs())
+			if err = c.svcCtx.Dao.SavePhotoSizeV2(c.ctx, document.GetId(), document.GetThumbs()); err != nil {
+				return nil, err
+			}
 		}
-		c.svcCtx.Dao.SaveDocumentV2(c.ctx, media.GetFile().GetName(), document)
+		if err = c.svcCtx.Dao.SaveDocumentV2(c.ctx, media.GetFile().GetName(), document); err != nil {
+			return nil, err
+		}
 	}
 
 	// messageMediaDocument#7c4414d3 flags:# document:flags.0?Document caption:flags.1?string ttl_seconds:flags.2?int = MessageMedia;

@@ -24,6 +24,7 @@ import (
 
 type Config struct {
 	zrpc.RpcServerConf
+	MysqlDSN          string `json:",optional"`
 	UpdatesClient     zrpc.RpcClientConf
 	UserClient        zrpc.RpcClientConf
 	ChatClient        zrpc.RpcClientConf

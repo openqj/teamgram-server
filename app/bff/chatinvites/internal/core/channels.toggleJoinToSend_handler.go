@@ -19,14 +19,51 @@
 package core
 
 import (
+	"fmt"
+
 	"github.com/teamgram/proto/mtproto"
+	"github.com/teamgram/teamgram-server/app/bff/apifull/persist"
 )
 
 // ChannelsToggleJoinToSend
 // channels.toggleJoinToSend#e4cb9580 channel:InputChannel enabled:Bool = Updates;
 func (c *ChatInvitesCore) ChannelsToggleJoinToSend(in *mtproto.TLChannelsToggleJoinToSend) (*mtproto.Updates, error) {
-	// TODO: not impl
-	c.Logger.Errorf("channels.toggleJoinToSend blocked, License key from https://teamgram.net required to unlock enterprise features.")
+	channel := in.GetChannel()
+	if channel == nil || channel.GetPredicateName() == mtproto.Predicate_inputChannelEmpty || channel.GetChannelId() == 0 {
+		c.Logger.Errorf("channels.toggleJoinToSend - error: channel invalid")
+		return nil, mtproto.ErrChannelInvalid
+	}
+	channelId := channel.GetChannelId()
 
-	return nil, mtproto.ErrEnterpriseIsBlocked
+	handled, err := c.requireChannelInviteAdmin(channel)
+	if err != nil {
+		return nil, err
+	}
+	if !handled {
+		if err = c.requireInvitePermission(channelId, 0); err != nil {
+			return nil, err
+		}
+	}
+
+	enabled := mtproto.FromBool(in.GetEnabled())
+	value := "0"
+	if enabled {
+		value = "1"
+	}
+	if err = persist.Default.Set(fmt.Sprintf("channel:%d:join_to_send", channelId), value); err != nil {
+		c.Logger.Errorf("channels.toggleJoinToSend - error: %v", err)
+		return nil, err
+	}
+
+	chat := mtproto.MakeTLChannel(&mtproto.Chat{
+		Id:         channelId,
+		Megagroup:  true,
+		JoinToSend: enabled,
+		Photo:      mtproto.MakeTLChatPhotoEmpty(nil).To_ChatPhoto(),
+	}).To_Chat()
+	update := mtproto.MakeTLUpdateChannel(&mtproto.Update{
+		ChannelId: channelId,
+	}).To_Update()
+
+	return mtproto.MakeUpdatesByUpdatesChats([]*mtproto.Chat{chat}, update), nil
 }

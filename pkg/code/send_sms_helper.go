@@ -20,8 +20,10 @@ package code
 
 import (
 	"context"
+	"strings"
 
 	"github.com/teamgram/teamgram-server/pkg/code/conf"
+	"github.com/teamgram/teamgram-server/pkg/code/me"
 	"github.com/teamgram/teamgram-server/pkg/code/none"
 )
 
@@ -35,9 +37,11 @@ func NewVerifyCode(c *conf.SmsVerifyCodeConfig) VerifyCodeInterface {
 		c = new(conf.SmsVerifyCodeConfig)
 	}
 
-	switch c.Name {
-	// case "predefined":
-	// 	return predefined.New(c)
+	switch strings.ToLower(strings.TrimSpace(c.Name)) {
+	case "http", "me":
+		if c.SendCodeUrl != "" {
+			return me.New(c)
+		}
 	case "none":
 		return none.New(c)
 	}

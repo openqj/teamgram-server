@@ -16,6 +16,7 @@ import (
 	"github.com/teamgram/marmota/pkg/net/rpcx"
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/proto/mtproto/rpc/metadata"
+	"github.com/teamgram/teamgram-server/pkg/rpc/dccontext"
 
 	"github.com/zeromicro/go-zero/core/logx"
 	"github.com/zeromicro/go-zero/zrpc"
@@ -85,6 +86,10 @@ func (c *BFFProxyClient) InvokeContext(ctx context.Context, rpcMetaData *metadat
 
 	conn, err := c.GetRpcClientByRequest(object)
 	if err != nil {
+		if mtproto.FindRPCContextTuple(object) == nil {
+			logger.Errorf("RPC request is not registered: %T", object)
+			return nil, mtproto.NewRpcError(mtproto.ErrMethodNotImpl)
+		}
 		if r, err2 := c.TryReturnFakeRpcResult(ctx, object); err2 != nil {
 			return nil, mtproto.NewRpcError(err2)
 		} else {
@@ -122,7 +127,7 @@ func (c *BFFProxyClient) InvokeContext(ctx context.Context, rpcMetaData *metadat
 	if t == nil {
 		err = fmt.Errorf("Invoke error: %v not regist!\n", object)
 		logger.Error("FindRPCContextTuple error: %v", err)
-		return nil, mtproto.NewRpcError(mtproto.ErrEnterpriseIsBlocked)
+		return nil, mtproto.NewRpcError(mtproto.ErrMethodNotImpl)
 	}
 
 	// logx.Infof("Invoke - method: {%s}", t.Method)
@@ -150,6 +155,12 @@ func (c *BFFProxyClient) InvokeContext(ctx context.Context, rpcMetaData *metadat
 	}
 
 	ctx2, _ := metadata.RpcMetadataToOutgoing(ctxWithTimeout, rpcMetaData)
+	// RpcMetadataToOutgoing creates a fresh outgoing metadata context. Reattach
+	// the trusted gateway DC marker after it so authorization can validate the
+	// actual connection DC instead of the service's default configuration.
+	if dcID, ok := dccontext.DCID(ctx); ok {
+		ctx2 = dccontext.WithOutgoingDCID(ctx2, dcID)
+	}
 	rt := time.Now()
 
 	logger.Debugf("rpc Invoke: {method: %s, metadata: %s, NewReplyFunc: {%#v}}",

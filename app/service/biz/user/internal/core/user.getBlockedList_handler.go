@@ -17,10 +17,21 @@ import (
 // UserGetBlockedList
 // user.getBlockedList user_id:long offset:int limit:int = Vector<PeerBlocked>;
 func (c *UserCore) UserGetBlockedList(in *user.TLUserGetBlockedList) (*user.Vector_PeerBlocked, error) {
+	totalCount, err := c.svcCtx.Dao.UserPeerBlocksDAO.SelectCount(c.ctx, in.UserId)
+	if err != nil {
+		c.Logger.Errorf("user.getBlockedList - count error: %v", err)
+		return nil, err
+	}
+
 	// TODO: recache
-	doList, _ := c.svcCtx.Dao.UserPeerBlocksDAO.SelectList(c.ctx, in.UserId, in.Limit)
+	doList, err := c.svcCtx.Dao.UserPeerBlocksDAO.SelectList(c.ctx, in.UserId, in.Offset, in.Limit)
+	if err != nil {
+		c.Logger.Errorf("user.getBlockedList - error: %v", err)
+		return nil, err
+	}
 	bockedList := &user.Vector_PeerBlocked{
-		Datas: make([]*mtproto.PeerBlocked, 0, len(doList)),
+		Datas:      make([]*mtproto.PeerBlocked, 0, len(doList)),
+		TotalCount: totalCount,
 	}
 
 	for _, do := range doList {

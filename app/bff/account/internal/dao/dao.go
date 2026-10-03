@@ -26,11 +26,13 @@ import (
 	authsession_client "github.com/teamgram/teamgram-server/app/service/authsession/client"
 	chat_client "github.com/teamgram/teamgram-server/app/service/biz/chat/client"
 	user_client "github.com/teamgram/teamgram-server/app/service/biz/user/client"
+	verification "github.com/teamgram/teamgram-server/pkg/code"
 	"github.com/zeromicro/go-zero/core/stores/kv"
 )
 
 type Dao struct {
-	kv kv.Store
+	kv                kv.Store
+	VerificationStore verification.ChallengeStore
 	authsession_client.AuthsessionClient
 	user_client.UserClient
 	sync_client.SyncClient
@@ -38,8 +40,10 @@ type Dao struct {
 }
 
 func New(c config.Config) *Dao {
+	kvStore := kv.NewStore(c.KV)
 	return &Dao{
-		kv:                kv.NewStore(c.KV),
+		kv:                kvStore,
+		VerificationStore: verification.NewRedisChallengeStore(kvStore),
 		UserClient:        user_client.NewUserClient(rpcx.GetCachedRpcClient(c.UserClient)),
 		AuthsessionClient: authsession_client.NewAuthsessionClient(rpcx.GetCachedRpcClient(c.AuthsessionClient)),
 		ChatClient:        chat_client.NewChatClient(rpcx.GetCachedRpcClient(c.ChatClient)),

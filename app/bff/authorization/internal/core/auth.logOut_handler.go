@@ -28,21 +28,27 @@ import (
 // auth.logOut#3e72ba19 = auth.LoggedOut;
 func (c *AuthorizationCore) AuthLogOut(in *mtproto.TLAuthLogOut) (*mtproto.Auth_LoggedOut, error) {
 	// unbind auth_key and user_id
-	_, err := c.svcCtx.Dao.AuthsessionClient.AuthsessionUnbindAuthKeyUser(c.ctx, &authsession.TLAuthsessionUnbindAuthKeyUser{
+	unbound, err := c.svcCtx.Dao.AuthsessionClient.AuthsessionUnbindAuthKeyUser(c.ctx, &authsession.TLAuthsessionUnbindAuthKeyUser{
 		AuthKeyId: c.MD.PermAuthKeyId,
 		UserId:    c.MD.UserId,
 	})
 	if err != nil {
 		c.Logger.Errorf("auth.logOut - error: %v", err)
 		return nil, err
-	} else {
-		if c.svcCtx.Plugin != nil {
-			c.svcCtx.Plugin.OnAuthLogout(c.ctx, c.MD.UserId, c.MD.PermAuthKeyId)
-		}
+	}
+	if unbound == nil || unbound.GetPredicateName() != mtproto.Predicate_boolTrue {
+		c.Logger.Errorf("auth.logOut - authsession unbind returned no success result")
+		return nil, mtproto.ErrInternalServerError
+	}
+	if c.svcCtx.Plugin != nil {
+		c.svcCtx.Plugin.OnAuthLogout(c.ctx, c.MD.UserId, c.MD.PermAuthKeyId)
 	}
 
 	futureAuthToken := crypto.RandomBytes(64)
-	c.svcCtx.Dao.PutFutureAuthToken(c.ctx, futureAuthToken, c.MD.UserId)
+	if err := c.svcCtx.Dao.PutFutureAuthToken(c.ctx, futureAuthToken, c.MD.UserId); err != nil {
+		c.Logger.Errorf("auth.logOut - put future auth token error: %v", err)
+		return nil, err
+	}
 
 	return mtproto.MakeTLAuthLoggedOut(&mtproto.Auth_LoggedOut{
 		FutureAuthToken: futureAuthToken,

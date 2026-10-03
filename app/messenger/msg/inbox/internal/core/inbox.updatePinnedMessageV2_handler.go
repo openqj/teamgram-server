@@ -26,8 +26,22 @@ import (
 // InboxUpdatePinnedMessageV2
 // inbox.updatePinnedMessageV2 flags:# user_id:long unpin:flags.1?true peer_type:int peer_id:long id:int dialog_message_id:long layer:flags.3?int server_id:flags.4?string session_id:flags.5?long client_req_msg_id:flags.6?long = Void;
 func (c *InboxCore) InboxUpdatePinnedMessageV2(in *inbox.TLInboxUpdatePinnedMessageV2) (*mtproto.Void, error) {
-	// TODO: not impl
-	c.Logger.Errorf("inbox.updatePinnedMessageV2 blocked, License key from https://teamgram.net required to unlock enterprise features.")
-
-	return nil, mtproto.ErrEnterpriseIsBlocked
+	if in == nil || in.DialogMessageId == 0 || in.Id == 0 {
+		c.Logger.Errorf("inbox.updatePinnedMessageV2 - invalid request")
+		return nil, mtproto.ErrMessageIdInvalid
+	}
+	switch in.PeerType {
+	case mtproto.PEER_SELF, mtproto.PEER_USER, mtproto.PEER_CHAT, mtproto.PEER_CHANNEL:
+	default:
+		c.Logger.Errorf("inbox.updatePinnedMessageV2 - invalid peer type")
+		return nil, mtproto.ErrPeerIdInvalid
+	}
+	return c.InboxUpdatePinnedMessage(&inbox.TLInboxUpdatePinnedMessage{
+		UserId:          in.UserId,
+		Unpin:           in.GetUnpin(),
+		PeerType:        in.PeerType,
+		PeerId:          in.PeerId,
+		Id:              in.Id,
+		DialogMessageId: in.DialogMessageId,
+	})
 }

@@ -26,6 +26,15 @@ import (
 // MessagesReorderPinnedSavedDialogs
 // messages.reorderPinnedSavedDialogs#8b716587 flags:# force:flags.0?true order:Vector<InputDialogPeer> = Bool;
 func (c *SavedMessageDialogsCore) MessagesReorderPinnedSavedDialogs(in *mtproto.TLMessagesReorderPinnedSavedDialogs) (*mtproto.Bool, error) {
+	if c == nil || c.MD == nil || c.MD.UserId <= 0 {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
+	if in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.DialogClient == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
 	if len(in.GetOrder()) == 0 {
 		c.Logger.Errorf("messages.reorderPinnedDialogs - len(order) == 0")
 		return mtproto.BoolTrue, nil
@@ -35,20 +44,21 @@ func (c *SavedMessageDialogsCore) MessagesReorderPinnedSavedDialogs(in *mtproto.
 		order []*mtproto.PeerUtil
 	)
 	for _, peer := range in.GetOrder() {
+		if peer == nil {
+			return nil, mtproto.ErrPeerIdInvalid
+		}
 		switch peer.PredicateName {
 		case mtproto.Predicate_inputDialogPeer:
+			if peer.Peer == nil {
+				return nil, mtproto.ErrPeerIdInvalid
+			}
 			p := mtproto.FromInputPeer2(c.MD.UserId, peer.Peer)
-			switch p.PeerType {
-			case mtproto.PEER_SELF,
-				mtproto.PEER_USER,
-				mtproto.PEER_CHAT,
-				mtproto.PEER_CHANNEL:
-				order = append(order, p)
-			default:
+			if !savedPeerAllowed(p) {
 				err := mtproto.ErrPeerIdInvalid
 				c.Logger.Errorf("messages.reorderPinnedSavedDialogs - error: %v", err)
 				return nil, err
 			}
+			order = append(order, p)
 		default:
 			err := mtproto.ErrPeerIdInvalid
 			c.Logger.Errorf("messages.reorderPinnedSavedDialogs - error: %v", err)
@@ -56,7 +66,7 @@ func (c *SavedMessageDialogsCore) MessagesReorderPinnedSavedDialogs(in *mtproto.
 		}
 	}
 
-	_, err := c.svcCtx.Dao.DialogClient.DialogReorderPinnedSavedDialogs(c.ctx, &dialog.TLDialogReorderPinnedSavedDialogs{
+	result, err := c.svcCtx.Dao.DialogClient.DialogReorderPinnedSavedDialogs(c.ctx, &dialog.TLDialogReorderPinnedSavedDialogs{
 		UserId: c.MD.UserId,
 		Force:  mtproto.ToBool(in.Force),
 		Order:  order,
@@ -64,6 +74,9 @@ func (c *SavedMessageDialogsCore) MessagesReorderPinnedSavedDialogs(in *mtproto.
 	if err != nil {
 		c.Logger.Errorf("messages.reorderPinnedSavedDialogs - error: %v", err)
 		return nil, err
+	}
+	if result == nil || !mtproto.FromBool(result) {
+		return nil, mtproto.ErrInternalServerError
 	}
 
 	return mtproto.BoolTrue, nil

@@ -32,7 +32,7 @@ func (c *DialogCore) DialogInsertOrUpdateDialogFilter(in *dialog.TLDialogInsertO
 		return nil, err
 	}
 
-	c.svcCtx.Dao.CachedConn.Exec(
+	_, _, err = c.svcCtx.Dao.CachedConn.Exec(
 		c.ctx,
 		func(ctx context.Context, conn *sqlx.DB) (int64, int64, error) {
 			_, _, err2 := c.svcCtx.Dao.DialogFiltersDAO.InsertOrUpdate(
@@ -50,6 +50,10 @@ func (c *DialogCore) DialogInsertOrUpdateDialogFilter(in *dialog.TLDialogInsertO
 			return 0, 0, err2
 		},
 		dialog.GetDialogFilterCacheKey(in.UserId))
+	if err != nil {
+		c.Logger.Errorf("dialog.insertOrUpdateDialogFilter - persist filter error: %v", err)
+		return nil, err
+	}
 
 	return mtproto.BoolTrue, nil
 }

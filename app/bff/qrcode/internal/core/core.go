@@ -35,10 +35,23 @@ type QrCodeCore struct {
 }
 
 func New(ctx context.Context, svcCtx *svc.ServiceContext) *QrCodeCore {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	return &QrCodeCore{
 		ctx:    ctx,
 		svcCtx: svcCtx,
 		Logger: logx.WithContext(ctx),
 		MD:     metadata.RpcMetadataFromIncoming(ctx),
+	}
+}
+
+func (c *QrCodeCore) ensureLogger() {
+	if c != nil && c.Logger == nil {
+		ctx := c.ctx
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		c.Logger = logx.WithContext(ctx)
 	}
 }

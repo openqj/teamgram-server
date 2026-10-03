@@ -19,8 +19,9 @@
 package core
 
 import (
+	"fmt"
+
 	"github.com/teamgram/proto/mtproto"
-	chatpb "github.com/teamgram/teamgram-server/app/service/biz/chat/chat"
 	userpb "github.com/teamgram/teamgram-server/app/service/biz/user/user"
 )
 
@@ -39,10 +40,19 @@ func (c *PrivacySettingsCore) AccountGetPrivacy(in *mtproto.TLAccountGetPrivacy)
 		return nil, err
 	}
 
-	ruleList, _ := c.svcCtx.Dao.UserClient.UserGetPrivacy(c.ctx, &userpb.TLUserGetPrivacy{
+	ruleList, err := c.svcCtx.Dao.UserClient.UserGetPrivacy(c.ctx, &userpb.TLUserGetPrivacy{
 		UserId:  c.MD.UserId,
 		KeyType: int32(key),
 	})
+	if err != nil {
+		c.Logger.Errorf("account.getPrivacy - error: %v", err)
+		return nil, fmt.Errorf("account.getPrivacy: load privacy rules: %w", err)
+	}
+	if ruleList == nil {
+		err = fmt.Errorf("account.getPrivacy: nil privacy rules response")
+		c.Logger.Errorf("account.getPrivacy - error: %v", err)
+		return nil, err
+	}
 
 	if len(ruleList.GetDatas()) == 0 {
 		if key == mtproto.PHONE_NUMBER {
@@ -66,33 +76,16 @@ func (c *PrivacySettingsCore) AccountGetPrivacy(in *mtproto.TLAccountGetPrivacy)
 			}).To_Account_PrivacyRules()
 		}
 	} else {
+		users, chats, err := c.hydratePrivacyRuleObjects(ruleList.GetDatas())
+		if err != nil {
+			c.Logger.Errorf("account.getPrivacy - error: %v", err)
+			return nil, fmt.Errorf("account.getPrivacy: %w", err)
+		}
 		rVal = mtproto.MakeTLAccountPrivacyRules(&mtproto.Account_PrivacyRules{
 			Rules: ruleList.GetDatas(),
-			Users: []*mtproto.User{}, // TODO
-			Chats: []*mtproto.Chat{}, // TODO
+			Users: users,
+			Chats: chats,
 		}).To_Account_PrivacyRules()
-
-		idHelper := mtproto.NewIDListHelper(c.MD.UserId)
-		idHelper.PickByRules(ruleList.GetDatas())
-		idHelper.Visit(
-			func(userIdList []int64) {
-				users, _ := c.svcCtx.Dao.UserClient.UserGetMutableUsers(c.ctx,
-					&userpb.TLUserGetMutableUsers{
-						Id: userIdList,
-					})
-				rVal.Users = users.GetUserListByIdList(c.MD.UserId, userIdList...)
-			},
-			func(chatIdList []int64) {
-				chats, _ := c.svcCtx.Dao.ChatClient.ChatGetChatListByIdList(c.ctx,
-					&chatpb.TLChatGetChatListByIdList{
-						IdList: chatIdList,
-					})
-				rVal.Chats = chats.GetChatListByIdList(c.MD.UserId, chatIdList...)
-			},
-
-			func(channelIdList []int64) {
-				// TODO
-			})
 	}
 
 	return rVal, nil

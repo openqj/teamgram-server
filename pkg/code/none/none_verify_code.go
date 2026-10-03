@@ -20,10 +20,12 @@ package none
 
 import (
 	"context"
+	"errors"
 
-	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/pkg/code/conf"
 )
+
+var errProviderUnavailable = errors.New("verification-code provider unavailable")
 
 func New(c *conf.SmsVerifyCodeConfig) *noneVerifyCode {
 	return &noneVerifyCode{
@@ -36,12 +38,9 @@ type noneVerifyCode struct {
 }
 
 func (m *noneVerifyCode) SendSmsVerifyCode(ctx context.Context, phoneNumber, code, codeHash string) (string, error) {
-	return code, nil
+	return "", errProviderUnavailable
 }
 
 func (m *noneVerifyCode) VerifySmsCode(ctx context.Context, codeHash, code, extraData string) error {
-	if code != "12345" {
-		return mtproto.ErrPhoneCodeInvalid
-	}
-	return nil
+	return errProviderUnavailable
 }

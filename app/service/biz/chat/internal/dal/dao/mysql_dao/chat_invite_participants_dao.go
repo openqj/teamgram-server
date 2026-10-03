@@ -232,6 +232,41 @@ func (dao *ChatInviteParticipantsDAO) SelectRecentRequestedListWithCB(ctx contex
 	return
 }
 
+// SelectListByQueryWithCB returns invite participants whose username starts
+// with q or whose first or last name contains q, matching user.search.
+func (dao *ChatInviteParticipantsDAO) SelectListByQueryWithCB(ctx context.Context, chatId int64, link string, requested int32, q string, cb func(sz, i int, v *dataobject.ChatInviteParticipantsDO)) (rList []dataobject.ChatInviteParticipantsDO, err error) {
+	var (
+		query  string
+		values []dataobject.ChatInviteParticipantsDO
+	)
+	query = `select p.id, p.chat_id, p.link, p.user_id, p.requested, p.approved_by, p.date2
+		from chat_invite_participants p
+		inner join users u on u.id = p.user_id
+		where p.chat_id = ? and p.requested = ? and u.deleted = 0
+		  and (u.username like ? or u.first_name like ? or u.last_name like ?)`
+	args := []any{chatId, requested, q + "%", "%" + q + "%", "%" + q + "%"}
+	if requested != 1 || link != "" {
+		query += " and p.link = ?"
+		args = append(args, link)
+	}
+
+	err = dao.db.QueryRowsPartial(ctx, &values, query, args...)
+	if err != nil {
+		logx.WithContext(ctx).Errorf("queryx in SelectListByQueryWithCB(_), error: %v", err)
+		return
+	}
+
+	rList = values
+	if cb != nil {
+		sz := len(rList)
+		for i := range sz {
+			cb(sz, i, &rList[i])
+		}
+	}
+
+	return
+}
+
 // UpdateChatId
 // update chat_invite_participants set chat_id = :chat_id where link = :link
 func (dao *ChatInviteParticipantsDAO) UpdateChatId(ctx context.Context, chatId int64, link string) (rowsAffected int64, err error) {

@@ -19,11 +19,15 @@
 package config
 
 import (
+	"github.com/teamgram/teamgram-server/pkg/code/conf"
+	"github.com/zeromicro/go-zero/core/stores/kv"
 	"github.com/zeromicro/go-zero/zrpc"
 )
 
 type Config struct {
 	zrpc.RpcServerConf
+	KV                kv.KvConf                 `json:",optional"`
+	Code              *conf.SmsVerifyCodeConfig `json:",optional"`
 	AuthsessionClient zrpc.RpcClientConf
 	UserClient        zrpc.RpcClientConf
 }

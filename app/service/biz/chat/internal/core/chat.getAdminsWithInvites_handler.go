@@ -19,6 +19,10 @@ import (
 // ChatGetAdminsWithInvites
 // chat.getAdminsWithInvites self_id:long chat_id:long = Vector<ChatAdminWithInvites>;
 func (c *ChatCore) ChatGetAdminsWithInvites(in *chat.TLChatGetAdminsWithInvites) (*chat.Vector_ChatAdminWithInvites, error) {
+	selfID, err := c.requireInviteSelf(in.SelfId)
+	if err != nil {
+		return nil, err
+	}
 	var (
 		rAdmins        []*mtproto.ChatAdminWithInvites
 		canInviteUsers []int64
@@ -30,7 +34,7 @@ func (c *ChatCore) ChatGetAdminsWithInvites(in *chat.TLChatGetAdminsWithInvites)
 		err = mtproto.ErrPeerIdInvalid
 		return nil, err
 	}
-	me, _ := chat2.GetImmutableChatParticipant(in.SelfId)
+	me, _ := chat2.GetImmutableChatParticipant(selfID)
 	if me == nil {
 		c.Logger.Errorf("chat.getAdminsWithInvites - error: not existed chat")
 		err = mtproto.ErrPeerIdInvalid
@@ -49,7 +53,7 @@ func (c *ChatCore) ChatGetAdminsWithInvites(in *chat.TLChatGetAdminsWithInvites)
 		return nil
 	})
 
-	c.svcCtx.Dao.ChatInvitesDAO.SelectListByChatIdWithCB(
+	_, err = c.svcCtx.Dao.ChatInvitesDAO.SelectListByChatIdWithCB(
 		c.ctx,
 		in.ChatId,
 		func(sz, i int, v *dataobject.ChatInvitesDO) {
@@ -81,6 +85,9 @@ func (c *ChatCore) ChatGetAdminsWithInvites(in *chat.TLChatGetAdminsWithInvites)
 				admin.InvitesCount++
 			}
 		})
+	if err != nil {
+		return nil, err
+	}
 
 	if rAdmins == nil {
 		rAdmins = []*mtproto.ChatAdminWithInvites{}

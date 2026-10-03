@@ -19,6 +19,7 @@ import (
 	"github.com/teamgram/proto/mtproto/crypto"
 	httpcodec "github.com/teamgram/teamgram-server/app/interface/gnetway/internal/server/gnet/http"
 	"github.com/teamgram/teamgram-server/app/interface/session/session"
+	"github.com/teamgram/teamgram-server/pkg/rpc/dccontext"
 
 	"github.com/panjf2000/gnet/v2"
 	"github.com/zeromicro/go-zero/core/logx"
@@ -243,6 +244,7 @@ func (s *Server) onHttpEncryptedMessage(ctx *connContext, c gnet.Conn, authKeyId
 		if err := s.pool.Submit(func() {
 			queryCtx, span := otel.Tracer("gnetway").Start(context.Background(), "HttpSessionQueryAuthKey")
 			defer span.End()
+			queryCtx = dccontext.WithOutgoingDCID(queryCtx, ctx.getDCID())
 			key, err := s.svcCtx.Dao.SessionDispatcher.QueryAuthKey(queryCtx, authKeyId, &session.TLSessionQueryAuthKey{
 				AuthKeyId: authKeyId,
 			})
@@ -298,17 +300,10 @@ func (s *Server) doHttpEncryptedMessage(ctx *connContext, c gnet.Conn, authKey *
 	if err := s.pool.Submit(func() {
 		sendCtx, span := otel.Tracer("gnetway").Start(context.Background(), "HttpSessionSendHttpData")
 		defer span.End()
+		sendCtx = dccontext.WithOutgoingDCID(sendCtx, ctx.getDCID())
 
 		rV, err := s.svcCtx.Dao.SessionDispatcher.SendHttpData(sendCtx, authKey.AuthKeyId(), &session.TLSessionSendHttpDataToSession{
-			Client: &session.SessionClientData{
-				ServerId:  s.svcCtx.GatewayId,
-				ConnType:  2, // TRANSPORT_HTTP
-				AuthKeyId: authKey.AuthKeyId(),
-				SessionId: sessionId,
-				ClientIp:  clientIp,
-				Salt:      salt,
-				Payload:   payload,
-			},
+			Client: newHTTPSessionClientData(authKey, s.svcCtx.GatewayId, sessionId, clientIp, salt, payload),
 		})
 		if err != nil {
 			logx.Errorf("conn(%s) HTTP SendHttpData error: %v", c, err)
@@ -341,6 +336,20 @@ func (s *Server) doHttpEncryptedMessage(ctx *connContext, c gnet.Conn, authKey *
 		logx.Errorf("conn(%s) HTTP pool.Submit error: %v", c, err)
 		_, _ = c.Write(httpcodec.FormatErrorResponse(502, "Bad Gateway"))
 		ctx.httpCodec.Reset()
+	}
+}
+
+func newHTTPSessionClientData(authKey *authKeyUtil, serverID string, sessionID int64, clientIP string, salt int64, payload []byte) *session.SessionClientData {
+	return &session.SessionClientData{
+		ServerId:      serverID,
+		ConnType:      2, // TRANSPORT_HTTP
+		AuthKeyId:     authKey.AuthKeyId(),
+		KeyType:       int32(authKey.AuthKeyType()),
+		PermAuthKeyId: authKey.PermAuthKeyId(),
+		SessionId:     sessionID,
+		ClientIp:      clientIP,
+		Salt:          salt,
+		Payload:       payload,
 	}
 }
 

@@ -20,6 +20,7 @@ package core
 
 import (
 	"github.com/teamgram/proto/mtproto"
+	messagepb "github.com/teamgram/teamgram-server/app/service/biz/message/message"
 	userpb "github.com/teamgram/teamgram-server/app/service/biz/user/user"
 )
 
@@ -39,20 +40,37 @@ func (c *ContactsCore) ContactsAddContact(in *mtproto.TLContactsAddContact) (*mt
 		return nil, err
 	}
 
-	id := mtproto.FromInputUser(c.MD.UserId, in.Id)
-
-	// TODO: check inputUserFromMessage
-	if !id.IsUser() || id.IsSelf() || id.PeerId == c.MD.UserId {
+	if in.GetId() == nil {
+		return nil, mtproto.ErrContactIdInvalid
+	}
+	var userId int64
+	if in.Id.GetPredicateName() == mtproto.Predicate_inputUserFromMessage {
+		var err error
+		userId, err = c.resolveUserFromMessage(in.Id)
+		if err != nil {
+			c.Logger.Errorf("contacts.addContact - error: %v", err)
+			return nil, mtproto.ErrContactIdInvalid
+		}
+	} else {
+		id := mtproto.FromInputUser(c.MD.UserId, in.Id)
+		if !id.IsUser() || id.IsSelf() {
+			err := mtproto.ErrContactIdInvalid
+			c.Logger.Errorf("contacts.addContact - error: %v", err)
+			return nil, err
+		}
+		userId = id.PeerId
+	}
+	if userId <= 0 || userId == c.MD.UserId {
 		err := mtproto.ErrContactIdInvalid
 		c.Logger.Errorf("contacts.addContact - error: %v", err)
 		return nil, err
 	}
 
 	users, err := c.svcCtx.Dao.UserClient.UserGetMutableUsersV2(c.ctx, &userpb.TLUserGetMutableUsersV2{
-		Id:      []int64{c.MD.UserId, id.PeerId},
+		Id:      []int64{c.MD.UserId, userId},
 		Privacy: true,
 		HasTo:   true,
-		To:      []int64{id.PeerId},
+		To:      []int64{userId},
 	})
 	if err != nil {
 		c.Logger.Errorf("contacts.addContact - error: %v", err)
@@ -60,7 +78,7 @@ func (c *ContactsCore) ContactsAddContact(in *mtproto.TLContactsAddContact) (*mt
 		return nil, err
 	}
 
-	if !users.CheckExistUser(c.MD.UserId, id.PeerId) {
+	if users == nil || !users.CheckExistUser(c.MD.UserId, userId) {
 		err = mtproto.ErrContactIdInvalid
 		c.Logger.Errorf("contacts.addContact - error: %v", err)
 		return nil, err
@@ -69,7 +87,7 @@ func (c *ContactsCore) ContactsAddContact(in *mtproto.TLContactsAddContact) (*mt
 	changeMutual, err := c.svcCtx.Dao.UserClient.UserAddContact(c.ctx, &userpb.TLUserAddContact{
 		UserId:                   c.MD.UserId,
 		AddPhonePrivacyException: mtproto.ToBool(in.AddPhonePrivacyException),
-		Id:                       id.PeerId,
+		Id:                       userId,
 		FirstName:                in.FirstName,
 		LastName:                 in.LastName,
 		Phone:                    in.Phone,
@@ -80,7 +98,7 @@ func (c *ContactsCore) ContactsAddContact(in *mtproto.TLContactsAddContact) (*mt
 		return nil, err
 	}
 
-	cUser, _ := users.GetUnsafeUser(c.MD.UserId, id.PeerId)
+	cUser, _ := users.GetUnsafeUser(c.MD.UserId, userId)
 	cUser.Contact = true
 	cUser.MutualContact = mtproto.FromBool(changeMutual)
 	cUser.FirstName = mtproto.MakeFlagsString(in.FirstName)
@@ -93,7 +111,7 @@ func (c *ContactsCore) ContactsAddContact(in *mtproto.TLContactsAddContact) (*mt
 	rUpdates := mtproto.MakeUpdatesByUpdatesUsers(
 		[]*mtproto.User{me, cUser},
 		mtproto.MakeTLUpdatePeerSettings(&mtproto.Update{
-			Peer_PEER: id.ToPeer(),
+			Peer_PEER: mtproto.MakePeerUser(userId),
 			Settings: mtproto.MakeTLPeerSettings(&mtproto.PeerSettings{
 				ReportSpam:             false,
 				AddContact:             false,
@@ -120,4 +138,48 @@ func (c *ContactsCore) ContactsAddContact(in *mtproto.TLContactsAddContact) (*mt
 		}).To_Update())
 
 	return rUpdates, nil
+}
+
+func (c *ContactsCore) resolveUserFromMessage(in *mtproto.InputUser) (int64, error) {
+	if in == nil || in.GetUserId() <= 0 || in.GetMsgId() <= 0 || in.GetPeer() == nil {
+		return 0, mtproto.ErrContactIdInvalid
+	}
+	peer := in.GetPeer()
+	var peerType int32
+	var peerId int64
+	switch peer.GetPredicateName() {
+	case mtproto.Predicate_inputPeerUser:
+		peerType, peerId = mtproto.PEER_USER, peer.GetUserId()
+	case mtproto.Predicate_inputPeerChat:
+		peerType, peerId = mtproto.PEER_CHAT, peer.GetChatId()
+	case mtproto.Predicate_inputPeerChannel:
+		peerType, peerId = mtproto.PEER_CHANNEL, peer.GetChannelId()
+	default:
+		return 0, mtproto.ErrContactIdInvalid
+	}
+	if peerId <= 0 || c.svcCtx.Dao.MessageClient == nil {
+		return 0, mtproto.ErrContactIdInvalid
+	}
+
+	box, err := c.svcCtx.Dao.MessageClient.MessageGetUserMessage(c.ctx, &messagepb.TLMessageGetUserMessage{
+		UserId: c.MD.UserId,
+		Id:     in.GetMsgId(),
+	})
+	if err != nil || box == nil || box.GetMessage() == nil || box.GetUserId() != c.MD.UserId || box.GetMessageId() != in.GetMsgId() {
+		return 0, mtproto.ErrContactIdInvalid
+	}
+	if box.GetPeerType() != peerType || box.GetPeerId() != peerId {
+		return 0, mtproto.ErrContactIdInvalid
+	}
+
+	// A private peer is the other user in that dialog; in group and channel
+	// contexts, only the author of the referenced message can be resolved.
+	userMatchesContext := peerType == mtproto.PEER_USER && peerId == in.GetUserId()
+	if peerType != mtproto.PEER_USER {
+		userMatchesContext = box.GetSenderUserId() == in.GetUserId()
+	}
+	if userMatchesContext {
+		return in.GetUserId(), nil
+	}
+	return 0, mtproto.ErrContactIdInvalid
 }

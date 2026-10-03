@@ -263,6 +263,7 @@ func (d *Dao) GetNoCacheUserData(ctx context.Context, id int64) (*CacheUserData,
 		return cacheData, nil
 	}
 
+	var contactErr error
 	mr.FinishVoid(
 		func() {
 			if do.PhotoId != 0 {
@@ -277,7 +278,7 @@ func (d *Dao) GetNoCacheUserData(ctx context.Context, id int64) (*CacheUserData,
 			}
 		},
 		func() {
-			cacheData.ContactIdList, _ = d.UserContactsDAO.SelectUserContactIdList(ctx, id)
+			cacheData.ContactIdList, contactErr = d.UserContactsDAO.SelectUserContactIdList(ctx, id)
 		},
 		func() {
 			cacheData.ReverseContactIdList, _ = d.UserContactsDAO.SelectUserReverseContactIdList(ctx, id)
@@ -305,6 +306,9 @@ func (d *Dao) GetNoCacheUserData(ctx context.Context, id int64) (*CacheUserData,
 				})
 			}
 		})
+	if contactErr != nil {
+		return nil, contactErr
+	}
 
 	if rules0 != nil {
 		cacheData.CachesPrivacyKeyRules = append(cacheData.CachesPrivacyKeyRules, rules0)

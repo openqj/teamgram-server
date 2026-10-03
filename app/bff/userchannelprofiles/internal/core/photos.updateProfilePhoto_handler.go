@@ -28,6 +28,12 @@ import (
 // PhotosUpdateProfilePhoto
 // photos.updateProfilePhoto#72d4742c id:InputPhoto = photos.Photo;
 func (c *UserChannelProfilesCore) PhotosUpdateProfilePhoto(in *mtproto.TLPhotosUpdateProfilePhoto) (*mtproto.Photos_Photo, error) {
+	if c == nil || c.MD == nil || c.MD.UserId <= 0 {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
+	if in == nil || in.GetId() == nil || in.GetId().GetId() <= 0 {
+		return nil, mtproto.ErrPhotoIdInvalid
+	}
 	var (
 		photo *mtproto.Photo
 	)
@@ -41,6 +47,9 @@ func (c *UserChannelProfilesCore) PhotosUpdateProfilePhoto(in *mtproto.TLPhotosU
 		c.Logger.Errorf("photos.updateProfilePhoto - error: %v", err)
 		return nil, err
 	}
+	if updatedPhotoId == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
 
 	if updatedPhotoId.V != 0 {
 		photo, err = c.svcCtx.Dao.MediaClient.MediaGetPhoto(c.ctx, &mediapb.TLMediaGetPhoto{
@@ -49,6 +58,9 @@ func (c *UserChannelProfilesCore) PhotosUpdateProfilePhoto(in *mtproto.TLPhotosU
 		if err != nil {
 			c.Logger.Errorf("photos.updateProfilePhoto - error: %v", err)
 			return nil, err
+		}
+		if photo == nil {
+			return nil, mtproto.ErrInternalServerError
 		}
 	}
 
@@ -67,15 +79,21 @@ func (c *UserChannelProfilesCore) PhotosUpdateProfilePhoto(in *mtproto.TLPhotosU
 		c.Logger.Errorf("photos.updateProfilePhoto - error: %v", err)
 		return nil, err
 	}
+	if me == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
 
-	_, _ = c.svcCtx.Dao.SyncClient.SyncPushUpdates(c.ctx, &sync.TLSyncPushUpdates{
+	if _, err = c.svcCtx.Dao.SyncClient.SyncPushUpdates(c.ctx, &sync.TLSyncPushUpdates{
 		UserId: c.MD.UserId,
 		Updates: mtproto.MakeUpdatesByUpdatesUsers(
 			[]*mtproto.User{me.ToSelfUser()},
 			mtproto.MakeTLUpdateUser(&mtproto.Update{
 				UserId: c.MD.UserId,
 			}).To_Update()),
-	})
+	}); err != nil {
+		c.Logger.Errorf("photos.updateProfilePhoto - sync error: %v", err)
+		return nil, err
+	}
 
 	return mtproto.MakeTLPhotosPhoto(&mtproto.Photos_Photo{
 		Photo: photo,

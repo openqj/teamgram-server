@@ -27,13 +27,17 @@ import (
 // UserGetImportersByPhone
 // user.getImportersByPhone phone:string = Vector<InputContact>;
 func (c *UserCore) UserGetImportersByPhone(in *user.TLUserGetImportersByPhone) (*user.Vector_InputContact, error) {
+	if in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+
 	contacts := &user.Vector_InputContact{
 		Datas: make([]*mtproto.InputContact, 0),
 	}
 
-	c.svcCtx.Dao.UnregisteredContactsDAO.SelectImportersByPhoneWithCB(
+	_, err := c.svcCtx.Dao.UnregisteredContactsDAO.SelectImportersByPhoneWithCB(
 		c.ctx,
-		in.Phone,
+		in.GetPhone(),
 		func(sz, i int, v *dataobject.UnregisteredContactsDO) {
 			contacts.Datas = append(contacts.Datas, mtproto.MakeTLInputPhoneContact(&mtproto.InputContact{
 				ClientId:  v.ImporterUserId,
@@ -42,6 +46,10 @@ func (c *UserCore) UserGetImportersByPhone(in *user.TLUserGetImportersByPhone) (
 				LastName:  v.ImportLastName,
 			}).To_InputContact())
 		})
+	if err != nil {
+		c.Logger.Errorf("user.getImportersByPhone - database lookup error: %v", err)
+		return nil, err
+	}
 
 	return contacts, nil
 }

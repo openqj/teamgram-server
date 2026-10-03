@@ -3,22 +3,25 @@
     <operation name="InsertOrUpdate">
         <sql>
             INSERT INTO user_global_privacy_settings
-                (user_id, archive_and_mute_new_noncontact_peers, keep_archived_unmuted, keep_archived_folders, hide_read_marks, new_noncontact_peers_require_premium)
+                (user_id, archive_and_mute_new_noncontact_peers, keep_archived_unmuted, keep_archived_folders, hide_read_marks, new_noncontact_peers_require_premium, display_gifts_button, noncontact_peers_paid_stars, disallowed_gifts)
             VALUES
-                (:user_id, :archive_and_mute_new_noncontact_peers, :keep_archived_unmuted, :keep_archived_folders, :hide_read_marks, :new_noncontact_peers_require_premium)
+                (:user_id, :archive_and_mute_new_noncontact_peers, :keep_archived_unmuted, :keep_archived_folders, :hide_read_marks, :new_noncontact_peers_require_premium, :display_gifts_button, :noncontact_peers_paid_stars, :disallowed_gifts)
             ON DUPLICATE KEY UPDATE
                 archive_and_mute_new_noncontact_peers = VALUES(archive_and_mute_new_noncontact_peers),
                 keep_archived_unmuted = VALUES(keep_archived_unmuted),
                 keep_archived_folders = VALUES(keep_archived_folders),
                 hide_read_marks = VALUES(hide_read_marks),
-                new_noncontact_peers_require_premium = VALUES(new_noncontact_peers_require_premium)
+                new_noncontact_peers_require_premium = VALUES(new_noncontact_peers_require_premium),
+                display_gifts_button = VALUES(display_gifts_button),
+                noncontact_peers_paid_stars = VALUES(noncontact_peers_paid_stars),
+                disallowed_gifts = VALUES(disallowed_gifts)
         </sql>
     </operation>
 
     <operation name="Select">
         <sql>
             SELECT
-                id, user_id, archive_and_mute_new_noncontact_peers, keep_archived_unmuted, keep_archived_folders, hide_read_marks, new_noncontact_peers_require_premium
+                id, user_id, archive_and_mute_new_noncontact_peers, keep_archived_unmuted, keep_archived_folders, hide_read_marks, new_noncontact_peers_require_premium, display_gifts_button, noncontact_peers_paid_stars, disallowed_gifts
             FROM
                 user_global_privacy_settings
             WHERE

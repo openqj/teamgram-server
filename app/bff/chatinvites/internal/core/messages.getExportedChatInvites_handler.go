@@ -20,6 +20,7 @@ package core
 
 import (
 	"github.com/teamgram/proto/mtproto"
+	"github.com/teamgram/teamgram-server/app/bff/apifull/channelview"
 	chatpb "github.com/teamgram/teamgram-server/app/service/biz/chat/chat"
 	userpb "github.com/teamgram/teamgram-server/app/service/biz/user/user"
 )
@@ -30,27 +31,52 @@ func (c *ChatInvitesCore) MessagesGetExportedChatInvites(in *mtproto.TLMessagesG
 	var (
 		peer    = mtproto.FromInputPeer2(c.MD.UserId, in.Peer)
 		adminId = mtproto.FromInputUser(c.MD.UserId, in.AdminId)
+		err     error
 		// limit   = in.GetLimit()
 	)
 
-	if !peer.IsChat() {
+	if !peer.IsChat() && !peer.IsChannel() {
 		err := mtproto.ErrPeerIdInvalid
 		c.Logger.Errorf("messages.getExportedChatInvites - error: ", err)
 		return nil, err
 	}
-
-	// TODO: check adminId
-	rInvites, err := c.svcCtx.Dao.ChatClient.ChatGetExportedChatInvites(c.ctx, &chatpb.TLChatGetExportedChatInvites{
-		ChatId:     peer.PeerId,
-		AdminId:    adminId.PeerId,
-		Revoked:    in.Revoked,
-		OffsetDate: in.OffsetDate,
-		OffsetLink: in.OffsetLink,
-		Limit:      in.GetLimit(),
-	})
-	if err != nil {
-		c.Logger.Errorf("messages.getExportedChatInvites - error: ", err)
-		return nil, err
+	if adminId.PeerId == 0 {
+		return nil, mtproto.ErrPeerIdInvalid
+	}
+	var invites []*mtproto.ExportedChatInvite
+	if peer.IsChannel() {
+		if _, err := channelview.ValidateInputPeer(c.MD.UserId, in.Peer); err != nil {
+			return nil, err
+		}
+		invites, err = channelview.ExportedInvites(
+			c.MD.UserId,
+			peer.PeerId,
+			adminId.PeerId,
+			in.Revoked,
+			in.GetOffsetDate().GetValue(),
+			in.GetOffsetLink().GetValue(),
+			in.GetLimit(),
+		)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		if err := c.requireInvitePermission(peer.PeerId, adminId.PeerId); err != nil {
+			return nil, err
+		}
+		rInvites, err := c.svcCtx.Dao.ChatClient.ChatGetExportedChatInvites(c.ctx, &chatpb.TLChatGetExportedChatInvites{
+			ChatId:     peer.PeerId,
+			AdminId:    adminId.PeerId,
+			Revoked:    in.Revoked,
+			OffsetDate: in.OffsetDate,
+			OffsetLink: in.OffsetLink,
+			Limit:      in.GetLimit(),
+		})
+		if err != nil {
+			c.Logger.Errorf("messages.getExportedChatInvites - error: ", err)
+			return nil, err
+		}
+		invites = rInvites.Datas
 	}
 
 	rValues := mtproto.MakeTLMessagesExportedChatInvites(&mtproto.Messages_ExportedChatInvites{
@@ -59,8 +85,8 @@ func (c *ChatInvitesCore) MessagesGetExportedChatInvites(in *mtproto.TLMessagesG
 		Users:   []*mtproto.User{},
 	}).To_Messages_ExportedChatInvites()
 
-	rValues.Count = int32(len(rInvites.Datas))
-	rValues.Invites = rInvites.Datas
+	rValues.Count = int32(len(invites))
+	rValues.Invites = invites
 
 	if len(rValues.Invites) == 0 {
 		return rValues, nil

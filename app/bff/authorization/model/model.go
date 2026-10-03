@@ -38,6 +38,7 @@ type PhoneCodeTransaction struct {
 	PhoneNumber           string `json:"phone_number"`
 	PhoneNumberRegistered bool   `json:"phone_number_registered"`
 	PhoneCode             string `json:"phone_code"`
+	PhoneCodeLength       int    `json:"phone_code_length,omitempty"`
 	PhoneCodeHash         string `json:"phone_code_hash"`
 	PhoneCodeExpired      int32  `json:"phone_code_expired"`
 	PhoneCodeExtraData    string `json:"phone_code_extra_data"`
@@ -56,8 +57,12 @@ type PhoneCodeTransaction struct {
 func (m *PhoneCodeTransaction) ToAuthSentCode() *mtproto.Auth_SentCode {
 	// TODO(@benqi): only use sms
 
+	codeLength := m.PhoneCodeLength
+	if codeLength == 0 {
+		codeLength = len(m.PhoneCode)
+	}
 	authSentCode := mtproto.MakeTLAuthSentCode(&mtproto.Auth_SentCode{
-		Type:          makeAuthSentCodeType(m.SentCodeType, len(m.PhoneCode), m.FlashCallPattern),
+		Type:          makeAuthSentCodeType(m.SentCodeType, codeLength, m.FlashCallPattern),
 		PhoneCodeHash: m.PhoneCodeHash,
 		NextType:      makeAuthCodeType(m.NextCodeType),
 		Timeout:       &wrapperspb.Int32Value{Value: 60}, // TODO(@benqi): 默认60s

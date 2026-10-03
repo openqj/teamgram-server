@@ -28,13 +28,25 @@ import (
 // PhotosDeletePhotos
 // photos.deletePhotos#87cf7f2f id:Vector<InputPhoto> = Vector<long>;
 func (c *UserChannelProfilesCore) PhotosDeletePhotos(in *mtproto.TLPhotosDeletePhotos) (*mtproto.Vector_Long, error) {
+	if c == nil || c.MD == nil || c.MD.UserId <= 0 {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
+	if in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
 	var (
 		photo        *mtproto.Photo
 		deleteIdList = make([]int64, 0, len(in.GetId()))
 	)
 
 	for _, id := range in.GetId() {
+		if id == nil || id.GetId() <= 0 {
+			return nil, mtproto.ErrPhotoIdInvalid
+		}
 		deleteIdList = append(deleteIdList, id.GetId())
+	}
+	if len(deleteIdList) == 0 {
+		return &mtproto.Vector_Long{Datas: deleteIdList}, nil
 	}
 
 	// TODO: ALBUM_PHOTOS_TOO_MANY
@@ -46,6 +58,9 @@ func (c *UserChannelProfilesCore) PhotosDeletePhotos(in *mtproto.TLPhotosDeleteP
 		c.Logger.Errorf("photos.deletePhotos - error: %v", err)
 		return nil, err
 	}
+	if mainId == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
 
 	if mainId.V != 0 {
 		photo, err = c.svcCtx.Dao.MediaClient.MediaGetPhoto(c.ctx, &mediapb.TLMediaGetPhoto{
@@ -54,6 +69,9 @@ func (c *UserChannelProfilesCore) PhotosDeletePhotos(in *mtproto.TLPhotosDeleteP
 		if err != nil {
 			c.Logger.Errorf("photos.deletePhotos - error: %v", err)
 			return nil, err
+		}
+		if photo == nil {
+			return nil, mtproto.ErrInternalServerError
 		}
 	}
 
@@ -72,15 +90,21 @@ func (c *UserChannelProfilesCore) PhotosDeletePhotos(in *mtproto.TLPhotosDeleteP
 		c.Logger.Errorf("photos.updateProfilePhoto - error: %v", err)
 		return nil, err
 	}
+	if me == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
 
-	c.svcCtx.Dao.SyncClient.SyncPushUpdates(c.ctx, &sync.TLSyncPushUpdates{
+	if _, err = c.svcCtx.Dao.SyncClient.SyncPushUpdates(c.ctx, &sync.TLSyncPushUpdates{
 		UserId: c.MD.UserId,
 		Updates: mtproto.MakeUpdatesByUpdatesUsers(
 			[]*mtproto.User{me.ToSelfUser()},
 			mtproto.MakeTLUpdateUser(&mtproto.Update{
 				UserId: c.MD.UserId,
 			}).To_Update()),
-	})
+	}); err != nil {
+		c.Logger.Errorf("photos.deletePhotos - sync error: %v", err)
+		return nil, err
+	}
 
 	return &mtproto.Vector_Long{
 		Datas: deleteIdList,

@@ -13,8 +13,23 @@
     "test_mode": {
       "predicate_name": "boolFalse"
     },
-    "this_dc": 1,
-    "dc_options": [],
+    "this_dc": 2,
+    "dc_options": [
+      {
+        "predicate_name": "dcOption",
+        "id": 2,
+        "ip_address": "127.0.0.1",
+        "port": 10443,
+        "this_port_only": true
+      },
+      {
+        "predicate_name": "dcOption",
+        "id": 2,
+        "ip_address": "127.0.0.1",
+        "port": 5222,
+        "this_port_only": true
+      }
+    ],
     "dc_txt_domain_name": "apv2.stel.com",
     "chat_size_max": 200,
     "megagroup_size_max": 100000,

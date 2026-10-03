@@ -26,11 +26,19 @@ import (
 // UserDeleteUser
 // user.deleteUser user_id:long reason:string phone:string = Bool;
 func (c *UserCore) UserDeleteUser(in *user.TLUserDeleteUser) (*mtproto.Bool, error) {
-	rB := c.svcCtx.Dao.DeleteUser(
+	if in == nil || in.GetUserId() <= 0 {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+
+	rB, err := c.svcCtx.Dao.DeleteUser(
 		c.ctx,
 		in.GetUserId(),
 		in.GetPhone(),
 		in.GetReason())
+	if err != nil {
+		c.Logger.Errorf("user.deleteUser - error: %v", err)
+		return nil, err
+	}
 
 	return mtproto.ToBool(rB), nil
 }

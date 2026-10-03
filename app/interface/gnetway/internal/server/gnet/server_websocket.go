@@ -10,7 +10,9 @@ import (
 	"encoding/binary"
 	"errors"
 
+	"github.com/gobwas/ws/wsutil"
 	"github.com/teamgram/teamgram-server/app/interface/gnetway/internal/server/gnet/codec"
+	"github.com/teamgram/teamgram-server/app/interface/gnetway/internal/server/gnet/ws"
 
 	"github.com/panjf2000/gnet/v2"
 	"github.com/zeromicro/go-zero/core/logx"
@@ -36,23 +38,26 @@ func (s *Server) onWebsocketData(ctx *connContext, c gnet.Conn) (action gnet.Act
 	if messages == nil {
 		return
 	}
-	for _, message := range messages {
-		ws.Conn.Buffer = message.Payload
+	bufferWebsocketMessages(&ws.Conn, messages)
 
-		if ctx.codec == nil {
-			ctx.codec, err = codec.CreateCodec(&ctx.wsCodec.Conn)
-			if err != nil {
-				if errors.Is(err, codec.ErrUnexpectedEOF) {
-					metricCodecDecodeError.Inc("websocket", classifyCodecError(err))
-					return gnet.None
-				}
-
+	if ctx.codec == nil {
+		ctx.codec, err = codec.CreateCodec(&ctx.wsCodec.Conn)
+		if err != nil {
+			if errors.Is(err, codec.ErrUnexpectedEOF) {
 				metricCodecDecodeError.Inc("websocket", classifyCodecError(err))
-				logx.Errorf("conn(%s) create codec error: %v", c, err)
-				return gnet.Close
+				return gnet.None
 			}
-		}
 
+			metricCodecDecodeError.Inc("websocket", classifyCodecError(err))
+			logx.Errorf("conn(%s) create codec error: %v", c, err)
+			return gnet.Close
+		}
+		if dcID, ok := codec.DCID(ctx.codec); ok {
+			ctx.setDCID(dcID)
+		}
+	}
+
+	for {
 		needAck, frame, err := ctx.codec.Decode(&ws.Conn)
 		if err != nil {
 			if errors.Is(err, codec.ErrUnexpectedEOF) {
@@ -62,11 +67,10 @@ func (s *Server) onWebsocketData(ctx *connContext, c gnet.Conn) (action gnet.Act
 
 			metricCodecDecodeError.Inc("websocket", classifyCodecError(err))
 			logx.Errorf("conn(%s) frame is error: %v", c, err)
-			action = gnet.Close
-			return
+			return gnet.Close
 		} else if frame == nil {
 			logx.Debugf("conn(%s) frame is nil", c)
-			return
+			return gnet.None
 		}
 
 		//msg2, ok := frame.(*mtproto.MTPRawMessage)
@@ -83,9 +87,11 @@ func (s *Server) onWebsocketData(ctx *connContext, c gnet.Conn) (action gnet.Act
 			return
 		}
 
-		_, _ = ws.Conn.InboundBuffer.Write(ws.Conn.Buffer)
-		ws.Conn.Buffer = ws.Conn.Buffer[:0]
-
 	}
-	return gnet.None
+}
+
+func bufferWebsocketMessages(conn *ws.WsConn, messages []wsutil.Message) {
+	for _, message := range messages {
+		_, _ = conn.InboundBuffer.Write(message.Payload)
+	}
 }

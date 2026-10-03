@@ -35,6 +35,10 @@ func (c *PrivacySettingsCore) MessagesGetDefaultHistoryTTL(in *mtproto.TLMessage
 		c.Logger.Errorf("user.getDefaultHistoryTTL - error: %v", err)
 		return nil, err
 	}
+	if rV == nil {
+		c.Logger.Errorf("user.getDefaultHistoryTTL - error: nil response")
+		return nil, mtproto.ErrInternalServerError
+	}
 
 	return rV, nil
 }

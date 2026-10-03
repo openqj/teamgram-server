@@ -19,15 +19,21 @@
 package core
 
 import (
+	"errors"
+	"time"
+
+	mysql "github.com/go-sql-driver/mysql"
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/service/biz/chat/chat"
 	"github.com/teamgram/teamgram-server/app/service/biz/chat/internal/dal/dataobject"
-	"time"
 )
 
 // ChatImportChatInvite2
 // chat.importChatInvite2 self_id:long hash:string = ChatInviteImported;
 func (c *ChatCore) ChatImportChatInvite2(in *chat.TLChatImportChatInvite2) (*chat.ChatInviteImported, error) {
+	if _, err := c.requireInviteSelf(in.SelfId); err != nil {
+		return nil, err
+	}
 	chatInviteDO, err := c.svcCtx.Dao.ChatInvitesDAO.SelectByLink(c.ctx, in.Hash)
 	if err != nil {
 		c.Logger.Errorf("chat.importChatInvite - error: %v", err)
@@ -70,32 +76,58 @@ func (c *ChatCore) ChatImportChatInvite2(in *chat.TLChatImportChatInvite2) (*cha
 			c.Logger.Errorf("chat.importChatInvite - error: %v", err2)
 			return nil, err2
 		}
+		if me, _ := mChat.GetImmutableChatParticipant(in.SelfId); me != nil && me.IsChatMemberStateNormal() {
+			return nil, mtproto.ErrUserAlreadyParticipant
+		}
 
-		if mChat.ParticipantsCount() >= 200 {
+		pendingRequests, err := c.svcCtx.Dao.ChatInviteParticipantsDAO.SelectListByLink(c.ctx, in.Hash, 1)
+		if err != nil {
+			return nil, err
+		}
+		alreadyRequested := false
+		for _, request := range pendingRequests {
+			if request.UserId == in.SelfId {
+				alreadyRequested = true
+				break
+			}
+		}
+
+		if !alreadyRequested && mChat.ParticipantsCount() >= 200 {
 			err2 = mtproto.ErrUsersTooMuch
 			c.Logger.Errorf("chat.importChatInvite - error: %v", err2)
 			return nil, err2
 		}
 
-		c.svcCtx.Dao.ChatInviteParticipantsDAO.Insert(c.ctx, &dataobject.ChatInviteParticipantsDO{
-			ChatId:    chatInviteDO.ChatId,
-			Link:      in.Hash,
-			UserId:    in.SelfId,
-			Requested: chatInviteDO.RequestNeeded,
-			Date2:     time.Now().Unix(),
-		})
+		if !alreadyRequested {
+			if _, _, err = c.svcCtx.Dao.ChatInviteParticipantsDAO.Insert(c.ctx, &dataobject.ChatInviteParticipantsDO{
+				ChatId:    chatInviteDO.ChatId,
+				Link:      in.Hash,
+				UserId:    in.SelfId,
+				Requested: chatInviteDO.RequestNeeded,
+				Date2:     time.Now().Unix(),
+			}); err != nil {
+				var mysqlErr *mysql.MySQLError
+				if !errors.As(err, &mysqlErr) || mysqlErr.Number != 1062 {
+					c.Logger.Errorf("chat.importChatInvite - error: %v", err)
+					return nil, err
+				}
+			}
+		}
 
 		requesters := chat.MakeTLRecentChatInviteRequesters(&chat.RecentChatInviteRequesters{
 			RequestsPending:  0,
 			RecentRequesters: []int64{},
 		}).To_RecentChatInviteRequesters()
-		c.svcCtx.Dao.ChatInviteParticipantsDAO.SelectRecentRequestedListWithCB(
+		_, err = c.svcCtx.Dao.ChatInviteParticipantsDAO.SelectRecentRequestedListWithCB(
 			c.ctx,
 			mChat.Id(),
 			func(sz, i int, v *dataobject.ChatInviteParticipantsDO) {
 				requesters.RequestsPending += 1
 				requesters.RecentRequesters = append(requesters.RecentRequesters, v.UserId)
 			})
+		if err != nil {
+			return nil, err
+		}
 
 		return chat.MakeTLChatInviteImported(&chat.ChatInviteImported{
 			Chat:       mChat,
@@ -112,13 +144,16 @@ func (c *ChatCore) ChatImportChatInvite2(in *chat.TLChatImportChatInvite2) (*cha
 			return nil, err
 		}
 
-		c.svcCtx.Dao.ChatInviteParticipantsDAO.Insert(c.ctx, &dataobject.ChatInviteParticipantsDO{
+		if _, _, err = c.svcCtx.Dao.ChatInviteParticipantsDAO.Insert(c.ctx, &dataobject.ChatInviteParticipantsDO{
 			ChatId:    chatInviteDO.ChatId,
 			Link:      in.Hash,
 			UserId:    in.SelfId,
 			Requested: false,
 			Date2:     time.Now().Unix(),
-		})
+		}); err != nil {
+			c.Logger.Errorf("chat.importChatInvite - error: %v", err)
+			return nil, err
+		}
 
 		return chat.MakeTLChatInviteImported(&chat.ChatInviteImported{
 			Chat:       chat2,

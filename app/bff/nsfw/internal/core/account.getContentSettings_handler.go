@@ -33,6 +33,10 @@ func (c *NsfwCore) AccountGetContentSettings(in *mtproto.TLAccountGetContentSett
 		c.Logger.Errorf("account.getContentSettings - error: %v", err)
 		return nil, err
 	}
+	if rValue == nil {
+		c.Logger.Errorf("account.getContentSettings - error: nil response")
+		return nil, mtproto.ErrInternalServerError
+	}
 
 	return rValue, nil
 }

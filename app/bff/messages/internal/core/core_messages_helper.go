@@ -17,7 +17,22 @@ import (
 	userpb "github.com/teamgram/teamgram-server/app/service/biz/user/user"
 	mediapb "github.com/teamgram/teamgram-server/app/service/media/media"
 	"github.com/teamgram/teamgram-server/pkg/phonenumber"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/wrapperspb"
 )
+
+func pollQuestionText(poll *mtproto.Poll) string {
+	if poll == nil {
+		return ""
+	}
+	if question := poll.GetQuestion_TEXTWITHENTITIES(); question != nil {
+		return question.GetText()
+	}
+	if question := poll.GetQuestion(); question != "" {
+		return question
+	}
+	return poll.GetQuestion_STRING()
+}
 
 // draft
 func (c *MessagesCore) doClearDraft(ctx context.Context, userId int64, authKeyId int64, peer *mtproto.PeerUtil) {
@@ -161,9 +176,22 @@ func (c *MessagesCore) makeMediaByInputMedia(media *mtproto.InputMedia) (message
 		//	query:flags.1?string = InputMedia;
 
 		id := media.To_InputMediaDocument().GetId_INPUTDOCUMENT()
+		if id == nil ||
+			id.GetPredicateName() != mtproto.Predicate_inputDocument ||
+			id.GetId() <= 0 ||
+			id.GetAccessHash() == 0 {
+			return nil, mtproto.ErrDocumentInvalid
+		}
+
 		document3, _ := c.svcCtx.Dao.MediaClient.MediaGetDocument(c.ctx, &mediapb.TLMediaGetDocument{
 			Id: id.GetId(),
 		})
+		if document3 == nil ||
+			document3.GetPredicateName() != mtproto.Predicate_document ||
+			document3.GetId() != id.GetId() ||
+			document3.GetAccessHash() != id.GetAccessHash() {
+			return nil, mtproto.ErrDocumentInvalid
+		}
 
 		// messageMediaDocument#7c4414d3 flags:# document:flags.0?Document caption:flags.1?string ttl_seconds:flags.2?int = MessageMedia;
 		messageMedia = mtproto.MakeTLMessageMediaDocument(&mtproto.MessageMedia{
@@ -219,8 +247,47 @@ func (c *MessagesCore) makeMediaByInputMedia(media *mtproto.InputMedia) (message
 	case mtproto.Predicate_inputMediaPoll:
 		// inputMediaPoll#f94e5f1 flags:# poll:Poll correct_answers:flags.0?Vector<bytes> solution:flags.1?string solution_entities:flags.1?Vector<MessageEntity> = InputMedia;
 
-		// TODO(@benqi): Not impl inputMediaPoll
-		messageMedia = mtproto.MakeTLMessageMediaUnsupported(nil).To_MessageMedia()
+		poll := media.GetPoll()
+		if poll == nil || pollQuestionText(poll) == "" {
+			return nil, mtproto.ErrPollQuestionInvalid
+		}
+		if len(poll.GetAnswers()) < 2 {
+			return nil, mtproto.ErrPollAnswersInvalid
+		}
+		seenOptions := make(map[string]struct{}, len(poll.GetAnswers()))
+		for _, answer := range poll.GetAnswers() {
+			if answer == nil || len(answer.GetOption()) == 0 {
+				return nil, mtproto.ErrPollAnswerInvalid
+			}
+			option := string(answer.GetOption())
+			if _, ok := seenOptions[option]; ok {
+				return nil, mtproto.ErrPollAnswersInvalid
+			}
+			seenOptions[option] = struct{}{}
+		}
+
+		storedPoll := proto.Clone(poll).(*mtproto.Poll)
+		storedPoll.Id = rand.Int63()
+		if storedPoll.Id == 0 {
+			storedPoll.Id = 1
+		}
+		storedPoll.Hash = rand.Int63()
+		if storedPoll.Hash == 0 {
+			storedPoll.Hash = 1
+		}
+		results := make([]*mtproto.PollAnswerVoters, 0, len(storedPoll.GetAnswers()))
+		for _, answer := range storedPoll.GetAnswers() {
+			results = append(results, mtproto.MakeTLPollAnswerVoters(&mtproto.PollAnswerVoters{
+				Option: append([]byte(nil), answer.GetOption()...),
+			}).To_PollAnswerVoters())
+		}
+		messageMedia = mtproto.MakeTLMessageMediaPoll(&mtproto.MessageMedia{
+			Poll: storedPoll,
+			Results: mtproto.MakeTLPollResults(&mtproto.PollResults{
+				Results:     results,
+				TotalVoters: wrapperspb.Int32(0),
+			}).To_PollResults(),
+		}).To_MessageMedia()
 	case mtproto.Predicate_inputMediaDice:
 		// inputMediaDice#e66fbf7b emoticon:string = InputMedia;
 

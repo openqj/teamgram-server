@@ -18,6 +18,7 @@ import (
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/interface/gnetway/internal/config"
 	"github.com/teamgram/teamgram-server/app/interface/session/session"
+	"github.com/teamgram/teamgram-server/pkg/rpc/dccontext"
 
 	"github.com/zeromicro/go-zero/core/discov"
 	"github.com/zeromicro/go-zero/core/hash"
@@ -338,6 +339,12 @@ func (d *StreamingSessionDispatcher) SendData(ctx context.Context, permAuthKeyId
 	if err != nil {
 		return err
 	}
+	if _, ok := dccontext.DCID(ctx); ok {
+		rpcCtx, cancel := context.WithTimeout(ctx, queryAuthKeyTimeout)
+		defer cancel()
+		_, err = session.NewRPCSessionClient(ns.conn).SessionSendDataToSession(rpcCtx, in)
+		return err
+	}
 
 	req := &session.SessionStreamRequest{
 		RequestId: d.nextRequestId(),
@@ -355,6 +362,12 @@ func (d *StreamingSessionDispatcher) SendData(ctx context.Context, permAuthKeyId
 func (d *StreamingSessionDispatcher) CloseSession(ctx context.Context, permAuthKeyId int64, in *session.TLSessionCloseSession) error {
 	ns, err := d.getNodeStream(permAuthKeyId)
 	if err != nil {
+		return err
+	}
+	if _, ok := dccontext.DCID(ctx); ok {
+		rpcCtx, cancel := context.WithTimeout(ctx, queryAuthKeyTimeout)
+		defer cancel()
+		_, err = session.NewRPCSessionClient(ns.conn).SessionCloseSession(rpcCtx, in)
 		return err
 	}
 
@@ -375,6 +388,11 @@ func (d *StreamingSessionDispatcher) QueryAuthKey(ctx context.Context, authKeyId
 	ns, err := d.getNodeStream(authKeyId)
 	if err != nil {
 		return nil, err
+	}
+	if _, ok := dccontext.DCID(ctx); ok {
+		rpcCtx, cancel := context.WithTimeout(ctx, queryAuthKeyTimeout)
+		defer cancel()
+		return session.NewRPCSessionClient(ns.conn).SessionQueryAuthKey(rpcCtx, in)
 	}
 
 	reqId := d.nextRequestId()

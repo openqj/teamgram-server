@@ -51,39 +51,68 @@ import (
 // ContactsGetContacts
 // contacts.getContacts#5dd69e12 hash:long = contacts.Contacts;
 func (c *ContactsCore) ContactsGetContacts(in *mtproto.TLContactsGetContacts) (*mtproto.Contacts_Contacts, error) {
-	var (
-		contacts *mtproto.Contacts_Contacts
-	)
+	if c.MD == nil || c.MD.UserId == 0 {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
+	if in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.UserClient == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
 
-	contactList, _ := c.svcCtx.Dao.UserClient.UserGetContactList(c.ctx, &userpb.TLUserGetContactList{
+	contactList, err := c.svcCtx.Dao.UserClient.UserGetContactList(c.ctx, &userpb.TLUserGetContactList{
 		UserId: c.MD.UserId,
 	})
+	if err != nil {
+		c.Logger.Errorf("contacts.getContacts - user.getContactList error: %v", err)
+		return nil, err
+	}
+	if contactList == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
 
 	// 避免查询数据库时IN()条件为empty
-	if len(contactList.GetDatas()) > 0 {
-		idList := make([]int64, 0, len(contactList.Datas))
-		for _, cV := range contactList.Datas {
-			idList = append(idList, cV.ContactUserId)
+	idList := make([]int64, 0, len(contactList.GetDatas()))
+	for _, contact := range contactList.GetDatas() {
+		if contact == nil || contact.GetContactUserId() <= 0 {
+			return nil, mtproto.ErrContactIdInvalid
 		}
+		idList = append(idList, contact.GetContactUserId())
+	}
 
-		c.Logger.Infof("contactIdList - {%v}", idList)
-
-		users, _ := c.svcCtx.UserClient.UserGetMutableUsers(c.ctx, &userpb.TLUserGetMutableUsers{
-			Id: append([]int64{c.MD.UserId}, idList...),
-			To: []int64{c.MD.UserId},
-		})
-		contacts = mtproto.MakeTLContactsContacts(&mtproto.Contacts_Contacts{
-			Contacts:   contactList.ToContacts(),
-			SavedCount: 0,
-			Users:      users.GetUserListByIdList(c.MD.UserId, idList...),
-		}).To_Contacts_Contacts()
-	} else {
-		contacts = mtproto.MakeTLContactsContacts(&mtproto.Contacts_Contacts{
+	if len(idList) == 0 {
+		return mtproto.MakeTLContactsContacts(&mtproto.Contacts_Contacts{
 			Contacts:   []*mtproto.Contact{},
 			SavedCount: 0,
 			Users:      []*mtproto.User{},
-		}).To_Contacts_Contacts()
+		}).To_Contacts_Contacts(), nil
 	}
 
-	return contacts, nil
+	c.Logger.Infof("contactIdList - {%v}", idList)
+	users, err := c.svcCtx.UserClient.UserGetMutableUsers(c.ctx, &userpb.TLUserGetMutableUsers{
+		Id: append([]int64{c.MD.UserId}, idList...),
+		To: []int64{c.MD.UserId},
+	})
+	if err != nil {
+		c.Logger.Errorf("contacts.getContacts - user.getMutableUsers error: %v", err)
+		return nil, err
+	}
+	if users == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
+	for _, user := range users.GetDatas() {
+		if user == nil || user.GetUser() == nil {
+			return nil, mtproto.ErrInternalServerError
+		}
+	}
+	if !users.CheckExistUser(append([]int64{c.MD.UserId}, idList...)...) {
+		return nil, mtproto.ErrInternalServerError
+	}
+
+	return mtproto.MakeTLContactsContacts(&mtproto.Contacts_Contacts{
+		Contacts:   contactList.ToContacts(),
+		SavedCount: 0,
+		Users:      users.GetUserListByIdList(c.MD.UserId, idList...),
+	}).To_Contacts_Contacts(), nil
 }

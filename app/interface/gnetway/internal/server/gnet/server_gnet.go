@@ -32,6 +32,7 @@ import (
 	"github.com/teamgram/teamgram-server/app/interface/gnetway/internal/server/gnet/pp"
 	"github.com/teamgram/teamgram-server/app/interface/gnetway/internal/server/gnet/ws"
 	"github.com/teamgram/teamgram-server/app/interface/session/session"
+	"github.com/teamgram/teamgram-server/pkg/rpc/dccontext"
 
 	"github.com/gobwas/ws/wsutil"
 	"github.com/panjf2000/gnet/v2"
@@ -112,27 +113,85 @@ func (s *Server) OnOpen(c gnet.Conn) (out []byte, action gnet.Action) {
 	ctx.tcp = s.c.Gnetway.IsTcp(c.LocalAddr().String())
 	ctx.websocket = s.c.Gnetway.IsWebsocket(c.LocalAddr().String())
 	ctx.http = s.c.Gnetway.IsHttp(c.LocalAddr().String())
-	if ctx.websocket {
-		ctx.wsCodec = new(ws.WsCodec)
-	}
-	if ctx.http {
-		ctx.httpCodec = new(httpcodec.HttpCodec)
+	if ctx.websocket && ctx.http {
+		// A browser HTTP fallback uses the same DC port as WebSocket. Wait for
+		// the request method before choosing a decoder for this connection.
 		ctx.closeDate = s.CachedNow() + 60
 	} else {
-		ctx.closeDate = s.CachedNow() + 30
+		s.setConnTransport(ctx, ctx.http, ctx.websocket)
+		if ctx.http {
+			ctx.closeDate = s.CachedNow() + 60
+		} else {
+			ctx.closeDate = s.CachedNow() + 30
+		}
 	}
 	s.timeoutWheel.Add(c.ConnId(), ctx.closeDate)
 	c.SetContext(ctx)
 
+	return
+}
+
+func (s *Server) setConnTransport(ctx *connContext, http, websocket bool) {
+	ctx.http = http
+	ctx.websocket = websocket
+	ctx.transportSelected = true
+	if websocket && ctx.wsCodec == nil {
+		ctx.wsCodec = new(ws.WsCodec)
+	}
+	if http && ctx.httpCodec == nil {
+		ctx.httpCodec = new(httpcodec.HttpCodec)
+	}
+	if ctx.metricOpened {
+		return
+	}
 	proto := "tcp"
-	if ctx.websocket {
+	if websocket {
 		proto = "websocket"
-	} else if ctx.http {
+	} else if http {
 		proto = "http"
 	}
 	metricConnOpen.Inc(proto)
+	ctx.metricOpened = true
+}
 
-	return
+type multiplexTransport int
+
+const (
+	multiplexTransportPending multiplexTransport = iota
+	multiplexTransportWebsocket
+	multiplexTransportHTTP
+)
+
+func classifyMultiplexTransport(data []byte) multiplexTransport {
+	for _, method := range []string{"GET ", "POST ", "OPTIONS "} {
+		if len(data) < len(method) && bytes.Equal(data, []byte(method[:len(data)])) {
+			return multiplexTransportPending
+		}
+	}
+	if bytes.HasPrefix(data, []byte("POST ")) || bytes.HasPrefix(data, []byte("OPTIONS ")) {
+		return multiplexTransportHTTP
+	}
+	return multiplexTransportWebsocket
+}
+
+func (s *Server) selectMultiplexTransport(ctx *connContext, c gnet.Conn) gnet.Action {
+	if ctx.transportSelected {
+		return gnet.None
+	}
+	data, err := c.Peek(-1)
+	if err != nil {
+		logx.Errorf("conn(%s) Peek fail: %v", c, err)
+		return gnet.Close
+	}
+	switch classifyMultiplexTransport(data) {
+	case multiplexTransportPending:
+		return gnet.None
+	case multiplexTransportHTTP:
+		s.setConnTransport(ctx, true, false)
+	default:
+		s.setConnTransport(ctx, false, true)
+	}
+	return gnet.None
 }
 
 // OnClose fires when a connection has been closed.
@@ -152,13 +211,15 @@ func (s *Server) OnClose(c gnet.Conn, err error) (action gnet.Action) {
 			ctx.wsCodec = nil
 		}
 
-		proto := "tcp"
-		if ctx.websocket {
-			proto = "websocket"
-		} else if ctx.http {
-			proto = "http"
+		if ctx.metricOpened {
+			proto := "tcp"
+			if ctx.websocket {
+				proto = "websocket"
+			} else if ctx.http {
+				proto = "http"
+			}
+			metricConnClose.Inc(proto)
 		}
-		metricConnClose.Inc(proto)
 
 		c.SetContext(nil)
 	}()
@@ -181,6 +242,7 @@ func (s *Server) OnClose(c gnet.Conn, err error) (action gnet.Action) {
 	if err := s.pool.Submit(func() {
 		closeCtx, span := otel.Tracer("gnetway").Start(context.Background(), "SessionCloseSession")
 		defer span.End()
+		closeCtx = dccontext.WithOutgoingDCID(closeCtx, ctx.getDCID())
 		err := s.svcCtx.Dao.SessionDispatcher.CloseSession(closeCtx, ctx.authKey.PermAuthKeyId(), &session.TLSessionCloseSession{
 			Client: session.MakeTLSessionClientEvent(&session.SessionClientEvent{
 				ServerId:      s.svcCtx.GatewayId,
@@ -204,13 +266,6 @@ func (s *Server) OnClose(c gnet.Conn, err error) (action gnet.Action) {
 // OnTraffic fires when a local socket receives data from the peer.
 func (s *Server) OnTraffic(c gnet.Conn) (action gnet.Action) {
 	ctx := c.Context().(*connContext)
-	oldCloseDate := ctx.closeDate
-	if ctx.http {
-		ctx.closeDate = s.CachedNow() + 60 + rand.Int63()%10
-	} else {
-		ctx.closeDate = s.CachedNow() + 300 + rand.Int63()%10
-	}
-	s.timeoutWheel.Move(c.ConnId(), oldCloseDate, ctx.closeDate)
 	if ctx.ppv1 {
 		ppv1, err := c.Peek(-1)
 		if err != nil {
@@ -250,6 +305,17 @@ func (s *Server) OnTraffic(c gnet.Conn) (action gnet.Action) {
 			ctx.ppv1 = false
 		}
 	}
+	if action = s.selectMultiplexTransport(ctx, c); action != gnet.None || !ctx.transportSelected {
+		return action
+	}
+
+	oldCloseDate := ctx.closeDate
+	if ctx.http {
+		ctx.closeDate = s.CachedNow() + 60 + rand.Int63()%10
+	} else {
+		ctx.closeDate = s.CachedNow() + 300 + rand.Int63()%10
+	}
+	s.timeoutWheel.Move(c.ConnId(), oldCloseDate, ctx.closeDate)
 
 	if ctx.http {
 		return s.onHttpData(ctx, c)
@@ -413,6 +479,7 @@ func (s *Server) onEncryptedMessage(c gnet.Conn, ctx *connContext, authKey *auth
 
 			ctx2, span := otel.Tracer("gnetway").Start(context.Background(), "SessionSendDataToSession")
 			defer span.End()
+			ctx2 = dccontext.WithOutgoingDCID(ctx2, ctx.getDCID())
 			err := s.svcCtx.Dao.SessionDispatcher.SendData(ctx2, permAuthKeyId, &session.TLSessionSendDataToSession{
 				Data: &session.SessionClientData{
 					ServerId:      s.svcCtx.GatewayId,
@@ -513,6 +580,7 @@ func (s *Server) onMTPRawMessage(ctx *connContext, c gnet.Conn, authKeyId int64,
 				func(authKeyId2 int64, mmsg []byte) (interface{}, error) {
 					queryCtx, span := otel.Tracer("gnetway").Start(context.Background(), "SessionQueryAuthKey")
 					defer span.End()
+					queryCtx = dccontext.WithOutgoingDCID(queryCtx, ctx.getDCID())
 					key3, err2 := s.svcCtx.Dao.SessionDispatcher.QueryAuthKey(queryCtx, authKeyId2, &session.TLSessionQueryAuthKey{
 						AuthKeyId: authKeyId2,
 					})

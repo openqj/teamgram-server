@@ -22,12 +22,22 @@ func (c *ChatCore) ChatGetExportedChatInvites(in *chat.TLChatGetExportedChatInvi
 		rInvites []*mtproto.ExportedChatInvite
 		limit    = in.Limit
 	)
+	callerId, err := c.requireInviteCaller()
+	if err != nil {
+		return nil, err
+	}
+	if _, err = c.requireInvitePermission(in.ChatId, callerId, in.AdminId); err != nil {
+		return nil, err
+	}
 
 	if limit == 0 {
 		limit = 50
 	}
+	if limit < 0 {
+		return nil, mtproto.ErrLimitInvalid
+	}
 
-	c.svcCtx.Dao.ChatInvitesDAO.SelectListByAdminIdWithCB(
+	_, err = c.svcCtx.Dao.ChatInvitesDAO.SelectListByAdminIdWithCB(
 		c.ctx,
 		in.ChatId,
 		in.AdminId,
@@ -42,7 +52,9 @@ func (c *ChatCore) ChatGetExportedChatInvites(in *chat.TLChatGetExportedChatInvi
 				}
 			}
 		})
-
+	if err != nil {
+		return nil, err
+	}
 	if rInvites == nil {
 		rInvites = []*mtproto.ExportedChatInvite{}
 	}

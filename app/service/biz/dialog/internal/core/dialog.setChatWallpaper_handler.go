@@ -29,15 +29,16 @@ import (
 // DialogSetChatWallpaper
 // dialog.setChatWallpaper flags:# user_id:long peer_type:int peer_id:long wallpaper_id:long wallpaper_overridden:flags.0?true = Bool;
 func (c *DialogCore) DialogSetChatWallpaper(in *dialog.TLDialogSetChatWallpaper) (*mtproto.Bool, error) {
-	c.svcCtx.Dao.CachedConn.Exec(
+	_, _, err := c.svcCtx.Dao.CachedConn.Exec(
 		c.ctx,
 		func(ctx context.Context, conn *sqlx.DB) (int64, int64, error) {
 			var (
 				rowsAffected int64
+				err          error
 			)
 
 			if in.WallpaperId != 0 {
-				rowsAffected, _ = c.svcCtx.Dao.DialogsDAO.UpdateCustomMap(
+				rowsAffected, err = c.svcCtx.Dao.DialogsDAO.UpdateCustomMap(
 					c.ctx,
 					map[string]interface{}{
 						"wallpaper_id":         in.WallpaperId,
@@ -47,7 +48,7 @@ func (c *DialogCore) DialogSetChatWallpaper(in *dialog.TLDialogSetChatWallpaper)
 					in.PeerType,
 					in.PeerId)
 			} else {
-				rowsAffected, _ = c.svcCtx.Dao.DialogsDAO.UpdateCustomMap(
+				rowsAffected, err = c.svcCtx.Dao.DialogsDAO.UpdateCustomMap(
 					c.ctx,
 					map[string]interface{}{
 						"wallpaper_id":         0,
@@ -58,9 +59,13 @@ func (c *DialogCore) DialogSetChatWallpaper(in *dialog.TLDialogSetChatWallpaper)
 					in.PeerId)
 			}
 
-			return 0, rowsAffected, nil
+			return 0, rowsAffected, err
 		},
 		dialog.GetDialogCacheKey(in.UserId, mtproto.MakePeerDialogId(in.PeerType, in.PeerId)))
+	if err != nil {
+		c.Logger.Errorf("dialog.setChatWallpaper - error: %v", err)
+		return nil, err
+	}
 
 	return mtproto.BoolTrue, nil
 }

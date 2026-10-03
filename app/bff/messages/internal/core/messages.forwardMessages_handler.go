@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/teamgram/proto/mtproto"
+	"github.com/teamgram/teamgram-server/app/bff/apifull/channelview"
 	msgpb "github.com/teamgram/teamgram-server/app/messenger/msg/msg/msg"
 	chatpb "github.com/teamgram/teamgram-server/app/service/biz/chat/chat"
 	"github.com/teamgram/teamgram-server/app/service/biz/message/message"
@@ -35,10 +36,32 @@ import (
 // MessagesForwardMessages
 // messages.forwardMessages#cc30290b flags:# silent:flags.5?true background:flags.6?true with_my_score:flags.8?true drop_author:flags.11?true drop_media_captions:flags.12?true noforwards:flags.14?true from_peer:InputPeer id:Vector<int> random_id:Vector<long> to_peer:InputPeer schedule_date:flags.10?int send_as:flags.13?InputPeer = Updates;
 func (c *MessagesCore) MessagesForwardMessages(in *mtproto.TLMessagesForwardMessages) (*mtproto.Updates, error) {
+	if c == nil || c.MD == nil || c.MD.UserId <= 0 {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
+	if in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if len(in.Id) == 0 || len(in.RandomId) == 0 || len(in.Id) != len(in.RandomId) {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if scheduleDate := in.GetScheduleDate(); scheduleDate != nil && scheduleDate.GetValue() == 0 {
+		return nil, mtproto.ErrScheduleDateInvalid
+	}
+	toPeer, err := c.validateForwardDestinationPeer(in.GetToPeer())
+	if err != nil {
+		c.Logger.Errorf("messages.forwardMessages destination peer: %v", err)
+		return nil, err
+	}
+	fromPeer, err := c.validateForwardSourcePeer(in.GetFromPeer())
+	if err != nil {
+		c.Logger.Errorf("messages.forwardMessages source peer: %v", err)
+		return nil, err
+	}
+	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.MessageClient == nil || c.svcCtx.Dao.MsgClient == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
 	var (
-		fromPeer = mtproto.FromInputPeer2(c.MD.UserId, in.FromPeer)
-		toPeer   = mtproto.FromInputPeer2(c.MD.UserId, in.ToPeer)
-		err      error
 		rUpdates *mtproto.Updates
 		saved    = false
 	)
@@ -79,13 +102,21 @@ func (c *MessagesCore) MessagesForwardMessages(in *mtproto.TLMessagesForwardMess
 		return nil, err
 	}
 
-	if len(in.Id) == 0 ||
-		len(in.RandomId) == 0 ||
-		len(in.Id) != len(in.RandomId) {
-
-		err = mtproto.ErrInputRequestInvalid
-		c.Logger.Errorf("invalid id or random_id")
-		return nil, err
+	when := in.GetScheduleDate().GetValue()
+	storedTextFallback := when != 0 || toPeer.IsChannel() || fromPeer.PeerType == mtproto.PEER_CHANNEL
+	if storedTextFallback {
+		if err = validateStoredTextForwardOptions(in); err != nil {
+			return nil, err
+		}
+		if when != 0 || toPeer.IsChannel() {
+			return nil, mtproto.ErrMethodNotImpl
+		}
+		texts, ferr := c.forwardTexts(fromPeer, in.Id)
+		if ferr != nil {
+			c.Logger.Errorf("messages.forwardMessages stored: %v", ferr)
+			return nil, ferr
+		}
+		return c.forwardPlain(toPeer, in.RandomId, texts)
 	}
 
 	fwdOutboxList, err := c.makeForwardMessages(fromPeer, toPeer, saved, in)
@@ -107,34 +138,251 @@ func (c *MessagesCore) MessagesForwardMessages(in *mtproto.TLMessagesForwardMess
 		c.Logger.Errorf("messages.forwardMessages - error: %v", err)
 		return nil, err
 	}
+	if rUpdates == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
 
 	return rUpdates, err
 }
 
-func (c *MessagesCore) checkForwardPrivacy(ctx context.Context, selfUserId, checkId int64) bool {
-	rules, _ := c.svcCtx.Dao.UserClient.UserGetPrivacy(c.ctx, &userpb.TLUserGetPrivacy{
+func validateStoredTextForwardOptions(in *mtproto.TLMessagesForwardMessages) error {
+	if in == nil {
+		return mtproto.ErrInputRequestInvalid
+	}
+	if scheduleDate := in.GetScheduleDate(); scheduleDate != nil {
+		when := int64(scheduleDate.GetValue())
+		now := time.Now().Unix()
+		if when <= now {
+			return mtproto.ErrScheduleDateInvalid
+		}
+		if when > now+365*24*60*60 {
+			return mtproto.ErrScheduleDateTooLate
+		}
+		return mtproto.ErrMethodNotImpl
+	}
+	if !in.GetDropAuthor() || in.GetSilent() || in.GetBackground() || in.GetWithMyScore() || in.GetNoforwards() ||
+		in.GetAllowPaidFloodskip() || in.GetSendAs() != nil || in.GetTopMsgId() != nil || in.GetReplyTo() != nil ||
+		in.GetScheduleRepeatPeriod() != nil || in.GetQuickReplyShortcut() != nil || in.GetEffect() != nil ||
+		in.GetVideoTimestamp() != nil || in.GetAllowPaidStars() != nil || in.GetSuggestedPost() != nil {
+		return mtproto.ErrMethodNotImpl
+	}
+	return nil
+}
+
+func (c *MessagesCore) validateForwardSourcePeer(input *mtproto.InputPeer) (*mtproto.PeerUtil, error) {
+	if input == nil {
+		return nil, mtproto.ErrPeerIdInvalid
+	}
+	peer := mtproto.FromInputPeer2(c.MD.UserId, input)
+	switch input.GetPredicateName() {
+	case mtproto.Predicate_inputPeerSelf:
+		if peer.PeerId != c.MD.UserId {
+			return nil, mtproto.ErrPeerIdInvalid
+		}
+	case mtproto.Predicate_inputPeerUser:
+		if err := c.validateForwardUserPeer(input); err != nil {
+			return nil, err
+		}
+	case mtproto.Predicate_inputPeerChat:
+		if err := c.validateForwardChatMember(input.GetChatId()); err != nil {
+			return nil, err
+		}
+	case mtproto.Predicate_inputPeerChannel:
+		if err := c.validateForwardChannelPeer(input, false); err != nil {
+			return nil, err
+		}
+	default:
+		return nil, mtproto.ErrPeerIdInvalid
+	}
+	return peer, nil
+}
+
+func (c *MessagesCore) validateForwardDestinationPeer(input *mtproto.InputPeer) (*mtproto.PeerUtil, error) {
+	if input == nil {
+		return nil, mtproto.ErrPeerIdInvalid
+	}
+	peer := mtproto.FromInputPeer2(c.MD.UserId, input)
+	switch input.GetPredicateName() {
+	case mtproto.Predicate_inputPeerSelf:
+		if peer.PeerId != c.MD.UserId {
+			return nil, mtproto.ErrPeerIdInvalid
+		}
+	case mtproto.Predicate_inputPeerUser:
+		if err := c.validateForwardUserPeer(input); err != nil {
+			return nil, err
+		}
+	case mtproto.Predicate_inputPeerChat:
+		if err := c.validateForwardChatMember(input.GetChatId()); err != nil {
+			return nil, err
+		}
+	case mtproto.Predicate_inputPeerChannel:
+		if err := c.validateForwardChannelPeer(input, true); err != nil {
+			return nil, err
+		}
+	default:
+		return nil, mtproto.ErrPeerIdInvalid
+	}
+	return peer, nil
+}
+
+func (c *MessagesCore) validateForwardUserPeer(input *mtproto.InputPeer) error {
+	if input == nil || input.GetUserId() <= 0 || input.GetAccessHash() == 0 {
+		return mtproto.ErrPeerIdInvalid
+	}
+	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.UserClient == nil {
+		return mtproto.ErrInternalServerError
+	}
+	users, err := c.svcCtx.Dao.UserClient.UserGetMutableUsers(c.ctx, &userpb.TLUserGetMutableUsers{
+		Id: []int64{input.GetUserId()},
+		To: []int64{c.MD.UserId},
+	})
+	if err != nil {
+		return err
+	}
+	if users == nil {
+		return mtproto.ErrInternalServerError
+	}
+	for _, item := range users.GetDatas() {
+		if item != nil && item.GetUser() != nil && !item.GetUser().GetDeleted() &&
+			item.GetUser().GetId() == input.GetUserId() && item.GetUser().GetAccessHash() == input.GetAccessHash() {
+			return nil
+		}
+	}
+	return mtproto.ErrPeerIdInvalid
+}
+
+func (c *MessagesCore) validateForwardChatMember(chatID int64) error {
+	if chatID <= 0 {
+		return mtproto.ErrPeerIdInvalid
+	}
+	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.ChatClient == nil || c.svcCtx.Dao.ChatClient.Client() == nil {
+		return mtproto.ErrInternalServerError
+	}
+	users, err := c.svcCtx.Dao.ChatClient.Client().ChatGetUsersChatIdList(c.ctx, &chatpb.TLChatGetUsersChatIdList{
+		Id: []int64{c.MD.UserId},
+	})
+	if err != nil {
+		return err
+	}
+	if users == nil {
+		return mtproto.ErrInternalServerError
+	}
+	for _, item := range users.GetDatas() {
+		if item == nil || item.GetUserId() != c.MD.UserId {
+			continue
+		}
+		for _, id := range item.GetChatIdList() {
+			if id == chatID {
+				return nil
+			}
+		}
+	}
+	return mtproto.ErrUserNotParticipant
+}
+
+func (c *MessagesCore) validateForwardChannelPeer(input *mtproto.InputPeer, requirePost bool) error {
+	if input == nil || input.GetChannelId() <= 0 || input.GetAccessHash() == 0 {
+		return mtproto.ErrChannelInvalid
+	}
+	history, err := channelview.HistoryForInputPeer(c.MD.UserId, input, 0, 1)
+	if err != nil {
+		return err
+	}
+	if history == nil {
+		return mtproto.ErrInternalServerError
+	}
+	if requirePost {
+		for _, chat := range history.GetChats() {
+			if chat != nil && chat.GetId() == input.GetChannelId() && chat.GetCreator() {
+				return nil
+			}
+		}
+		return mtproto.ErrChatAdminRequired
+	}
+	return nil
+}
+
+func (c *MessagesCore) checkForwardPrivacy(ctx context.Context, selfUserId, checkId int64) (bool, error) {
+	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.UserClient == nil {
+		return false, mtproto.ErrInternalServerError
+	}
+	rules, err := c.svcCtx.Dao.UserClient.UserGetPrivacy(ctx, &userpb.TLUserGetPrivacy{
 		UserId:  selfUserId,
 		KeyType: mtproto.FORWARDS,
 	})
+	if err != nil {
+		return false, err
+	}
+	if rules == nil {
+		return false, mtproto.ErrInternalServerError
+	}
 
 	if len(rules.Datas) == 0 {
-		return true
+		return true, nil
 	}
-	return mtproto.CheckPrivacyIsAllow(
+	for _, rule := range rules.Datas {
+		if rule == nil {
+			return false, mtproto.ErrInternalServerError
+		}
+	}
+	var privacyErr error
+	allowed := mtproto.CheckPrivacyIsAllow(
 		selfUserId,
 		rules.Datas,
 		checkId,
 		func(id, checkId int64) bool {
-			contact, _ := c.svcCtx.Dao.UserClient.UserCheckContact(c.ctx, &userpb.TLUserCheckContact{
+			contact, err := c.svcCtx.Dao.UserClient.UserCheckContact(ctx, &userpb.TLUserCheckContact{
 				UserId: id,
 				Id:     checkId,
 			})
+			if err != nil {
+				privacyErr = err
+				return false
+			}
+			if contact == nil {
+				privacyErr = mtproto.ErrInternalServerError
+				return false
+			}
 			return mtproto.FromBool(contact)
 		},
 		func(checkId int64, idList []int64) bool {
+			if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.ChatClient == nil || c.svcCtx.Dao.ChatClient.Client() == nil {
+				privacyErr = mtproto.ErrInternalServerError
+				return false
+			}
 			chatIdList, _ := mtproto.SplitChatAndChannelIdList(idList)
-			return c.svcCtx.Dao.ChatClient.CheckParticipantIsExist(c.ctx, checkId, chatIdList)
+			if len(chatIdList) == 0 {
+				return false
+			}
+			users, err := c.svcCtx.Dao.ChatClient.Client().ChatGetUsersChatIdList(ctx, &chatpb.TLChatGetUsersChatIdList{
+				Id: []int64{checkId},
+			})
+			if err != nil {
+				privacyErr = err
+				return false
+			}
+			if users == nil {
+				privacyErr = mtproto.ErrInternalServerError
+				return false
+			}
+			for _, item := range users.GetDatas() {
+				if item == nil || item.GetUserId() != checkId {
+					continue
+				}
+				for _, chatID := range item.GetChatIdList() {
+					for _, wantedID := range chatIdList {
+						if chatID == wantedID {
+							return true
+						}
+					}
+				}
+			}
+			return false
 		})
+	if privacyErr != nil {
+		return false, privacyErr
+	}
+	return allowed, nil
 }
 
 func (c *MessagesCore) makeForwardMessages(
@@ -162,28 +410,45 @@ func (c *MessagesCore) makeForwardMessages(
 
 	var (
 		messageList *message.Vector_MessageBox
+		err         error
 	)
 
 	switch fromPeer.PeerType {
 	case mtproto.PEER_CHANNEL:
-		// TODO: not impl
-		c.Logger.Errorf("messages.forwardMessages blocked, License key from https://teamgram.net required to unlock enterprise features.")
-
-		return nil, mtproto.ErrEnterpriseIsBlocked
+		c.Logger.Errorf("messages.forwardMessages - error: %v", mtproto.ErrChannelInvalid)
+		return nil, mtproto.ErrChannelInvalid
 	default:
-		messageList, _ = c.svcCtx.Dao.MessageClient.MessageGetUserMessageList(c.ctx, &message.TLMessageGetUserMessageList{
+		if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.MessageClient == nil {
+			return nil, mtproto.ErrInternalServerError
+		}
+		messageList, err = c.svcCtx.Dao.MessageClient.MessageGetUserMessageList(c.ctx, &message.TLMessageGetUserMessageList{
 			UserId: c.MD.UserId,
 			IdList: idList,
 		})
+		if err != nil {
+			return nil, err
+		}
+		if messageList == nil {
+			return nil, mtproto.ErrInternalServerError
+		}
+		if err = validateForwardMessageBoxes(c.MD.UserId, fromPeer, idList, messageList); err != nil {
+			return nil, err
+		}
 		if messageList.Length() > 0 {
 			msgBox0 := messageList.Datas[0]
 			if msgBox0.PeerType == mtproto.PEER_CHAT {
+				if c.svcCtx.Dao.ChatClient == nil || c.svcCtx.Dao.ChatClient.Client() == nil {
+					return nil, mtproto.ErrInternalServerError
+				}
 				chat, err := c.svcCtx.Dao.ChatClient.Client().ChatGetMutableChat(c.ctx, &chatpb.TLChatGetMutableChat{
 					ChatId: msgBox0.PeerId,
 				})
 				if err != nil {
 					c.Logger.Errorf("messages.forwardMessages - error: %v", err)
 					return nil, err
+				}
+				if chat == nil || chat.GetChat() == nil || chat.GetChat().GetId() != msgBox0.PeerId {
+					return nil, mtproto.ErrInternalServerError
 				}
 
 				if chat.Noforwards() {
@@ -242,12 +507,25 @@ func (c *MessagesCore) makeForwardMessages(
 					// TODO(@benqi): saved_from_peer and saved_from_msg_id??
 				} else {
 					fromId := box.SenderUserId
-					if c.checkForwardPrivacy(c.ctx, fromId, c.MD.UserId) {
+					if fromId <= 0 {
+						return nil, mtproto.ErrInternalServerError
+					}
+					allowed, err := c.checkForwardPrivacy(c.ctx, fromId, c.MD.UserId)
+					if err != nil {
+						return nil, err
+					}
+					if allowed {
 						fwdFrom.FromId = mtproto.MakePeerUser(fromId)
 					} else {
-						uname, _ := c.svcCtx.Dao.UserClient.UserGetAccountUsername(c.ctx, &userpb.TLUserGetAccountUsername{
+						uname, err := c.svcCtx.Dao.UserClient.UserGetAccountUsername(c.ctx, &userpb.TLUserGetAccountUsername{
 							UserId: fromId,
 						})
+						if err != nil {
+							return nil, err
+						}
+						if uname == nil {
+							return nil, mtproto.ErrInternalServerError
+						}
 						fwdFrom.FromName = &wrapperspb.StringValue{Value: uname.GetUsername()}
 					}
 					m.Post = false
@@ -306,7 +584,7 @@ func (c *MessagesCore) makeForwardMessages(
 		fwdOutboxList = append(fwdOutboxList, &msgpb.OutboxMessage{
 			NoWebpage:    true,
 			Background:   false,
-			RandomId:     findRandomIdById(m.GetId()),
+			RandomId:     findRandomIdById(box.GetMessageId()),
 			Message:      m,
 			ScheduleDate: request.GetScheduleDate(),
 		})

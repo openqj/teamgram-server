@@ -34,6 +34,10 @@ func (c *NsfwCore) AccountSetContentSettings(in *mtproto.TLAccountSetContentSett
 		c.Logger.Errorf("account.setGlobalPrivacySettings - error: %v", err)
 		return nil, err
 	}
+	if rValue == nil || !mtproto.FromBool(rValue) {
+		c.Logger.Errorf("account.setContentSettings - error: user service did not acknowledge the write")
+		return nil, mtproto.ErrInternalServerError
+	}
 
 	return rValue, nil
 }

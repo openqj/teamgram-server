@@ -26,8 +26,17 @@ import (
 // AuthCheckPassword
 // auth.checkPassword#d18b4d16 password:InputCheckPasswordSRP = auth.Authorization;
 func (c *AuthorizationCore) AuthCheckPassword(in *mtproto.TLAuthCheckPassword) (*mtproto.Auth_Authorization, error) {
-	// TODO: check password
-	c.Logger.Errorf("auth.checkPassword blocked, License key from https://teamgram.net required to unlock enterprise features.")
+	if c.MD.UserId <= 0 {
+		return nil, mtproto.ErrPasswordHashInvalid
+	}
+	var proof *mtproto.InputCheckPasswordSRP
+	if in != nil {
+		proof = in.GetPassword()
+	}
+	if err := c.svcCtx.Dao.CheckPassword(c.MD.UserId, proof); err != nil {
+		c.Logger.Errorf("auth.checkPassword - proof rejected: %v", err)
+		return nil, err
+	}
 
 	user, err := c.svcCtx.UserClient.UserGetImmutableUser(c.ctx, &userpb.TLUserGetImmutableUser{
 		Id: c.MD.UserId,

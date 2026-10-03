@@ -37,8 +37,11 @@ func (c *ChatsCore) MessagesGetFullChat(in *mtproto.TLMessagesGetFullChat) (*mtp
 		c.Logger.Errorf("messages.getFullChat - error: %v", err)
 		return nil, err
 	}
+	if err = validateFullChatMutableChat(chat); err != nil {
+		return nil, err
+	}
 
-	me, ok := chat.GetImmutableChatParticipant(c.MD.UserId)
+	me, ok := getFullChatMember(chat, c.MD.UserId)
 	if !ok {
 		c.Logger.Errorf("messages.getFullChat - error: not participant{chat_id: %d, chat_participant_id: %d}", in.ChatId, c.MD.UserId)
 		err = mtproto.ErrPeerIdInvalid
@@ -51,15 +54,13 @@ func (c *ChatsCore) MessagesGetFullChat(in *mtproto.TLMessagesGetFullChat) (*mtp
 	})
 	if err != nil {
 		c.Logger.Errorf("messages.getFullChat - error: %v", err)
-		err = mtproto.ErrPeerIdInvalid
 		return nil, err
-	} else if len(dialog2.Datas) == 0 {
-		c.Logger.Errorf("messages.getFullChat - error: not found dialog")
-		err = mtproto.ErrPeerIdInvalid
+	}
+	fullChatDialog, err := getFullChatDialog(dialog2)
+	if err != nil {
 		return nil, err
 	}
 
-	dlg := dialog2.Datas[0].GetDialog()
 	chatFull := mtproto.MakeTLChatFull(&mtproto.ChatFull{
 		CanSetUsername:                       true,
 		HasScheduled:                         false, // TODO
@@ -71,7 +72,7 @@ func (c *ChatsCore) MessagesGetFullChat(in *mtproto.TLMessagesGetFullChat) (*mtp
 		ExportedInvite:                       nil, // TODO
 		BotInfo:                              nil, // TODO
 		PinnedMsgId:                          nil, // TODO
-		FolderId:                             dlg.FolderId,
+		FolderId:                             fullChatDialog.GetDialog().GetFolderId(),
 		Call:                                 chat.Call(),
 		TtlPeriod:                            mtproto.MakeFlagsInt32(chat.TTLPeriod()), // TODO
 		GroupcallDefaultJoinAs:               nil,                                      // TODO
@@ -81,32 +82,63 @@ func (c *ChatsCore) MessagesGetFullChat(in *mtproto.TLMessagesGetFullChat) (*mtp
 		AvailableReactions_FLAGVECTORSTRING:  chat.GetChat().GetAvailableReactions(),
 		AvailableReactions_FLAGCHATREACTIONS: chat.AvailableReactions(),
 	}).To_ChatFull()
+	applyDialogFullChatFields(chatFull, fullChatDialog)
+
+	pinned, err := c.svcCtx.Dao.DialogClient.DialogGetUserPinnedMessage(c.ctx, &dialog.TLDialogGetUserPinnedMessage{
+		UserId:   c.MD.UserId,
+		PeerType: mtproto.PEER_CHAT,
+		PeerId:   in.ChatId,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if pinned == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
+	setFullChatPinnedMessage(chatFull, pinned)
 
 	var (
 		idList []int64
 	)
 
 	// NotifySettings
-	if settings, _ := c.svcCtx.Dao.UserClient.UserGetNotifySettings(c.ctx, &userpb.TLUserGetNotifySettings{
+	settings, err := c.svcCtx.Dao.UserClient.UserGetNotifySettings(c.ctx, &userpb.TLUserGetNotifySettings{
 		UserId:   c.MD.UserId,
 		PeerType: mtproto.PEER_CHAT,
 		PeerId:   in.ChatId,
-	}); settings != nil {
-		chatFull.NotifySettings = settings
+	})
+	if err != nil {
+		return nil, err
 	}
+	if settings == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
+	chatFull.NotifySettings = settings
 
 	if me.CanInviteUsers() {
 		if me.Link != "" {
-			chatFull.ExportedInvite, _ = c.svcCtx.Dao.ChatClient.Client().ChatGetExportedChatInvite(c.ctx, &chatpb.TLChatGetExportedChatInvite{
+			chatFull.ExportedInvite, err = c.svcCtx.Dao.ChatClient.Client().ChatGetExportedChatInvite(c.ctx, &chatpb.TLChatGetExportedChatInvite{
 				ChatId: in.ChatId,
 				Link:   me.Link,
 			})
+			if err != nil {
+				return nil, err
+			}
+			if chatFull.ExportedInvite == nil {
+				return nil, mtproto.ErrInternalServerError
+			}
 		}
 
-		requesters, _ := c.svcCtx.Dao.ChatClient.Client().ChatGetRecentChatInviteRequesters(c.ctx, &chatpb.TLChatGetRecentChatInviteRequesters{
+		requesters, err := c.svcCtx.Dao.ChatClient.Client().ChatGetRecentChatInviteRequesters(c.ctx, &chatpb.TLChatGetRecentChatInviteRequesters{
 			SelfId: c.MD.UserId,
 			ChatId: in.ChatId,
 		})
+		if err != nil {
+			return nil, err
+		}
+		if requesters == nil {
+			return nil, mtproto.ErrInternalServerError
+		}
 
 		if len(requesters.GetRecentRequesters()) > 0 {
 			chatFull.RequestsPending = &wrapperspb.Int32Value{Value: requesters.GetRequestsPending()}
@@ -120,29 +152,87 @@ func (c *ChatsCore) MessagesGetFullChat(in *mtproto.TLMessagesGetFullChat) (*mtp
 		Users:    nil,
 	}).To_Messages_ChatFull()
 
-	chat.Walk(func(userId int64, participant *mtproto.ImmutableChatParticipant) error {
+	for _, participant := range chat.GetChatParticipants() {
 		if participant.IsChatMemberStateNormal() {
 			idList = append(idList, participant.UserId)
 			if participant.IsBot {
 				// TODO: 优化
-				botInfo, _ := c.svcCtx.Dao.UserClient.UserGetBotInfo(c.ctx, &userpb.TLUserGetBotInfo{
+				botInfo, err := c.svcCtx.Dao.UserClient.UserGetBotInfo(c.ctx, &userpb.TLUserGetBotInfo{
 					BotId: participant.UserId,
 				})
-				if botInfo != nil {
-					chatFull.BotInfo = append(chatFull.BotInfo, botInfo)
+				if err != nil {
+					return nil, err
 				}
+				if botInfo == nil {
+					return nil, mtproto.ErrInternalServerError
+				}
+				chatFull.BotInfo = append(chatFull.BotInfo, botInfo)
 			}
 		}
-		return nil
-	})
+	}
 
 	mUsers, err := c.svcCtx.Dao.UserClient.UserGetMutableUsers(c.ctx, &userpb.TLUserGetMutableUsers{
 		Id: idList,
 	})
 	if err != nil {
-		c.Logger.Errorf("messages.getFullChat - error: not found dialog")
+		c.Logger.Errorf("messages.getFullChat - error: %v", err)
+		return nil, err
+	}
+	if mUsers == nil || !mUsers.CheckExistUser(idList...) {
+		return nil, mtproto.ErrInternalServerError
 	}
 	rValue.Users = mUsers.GetUserListByIdList(c.MD.UserId, idList...)
 
 	return rValue, nil
+}
+
+// applyDialogFullChatFields copies per-user dialog state that messages.ChatFull
+// can encode. The DialogExt wrapper carries fields that are not part of the
+// nested mtproto.Dialog message.
+func applyDialogFullChatFields(full *mtproto.ChatFull, ext *dialog.DialogExt) {
+	if full == nil || ext == nil {
+		return
+	}
+	full.ThemeEmoticon = mtproto.MakeFlagsString(ext.GetThemeEmoticon())
+	if ext.GetTtlPeriod() != 0 {
+		full.TtlPeriod = mtproto.MakeFlagsInt32(ext.GetTtlPeriod())
+	}
+	if nested := ext.GetDialog(); nested != nil {
+		full.FolderId = nested.GetFolderId()
+	}
+}
+
+func setFullChatPinnedMessage(full *mtproto.ChatFull, pinned *mtproto.Int32) {
+	if full == nil || pinned == nil || pinned.GetV() == 0 {
+		return
+	}
+	full.PinnedMsgId = mtproto.MakeFlagsInt32(pinned.GetV())
+}
+
+func validateFullChatMutableChat(chat *mtproto.MutableChat) error {
+	if chat == nil || chat.GetChat() == nil {
+		return mtproto.ErrInternalServerError
+	}
+	for _, participant := range chat.GetChatParticipants() {
+		if participant == nil {
+			return mtproto.ErrInternalServerError
+		}
+	}
+	return nil
+}
+
+func getFullChatMember(chat *mtproto.MutableChat, userID int64) (*mtproto.ImmutableChatParticipant, bool) {
+	participant, ok := chat.GetImmutableChatParticipant(userID)
+	return participant, ok && participant.IsChatMemberStateNormal()
+}
+
+func getFullChatDialog(result *dialog.Vector_DialogExt) (*dialog.DialogExt, error) {
+	if result == nil || len(result.GetDatas()) == 0 {
+		return nil, mtproto.ErrPeerIdInvalid
+	}
+	ext := result.GetDatas()[0]
+	if ext == nil || ext.GetDialog() == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
+	return ext, nil
 }

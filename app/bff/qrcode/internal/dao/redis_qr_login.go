@@ -20,6 +20,7 @@ package dao
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strconv"
 
@@ -32,6 +33,53 @@ const (
 	// qrCodeTimeout     int64 = 30 // salt timeout
 	cacheQRCodePrefix = "qr_codes"
 )
+
+// The code hash changes atomically with immutable QR metadata, including except_ids.
+// Comparing it prevents accepting a stale transaction after a QR refresh.
+const acceptQRCodeScript = `
+if redis.call('HGET', KEYS[1], 'code_hash') ~= ARGV[1] then return -1 end
+local expire_at = tonumber(redis.call('HGET', KEYS[1], 'expire_at') or '0')
+if expire_at < tonumber(ARGV[2]) then return -2 end
+local state = redis.call('HGET', KEYS[1], 'state')
+local user_id = redis.call('HGET', KEYS[1], 'user_id') or '0'
+if state == ARGV[3] then
+  redis.call('HSET', KEYS[1], 'user_id', ARGV[4], 'state', ARGV[5])
+  return 1
+end
+if (state == ARGV[5] or state == ARGV[6]) and user_id == ARGV[4] then return 2 end
+if state == ARGV[5] or state == ARGV[6] then return 0 end
+return -1
+`
+
+const commitQRCodeScript = `
+if redis.call('HGET', KEYS[1], 'code_hash') ~= ARGV[1] then return -1 end
+local state = redis.call('HGET', KEYS[1], 'state')
+local user_id = redis.call('HGET', KEYS[1], 'user_id') or '0'
+if user_id ~= ARGV[2] then return 0 end
+if state == ARGV[3] then
+  redis.call('HSET', KEYS[1], 'state', ARGV[4])
+  return 1
+end
+if state == ARGV[4] then return 2 end
+return -1
+`
+
+const createQRCodeScript = `
+if redis.call('EXISTS', KEYS[1]) ~= 0 then return 0 end
+redis.call('HSET', KEYS[1], unpack(ARGV, 2))
+local ttl = tonumber(ARGV[1])
+if ttl and ttl > 0 then redis.call('EXPIRE', KEYS[1], ttl) end
+return 1
+`
+
+const rotateQRCodeScript = `
+if redis.call('HGET', KEYS[1], 'code_hash') ~= ARGV[1] then return -1 end
+if redis.call('HGET', KEYS[1], 'state') ~= ARGV[2] then return 0 end
+redis.call('HSET', KEYS[1], unpack(ARGV, 4))
+local ttl = tonumber(ARGV[3])
+if ttl and ttl > 0 then redis.call('EXPIRE', KEYS[1], ttl) end
+return 1
+`
 
 func genQRLoginCodeKey(authKeyId int64) string {
 	return fmt.Sprintf("%s_%d", cacheQRCodePrefix, authKeyId)
@@ -56,6 +104,9 @@ func (d *Dao) GetCacheQRLoginCode(ctx context.Context, keyId int64) (code *model
 		switch k {
 		case "perm_auth_key_id":
 			code.PermAuthKeyId, _ = strconv.ParseInt(v, 10, 64)
+		case "dc_id":
+			value, _ := strconv.ParseInt(v, 10, 32)
+			code.DcId = int32(value)
 		case "session_id":
 			code.SessionId, _ = strconv.ParseInt(v, 10, 64)
 		case "auth_key_id":
@@ -67,6 +118,10 @@ func (d *Dao) GetCacheQRLoginCode(ctx context.Context, keyId int64) (code *model
 			code.ApiId = int32(v)
 		case "api_hash":
 			code.ApiHash = v
+		case "except_ids":
+			if err = json.Unmarshal([]byte(v), &code.ExceptIDs); err != nil {
+				return nil, fmt.Errorf("decode qr code except_ids: %w", err)
+			}
 		case "code_hash":
 			code.CodeHash = v
 		case "expire_at":
@@ -82,50 +137,105 @@ func (d *Dao) GetCacheQRLoginCode(ctx context.Context, keyId int64) (code *model
 	return
 }
 
-func (d *Dao) PutCacheQRLoginCode(ctx context.Context, keyId int64, qrCode *model.QRCodeTransaction, expiredIn int) (err error) {
-	var (
-		key = genQRLoginCodeKey(keyId)
-
-		args = map[string]string{
-			"perm_auth_key_id": strconv.FormatInt(qrCode.PermAuthKeyId, 10),
-			"session_id":       strconv.FormatInt(qrCode.SessionId, 10),
-			"auth_key_id":      strconv.FormatInt(qrCode.AuthKeyId, 10),
-			"server_id":        qrCode.ServerId,
-			"api_id":           strconv.Itoa(int(qrCode.ApiId)),
-			"api_hash":         qrCode.ApiHash,
-			"code_hash":        qrCode.CodeHash,
-			"expire_at":        strconv.FormatInt(qrCode.ExpireAt, 10),
-			"state":            strconv.Itoa(qrCode.State),
-			"user_id":          strconv.FormatInt(qrCode.UserId, 10),
-		}
-	)
-
-	// TODO(@benqi): args error??
-	if err = d.kv.HmsetCtx(ctx, key, args); err != nil {
-		logx.WithContext(ctx).Error("conn.Send(HMSET %s,%v) error(%v)", key, args, err)
-		return
+func qrCodeCacheFields(qrCode *model.QRCodeTransaction) (map[string]string, error) {
+	exceptIDs, err := json.Marshal(qrCode.ExceptIDs)
+	if err != nil {
+		return nil, fmt.Errorf("encode qr code except_ids: %w", err)
 	}
 
-	if expiredIn > 0 {
-		if _, err = d.kv.ExpireWithResultCtx(ctx, key, expiredIn+2); err != nil {
-			logx.WithContext(ctx).Error("conn.Send(EXPIRE %d,%d) error(%v)", key, expiredIn, err)
-			return
-		}
-	}
-
-	return
+	return map[string]string{
+		"perm_auth_key_id": strconv.FormatInt(qrCode.PermAuthKeyId, 10),
+		"dc_id":            strconv.Itoa(int(qrCode.DcId)),
+		"session_id":       strconv.FormatInt(qrCode.SessionId, 10),
+		"auth_key_id":      strconv.FormatInt(qrCode.AuthKeyId, 10),
+		"server_id":        qrCode.ServerId,
+		"api_id":           strconv.Itoa(int(qrCode.ApiId)),
+		"api_hash":         qrCode.ApiHash,
+		"except_ids":       string(exceptIDs),
+		"code_hash":        qrCode.CodeHash,
+		"expire_at":        strconv.FormatInt(qrCode.ExpireAt, 10),
+		"state":            strconv.Itoa(qrCode.State),
+		"user_id":          strconv.FormatInt(qrCode.UserId, 10),
+	}, nil
 }
 
-func (d *Dao) UpdateCacheQRLoginCode(ctx context.Context, keyId int64, values map[string]string) (err error) {
-	var (
-		key = genQRLoginCodeKey(keyId)
-	)
-
-	if err = d.kv.HmsetCtx(ctx, key, values); err != nil {
-		logx.WithContext(ctx).Errorf("conn.HSET(%s) error(%v)", key, err)
+func qrCodeWriteArgs(fields map[string]string) []any {
+	args := make([]any, 0, len(fields)*2)
+	for _, field := range []string{
+		"perm_auth_key_id", "dc_id", "session_id", "auth_key_id", "server_id", "api_id", "api_hash",
+		"except_ids", "code_hash", "expire_at", "state", "user_id",
+	} {
+		args = append(args, field, fields[field])
 	}
+	return args
+}
 
-	return
+func qrCodeCacheTTL(expiredIn int) int {
+	if expiredIn <= 0 {
+		return 0
+	}
+	// Keep cache entries for two seconds beyond the requested token lifetime.
+	return expiredIn + 2
+}
+
+func (d *Dao) CreateCacheQRLoginCode(ctx context.Context, keyId int64, qrCode *model.QRCodeTransaction, expiredIn int) (int64, error) {
+	fields, err := qrCodeCacheFields(qrCode)
+	if err != nil {
+		return 0, err
+	}
+	args := append([]any{strconv.Itoa(qrCodeCacheTTL(expiredIn))}, qrCodeWriteArgs(fields)...)
+	return d.evalQRCodeResult(ctx, createQRCodeScript, genQRLoginCodeKey(keyId), args...)
+}
+
+// RotateCacheQRLoginCode replaces a New token only if its generation is still current.
+func (d *Dao) RotateCacheQRLoginCode(ctx context.Context, keyId int64, oldCodeHash string, qrCode *model.QRCodeTransaction, expiredIn int) (int64, error) {
+	fields, err := qrCodeCacheFields(qrCode)
+	if err != nil {
+		return 0, err
+	}
+	args := append([]any{oldCodeHash, strconv.Itoa(model.QRCodeStateNew), strconv.Itoa(qrCodeCacheTTL(expiredIn))}, qrCodeWriteArgs(fields)...)
+	return d.evalQRCodeResult(ctx, rotateQRCodeScript, genQRLoginCodeKey(keyId), args...)
+}
+
+// AcceptCacheQRLoginCode atomically moves one unexpired token generation from
+// New to Accepted. The same user may resume an Accepted/Success generation.
+func (d *Dao) AcceptCacheQRLoginCode(ctx context.Context, keyId int64, codeHash string, userID int64, now int64) (int64, error) {
+	return d.evalQRCodeResult(
+		ctx, acceptQRCodeScript, genQRLoginCodeKey(keyId),
+		codeHash,
+		strconv.FormatInt(now, 10),
+		strconv.Itoa(model.QRCodeStateNew),
+		strconv.FormatInt(userID, 10),
+		strconv.Itoa(model.QRCodeStateAccepted),
+		strconv.Itoa(model.QRCodeStateSuccess),
+	)
+}
+
+// CommitCacheQRLoginCode marks a claim successful only after authsession
+// confirms that the QR auth key belongs to the claimed user.
+func (d *Dao) CommitCacheQRLoginCode(ctx context.Context, keyId int64, codeHash string, userID int64) (int64, error) {
+	return d.evalQRCodeResult(
+		ctx, commitQRCodeScript, genQRLoginCodeKey(keyId),
+		codeHash,
+		strconv.FormatInt(userID, 10),
+		strconv.Itoa(model.QRCodeStateAccepted),
+		strconv.Itoa(model.QRCodeStateSuccess),
+	)
+}
+
+func (d *Dao) evalQRCodeResult(ctx context.Context, script, key string, args ...any) (int64, error) {
+	result, err := d.kv.EvalCtx(ctx, script, key, args...)
+	if err != nil {
+		return 0, err
+	}
+	switch n := result.(type) {
+	case int64:
+		return n, nil
+	case int:
+		return int64(n), nil
+	default:
+		return 0, fmt.Errorf("unexpected qr accept result %T", result)
+	}
 }
 
 func (d *Dao) DeleteCacheQRLoginCode(ctx context.Context, authKeyId int64) (err error) {

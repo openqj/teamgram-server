@@ -20,13 +20,66 @@ package core
 
 import (
 	"github.com/teamgram/proto/mtproto"
+	userpb "github.com/teamgram/teamgram-server/app/service/biz/user/user"
 )
 
 // ContactsSetBlocked
 // contacts.setBlocked#94c65c76 flags:# my_stories_from:flags.0?true id:Vector<InputPeer> limit:int = Bool;
 func (c *ContactsCore) ContactsSetBlocked(in *mtproto.TLContactsSetBlocked) (*mtproto.Bool, error) {
-	// TODO: not impl
-	c.Logger.Errorf("contacts.setBlocked blocked, License key from https://teamgram.net required to unlock enterprise features.")
+	// user.blockPeer / unblockPeer have no my_stories_from or stories field, so the
+	// existing contacts.block and contacts.unblock paths are the storage.
+	want := make(map[int64]*mtproto.InputPeer, len(in.GetId()))
+	for _, id := range in.GetId() {
+		peer := mtproto.FromInputPeer2(c.MD.UserId, id)
+		if !peer.IsUser() || peer.IsSelf() || peer.PeerId == c.MD.UserId {
+			err := mtproto.ErrPeerIdInvalid
+			c.Logger.Errorf("contacts.setBlocked - error: %v", err)
+			return nil, err
+		}
+		want[peer.PeerId] = id
+	}
 
-	return nil, mtproto.ErrEnterpriseIsBlocked
+	blockedList, err := c.svcCtx.Dao.UserClient.UserGetBlockedList(c.ctx, &userpb.TLUserGetBlockedList{
+		UserId: c.MD.UserId,
+		Offset: 0,
+		Limit:  10000,
+	})
+	if err != nil {
+		c.Logger.Errorf("contacts.setBlocked - error: %v", err)
+		return nil, err
+	}
+
+	have := make(map[int64]struct{}, len(blockedList.GetDatas()))
+	for _, blocked := range blockedList.GetDatas() {
+		uid := blocked.GetPeerId().GetUserId()
+		if uid == 0 {
+			continue
+		}
+		have[uid] = struct{}{}
+		if _, ok := want[uid]; ok {
+			continue
+		}
+		if _, err = c.ContactsUnblock(&mtproto.TLContactsUnblock{
+			MyStoriesFrom: in.GetMyStoriesFrom(),
+			Id:            mtproto.MakeTLInputPeerUser(&mtproto.InputPeer{UserId: uid}).To_InputPeer(),
+		}); err != nil {
+			c.Logger.Errorf("contacts.setBlocked - error: %v", err)
+			return nil, err
+		}
+	}
+
+	for uid, id := range want {
+		if _, ok := have[uid]; ok {
+			continue
+		}
+		if _, err = c.ContactsBlock(&mtproto.TLContactsBlock{
+			MyStoriesFrom: in.GetMyStoriesFrom(),
+			Id:            id,
+		}); err != nil {
+			c.Logger.Errorf("contacts.setBlocked - error: %v", err)
+			return nil, err
+		}
+	}
+
+	return mtproto.BoolTrue, nil
 }

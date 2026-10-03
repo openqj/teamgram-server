@@ -19,14 +19,58 @@
 package core
 
 import (
+	"errors"
+
 	"github.com/teamgram/proto/mtproto"
+	verification "github.com/teamgram/teamgram-server/pkg/code"
 )
 
 // AuthCheckRecoveryPassword
 // auth.checkRecoveryPassword#d36bf79 code:string = Bool;
 func (c *AuthorizationCore) AuthCheckRecoveryPassword(in *mtproto.TLAuthCheckRecoveryPassword) (*mtproto.Bool, error) {
-	// TODO: not impl
-	c.Logger.Errorf("auth.checkRecoveryPassword blocked, License key from https://teamgram.net required to unlock enterprise features.")
+	if c == nil || in == nil {
+		if c == nil {
+			return nil, mtproto.ErrAuthKeyUnregistered
+		}
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if c.MD == nil || c.MD.GetUserId() == 0 {
+		c.Logger.Errorf("auth.checkRecoveryPassword - user not bound")
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
+	if c.svcCtx == nil || c.svcCtx.Challenges == nil {
+		c.Logger.Errorf("auth.checkRecoveryPassword - challenge provider unavailable")
+		return nil, mtproto.ErrPasswordRecoveryExpired
+	}
 
-	return nil, mtproto.ErrEnterpriseIsBlocked
+	st, err := loadAcctPasswordState(c.MD.GetUserId())
+	if err != nil {
+		c.Logger.Errorf("auth.checkRecoveryPassword - error: %v", err)
+		return nil, err
+	}
+	if st.recoveryEmail() == "" {
+		c.Logger.Errorf("auth.checkRecoveryPassword - no recovery email")
+		return nil, mtproto.ErrPasswordRecoveryNa
+	}
+	if err = st.checkRecoveryCode(in.GetCode()); err != nil {
+		c.Logger.Errorf("auth.checkRecoveryPassword - code: %v", err)
+		return nil, err
+	}
+	_, err = c.svcCtx.Challenges.Check(c.ctx, verification.VerifyRequest{
+		Channel: verification.ChannelEmail, Purpose: challengePurposePasswordRecovery,
+		Scope:       verification.ScopeID(c.MD.GetUserId()),
+		ChallengeID: verification.PurposeID(challengePurposePasswordRecovery, verification.ScopeID(c.MD.GetUserId())),
+		Code:        in.GetCode(),
+	})
+	if err != nil {
+		if errors.Is(err, verification.ErrChallengeInvalid) {
+			return nil, mtproto.ErrCodeInvalid
+		}
+		if errors.Is(err, verification.ErrChallengeNotFound) || errors.Is(err, verification.ErrChallengeExpired) {
+			return nil, mtproto.ErrPasswordRecoveryExpired
+		}
+		return nil, mtproto.ErrInternalServerError
+	}
+
+	return mtproto.BoolTrue, nil
 }

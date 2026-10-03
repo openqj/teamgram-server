@@ -457,23 +457,34 @@ func (c *session) generateMessageSeqNo(increment bool) int32 {
 }
 
 func (c *session) sendRpcResultToQueue(ctx context.Context, gatewayId string, reqMsgId int64, result mtproto.TLObject) {
-	rpcResult := &mtproto.TLRpcResult{
-		ReqMsgId: reqMsgId,
-		Result:   result,
-	}
-	rawMsg := func() *mtproto.TLMessageRawData {
-		x := mtproto.GetEncodeBuf()
-		defer mtproto.PutEncodeBuf(x)
-		rpcResult.Encode(x, c.sessList.cb.Layer())
-		return &mtproto.TLMessageRawData{
-			MsgId: nextMessageId(true),
-			Seqno: c.generateMessageSeqNo(true),
-			Bytes: int32(x.GetOffset()),
-			Body:  append([]byte(nil), x.GetBuf()...),
+	layer := c.sessList.cb.Layer()
+	body, err := encodeRpcResultBody(reqMsgId, result, layer)
+	if err != nil {
+		logx.WithContext(ctx).Errorf("rpc result encoding failed for request %d: %v", reqMsgId, err)
+		body, err = encodeRpcResultBody(reqMsgId, mtproto.NewRpcError(mtproto.ErrInternalServerError), layer)
+		if err != nil {
+			logx.WithContext(ctx).Errorf("rpc error fallback encoding failed for request %d: %v", reqMsgId, err)
+			return
 		}
-	}()
+	}
+	rawMsg := &mtproto.TLMessageRawData{
+		MsgId: nextMessageId(true),
+		Seqno: c.generateMessageSeqNo(true),
+		Bytes: int32(len(body)),
+		Body:  body,
+	}
 	c.outQueue.AddRpcResultMsg(reqMsgId, rawMsg)
 	// cb(rawMsg)
+}
+
+func encodeRpcResultBody(reqMsgId int64, result mtproto.TLObject, layer int32) ([]byte, error) {
+	rpcResult := &mtproto.TLRpcResult{ReqMsgId: reqMsgId, Result: result}
+	x := mtproto.GetEncodeBuf()
+	defer mtproto.PutEncodeBuf(x)
+	if err := rpcResult.Encode(x, layer); err != nil {
+		return nil, err
+	}
+	return append([]byte(nil), x.GetBuf()...), nil
 }
 
 func (c *session) sendPushRpcResultToQueue(gatewayId string, reqMsgId int64, result []byte) {

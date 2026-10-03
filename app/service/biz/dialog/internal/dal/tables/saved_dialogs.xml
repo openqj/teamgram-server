@@ -23,6 +23,14 @@
         </sql>
     </operation>
 
+    <operation name="UpdateReadMaxId">
+        <sql>
+            UPDATE saved_dialogs
+            SET read_max_id = GREATEST(read_max_id, :read_max_id)
+            WHERE user_id = :user_id AND peer_type = :peer_type AND peer_id = :peer_id AND deleted = 0
+        </sql>
+    </operation>
+
     <operation name="SelectPinnedDialogs" result_set="list">
         <sql>
             <![CDATA[

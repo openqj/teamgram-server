@@ -55,6 +55,9 @@ import (
 // AuthSignIn
 // auth.signIn#bcd51581 phone_number:string phone_code_hash:string phone_code:string = auth.Authorization;
 func (c *AuthorizationCore) AuthSignIn(in *mtproto.TLAuthSignIn) (*mtproto.Auth_Authorization, error) {
+	if c == nil || in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
 	var (
 		phoneCode     = in.GetPhoneCode_STRING()
 		phoneCodeHash = in.PhoneCodeHash
@@ -64,9 +67,26 @@ func (c *AuthorizationCore) AuthSignIn(in *mtproto.TLAuthSignIn) (*mtproto.Auth_
 		phoneCode = in.GetPhoneCode_FLAGSTRING().GetValue()
 	}
 
-	if phoneCode == "" || phoneCodeHash == "" {
+	emailVerification := in.GetEmailVerification()
+	if emailVerification != nil {
+		predicate := emailVerification.GetPredicateName()
+		if predicate == "" && emailVerification.GetConstructor() == mtproto.CRC32_emailVerificationCode {
+			predicate = mtproto.Predicate_emailVerificationCode
+		}
+		if predicate != mtproto.Predicate_emailVerificationCode {
+			return nil, mtproto.ErrAccessTokenInvalid
+		}
+		if emailVerification.GetCode() == "" {
+			return nil, mtproto.ErrCodeEmpty
+		}
+	} else if phoneCode == "" {
 		err := mtproto.ErrPhoneCodeEmpty
 		c.Logger.Errorf("auth.sendCode - error: %v", err)
+		return nil, err
+	}
+	if phoneCodeHash == "" {
+		err := mtproto.ErrPhoneCodeHashEmpty
+		c.Logger.Errorf("auth.signIn - error: %v", err)
 		return nil, err
 	}
 
@@ -92,10 +112,10 @@ func (c *AuthorizationCore) AuthSignIn(in *mtproto.TLAuthSignIn) (*mtproto.Auth_
 		phoneCode,
 		phoneCodeHash,
 		func(codeData2 *model.PhoneCodeTransaction) error {
-			return c.svcCtx.AuthLogic.VerifyCodeInterface.VerifySmsCode(c.ctx,
-				codeData2.PhoneCodeHash,
-				phoneCode,
-				codeData2.PhoneCodeExtraData)
+			if emailVerification != nil {
+				return c.consumeEmailLoginChallenge(phoneNumber, codeData2.PhoneCodeHash, emailVerification.GetCode())
+			}
+			return c.consumePhoneChallenge(phoneNumber, codeData2.PhoneCodeHash, phoneCode, challengePurposeAuthLogin)
 		})
 
 	if err2 != nil {
@@ -148,25 +168,37 @@ func (c *AuthorizationCore) AuthSignIn(in *mtproto.TLAuthSignIn) (*mtproto.Auth_
 	}
 
 	// Bind authKeyId and userId
-	c.svcCtx.Dao.AuthsessionClient.AuthsessionBindAuthKeyUser(c.ctx, &authsession.TLAuthsessionBindAuthKeyUser{
+	bindHash, err := c.svcCtx.Dao.AuthsessionClient.AuthsessionBindAuthKeyUser(c.ctx, &authsession.TLAuthsessionBindAuthKeyUser{
 		AuthKeyId: c.MD.PermAuthKeyId,
 		UserId:    user.User.Id,
 	})
+	if err != nil {
+		c.Logger.Errorf("auth.signIn - bind auth key error: %v", err)
+		return nil, err
+	}
+	if bindHash == nil || bindHash.GetV() == 0 {
+		c.Logger.Errorf("auth.signIn - auth key bind did not persist")
+		return nil, mtproto.ErrInternalServerError
+	}
 
-	// Check SESSION_PASSWORD_NEEDED
-	if c.svcCtx.Plugin != nil {
-		if c.svcCtx.Plugin.CheckSessionPasswordNeeded(c.ctx, user.User.Id) {
-			// hack
-			// err = mtproto.ErrSessionPasswordNeeded
-			err = status.Error(mtproto.ErrUnauthorized, fmt.Sprintf("SESSION_PASSWORD_NEEDED_%d", user.Id()))
-			c.Logger.Infof("auth.signIn - registered, next step auth.checkPassword: %v", err)
-			return nil, err
-		}
+	// Check SESSION_PASSWORD_NEEDED from the password state shared with APIFull.
+	passwordNeeded, err := c.svcCtx.Dao.CheckSessionPasswordNeeded(user.User.Id)
+	if err != nil {
+		return nil, err
+	}
+	if c.svcCtx.Plugin != nil && c.svcCtx.Plugin.CheckSessionPasswordNeeded(c.ctx, user.User.Id) {
+		passwordNeeded = true
+	}
+	if passwordNeeded {
+		err = status.Error(mtproto.ErrUnauthorized, fmt.Sprintf("SESSION_PASSWORD_NEEDED_%d", user.Id()))
+		c.Logger.Infof("auth.signIn - registered, next step auth.checkPassword: %v", err)
+		return nil, err
 	}
 
 	selfUser := user.ToSelfUser()
 
-	c.svcCtx.AuthLogic.DeletePhoneCode(c.ctx, c.MD.PermAuthKeyId, in.PhoneNumber, phoneCodeHash)
+	// Use the normalized number used for lookup; the wire value may contain spaces.
+	c.svcCtx.AuthLogic.DeletePhoneCode(c.ctx, c.MD.PermAuthKeyId, phoneNumber, phoneCodeHash)
 
 	region, _ := c.svcCtx.Dao.GetCountryAndRegionByIp(c.MD.ClientAddr)
 

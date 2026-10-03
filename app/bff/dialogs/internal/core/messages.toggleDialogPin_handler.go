@@ -19,6 +19,8 @@
 package core
 
 import (
+	"fmt"
+
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/messenger/sync/sync"
 	chatpb "github.com/teamgram/teamgram-server/app/service/biz/chat/chat"
@@ -29,9 +31,17 @@ import (
 // MessagesToggleDialogPin
 // messages.toggleDialogPin#a731e257 flags:# pinned:flags.0?true peer:InputDialogPeer = Bool;
 func (c *DialogsCore) MessagesToggleDialogPin(in *mtproto.TLMessagesToggleDialogPin) (*mtproto.Bool, error) {
-	var (
-		peer *mtproto.PeerUtil
-	)
+	if c == nil || c.MD == nil || c.MD.UserId <= 0 {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
+	if in == nil || in.GetPeer() == nil || in.GetPeer().GetPeer() == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.DialogClient == nil || c.svcCtx.Dao.SyncClient == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
+
+	var peer *mtproto.PeerUtil
 
 	switch in.GetPeer().GetPredicateName() {
 	case mtproto.Predicate_inputDialogPeer:
@@ -45,6 +55,9 @@ func (c *DialogsCore) MessagesToggleDialogPin(in *mtproto.TLMessagesToggleDialog
 		c.Logger.Errorf("messages.toggleDialogPin - error: %v", err)
 		return nil, err
 	}
+	if peer == nil || peer.PeerId <= 0 {
+		return nil, mtproto.ErrPeerIdInvalid
+	}
 
 	folderId, err := c.svcCtx.Dao.DialogClient.DialogToggleDialogPin(c.ctx, &dialog.TLDialogToggleDialogPin{
 		UserId:   c.MD.UserId,
@@ -54,44 +67,64 @@ func (c *DialogsCore) MessagesToggleDialogPin(in *mtproto.TLMessagesToggleDialog
 	})
 	if err != nil {
 		c.Logger.Errorf("messages.toggleDialogPin - error: %v", err)
-		return mtproto.BoolFalse, nil
+		return nil, err
+	}
+	if folderId == nil {
+		return nil, mtproto.ErrInternalServerError
 	}
 
-	var (
-		idHelper    = mtproto.NewIDListHelper(c.MD.UserId)
-		syncUpdates = mtproto.MakeUpdatesByUpdates(mtproto.MakeTLUpdateDialogPinned(&mtproto.Update{
-			Pinned:   in.GetPinned(),
-			FolderId: mtproto.MakeFlagsInt32(folderId.V),
-			Peer_DIALOGPEER: mtproto.MakeTLDialogPeer(&mtproto.DialogPeer{
-				Peer: peer.ToPeer(),
-			}).To_DialogPeer(),
-		}).To_Update())
-	)
+	syncUpdates := mtproto.MakeUpdatesByUpdates(mtproto.MakeTLUpdateDialogPinned(&mtproto.Update{
+		Pinned:   in.GetPinned(),
+		FolderId: mtproto.MakeFlagsInt32(folderId.V),
+		Peer_DIALOGPEER: mtproto.MakeTLDialogPeer(&mtproto.DialogPeer{
+			Peer: peer.ToPeer(),
+		}).To_DialogPeer(),
+	}).To_Update())
 
-	idHelper.PickByPeerUtil(peer.PeerType, peer.PeerId)
-	idHelper.Visit(
-		func(userIdList []int64) {
-			users, _ := c.svcCtx.Dao.UserClient.UserGetMutableUsers(c.ctx,
-				&userpb.TLUserGetMutableUsers{
-					Id: userIdList,
-				})
-			syncUpdates.PushUser(users.GetUserListByIdList(c.MD.UserId, userIdList...)...)
-		},
-		func(chatIdList []int64) {
-			chats, _ := c.svcCtx.Dao.ChatClient.ChatGetChatListByIdList(c.ctx,
-				&chatpb.TLChatGetChatListByIdList{
-					IdList: chatIdList,
-				})
-			syncUpdates.PushChat(chats.GetChatListByIdList(c.MD.UserId, chatIdList...)...)
-		},
-		func(channelIdList []int64) {
-			// TODO
-		})
-	c.svcCtx.Dao.SyncClient.SyncUpdatesNotMe(c.ctx, &sync.TLSyncUpdatesNotMe{
+	switch peer.PeerType {
+	case mtproto.PEER_SELF, mtproto.PEER_USER:
+		if c.svcCtx.Dao.UserClient == nil {
+			return nil, mtproto.ErrInternalServerError
+		}
+		users, err := c.svcCtx.Dao.UserClient.UserGetMutableUsers(c.ctx, &userpb.TLUserGetMutableUsers{Id: []int64{peer.PeerId}})
+		if err != nil {
+			return nil, err
+		}
+		if users == nil || len(users.GetDatas()) == 0 {
+			return nil, fmt.Errorf("messages.toggleDialogPin: user.getMutableUsers returned no user %d", peer.PeerId)
+		}
+		syncUpdates.PushUser(users.GetUserListByIdList(c.MD.UserId, peer.PeerId)...)
+	case mtproto.PEER_CHAT:
+		if c.svcCtx.Dao.ChatClient == nil {
+			return nil, mtproto.ErrInternalServerError
+		}
+		chats, err := c.svcCtx.Dao.ChatClient.ChatGetChatListByIdList(c.ctx, &chatpb.TLChatGetChatListByIdList{IdList: []int64{peer.PeerId}})
+		if err != nil {
+			return nil, err
+		}
+		if chats == nil || len(chats.GetDatas()) == 0 {
+			return nil, fmt.Errorf("messages.toggleDialogPin: chat.getChatListByIdList returned no chat %d", peer.PeerId)
+		}
+		syncUpdates.PushChat(chats.GetChatListByIdList(c.MD.UserId, peer.PeerId)...)
+	case mtproto.PEER_CHANNEL:
+		if c.svcCtx.Plugin == nil {
+			return nil, fmt.Errorf("messages.toggleDialogPin: channel resolver is unavailable")
+		}
+		channels := c.svcCtx.Plugin.GetChannelListByIdList(c.ctx, c.MD.UserId, peer.PeerId)
+		if len(channels) != 1 || channels[0] == nil || channels[0].GetId() != peer.PeerId {
+			return nil, fmt.Errorf("messages.toggleDialogPin: channel resolver returned no channel %d", peer.PeerId)
+		}
+		syncUpdates.PushChat(channels...)
+	default:
+		return nil, mtproto.ErrPeerIdInvalid
+	}
+	if _, err := c.svcCtx.Dao.SyncClient.SyncUpdatesNotMe(c.ctx, &sync.TLSyncUpdatesNotMe{
 		UserId:        c.MD.UserId,
 		PermAuthKeyId: c.MD.PermAuthKeyId,
 		Updates:       syncUpdates,
-	})
+	}); err != nil {
+		return nil, err
+	}
 
 	return mtproto.BoolTrue, nil
 }

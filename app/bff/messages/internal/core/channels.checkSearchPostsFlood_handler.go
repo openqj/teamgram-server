@@ -20,13 +20,24 @@ package core
 
 import (
 	"github.com/teamgram/proto/mtproto"
+	"google.golang.org/protobuf/types/known/wrapperspb"
+)
+
+const (
+	searchPostsFloodTotalDaily = 10
+	searchPostsFloodRemains    = 10
 )
 
 // ChannelsCheckSearchPostsFlood
 // channels.checkSearchPostsFlood#22567115 flags:# query:flags.0?string = SearchPostsFlood;
 func (c *MessagesCore) ChannelsCheckSearchPostsFlood(in *mtproto.TLChannelsCheckSearchPostsFlood) (*mtproto.SearchPostsFlood, error) {
-	// TODO: not impl
-	c.Logger.Errorf("channels.checkSearchPostsFlood blocked, License key from https://teamgram.net required to unlock enterprise features.")
+	_ = in
 
-	return nil, mtproto.ErrEnterpriseIsBlocked
+	return mtproto.MakeTLSearchPostsFlood(&mtproto.SearchPostsFlood{
+		QueryIsFree: true,
+		TotalDaily:  searchPostsFloodTotalDaily,
+		Remains:     searchPostsFloodRemains,
+		WaitTill:    &wrapperspb.Int32Value{Value: 0},
+		StarsAmount: 0,
+	}).To_SearchPostsFlood(), nil
 }

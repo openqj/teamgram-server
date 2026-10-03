@@ -17,8 +17,24 @@ import (
 // DialogGetDialogsCount
 // dialog.getDialogsCount user_id:long exclude_pinned:Bool folder_id:int = Int32;
 func (c *DialogCore) DialogGetDialogsCount(in *dialog.TLDialogGetDialogsCount) (*mtproto.Int32, error) {
-	// TODO: not impl
-	c.Logger.Errorf("dialog.getDialogsCount - error: method DialogGetDialogsCount not impl")
+	if in == nil || in.GetUserId() <= 0 || in.GetFolderId() < 0 {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
 
-	return nil, mtproto.ErrMethodNotImpl
+	rows, err := c.svcCtx.Dao.DialogsDAO.SelectDialogs(c.ctx, in.GetUserId(), in.GetFolderId())
+	if err != nil {
+		c.Logger.Errorf("dialog.getDialogsCount - select dialogs error: %v", err)
+		return nil, err
+	}
+
+	excludePinned := mtproto.FromBool(in.GetExcludePinned())
+	count := 0
+	for _, row := range rows {
+		if excludePinned && row.Pinned > 0 {
+			continue
+		}
+		count++
+	}
+
+	return mtproto.MakeTLInt32(&mtproto.Int32{V: int32(count)}).To_Int32(), nil
 }

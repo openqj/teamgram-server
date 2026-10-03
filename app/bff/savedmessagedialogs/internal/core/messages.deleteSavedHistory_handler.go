@@ -23,10 +23,21 @@ import (
 )
 
 // MessagesDeleteSavedHistory
-// messages.deleteSavedHistory#6e98102b flags:# peer:InputPeer max_id:int min_date:flags.2?int max_date:flags.3?int = messages.AffectedHistory;
+// messages.deleteSavedHistory#4dc5085f flags:# parent_peer:flags.0?InputPeer peer:InputPeer max_id:int min_date:flags.2?int max_date:flags.3?int = messages.AffectedHistory;
 func (c *SavedMessageDialogsCore) MessagesDeleteSavedHistory(in *mtproto.TLMessagesDeleteSavedHistory) (*mtproto.Messages_AffectedHistory, error) {
-	// TODO: not impl
-	c.Logger.Errorf("messages.deleteSavedHistory blocked, License key from https://teamgram.net required to unlock enterprise features.")
-
-	return nil, mtproto.ErrEnterpriseIsBlocked
+	if c == nil || c.MD == nil || c.MD.UserId <= 0 {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
+	if in == nil || in.GetPeer() == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	peer := mtproto.FromInputPeer2(c.MD.UserId, in.GetPeer())
+	if !savedPeerAllowed(peer) || peer.PeerId <= 0 {
+		c.Logger.Errorf("messages.deleteSavedHistory - error: invalid peer")
+		return nil, mtproto.ErrPeerIdInvalid
+	}
+	// The BFF has no authoritative saved-message deletion RPC. Returning an
+	// affected history without deleting rows would leave the client and store
+	// inconsistent, so this method remains explicitly fail-closed.
+	return nil, mtproto.ErrMethodNotImpl
 }

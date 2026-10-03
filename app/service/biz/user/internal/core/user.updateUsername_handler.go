@@ -17,10 +17,12 @@ import (
 // UserUpdateUsername
 // user.updateUsername user_id:long username:string = Bool;
 func (c *UserCore) UserUpdateUsername(in *user.TLUserUpdateUsername) (*mtproto.Bool, error) {
-	rB := c.svcCtx.Dao.UpdateUserUsername(
+	if err := c.svcCtx.Dao.UpdateUserUsername(
 		c.ctx,
 		in.GetUserId(),
-		in.GetUsername())
+		in.GetUsername()); err != nil {
+		return nil, err
+	}
 
-	return mtproto.ToBool(rB), nil
+	return mtproto.BoolTrue, nil
 }

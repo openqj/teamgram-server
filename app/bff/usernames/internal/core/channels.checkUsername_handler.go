@@ -20,13 +20,51 @@ package core
 
 import (
 	"github.com/teamgram/proto/mtproto"
+	userpb "github.com/teamgram/teamgram-server/app/service/biz/user/user"
 )
 
 // ChannelsCheckUsername
 // channels.checkUsername#10e6bd2c channel:InputChannel username:string = Bool;
 func (c *UsernamesCore) ChannelsCheckUsername(in *mtproto.TLChannelsCheckUsername) (*mtproto.Bool, error) {
-	// TODO: not impl
-	c.Logger.Errorf("channels.checkUsername blocked, License key from https://teamgram.net required to unlock enterprise features.")
+	if c == nil || c.MD == nil || c.MD.UserId == 0 {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
+	if in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.UserClient == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
+	channelId, err := channelID(in.GetChannel())
+	if err != nil {
+		c.Logger.Errorf("channels.checkUsername - error: %v", err)
+		return nil, err
+	}
+	if usernameFormatInvalid(in.GetUsername()) {
+		err = mtproto.ErrUsernameInvalid
+		c.Logger.Errorf("channels.checkUsername - format error: %v", err)
+		return nil, err
+	}
 
-	return nil, mtproto.ErrEnterpriseIsBlocked
+	existed, err := c.svcCtx.Dao.UserClient.UserCheckChannelUsername(c.ctx, &userpb.TLUserCheckChannelUsername{
+		ChannelId: channelId,
+		Username:  in.GetUsername(),
+	})
+	if err != nil {
+		c.Logger.Errorf("channels.checkUsername - error: %v", err)
+		return nil, err
+	}
+	if existed == nil {
+		c.Logger.Errorf("channels.checkUsername - user service returned an empty response")
+		return nil, mtproto.ErrInternalServerError
+	}
+	switch existed.GetPredicateName() {
+	case userpb.Predicate_usernameExistedNotMe:
+		return mtproto.BoolFalse, nil
+	case userpb.Predicate_usernameNotExisted, userpb.Predicate_usernameExistedIsMe:
+		return mtproto.BoolTrue, nil
+	default:
+		c.Logger.Errorf("channels.checkUsername - user service returned unknown predicate: %q", existed.GetPredicateName())
+		return nil, mtproto.ErrInternalServerError
+	}
 }

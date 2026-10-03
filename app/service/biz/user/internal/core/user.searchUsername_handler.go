@@ -42,7 +42,7 @@ func (c *UserCore) UserSearchUsername(in *user.TLUserSearchUsername) (*user.Vect
 
 	// 构造模糊查询字符串
 	q2 := in.Q + "%"
-	doList, _ := c.svcCtx.Dao.UsernameDAO.SearchByQueryNotIdListWithCB(
+	doList, err := c.svcCtx.Dao.UsernameDAO.SearchByQueryNotIdListWithCB(
 		c.ctx,
 		q2,
 		in.ExcludedContacts,
@@ -61,6 +61,10 @@ func (c *UserCore) UserSearchUsername(in *user.TLUserSearchUsername) (*user.Vect
 				}).To_UsernameData())
 			}
 		})
+	if err != nil {
+		c.Logger.Errorf("user.searchUsername - error: %v", err)
+		return nil, err
+	}
 
 	c.Logger.Infof("username.search - doList: %v", doList)
 	return rValList, nil

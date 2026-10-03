@@ -30,6 +30,8 @@ import (
 	chat_client "github.com/teamgram/teamgram-server/app/service/biz/chat/client"
 	user_client "github.com/teamgram/teamgram-server/app/service/biz/user/client"
 	status_client "github.com/teamgram/teamgram-server/app/service/status/client"
+	verification "github.com/teamgram/teamgram-server/pkg/code"
+	"github.com/teamgram/teamgram-server/pkg/twofa"
 
 	"github.com/oschwald/geoip2-golang"
 	"github.com/zeromicro/go-zero/core/stores/kv"
@@ -44,8 +46,11 @@ func init() {
 }
 
 type Dao struct {
-	kv   kv.Store
-	MMDB *geoip2.Reader
+	kv                kv.Store
+	passwordStore     twofa.ProofStore
+	passwordStoreErr  error
+	VerificationStore verification.ChallengeStore
+	MMDB              *geoip2.Reader
 	authsession_client.AuthsessionClient
 	user_client.UserClient
 	sync_client.SyncClient
@@ -59,8 +64,17 @@ func New(c config.Config) *Dao {
 	if err != nil {
 		// panic(err)
 	}
+	kvStore := kv.NewStore(c.KV)
+	var passwordStore twofa.ProofStore = twofa.NewRedisProofStore(kvStore)
+	var passwordStoreErr error
+	if c.MysqlDSN != "" {
+		passwordStore, passwordStoreErr = twofa.OpenMySQLProofStore(c.MysqlDSN)
+	}
 	return &Dao{
-		kv:                kv.NewStore(c.KV),
+		kv:                kvStore,
+		passwordStore:     passwordStore,
+		passwordStoreErr:  passwordStoreErr,
+		VerificationStore: verification.NewRedisChallengeStore(kvStore),
 		MMDB:              MMDB,
 		UserClient:        user_client.NewUserClient(rpcx.GetCachedRpcClient(c.UserClient)),
 		AuthsessionClient: authsession_client.NewAuthsessionClient(rpcx.GetCachedRpcClient(c.AuthsessionClient)),

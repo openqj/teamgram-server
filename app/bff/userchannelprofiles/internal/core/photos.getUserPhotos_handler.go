@@ -27,6 +27,12 @@ import (
 // PhotosGetUserPhotos
 // photos.getUserPhotos#91cd32a8 user_id:InputUser offset:int max_id:long limit:int = photos.Photos;
 func (c *UserChannelProfilesCore) PhotosGetUserPhotos(in *mtproto.TLPhotosGetUserPhotos) (*mtproto.Photos_Photos, error) {
+	if c == nil || c.MD == nil || c.MD.UserId <= 0 {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
+	if in == nil || in.GetUserId() == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
 	userId := mtproto.FromInputUser(c.MD.UserId, in.UserId)
 	switch userId.PeerType {
 	case mtproto.PEER_SELF, mtproto.PEER_USER:
@@ -43,6 +49,9 @@ func (c *UserChannelProfilesCore) PhotosGetUserPhotos(in *mtproto.TLPhotosGetUse
 		c.Logger.Errorf("photos.getUserPhotos - error: %v", err)
 		return nil, err
 	}
+	if cachePhotos == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
 
 	photos := mtproto.MakeTLPhotosPhotos(&mtproto.Photos_Photos{
 		Photos: make([]*mtproto.Photo, 0, len(cachePhotos.GetDatas())),
@@ -50,14 +59,18 @@ func (c *UserChannelProfilesCore) PhotosGetUserPhotos(in *mtproto.TLPhotosGetUse
 	}).To_Photos_Photos()
 
 	for _, id := range cachePhotos.GetDatas() {
-		if photo, err := c.svcCtx.Dao.MediaClient.MediaGetPhoto(c.ctx,
+		photo, err := c.svcCtx.Dao.MediaClient.MediaGetPhoto(c.ctx,
 			&mediapb.TLMediaGetPhoto{
 				PhotoId: id,
-			}); err != nil {
+			})
+		if err != nil {
 			c.Logger.Errorf("photos.getUserPhotos - error: %v", err)
-		} else if photo != nil {
-			photos.Photos = append(photos.Photos, photo)
+			return nil, err
 		}
+		if photo == nil {
+			return nil, mtproto.ErrInternalServerError
+		}
+		photos.Photos = append(photos.Photos, photo)
 	}
 
 	return photos, nil

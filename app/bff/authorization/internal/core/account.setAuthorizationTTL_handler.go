@@ -37,16 +37,19 @@ func (c *AuthorizationCore) AccountSetAuthorizationTTL(in *mtproto.TLAccountSetA
 	case 548:
 	case 730:
 	default:
-		// err := mtproto.ErrTtlDaysInvalid
-		c.Logger.Errorf("account.setAuthorizationTTL - error: %s", in)
-		// return nil, err
+		err := mtproto.ErrTtlDaysInvalid
+		c.Logger.Errorf("account.setAuthorizationTTL - error: %v", err)
+		return nil, err
 	}
 
-	_, _ = c.svcCtx.Dao.UserClient.UserSetAuthorizationTTL(
+	if _, err := c.svcCtx.Dao.UserClient.UserSetAuthorizationTTL(
 		c.ctx,
 		&user.TLUserSetAuthorizationTTL{
 			UserId: c.MD.UserId,
 			Ttl:    in.AuthorizationTtlDays,
-		})
+		}); err != nil {
+		c.Logger.Errorf("account.setAuthorizationTTL - error: %v", err)
+		return nil, err
+	}
 	return mtproto.BoolTrue, nil
 }

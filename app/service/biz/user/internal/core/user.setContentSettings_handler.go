@@ -40,7 +40,7 @@ func (c *UserCore) UserSetContentSettings(in *user.TLUserSetContentSettings) (*m
 	})
 	if err != nil {
 		c.Logger.Errorf("user.setContentSettings - error: %v", err)
-		return mtproto.BoolFalse, nil
+		return nil, err
 	}
 
 	return mtproto.BoolTrue, nil

@@ -20,8 +20,10 @@ package core
 
 import (
 	"context"
+	"sync"
 
 	"github.com/teamgram/proto/mtproto"
+	"github.com/teamgram/teamgram-server/app/bff/apifull/channelview"
 	chatpb "github.com/teamgram/teamgram-server/app/service/biz/chat/chat"
 	"github.com/teamgram/teamgram-server/app/service/biz/dialog/dialog"
 	"github.com/teamgram/teamgram-server/app/service/biz/message/message"
@@ -76,6 +78,15 @@ import (
 // MessagesGetPeerDialogs
 // messages.getPeerDialogs#e470bcfd peers:Vector<InputDialogPeer> = messages.PeerDialogs;
 func (c *DialogsCore) MessagesGetPeerDialogs(in *mtproto.TLMessagesGetPeerDialogs) (*mtproto.Messages_PeerDialogs, error) {
+	if c == nil || c.MD == nil || c.MD.UserId <= 0 {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
+	if in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.UpdatesClient == nil || c.svcCtx.Dao.DialogClient == nil || c.svcCtx.Dao.UserClient == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
 	var (
 		peerDialogIdList []int64
 		folderId         int32 = -1
@@ -83,16 +94,20 @@ func (c *DialogsCore) MessagesGetPeerDialogs(in *mtproto.TLMessagesGetPeerDialog
 	)
 
 	for _, peer := range in.GetPeers() {
+		if peer == nil {
+			return nil, mtproto.ErrInputConstructorInvalid
+		}
 		switch peer.GetPredicateName() {
 		case mtproto.Predicate_inputDialogPeer:
+			if peer.GetPeer() == nil {
+				return nil, mtproto.ErrInputConstructorInvalid
+			}
 			p := mtproto.FromInputPeer2(c.MD.UserId, peer.Peer)
+			if p == nil || p.PeerId <= 0 {
+				return nil, mtproto.ErrPeerIdInvalid
+			}
 			switch p.PeerType {
-			case mtproto.PEER_SELF:
-			case mtproto.PEER_USER:
-			case mtproto.PEER_CHAT:
-			case mtproto.PEER_CHANNEL:
-				c.Logger.Errorf("blocked, License key from https://teamgram.net required to unlock enterprise features.")
-				continue
+			case mtproto.PEER_SELF, mtproto.PEER_USER, mtproto.PEER_CHAT, mtproto.PEER_CHANNEL:
 			default:
 				err := mtproto.ErrInputConstructorInvalid
 				c.Logger.Errorf("messages.getPeerDialogs - getPeerDialogs error: %v", err)
@@ -148,6 +163,9 @@ func (c *DialogsCore) MessagesGetPeerDialogs(in *mtproto.TLMessagesGetPeerDialog
 					c.Logger.Errorf("messages.getPeerDialogs - getPeerDialogs error: %v", err2)
 					return err2
 				}
+				if dList == nil {
+					return mtproto.ErrInternalServerError
+				}
 				dialogExtList = dList.GetDatas()
 			} else if folderId != -1 {
 				dList, err2 := c.svcCtx.Dao.DialogClient.DialogGetDialogFolder(c.ctx, &dialog.TLDialogGetDialogFolder{
@@ -157,6 +175,9 @@ func (c *DialogsCore) MessagesGetPeerDialogs(in *mtproto.TLMessagesGetPeerDialog
 				if err2 != nil {
 					c.Logger.Errorf("messages.getPeerDialogs - getPeerDialogs error: %v", err2)
 					return err2
+				}
+				if dList == nil {
+					return mtproto.ErrInternalServerError
 				}
 				dialogExtList = dList.GetDatas()
 			}
@@ -173,6 +194,9 @@ func (c *DialogsCore) MessagesGetPeerDialogs(in *mtproto.TLMessagesGetPeerDialog
 					c.Logger.Errorf("messages.getDialogs - error: %v", err2)
 					return err2
 				}
+				if settingsList == nil {
+					return mtproto.ErrInternalServerError
+				}
 				notifySettingsList = settingsList.GetDatas()
 			}
 
@@ -183,15 +207,35 @@ func (c *DialogsCore) MessagesGetPeerDialogs(in *mtproto.TLMessagesGetPeerDialog
 		c.Logger.Errorf("messages.getPeerDialogs - getPeerDialogs error: %v", err)
 		return nil, err
 	}
-
-	for _, dialogEx := range dialogExtList {
-		peer2 := mtproto.FromPeer(dialogEx.GetDialog().GetPeer())
-		dialogEx.Dialog.NotifySettings = userpb.FindPeerPeerNotifySettings(notifySettingsList, peer2)
-		if peer2.IsChannel() {
-			c.Logger.Errorf("blocked, License key from https://teamgram.net required to unlock enterprise features.")
-		}
+	if state == nil {
+		return nil, mtproto.ErrInternalServerError
 	}
 
+	for _, dialogEx := range dialogExtList {
+		if dialogEx == nil || dialogEx.GetDialog() == nil || dialogEx.GetDialog().GetPeer() == nil {
+			return nil, mtproto.ErrInternalServerError
+		}
+		peer2 := mtproto.FromPeer(dialogEx.GetDialog().GetPeer())
+		dialogEx.Dialog.NotifySettings = userpb.FindPeerPeerNotifySettings(notifySettingsList, peer2)
+	}
+
+	if c.svcCtx.Dao.MessageClient == nil || c.svcCtx.Dao.ChatClient == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
+	var (
+		loadErr   error
+		loadErrMu sync.Mutex
+	)
+	recordLoadErr := func(err error) {
+		if err == nil {
+			return
+		}
+		loadErrMu.Lock()
+		if loadErr == nil {
+			loadErr = err
+		}
+		loadErrMu.Unlock()
+	}
 	messageDialogs := dialogExtList.DoGetMessagesDialogs(
 		c.ctx,
 		c.MD.UserId,
@@ -201,44 +245,82 @@ func (c *DialogsCore) MessagesGetPeerDialogs(in *mtproto.TLMessagesGetPeerDialog
 				msgIdList = make([]int32, 0, len(id))
 			)
 			for _, id2 := range id {
-				if id2.Peer.IsChannel() {
-					c.Logger.Errorf("blocked, License key from https://teamgram.net required to unlock enterprise features.")
-				} else {
+				if !id2.Peer.IsChannel() {
 					msgIdList = append(msgIdList, id2.TopMessage)
 				}
 			}
 			if len(msgIdList) > 0 {
-				boxList, _ := c.svcCtx.Dao.MessageClient.MessageGetUserMessageList(c.ctx, &message.TLMessageGetUserMessageList{
+				boxList, err := c.svcCtx.Dao.MessageClient.MessageGetUserMessageList(c.ctx, &message.TLMessageGetUserMessageList{
 					UserId: c.MD.UserId,
 					IdList: msgIdList,
 				})
+				if err != nil {
+					recordLoadErr(err)
+					return nil
+				}
+				if boxList == nil {
+					recordLoadErr(mtproto.ErrInternalServerError)
+					return nil
+				}
 				boxList.Walk(func(idx int, v *mtproto.MessageBox) {
-					msgList = append(msgList, v.ToMessage(c.MD.UserId))
+					if v != nil {
+						msgList = append(msgList, v.ToMessage(c.MD.UserId))
+					}
 				})
 			}
 
 			return msgList
 		},
 		func(ctx context.Context, selfUserId int64, id ...int64) []*mtproto.User {
-			users, _ := c.svcCtx.Dao.UserClient.UserGetMutableUsers(c.ctx,
+			users, err := c.svcCtx.Dao.UserClient.UserGetMutableUsers(c.ctx,
 				&userpb.TLUserGetMutableUsers{
 					Id: id,
 				})
+			if err != nil {
+				recordLoadErr(err)
+				return nil
+			}
+			if users == nil {
+				recordLoadErr(mtproto.ErrInternalServerError)
+				return nil
+			}
 
 			return users.GetUserListByIdList(c.MD.UserId, id...)
 		},
 		func(ctx context.Context, selfUserId int64, id ...int64) []*mtproto.Chat {
-			chats, _ := c.svcCtx.Dao.ChatClient.ChatGetChatListByIdList(c.ctx,
+			chats, err := c.svcCtx.Dao.ChatClient.ChatGetChatListByIdList(c.ctx,
 				&chatpb.TLChatGetChatListByIdList{
 					IdList: id,
 				})
+			if err != nil {
+				recordLoadErr(err)
+				return nil
+			}
+			if chats == nil {
+				recordLoadErr(mtproto.ErrInternalServerError)
+				return nil
+			}
 
 			return chats.GetChatListByIdList(c.MD.UserId, id...)
 		},
 		func(ctx context.Context, selfUserId int64, id ...int64) []*mtproto.Chat {
-			c.Logger.Errorf("blocked, License key from https://teamgram.net required to unlock enterprise features.")
-			return []*mtproto.Chat{}
+			return channelview.ChatsByID(selfUserId, id)
 		})
+	loadErrMu.Lock()
+	err = loadErr
+	loadErrMu.Unlock()
+	if err != nil {
+		c.Logger.Errorf("messages.getPeerDialogs - entity load error: %v", err)
+		return nil, err
+	}
 
-	return messageDialogs.ToMessagesPeerDialogs(state), nil
+	out := messageDialogs.ToMessagesPeerDialogs(state)
+	var channelIDs []int64
+	for _, p := range peers {
+		if p != nil && p.PeerType == mtproto.PEER_CHANNEL {
+			channelIDs = append(channelIDs, p.PeerId)
+		}
+	}
+	channelview.AppendRequested(out, c.MD.UserId, channelIDs)
+	return out, nil
 }

@@ -25,8 +25,18 @@ import (
 // AuthDropTempAuthKeys
 // auth.dropTempAuthKeys#8e48a188 except_auth_keys:Vector<long> = Bool;
 func (c *AuthorizationCore) AuthDropTempAuthKeys(in *mtproto.TLAuthDropTempAuthKeys) (*mtproto.Bool, error) {
-	// TODO: not impl
-	// c.Logger.Errorf("auth.dropTempAuthKeys blocked, License key from https://teamgram.net required to unlock enterprise features.")
-
-	return mtproto.BoolTrue, nil
+	if c == nil || c.MD == nil || c.MD.GetPermAuthKeyId() == 0 {
+		if c != nil {
+			c.Logger.Errorf("auth.dropTempAuthKeys - perm auth key empty")
+		}
+		return nil, mtproto.ErrAuthKeyInvalid
+	}
+	if in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	// AuthsessionClient has no temporary-key store or drop RPC. Do not report
+	// success or claim that the permanent key is invalid.
+	_ = in.GetExceptAuthKeys()
+	c.Logger.Errorf("auth.dropTempAuthKeys - temporary-key store unavailable")
+	return nil, mtproto.ErrMethodNotImpl
 }

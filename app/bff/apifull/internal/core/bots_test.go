@@ -1,0 +1,99 @@
+// Copyright 2026 Teamgram Authors
+//  All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//   http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+//
+// Author: teamgramio (teamgram.io@gmail.com)
+//
+
+package core
+
+import (
+	"errors"
+	"testing"
+
+	"github.com/teamgram/proto/mtproto"
+	"github.com/teamgram/proto/mtproto/rpc/metadata"
+	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/persist"
+)
+
+func TestBotCommandsAndMenuButtonRoundTrip(t *testing.T) {
+	if err := persist.Default.Set(botMenuButtonPersistKey(1, 7), ""); err != nil {
+		t.Fatal(err)
+	}
+
+	c := &ApiFullCore{MD: &metadata.RpcMetadata{UserId: 1}}
+	scope := mtproto.MakeTLBotCommandScopeDefault(&mtproto.BotCommandScope{}).To_BotCommandScope()
+	if err := persist.Default.Set(botCommandStoreKey(1, scope, "en"), ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.BotsSetBotCommands(&mtproto.TLBotsSetBotCommands{
+		Scope:    scope,
+		LangCode: "en",
+		Commands: []*mtproto.BotCommand{{Command: "start", Description: "hi"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := c.BotsGetBotCommands(&mtproto.TLBotsGetBotCommands{Scope: scope, LangCode: "en"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.GetDatas()) != 1 || got.Datas[0].GetCommand() != "start" || got.Datas[0].GetDescription() != "hi" {
+		t.Fatalf("commands = %#v", got.GetDatas())
+	}
+
+	user := &mtproto.InputUser{UserId: 7}
+	button := mtproto.MakeTLBotMenuButton(&mtproto.BotMenuButton{Text: "Open", Url: "https://example.com"}).To_BotMenuButton()
+	if _, err := c.BotsSetBotMenuButton(&mtproto.TLBotsSetBotMenuButton{UserId: user, Button: button}); err != nil {
+		t.Fatal(err)
+	}
+	gotButton, err := c.BotsGetBotMenuButton(&mtproto.TLBotsGetBotMenuButton{UserId: user})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotButton.GetText() != "Open" || gotButton.GetUrl() != "https://example.com" {
+		t.Fatalf("menu button = %#v", gotButton)
+	}
+}
+
+func TestBotWritesNilError(t *testing.T) {
+	c := &ApiFullCore{MD: &metadata.RpcMetadata{UserId: 1}}
+	fns := []struct {
+		name string
+		call func() error
+	}{
+		{"reset commands", func() error { _, err := c.BotsResetBotCommands(nil); return err }},
+		{"set bot info", func() error { _, err := c.BotsSetBotInfo(nil); return err }},
+		{"create bot", func() error { _, err := c.BotsCreateBot(nil); return err }},
+		{"export token", func() error { _, err := c.BotsExportBotToken(nil); return err }},
+		{"edit access", func() error { _, err := c.BotsEditAccessSettings(nil); return err }},
+		{"set join results", func() error { _, err := c.BotsSetJoinChatResults(nil); return err }},
+		{"help updates", func() error { _, err := c.HelpSetBotUpdatesStatus(nil); return err }},
+		{"custom request", func() error { _, err := c.BotsSendCustomRequest(nil); return err }},
+		{"webhook answer", func() error { _, err := c.BotsAnswerWebhookJSONQuery(nil); return err }},
+		{"broadcast rights", func() error { _, err := c.BotsSetBotBroadcastDefaultAdminRights(nil); return err }},
+		{"group rights", func() error { _, err := c.BotsSetBotGroupDefaultAdminRights(nil); return err }},
+		{"attach menu", func() error { _, err := c.MessagesToggleBotInAttachMenu(nil); return err }},
+		{"custom verification", func() error { _, err := c.BotsSetCustomVerification(nil); return err }},
+	}
+	for _, fn := range fns {
+		err := fn.call()
+		if fn.name == "set bot info" || fn.name == "create bot" || fn.name == "export token" || fn.name == "edit access" || fn.name == "set join results" || fn.name == "broadcast rights" || fn.name == "group rights" || fn.name == "custom verification" {
+			if !errors.Is(err, mtproto.ErrMethodNotImpl) {
+				t.Fatalf("%s: got %v, want METHOD_NOT_IMPL", fn.name, err)
+			}
+		} else if err != nil {
+			t.Fatalf("%s: got %v", fn.name, err)
+		}
+	}
+}

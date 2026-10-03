@@ -20,13 +20,54 @@ package core
 
 import (
 	"github.com/teamgram/proto/mtproto"
+	"github.com/teamgram/teamgram-server/app/bff/apifull/channelview"
 )
 
 // ChannelsSearchPosts
-// channels.searchPosts#d19f987b hashtag:string offset_rate:int offset_peer:InputPeer offset_id:int limit:int = messages.Messages;
+// channels.searchPosts#f2c4f24d flags:# hashtag:flags.0?string query:flags.1?string offset_rate:int offset_peer:InputPeer offset_id:int limit:int allow_paid_stars:flags.2?long = messages.Messages;
 func (c *MessagesCore) ChannelsSearchPosts(in *mtproto.TLChannelsSearchPosts) (*mtproto.Messages_Messages, error) {
-	// TODO: not impl
-	c.Logger.Errorf("channels.searchPosts blocked, License key from https://teamgram.net required to unlock enterprise features.")
+	if c == nil || c.MD == nil || c.MD.UserId <= 0 {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
+	if in == nil || in.GetOffsetPeer() == nil {
+		return nil, mtproto.ErrPeerIdInvalid
+	}
+	if c.MD.IsBot {
+		return nil, mtproto.ErrBotMethodInvalid
+	}
+	if in.GetAllowPaidStars() != nil {
+		return nil, mtproto.ErrMethodNotImpl
+	}
+	if in.GetOffsetRate() != 0 {
+		return nil, mtproto.ErrMethodNotImpl
+	}
+	if in.GetLimit() < 0 || in.GetLimit() > 100 {
+		return nil, mtproto.ErrLimitInvalid
+	}
 
-	return nil, mtproto.ErrEnterpriseIsBlocked
+	query := in.GetQuery().GetValue()
+	if query == "" {
+		query = in.GetHashtag_STRING()
+	}
+	if query == "" && in.GetHashtag_FLAGSTRING() != nil {
+		query = in.GetHashtag_FLAGSTRING().GetValue()
+	}
+	limit := in.GetLimit()
+	if limit == 0 {
+		limit = 20
+	}
+
+	return channelview.SearchForInputPeer(
+		c.MD.UserId,
+		in.GetOffsetPeer(),
+		query,
+		0,
+		in.GetOffsetId(),
+		0,
+		0,
+		0,
+		0,
+		0,
+		limit,
+	)
 }

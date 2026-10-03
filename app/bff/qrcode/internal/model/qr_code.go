@@ -27,22 +27,36 @@ import (
 )
 
 const (
-	QRCodeStateNew      = 1
+	QRCodeStateNew = 1
+	// QRCodeStateAccepted is a recoverable claim. The authsession binding may
+	// still be pending, so polling clients must not treat it as authorized.
 	QRCodeStateAccepted = 2
-	QRCodeStateSuccess  = 3
+	// QRCodeStateSuccess means the claimed user was confirmed in authsession.
+	QRCodeStateSuccess = 3
 )
 
 type QRCodeTransaction struct {
-	PermAuthKeyId int64  `json:"perm_auth_key_id"`
-	ServerId      string `json:"server_id"`
-	AuthKeyId     int64  `json:"auth_key_id"`
-	SessionId     int64  `json:"session_id"`
-	ApiId         int32  `json:"api_id"`
-	ApiHash       string `json:"api_hash"`
-	CodeHash      string `json:"code_hash"`
-	ExpireAt      int64  `json:"expire_at"`
-	UserId        int64  `json:"user_id"`
-	State         int    `json:"state"`
+	PermAuthKeyId int64   `json:"perm_auth_key_id"`
+	DcId          int32   `json:"dc_id"`
+	ServerId      string  `json:"server_id"`
+	AuthKeyId     int64   `json:"auth_key_id"`
+	SessionId     int64   `json:"session_id"`
+	ApiId         int32   `json:"api_id"`
+	ApiHash       string  `json:"api_hash"`
+	ExceptIDs     []int64 `json:"except_ids"`
+	CodeHash      string  `json:"code_hash"`
+	ExpireAt      int64   `json:"expire_at"`
+	UserId        int64   `json:"user_id"`
+	State         int     `json:"state"`
+}
+
+func (m *QRCodeTransaction) ExcludesUser(userID int64) bool {
+	for _, id := range m.ExceptIDs {
+		if id == userID {
+			return true
+		}
+	}
+	return false
 }
 
 func (m *QRCodeTransaction) Token() []byte {

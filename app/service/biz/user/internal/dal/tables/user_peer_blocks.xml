@@ -14,6 +14,7 @@
 
     <operation name="SelectList" result_set="list">
         <params>
+            <param name="offset" type="int32" />
             <param name="limit" type="int32" />
         </params>
         <sql>
@@ -22,7 +23,7 @@
             FROM
                 user_peer_blocks
             WHERE
-                user_id = :user_id AND deleted = 0 ORDER BY id LIMIT :limit
+                user_id = :user_id AND deleted = 0 ORDER BY id LIMIT :offset, :limit
         </sql>
     </operation>
 

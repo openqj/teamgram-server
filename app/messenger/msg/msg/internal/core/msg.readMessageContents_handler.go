@@ -11,6 +11,7 @@ package core
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/teamgram/marmota/pkg/stores/sqlx"
 	"github.com/teamgram/proto/mtproto"
@@ -22,15 +23,27 @@ import (
 // MsgReadMessageContents
 // msg.readMessageContents user_id:long auth_key_id:long peer_type:int peer_id:long id:Vector<ContentMessage> = messages.AffectedMessage;
 func (c *MsgCore) MsgReadMessageContents(in *msg.TLMsgReadMessageContents) (*mtproto.Messages_AffectedMessages, error) {
+	if in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
 	var (
 		pts, ptsCount int32
 	)
 
-	affected, _ := c.readMentionedMessageContents(in)
+	affected, err := c.readMentionedMessageContents(in)
+	if err != nil {
+		return nil, err
+	}
 	ptsCount += affected
-	affected, _ = c.readMediaUnreadMessageContents(in)
+	affected, err = c.readMediaUnreadMessageContents(in)
+	if err != nil {
+		return nil, err
+	}
 	ptsCount += affected
-	affected, _ = c.readReactionUnreadMessageContents(in)
+	affected, err = c.readReactionUnreadMessageContents(in)
+	if err != nil {
+		return nil, err
+	}
 	ptsCount += affected
 
 	if ptsCount > 0 {
@@ -61,20 +74,18 @@ func (c *MsgCore) readMentionedMessageContents(in *msg.TLMsgReadMessageContents)
 			}
 		}
 		if ptsCount > 0 {
-			sz := c.svcCtx.Dao.CommonDAO.CalcSize(
-				c.ctx,
-				c.svcCtx.Dao.MessagesDAO.CalcTableName(in.UserId),
-				map[string]interface{}{
-					"user_id":   in.UserId,
-					"peer_type": mtproto.PEER_CHAT,
-					"peer_id":   in.PeerId,
-					"mentioned": 1,
-					"deleted":   0,
-				})
+			// CommonDAO.CalcSize converts query errors to a zero count. This path
+			// mutates unread state, so keep the underlying database error visible.
+			var sz int
+			query := fmt.Sprintf("SELECT count(id) FROM %s WHERE user_id = ? AND peer_type = ? AND peer_id = ? AND mentioned = ? AND deleted = ?", c.svcCtx.Dao.MessagesDAO.CalcTableName(in.UserId))
+			if err := c.svcCtx.Dao.DB.QueryRow(c.ctx, &sz, query, in.UserId, mtproto.PEER_CHAT, in.PeerId, 1, 0); err != nil {
+				return 0, err
+			}
 			for _, m := range in.Id {
 				if m.Mentioned {
-					c.svcCtx.Dao.MessagesDAO.UpdateMentionedAndMediaUnread(c.ctx, in.UserId, m.Id)
-					//UpdateMentioned()
+					if _, err := c.svcCtx.Dao.MessagesDAO.UpdateMentionedAndMediaUnread(c.ctx, in.UserId, m.Id); err != nil {
+						return 0, err
+					}
 				}
 			}
 
@@ -83,11 +94,11 @@ func (c *MsgCore) readMentionedMessageContents(in *msg.TLMsgReadMessageContents)
 				sz = 0
 			}
 
-			c.svcCtx.Dao.CachedConn.Exec(
+			if _, _, err := c.svcCtx.Dao.CachedConn.Exec(
 				c.ctx,
 				func(ctx context.Context, conn *sqlx.DB) (int64, int64, error) {
 					_, err2 := c.svcCtx.Dao.DialogsDAO.UpdateCustomMap(
-						c.ctx,
+						ctx,
 						map[string]interface{}{
 							"unread_mentions_count": sz,
 						},
@@ -97,7 +108,9 @@ func (c *MsgCore) readMentionedMessageContents(in *msg.TLMsgReadMessageContents)
 
 					return 0, 0, err2
 				},
-				dialog.GetDialogCacheKey(in.UserId, mtproto.MakePeerDialogId(mtproto.PEER_CHAT, in.PeerId)))
+				dialog.GetDialogCacheKey(in.UserId, mtproto.MakePeerDialogId(mtproto.PEER_CHAT, in.PeerId))); err != nil {
+				return 0, err
+			}
 		}
 
 		return ptsCount, nil
@@ -120,15 +133,19 @@ func (c *MsgCore) readMediaUnreadMessageContents(in *msg.TLMsgReadMessageContent
 		for _, m := range in.Id {
 			if m.MediaUnread {
 				ptsCount++
-				c.svcCtx.Dao.MessagesDAO.UpdateMediaUnread(c.ctx, in.UserId, m.Id)
+				if _, err := c.svcCtx.Dao.MessagesDAO.UpdateMediaUnread(c.ctx, in.UserId, m.Id); err != nil {
+					return 0, err
+				}
 				if in.UserId != in.PeerId {
-					c.svcCtx.Dao.InboxClient.InboxReadMediaUnreadToInboxV2(
+					if _, err := c.svcCtx.Dao.InboxClient.InboxReadMediaUnreadToInboxV2(
 						c.ctx, &inbox.TLInboxReadMediaUnreadToInboxV2{
 							UserId:          in.PeerId,
 							PeerType:        mtproto.PEER_USER,
 							PeerId:          in.UserId,
 							DialogMessageId: m.DialogMessageId,
-						})
+						}); err != nil {
+						return 0, err
+					}
 				}
 			}
 		}
@@ -139,14 +156,18 @@ func (c *MsgCore) readMediaUnreadMessageContents(in *msg.TLMsgReadMessageContent
 		for _, m := range in.Id {
 			if m.MediaUnread {
 				ptsCount++
-				c.svcCtx.Dao.MessagesDAO.UpdateMediaUnread(c.ctx, in.UserId, m.Id)
-				c.svcCtx.Dao.InboxClient.InboxReadMediaUnreadToInboxV2(
+				if _, err := c.svcCtx.Dao.MessagesDAO.UpdateMediaUnread(c.ctx, in.UserId, m.Id); err != nil {
+					return 0, err
+				}
+				if _, err := c.svcCtx.Dao.InboxClient.InboxReadMediaUnreadToInboxV2(
 					c.ctx, &inbox.TLInboxReadMediaUnreadToInboxV2{
 						UserId:          m.SendUserId,
 						PeerType:        mtproto.PEER_CHAT,
 						PeerId:          in.PeerId,
 						DialogMessageId: m.DialogMessageId,
-					})
+					}); err != nil {
+					return 0, err
+				}
 			}
 		}
 
@@ -172,17 +193,21 @@ func (c *MsgCore) readReactionUnreadMessageContents(in *msg.TLMsgReadMessageCont
 	for _, m := range in.Id {
 		if m.Reaction {
 			if c.svcCtx.MsgPlugin != nil {
-				c.svcCtx.MsgPlugin.ReadReactionUnreadMessage(c.ctx, in.UserId, m.Id)
+				if err := c.svcCtx.MsgPlugin.ReadReactionUnreadMessage(c.ctx, in.UserId, m.Id); err != nil {
+					return 0, err
+				}
+			} else {
+				return 0, mtproto.ErrMethodNotImpl
 			}
 		}
 	}
 
 	if unreadReactionsCount > 0 {
-		c.svcCtx.Dao.CachedConn.Exec(
+		if _, _, err := c.svcCtx.Dao.CachedConn.Exec(
 			c.ctx,
 			func(ctx context.Context, conn *sqlx.DB) (int64, int64, error) {
 				_, err2 := c.svcCtx.Dao.DialogsDAO.UpdateUnreadCount(
-					c.ctx,
+					ctx,
 					0,
 					0,
 					-unreadReactionsCount,
@@ -192,7 +217,9 @@ func (c *MsgCore) readReactionUnreadMessageContents(in *msg.TLMsgReadMessageCont
 
 				return 0, 0, err2
 			},
-			dialog.GetDialogCacheKey(in.UserId, mtproto.MakePeerDialogId(in.PeerType, in.PeerId)))
+			dialog.GetDialogCacheKey(in.UserId, mtproto.MakePeerDialogId(in.PeerType, in.PeerId))); err != nil {
+			return 0, err
+		}
 	}
-	return 0, nil
+	return unreadReactionsCount, nil
 }

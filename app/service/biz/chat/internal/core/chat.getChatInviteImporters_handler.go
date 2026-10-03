@@ -96,60 +96,92 @@ import (
 // ChatGetChatInviteImporters
 // chat.getChatInviteImporters flags:# self_id:long chat_id:long requested:flags.0?true link:flags.1?string q:flags.2?string offset_date:int offset_user:long limit:int = Vector<ChatInviteImporter>;
 func (c *ChatCore) ChatGetChatInviteImporters(in *chat.TLChatGetChatInviteImporters) (*chat.Vector_ChatInviteImporter, error) {
+	selfID, err := c.requireInviteSelf(in.GetSelfId())
+	if err != nil {
+		return nil, err
+	}
 	var (
 		rInvites []*mtproto.ChatInviteImporter
 		link     = chat.GetInviteHashByLink(in.GetLink().GetValue())
 		limit    = in.Limit
 	)
 
-	// TODO: see (case1, case2, case3)
+	if link != "" {
+		if _, err := c.requireInviteLinkPermission(in.GetChatId(), selfID, in.GetLink().GetValue()); err != nil {
+			return nil, err
+		}
+	} else if _, err := c.requireInvitePermission(in.GetChatId(), selfID, 0); err != nil {
+		return nil, err
+	}
 
 	if limit == 0 {
 		limit = 50
 	}
+	if limit < 0 {
+		return nil, mtproto.ErrLimitInvalid
+	}
 
-	// TODO: q
-
-	// TODO: see (case1, case2, case3)
 	var (
 		requested int32
+		q         = in.GetQ().GetValue()
 	)
 	if in.GetRequested() {
 		requested = 1
 	} else {
 		requested = 0
 	}
+	if q != "" && len(q) < 3 {
+		return &chat.Vector_ChatInviteImporter{Datas: []*mtproto.ChatInviteImporter{}}, nil
+	}
 
-	if requested == 1 {
-		c.svcCtx.Dao.ChatInviteParticipantsDAO.SelectRecentRequestedListWithCB(
+	appendImporter := func(v *dataobject.ChatInviteParticipantsDO) {
+		approvedBy := mtproto.MakeFlagsInt64(v.ApprovedBy)
+		if requested == 1 && link == "" {
+			approvedBy = nil
+		}
+		rInvites = append(rInvites, mtproto.MakeTLChatInviteImporter(&mtproto.ChatInviteImporter{
+			Requested:  v.Requested,
+			UserId:     v.UserId,
+			Date:       int32(v.Date2),
+			About:      nil,
+			ApprovedBy: approvedBy,
+		}).To_ChatInviteImporter())
+	}
+
+	if q != "" {
+		_, err := c.svcCtx.Dao.ChatInviteParticipantsDAO.SelectListByQueryWithCB(
 			c.ctx,
 			in.GetChatId(),
-			func(sz, i int, v *dataobject.ChatInviteParticipantsDO) {
-				rInvites = append(rInvites, mtproto.MakeTLChatInviteImporter(&mtproto.ChatInviteImporter{
-					Requested:  v.Requested,
-					UserId:     v.UserId,
-					Date:       int32(v.Date2),
-					About:      nil,
-					ApprovedBy: nil,
-				}).To_ChatInviteImporter())
-			})
+			link,
+			requested,
+			q,
+			func(_ int, _ int, v *dataobject.ChatInviteParticipantsDO) { appendImporter(v) })
+		if err != nil {
+			return nil, err
+		}
+		if rInvites == nil {
+			rInvites = []*mtproto.ChatInviteImporter{}
+		}
+	} else if requested == 1 && link == "" {
+		_, err := c.svcCtx.Dao.ChatInviteParticipantsDAO.SelectRecentRequestedListWithCB(
+			c.ctx,
+			in.GetChatId(),
+			func(_ int, _ int, v *dataobject.ChatInviteParticipantsDO) { appendImporter(v) })
+		if err != nil {
+			return nil, err
+		}
 		if rInvites == nil {
 			rInvites = []*mtproto.ChatInviteImporter{}
 		}
 	} else {
-		c.svcCtx.Dao.ChatInviteParticipantsDAO.SelectListByLinkWithCB(
+		_, err := c.svcCtx.Dao.ChatInviteParticipantsDAO.SelectListByLinkWithCB(
 			c.ctx,
 			link,
 			requested,
-			func(sz, i int, v *dataobject.ChatInviteParticipantsDO) {
-				rInvites = append(rInvites, mtproto.MakeTLChatInviteImporter(&mtproto.ChatInviteImporter{
-					Requested:  v.Requested,
-					UserId:     v.UserId,
-					Date:       int32(v.Date2),
-					About:      nil,
-					ApprovedBy: mtproto.MakeFlagsInt64(v.ApprovedBy),
-				}).To_ChatInviteImporter())
-			})
+			func(_ int, _ int, v *dataobject.ChatInviteParticipantsDO) { appendImporter(v) })
+		if err != nil {
+			return nil, err
+		}
 
 		if rInvites == nil {
 			rInvites = []*mtproto.ChatInviteImporter{}

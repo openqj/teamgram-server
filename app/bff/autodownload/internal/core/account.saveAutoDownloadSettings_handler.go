@@ -19,14 +19,42 @@
 package core
 
 import (
+	"encoding/json"
+	"fmt"
+
 	"github.com/teamgram/proto/mtproto"
+	"github.com/teamgram/teamgram-server/app/bff/apifull/persist"
 )
+
+func autoDownloadKey(userID int64, slot string) string {
+	return fmt.Sprintf("auto_download:%d:%s", userID, slot)
+}
+
+func autoDownloadSlot(in *mtproto.TLAccountSaveAutoDownloadSettings) string {
+	if in.GetLow() {
+		return "low"
+	}
+	if in.GetHigh() {
+		return "high"
+	}
+	return "medium"
+}
 
 // AccountSaveAutoDownloadSettings
 // account.saveAutoDownloadSettings#76f36233 flags:# low:flags.0?true high:flags.1?true settings:AutoDownloadSettings = Bool;
 func (c *AutoDownloadCore) AccountSaveAutoDownloadSettings(in *mtproto.TLAccountSaveAutoDownloadSettings) (*mtproto.Bool, error) {
-	// TODO: not impl
-	c.Logger.Errorf("account.saveAutoDownloadSettings blocked, License key from https://teamgram.net required to unlock enterprise features.")
-
+	settings := in.GetSettings()
+	if settings == nil {
+		return mtproto.BoolTrue, nil
+	}
+	raw, err := json.Marshal(settings)
+	if err != nil {
+		c.Logger.Errorf("account.saveAutoDownloadSettings - error: %v", err)
+		return nil, err
+	}
+	if err = persist.Default.Set(autoDownloadKey(c.MD.UserId, autoDownloadSlot(in)), string(raw)); err != nil {
+		c.Logger.Errorf("account.saveAutoDownloadSettings - error: %v", err)
+		return nil, err
+	}
 	return mtproto.BoolTrue, nil
 }

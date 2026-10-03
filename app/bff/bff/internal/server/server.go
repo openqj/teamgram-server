@@ -19,10 +19,13 @@
 package server
 
 import (
+	"context"
 	"flag"
 
 	"github.com/teamgram/proto/mtproto"
 	account_helper "github.com/teamgram/teamgram-server/app/bff/account"
+	apifull_helper "github.com/teamgram/teamgram-server/app/bff/apifull"
+	"github.com/teamgram/teamgram-server/app/bff/apifull/channelview"
 	authorization_helper "github.com/teamgram/teamgram-server/app/bff/authorization"
 	autodownload_helper "github.com/teamgram/teamgram-server/app/bff/autodownload"
 	"github.com/teamgram/teamgram-server/app/bff/bff/internal/config"
@@ -50,6 +53,7 @@ import (
 	usernames_helper "github.com/teamgram/teamgram-server/app/bff/usernames"
 	users_helper "github.com/teamgram/teamgram-server/app/bff/users"
 	webbrowserhelper "github.com/teamgram/teamgram-server/app/bff/webbrowser"
+	dialogpb "github.com/teamgram/teamgram-server/app/service/biz/dialog/dialog"
 
 	"github.com/zeromicro/go-zero/core/conf"
 	"github.com/zeromicro/go-zero/core/logx"
@@ -61,6 +65,24 @@ var configFile = flag.String("f", "etc/bff.yaml", "the config file")
 
 type Server struct {
 	grpcSrv *zrpc.RpcServer
+}
+
+type contactsChannelPlugin struct{}
+
+func (contactsChannelPlugin) GetChannelListByIdList(_ context.Context, selfID int64, ids ...int64) []*mtproto.Chat {
+	return channelview.ChatsByID(selfID, ids)
+}
+
+func (contactsChannelPlugin) GetChannelDialogById(context.Context, int64, int64) (*dialogpb.DialogExt, error) {
+	return nil, mtproto.ErrMethodNotImpl
+}
+
+func (contactsChannelPlugin) GetChannelMessage(context.Context, int64, int64, int32) (*mtproto.MessageBox, error) {
+	return nil, mtproto.ErrMethodNotImpl
+}
+
+func (contactsChannelPlugin) GetChannelTypingRecipients(ctx context.Context, selfID int64, peer *mtproto.InputPeer) ([]int64, error) {
+	return channelview.TypingRecipients(selfID, peer)
 }
 
 func New() *Server {
@@ -96,7 +118,10 @@ func (s *Server) Initialize() error {
 			qrcode_helper.New(
 				qrcode_helper.Config{
 					RpcServerConf:     c.RpcServerConf,
+					DcId:              c.DcId,
+					KnownDcIds:        c.KnownDcIds,
 					KV:                c.KV,
+					MysqlDSN:          c.MysqlDSN,
 					UserClient:        c.BizServiceClient,
 					AuthSessionClient: c.AuthSessionClient,
 					SyncClient:        c.SyncClient,
@@ -116,7 +141,10 @@ func (s *Server) Initialize() error {
 			authorization_helper.New(
 				authorization_helper.Config{
 					RpcServerConf:             c.RpcServerConf,
+					DcId:                      c.DcId,
+					KnownDcIds:                c.KnownDcIds,
 					KV:                        c.KV,
+					MysqlDSN:                  c.MysqlDSN,
 					Code:                      c.Code,
 					UserClient:                c.BizServiceClient,
 					AuthsessionClient:         c.AuthSessionClient,
@@ -188,6 +216,7 @@ func (s *Server) Initialize() error {
 			grpcServer,
 			updates_helper.New(updates_helper.Config{
 				RpcServerConf:     c.RpcServerConf,
+				MysqlDSN:          c.MysqlDSN,
 				UpdatesClient:     c.BizServiceClient,
 				UserClient:        c.BizServiceClient,
 				ChatClient:        c.BizServiceClient,
@@ -202,9 +231,10 @@ func (s *Server) Initialize() error {
 					RpcServerConf: c.RpcServerConf,
 					UserClient:    c.BizServiceClient,
 					ChatClient:    c.BizServiceClient,
+					MessageClient: c.BizServiceClient,
 					SyncClient:    c.SyncClient,
 				},
-				nil))
+				contactsChannelPlugin{}))
 
 		// dialogs_helper
 		mtproto.RegisterRPCDialogsServer(
@@ -217,7 +247,7 @@ func (s *Server) Initialize() error {
 				DialogClient:  c.BizServiceClient,
 				SyncClient:    c.SyncClient,
 				MessageClient: c.BizServiceClient,
-			}, nil))
+			}, contactsChannelPlugin{}))
 
 		// drafts_helper
 		mtproto.RegisterRPCDraftsServer(
@@ -352,7 +382,12 @@ func (s *Server) Initialize() error {
 		mtproto.RegisterRPCPasskeyServer(
 			grpcServer,
 			passkeyhelper.New(passkeyhelper.Config{
-				RpcServerConf: c.RpcServerConf,
+				RpcServerConf:     c.RpcServerConf,
+				Provider:          c.Passkey,
+				MysqlDSN:          c.MysqlDSN,
+				DcId:              c.DcId,
+				UserClient:        c.BizServiceClient,
+				AuthSessionClient: c.AuthSessionClient,
 			}))
 
 		mtproto.RegisterRPCWebBrowserServer(
@@ -360,6 +395,112 @@ func (s *Server) Initialize() error {
 			webbrowserhelper.New(webbrowserhelper.Config{
 				RpcServerConf: c.RpcServerConf,
 			}))
+
+		apiFull := apifull_helper.New(apifull_helper.Config{
+			RpcServerConf:                 c.RpcServerConf,
+			DialogClient:                  c.BizServiceClient,
+			UserClient:                    c.BizServiceClient,
+			ChatClient:                    c.BizServiceClient,
+			MessageClient:                 c.BizServiceClient,
+			MsgClient:                     c.MsgClient,
+			DfsClient:                     c.DfsClient,
+			SyncClient:                    c.SyncClient,
+			KV:                            c.KV,
+			Code:                          c.Code,
+			MysqlDSN:                      c.MysqlDSN,
+			PaymentProviderEndpoint:       c.PaymentProviderEndpoint,
+			PaymentProviderKey:            c.PaymentProviderKey,
+			PaymentProviderTimeoutSeconds: c.PaymentProviderTimeoutSeconds,
+			TurnHost:                      c.TurnHost,
+			TurnPort:                      c.TurnPort,
+		})
+		mtproto.RegisterRPCAccentColorsServer(grpcServer, apiFull)
+		mtproto.RegisterRPCAffiliateProgramsServer(grpcServer, apiFull)
+		mtproto.RegisterRPCAiComposeToneServer(grpcServer, apiFull)
+		mtproto.RegisterRPCAntiSpamServer(grpcServer, apiFull)
+		mtproto.RegisterRPCAutosaveServer(grpcServer, apiFull)
+		mtproto.RegisterRPCBoostsServer(grpcServer, apiFull)
+		mtproto.RegisterRPCBotAdminRightServer(grpcServer, apiFull)
+		mtproto.RegisterRPCBotMenuServer(grpcServer, apiFull)
+		mtproto.RegisterRPCBotMenuButtonServer(grpcServer, apiFull)
+		mtproto.RegisterRPCBotVerificationIconsServer(grpcServer, apiFull)
+		mtproto.RegisterRPCBotsServer(grpcServer, apiFull)
+		mtproto.RegisterRPCBusinessChatLinksServer(grpcServer, apiFull)
+		mtproto.RegisterRPCBusinessConnectedBotsServer(grpcServer, apiFull)
+		mtproto.RegisterRPCBusinessGreetingServer(grpcServer, apiFull)
+		mtproto.RegisterRPCBusinessIntroServer(grpcServer, apiFull)
+		mtproto.RegisterRPCBusinessLocationServer(grpcServer, apiFull)
+		mtproto.RegisterRPCBusinessOpeningHoursServer(grpcServer, apiFull)
+		mtproto.RegisterRPCBusinessQuickReplyServer(grpcServer, apiFull)
+		mtproto.RegisterRPCChannelAdRevenueServer(grpcServer, apiFull)
+		mtproto.RegisterRPCChannelRecommendationsServer(grpcServer, apiFull)
+		mtproto.RegisterRPCChannelsServer(grpcServer, apiFull)
+		mtproto.RegisterRPCCommunitiesServer(grpcServer, apiFull)
+		mtproto.RegisterRPCConferenceCallsServer(grpcServer, apiFull)
+		mtproto.RegisterRPCCustomEmojisServer(grpcServer, apiFull)
+		mtproto.RegisterRPCDeepLinksServer(grpcServer, apiFull)
+		mtproto.RegisterRPCEmojiServer(grpcServer, apiFull)
+		mtproto.RegisterRPCEmojiCategoriesServer(grpcServer, apiFull)
+		mtproto.RegisterRPCEmojiStatusServer(grpcServer, apiFull)
+		mtproto.RegisterRPCEphemeralServer(grpcServer, apiFull)
+		mtproto.RegisterRPCFactChecksServer(grpcServer, apiFull)
+		mtproto.RegisterRPCFolderTagsServer(grpcServer, apiFull)
+		mtproto.RegisterRPCFoldersServer(grpcServer, apiFull)
+		mtproto.RegisterRPCForumsServer(grpcServer, apiFull)
+		mtproto.RegisterRPCFragmentServer(grpcServer, apiFull)
+		mtproto.RegisterRPCFragmentCollectiblesServer(grpcServer, apiFull)
+		mtproto.RegisterRPCGamesServer(grpcServer, apiFull)
+		mtproto.RegisterRPCGatewayVerificationMessagesServer(grpcServer, apiFull)
+		mtproto.RegisterRPCGifsServer(grpcServer, apiFull)
+		mtproto.RegisterRPCGiftCodesServer(grpcServer, apiFull)
+		mtproto.RegisterRPCGiftCollectionsServer(grpcServer, apiFull)
+		mtproto.RegisterRPCGiftsServer(grpcServer, apiFull)
+		mtproto.RegisterRPCGiveawaysServer(grpcServer, apiFull)
+		mtproto.RegisterRPCGroupCallsServer(grpcServer, apiFull)
+		mtproto.RegisterRPCImportedChatsServer(grpcServer, apiFull)
+		mtproto.RegisterRPCInlineBotServer(grpcServer, apiFull)
+		mtproto.RegisterRPCInternalBotServer(grpcServer, apiFull)
+		mtproto.RegisterRPCLangpackServer(grpcServer, apiFull)
+		mtproto.RegisterRPCMainMiniBotAppsServer(grpcServer, apiFull)
+		mtproto.RegisterRPCMessageEffectsServer(grpcServer, apiFull)
+		mtproto.RegisterRPCMessageThreadsServer(grpcServer, apiFull)
+		mtproto.RegisterRPCMiniBotAppsServer(grpcServer, apiFull)
+		mtproto.RegisterRPCPaidMediaServer(grpcServer, apiFull)
+		mtproto.RegisterRPCPaidMessageServer(grpcServer, apiFull)
+		mtproto.RegisterRPCPaymentsServer(grpcServer, apiFull)
+		mtproto.RegisterRPCPollsServer(grpcServer, apiFull)
+		mtproto.RegisterRPCPredefinedServer(grpcServer, apiFull)
+		mtproto.RegisterRPCPreparedInlineMessagesServer(grpcServer, apiFull)
+		mtproto.RegisterRPCProfileLinksServer(grpcServer, apiFull)
+		mtproto.RegisterRPCPromoDataServer(grpcServer, apiFull)
+		mtproto.RegisterRPCReactionNotificationServer(grpcServer, apiFull)
+		mtproto.RegisterRPCReactionsServer(grpcServer, apiFull)
+		mtproto.RegisterRPCReportsServer(grpcServer, apiFull)
+		mtproto.RegisterRPCRingtoneServer(grpcServer, apiFull)
+		mtproto.RegisterRPCSavedMessageTagsServer(grpcServer, apiFull)
+		mtproto.RegisterRPCScheduledMessagesServer(grpcServer, apiFull)
+		mtproto.RegisterRPCSeamlessServer(grpcServer, apiFull)
+		mtproto.RegisterRPCSecretChatsServer(grpcServer, apiFull)
+		mtproto.RegisterRPCSmsjobsServer(grpcServer, apiFull)
+		mtproto.RegisterRPCStarSubscriptionsServer(grpcServer, apiFull)
+		mtproto.RegisterRPCStarsServer(grpcServer, apiFull)
+		mtproto.RegisterRPCStatisticsServer(grpcServer, apiFull)
+		mtproto.RegisterRPCStickersServer(grpcServer, apiFull)
+		mtproto.RegisterRPCStoriesServer(grpcServer, apiFull)
+		mtproto.RegisterRPCSuggestedPostsServer(grpcServer, apiFull)
+		mtproto.RegisterRPCTakeoutServer(grpcServer, apiFull)
+		mtproto.RegisterRPCThemesServer(grpcServer, apiFull)
+		mtproto.RegisterRPCTimezonesServer(grpcServer, apiFull)
+		mtproto.RegisterRPCTodoListsServer(grpcServer, apiFull)
+		mtproto.RegisterRPCTranscriptionServer(grpcServer, apiFull)
+		mtproto.RegisterRPCTranslationServer(grpcServer, apiFull)
+		mtproto.RegisterRPCTsfServer(grpcServer, apiFull)
+		mtproto.RegisterRPCTwoFaServer(grpcServer, apiFull)
+		mtproto.RegisterRPCVoipCallsServer(grpcServer, apiFull)
+		mtproto.RegisterRPCWallpapersServer(grpcServer, apiFull)
+		mtproto.RegisterRPCWebPageServer(grpcServer, apiFull)
+		mtproto.RegisterRPCBizServer(grpcServer, apiFull)
+
 	})
 
 	// logx.Must(err)

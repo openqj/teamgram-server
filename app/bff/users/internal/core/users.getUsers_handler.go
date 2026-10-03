@@ -26,24 +26,47 @@ import (
 // UsersGetUsers
 // users.getUsers#d91a548 id:Vector<InputUser> = Vector<User>;
 func (c *UsersCore) UsersGetUsers(in *mtproto.TLUsersGetUsers) (*mtproto.Vector_User, error) {
+	if c == nil || c.MD == nil || c.MD.UserId <= 0 {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
+	if in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
 	var (
 		idList []int64
 	)
 
 	for _, inputUser := range in.Id {
+		if inputUser == nil {
+			return nil, mtproto.ErrUserIdInvalid
+		}
 		peer := mtproto.FromInputUser(c.MD.UserId, inputUser)
 		switch peer.PeerType {
-		case mtproto.PEER_SELF, mtproto.PEER_USER:
+		case mtproto.PEER_SELF:
+			idList = append(idList, c.MD.UserId)
+		case mtproto.PEER_USER:
+			if peer.PeerId <= 0 {
+				return nil, mtproto.ErrUserIdInvalid
+			}
 			idList = append(idList, peer.PeerId)
 		default:
 			c.Logger.Errorf("invalid userId")
+			return nil, mtproto.ErrUserIdInvalid
 		}
 	}
 
-	mUsers, _ := c.svcCtx.Dao.UserClient.UserGetMutableUsers(c.ctx, &userpb.TLUserGetMutableUsers{
+	mUsers, err := c.svcCtx.Dao.UserClient.UserGetMutableUsers(c.ctx, &userpb.TLUserGetMutableUsers{
 		Id: idList,
 		To: []int64{c.MD.UserId},
 	})
+	if err != nil {
+		c.Logger.Errorf("users.getUsers - error: %v", err)
+		return nil, err
+	}
+	if mUsers == nil {
+		c.Logger.Errorf("users.getUsers - error: nil response")
+		return nil, mtproto.ErrInternalServerError
+	}
 
 	return &mtproto.Vector_User{
 		Datas: mUsers.GetUserListByIdList(c.MD.UserId, idList...),

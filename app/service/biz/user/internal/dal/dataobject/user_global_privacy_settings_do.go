@@ -10,12 +10,17 @@
 
 package dataobject
 
+import "database/sql"
+
 type UserGlobalPrivacySettingsDO struct {
-	Id                               int64 `db:"id" json:"id"`
-	UserId                           int64 `db:"user_id" json:"user_id"`
-	ArchiveAndMuteNewNoncontactPeers bool  `db:"archive_and_mute_new_noncontact_peers" json:"archive_and_mute_new_noncontact_peers"`
-	KeepArchivedUnmuted              bool  `db:"keep_archived_unmuted" json:"keep_archived_unmuted"`
-	KeepArchivedFolders              bool  `db:"keep_archived_folders" json:"keep_archived_folders"`
-	HideReadMarks                    bool  `db:"hide_read_marks" json:"hide_read_marks"`
-	NewNoncontactPeersRequirePremium bool  `db:"new_noncontact_peers_require_premium" json:"new_noncontact_peers_require_premium"`
+	Id                               int64          `db:"id" json:"id"`
+	UserId                           int64          `db:"user_id" json:"user_id"`
+	ArchiveAndMuteNewNoncontactPeers bool           `db:"archive_and_mute_new_noncontact_peers" json:"archive_and_mute_new_noncontact_peers"`
+	KeepArchivedUnmuted              bool           `db:"keep_archived_unmuted" json:"keep_archived_unmuted"`
+	KeepArchivedFolders              bool           `db:"keep_archived_folders" json:"keep_archived_folders"`
+	HideReadMarks                    bool           `db:"hide_read_marks" json:"hide_read_marks"`
+	NewNoncontactPeersRequirePremium bool           `db:"new_noncontact_peers_require_premium" json:"new_noncontact_peers_require_premium"`
+	DisplayGiftsButton               bool           `db:"display_gifts_button" json:"display_gifts_button"`
+	NoncontactPeersPaidStars         sql.NullInt64  `db:"noncontact_peers_paid_stars" json:"noncontact_peers_paid_stars"`
+	DisallowedGiftsJSON              sql.NullString `db:"disallowed_gifts" json:"disallowed_gifts"`
 }

@@ -19,14 +19,42 @@
 package core
 
 import (
+	"encoding/base64"
+
 	"github.com/teamgram/proto/mtproto"
+	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
 // AccountGetPasskeys
 // account.getPasskeys#ea1f0c52 = account.Passkeys;
 func (c *PasskeyCore) AccountGetPasskeys(in *mtproto.TLAccountGetPasskeys) (*mtproto.Account_Passkeys, error) {
-	// TODO: not impl
-	c.Logger.Errorf("account.getPasskeys blocked, License key from https://teamgram.net required to unlock enterprise features.")
-
-	return nil, mtproto.ErrEnterpriseIsBlocked
+	userID, err := passkeyRequireUser(c)
+	if err != nil {
+		return nil, err
+	}
+	if err = c.requireProvider(); err != nil {
+		return nil, err
+	}
+	if c.svcCtx.Dao == nil {
+		return nil, mtproto.ErrMethodNotImpl
+	}
+	_ = in
+	credentials, err := c.svcCtx.Dao.ListCredentials(c.ctx, userID)
+	if err != nil {
+		return nil, passkeyStorageError(err)
+	}
+	passkeys := make([]*mtproto.Passkey, 0, len(credentials))
+	for _, credential := range credentials {
+		var lastUsage *wrapperspb.Int32Value
+		if credential.LastUsageDate > 0 {
+			lastUsage = wrapperspb.Int32(int32(credential.LastUsageDate))
+		}
+		passkeys = append(passkeys, &mtproto.Passkey{
+			Id:            base64.RawURLEncoding.EncodeToString(credential.ID),
+			Name:          credential.Name,
+			Date:          int32(credential.Date),
+			LastUsageDate: lastUsage,
+		})
+	}
+	return mtproto.MakeTLAccountPasskeys(&mtproto.Account_Passkeys{Passkeys: passkeys}).To_Account_Passkeys(), nil
 }

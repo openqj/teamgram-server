@@ -19,14 +19,35 @@
 package core
 
 import (
+	"strconv"
+
 	"github.com/teamgram/proto/mtproto"
+	"github.com/teamgram/teamgram-server/app/bff/apifull/persist"
 )
 
 // ChannelsSetEmojiStickers
 // channels.setEmojiStickers#3cd930b7 channel:InputChannel stickerset:InputStickerSet = Bool;
 func (c *ChatsCore) ChannelsSetEmojiStickers(in *mtproto.TLChannelsSetEmojiStickers) (*mtproto.Bool, error) {
-	// TODO: not impl
-	c.Logger.Errorf("channels.setEmojiStickers blocked, License key from https://teamgram.net required to unlock enterprise features.")
+	if in == nil {
+		return nil, mtproto.ErrPeerIdInvalid
+	}
+	channelId, err := inputChannelId(in.GetChannel())
+	if err != nil {
+		return nil, err
+	}
+	chat, err := c.loadMutableChat(channelId)
+	if err != nil {
+		return nil, err
+	}
+	if _, err = c.requireCreatorOrAdmin(chat, false); err != nil {
+		c.Logger.Errorf("channels.setEmojiStickers - error: %v", err)
+		return nil, err
+	}
 
-	return nil, mtproto.ErrEnterpriseIsBlocked
+	key := "chat-emoji:" + strconv.FormatInt(channelId, 10)
+	if err = persist.Default.Set(key, stickerSetValue(in.GetStickerset())); err != nil {
+		c.Logger.Errorf("channels.setEmojiStickers - error: %v", err)
+		return nil, err
+	}
+	return mtproto.BoolTrue, nil
 }

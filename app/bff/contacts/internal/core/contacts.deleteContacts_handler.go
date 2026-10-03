@@ -33,14 +33,34 @@ func (c *ContactsCore) ContactsDeleteContacts(in *mtproto.TLContactsDeleteContac
 	)
 
 	for _, id := range in.GetId() {
+		if id == nil {
+			err := mtproto.ErrContactIdInvalid
+			c.Logger.Errorf("contacts.deleteContacts - error: invalid id %v: %v", id, err)
+			return nil, err
+		}
+
+		var userId int64
 		switch id.GetPredicateName() {
 		case mtproto.Predicate_inputUser:
+			userId = id.GetUserId()
+		case mtproto.Predicate_inputUserFromMessage:
+			var err error
+			userId, err = c.resolveUserFromMessage(id)
+			if err != nil {
+				c.Logger.Errorf("contacts.deleteContacts - error: invalid message user %v: %v", id, err)
+				return nil, mtproto.ErrContactIdInvalid
+			}
 		default:
-			// TODO:
-			c.Logger.Errorf("contacts.deleteContacts - error: invalid id %v", id)
-			continue
+			err := mtproto.ErrContactIdInvalid
+			c.Logger.Errorf("contacts.deleteContacts - error: invalid id %v: %v", id, err)
+			return nil, err
 		}
-		idHelper.AppendUsers(id.GetUserId())
+		if userId <= 0 || userId == c.MD.UserId {
+			err := mtproto.ErrContactIdInvalid
+			c.Logger.Errorf("contacts.deleteContacts - error: invalid user id %d: %v", userId, err)
+			return nil, err
+		}
+		idHelper.AppendUsers(userId)
 	}
 
 	deleteUsers, err := c.svcCtx.Dao.UserGetMutableUsers(c.ctx, &userpb.TLUserGetMutableUsers{
@@ -51,13 +71,20 @@ func (c *ContactsCore) ContactsDeleteContacts(in *mtproto.TLContactsDeleteContac
 		return nil, err
 	}
 
+	var deleteErr error
 	deleteUsers.VisitByMe(c.MD.UserId, func(me, it *mtproto.ImmutableUser) {
+		if deleteErr != nil {
+			return
+		}
 		if me.Id() != it.Id() {
 			// TODO: mutual
-			c.svcCtx.Dao.UserClient.UserDeleteContact(c.ctx, &userpb.TLUserDeleteContact{
+			if _, deleteErr = c.svcCtx.Dao.UserClient.UserDeleteContact(c.ctx, &userpb.TLUserDeleteContact{
 				UserId: c.MD.UserId,
 				Id:     it.Id(),
-			})
+			}); deleteErr != nil {
+				c.Logger.Errorf("contacts.deleteContacts - error: %v", deleteErr)
+				return
+			}
 
 			rUpdates.PushBackUpdate(
 				mtproto.MakeTLUpdatePeerSettings(&mtproto.Update{
@@ -93,12 +120,18 @@ func (c *ContactsCore) ContactsDeleteContacts(in *mtproto.TLContactsDeleteContac
 			rUpdates.PushUser(cUser)
 		}
 	})
+	if deleteErr != nil {
+		return nil, deleteErr
+	}
 
-	c.svcCtx.Dao.SyncClient.SyncUpdatesNotMe(c.ctx, &sync.TLSyncUpdatesNotMe{
+	if _, err = c.svcCtx.Dao.SyncClient.SyncUpdatesNotMe(c.ctx, &sync.TLSyncUpdatesNotMe{
 		UserId:        c.MD.UserId,
 		PermAuthKeyId: c.MD.PermAuthKeyId,
 		Updates:       rUpdates,
-	})
+	}); err != nil {
+		c.Logger.Errorf("contacts.deleteContacts - sync update: %v", err)
+		return nil, err
+	}
 
 	return rUpdates, nil
 }

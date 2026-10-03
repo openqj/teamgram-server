@@ -97,6 +97,34 @@ func TestRefreshAuthStateIfNeededPromotesWrapperToNormal(t *testing.T) {
 	}
 }
 
+func TestImportedAuthorizationPromotesUnauthorizedSession(t *testing.T) {
+	const userID = 2002
+
+	wrapper := &MainAuthWrapper{state: mtproto.AuthStateUnauthorized}
+	sess := &session{
+		inQueue:  newSessionInboundQueue(),
+		sessList: &SessionList{cb: wrapper},
+	}
+	authorization := mtproto.MakeTLAuthAuthorization(&mtproto.Auth_Authorization{
+		User: mtproto.MakeTLUser(&mtproto.User{Id: userID}).To_User(),
+	}).To_Auth_Authorization()
+
+	sess.onRpcResult(context.Background(), &rpcApiMessage{
+		reqMsg: &mtproto.TLAuthImportAuthorization{},
+		rpcResult: &mtproto.TLRpcResult{
+			ReqMsgId: 1,
+			Result:   authorization,
+		},
+	})
+
+	if wrapper.state != mtproto.AuthStateNormal {
+		t.Fatalf("wrapper.state = %d, want %d", wrapper.state, mtproto.AuthStateNormal)
+	}
+	if wrapper.AuthUserId != userID {
+		t.Fatalf("wrapper.AuthUserId = %d, want %d", wrapper.AuthUserId, userID)
+	}
+}
+
 var _ authsessionclient.AuthsessionClient = (*fakeAuthsessionClient)(nil)
 
 type fakeAuthsessionClient struct {

@@ -40,6 +40,8 @@ const (
 	cacheAuthKeyV2Prefix = "auth_keys2"
 )
 
+var ErrTempAuthKeyAlreadyBound = errors.New("temporary auth key is already bound to another permanent key")
+
 func genCacheAuthKeyKey(id int64) string {
 	return fmt.Sprintf("%s_%d", cacheAuthKeyPrefix, id)
 }
@@ -232,6 +234,59 @@ func (d *Dao) UnsafeBindKeyIdV2(ctx context.Context, keyId int64, bindType int32
 		key)
 
 	return
+}
+
+// BindTempAuthKeyV2 updates both sides of a temporary/permanent key binding in
+// one transaction. The temporary key cannot silently move between permanent
+// keys, while a permanent key may replace its previous temporary key.
+func (d *Dao) BindTempAuthKeyV2(ctx context.Context, permAuthKeyID, tempAuthKeyID int64, tempAuthKeyType int32) error {
+	if permAuthKeyID <= 0 || tempAuthKeyID <= 0 || permAuthKeyID == tempAuthKeyID {
+		return fmt.Errorf("invalid temporary auth key binding")
+	}
+	if tempAuthKeyType != mtproto.AuthKeyTypeTemp && tempAuthKeyType != mtproto.AuthKeyTypeMediaTemp {
+		return fmt.Errorf("invalid temporary auth key type: %d", tempAuthKeyType)
+	}
+
+	txResult := sqlx.TxWrapper(ctx, d.DB, func(tx *sqlx.Tx, result *sqlx.StoreResult) {
+		permInfo := &dataobject.AuthKeyInfosDO{}
+		if err := tx.QueryRowPartial(permInfo,
+			"SELECT auth_key_id, auth_key_type, perm_auth_key_id, temp_auth_key_id, media_temp_auth_key_id FROM auth_key_infos WHERE auth_key_id = ? AND deleted = 0 FOR UPDATE",
+			permAuthKeyID); err != nil {
+			result.Err = err
+			return
+		}
+		tempInfo := &dataobject.AuthKeyInfosDO{}
+		if err := tx.QueryRowPartial(tempInfo,
+			"SELECT auth_key_id, auth_key_type, perm_auth_key_id, temp_auth_key_id, media_temp_auth_key_id FROM auth_key_infos WHERE auth_key_id = ? AND deleted = 0 FOR UPDATE",
+			tempAuthKeyID); err != nil {
+			result.Err = err
+			return
+		}
+		if tempInfo.AuthKeyType != tempAuthKeyType {
+			result.Err = fmt.Errorf("temporary auth key type mismatch: got %d, want %d", tempInfo.AuthKeyType, tempAuthKeyType)
+			return
+		}
+		if tempInfo.PermAuthKeyId != 0 && tempInfo.PermAuthKeyId != permAuthKeyID {
+			result.Err = ErrTempAuthKeyAlreadyBound
+			return
+		}
+
+		field := "temp_auth_key_id"
+		if tempAuthKeyType == mtproto.AuthKeyTypeMediaTemp {
+			field = "media_temp_auth_key_id"
+		}
+		if _, err := d.AuthKeyInfosDAO.UpdateCustomMapTx(tx, map[string]interface{}{field: tempAuthKeyID}, permAuthKeyID); err != nil {
+			result.Err = err
+			return
+		}
+		if _, err := d.AuthKeyInfosDAO.UpdateCustomMapTx(tx, map[string]interface{}{"perm_auth_key_id": permAuthKeyID}, tempAuthKeyID); err != nil {
+			result.Err = err
+		}
+	})
+	if txResult.Err != nil {
+		return txResult.Err
+	}
+	return d.CachedConn.DelCache(ctx, genCacheAuthKeyV2Key(permAuthKeyID), genCacheAuthKeyV2Key(tempAuthKeyID))
 }
 
 func (d *Dao) GetPermAuthKeyId(ctx context.Context, authKeyId int64) int64 {

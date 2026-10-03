@@ -27,24 +27,32 @@ import (
 // DialogSetHistoryTTL
 // dialog.setHistoryTTL user_id:long peer_type:int peer_id:long ttl_period:int = Bool;
 func (c *DialogCore) DialogSetHistoryTTL(in *dialog.TLDialogSetHistoryTTL) (*mtproto.Bool, error) {
-	sqlx.TxWrapper(c.ctx, c.svcCtx.Dao.DB, func(tx *sqlx.Tx, result *sqlx.StoreResult) {
-		c.svcCtx.Dao.DialogsDAO.UpdateCustomMapTx(
+	result := sqlx.TxWrapper(c.ctx, c.svcCtx.Dao.DB, func(tx *sqlx.Tx, result *sqlx.StoreResult) {
+		if _, result.Err = c.svcCtx.Dao.DialogsDAO.UpdateCustomMapTx(
 			tx,
 			map[string]interface{}{
 				"ttl_period": in.TtlPeriod,
 			},
 			in.UserId,
 			in.PeerType,
-			in.PeerId)
-		c.svcCtx.Dao.DialogsDAO.UpdateCustomMapTx(
+			in.PeerId); result.Err != nil {
+			return
+		}
+		if _, result.Err = c.svcCtx.Dao.DialogsDAO.UpdateCustomMapTx(
 			tx,
 			map[string]interface{}{
 				"ttl_period": in.TtlPeriod,
 			},
 			in.PeerId,
 			in.PeerType,
-			in.UserId)
+			in.UserId); result.Err != nil {
+			return
+		}
 	})
+	if result.Err != nil {
+		c.Logger.Errorf("dialog.setHistoryTTL - error: %v", result.Err)
+		return nil, result.Err
+	}
 
 	return mtproto.BoolTrue, nil
 }

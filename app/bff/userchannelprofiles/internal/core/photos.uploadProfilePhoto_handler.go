@@ -28,6 +28,12 @@ import (
 // PhotosUploadProfilePhoto
 // photos.uploadProfilePhoto#89f30f69 flags:# file:flags.0?InputFile video:flags.1?InputFile video_start_ts:flags.2?double = photos.Photo;
 func (c *UserChannelProfilesCore) PhotosUploadProfilePhoto(in *mtproto.TLPhotosUploadProfilePhoto) (*mtproto.Photos_Photo, error) {
+	if c == nil || c.MD == nil || c.MD.UserId <= 0 {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
+	if in == nil || (inputFileEmpty(in.GetFile()) && inputFileEmpty(in.GetVideo())) {
+		return nil, mtproto.ErrPhotoInvalid
+	}
 	photo, err := c.svcCtx.Dao.MediaClient.MediaUploadProfilePhotoFile(c.ctx, &mediapb.TLMediaUploadProfilePhotoFile{
 		OwnerId:          c.MD.PermAuthKeyId,
 		File:             in.GetFile(),
@@ -39,15 +45,21 @@ func (c *UserChannelProfilesCore) PhotosUploadProfilePhoto(in *mtproto.TLPhotosU
 		c.Logger.Errorf("photos.uploadProfilePhoto - error: %v", err)
 		return nil, err
 	}
+	if photo == nil || photo.GetId() <= 0 {
+		return nil, mtproto.ErrInternalServerError
+	}
 
 	// TODO: ALBUM_PHOTOS_TOO_MANY
-	_, err = c.svcCtx.Dao.UserClient.UserUpdateProfilePhoto(c.ctx, &userpb.TLUserUpdateProfilePhoto{
+	updatedPhotoId, err := c.svcCtx.Dao.UserClient.UserUpdateProfilePhoto(c.ctx, &userpb.TLUserUpdateProfilePhoto{
 		UserId: c.MD.UserId,
 		Id:     photo.GetId(),
 	})
 	if err != nil {
 		c.Logger.Errorf("photos.uploadProfilePhoto - error: %v", err)
 		return nil, err
+	}
+	if updatedPhotoId == nil || updatedPhotoId.GetV() <= 0 {
+		return nil, mtproto.ErrInternalServerError
 	}
 
 	me, err := c.svcCtx.Dao.UserClient.UserGetImmutableUser(
@@ -61,15 +73,21 @@ func (c *UserChannelProfilesCore) PhotosUploadProfilePhoto(in *mtproto.TLPhotosU
 		c.Logger.Errorf("photos.uploadProfilePhoto - error: %v", err)
 		return nil, err
 	}
+	if me == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
 
-	_, _ = c.svcCtx.Dao.SyncClient.SyncPushUpdates(c.ctx, &sync.TLSyncPushUpdates{
+	if _, err = c.svcCtx.Dao.SyncClient.SyncPushUpdates(c.ctx, &sync.TLSyncPushUpdates{
 		UserId: c.MD.UserId,
 		Updates: mtproto.MakeUpdatesByUpdatesUsers(
 			[]*mtproto.User{me.ToSelfUser()},
 			mtproto.MakeTLUpdateUser(&mtproto.Update{
 				UserId: c.MD.UserId,
 			}).To_Update()),
-	})
+	}); err != nil {
+		c.Logger.Errorf("photos.uploadProfilePhoto - sync error: %v", err)
+		return nil, err
+	}
 
 	return mtproto.MakeTLPhotosPhoto(&mtproto.Photos_Photo{
 		Photo: photo,

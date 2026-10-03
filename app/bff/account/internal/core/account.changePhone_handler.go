@@ -27,6 +27,7 @@ import (
 	userpb "github.com/teamgram/teamgram-server/app/service/biz/user/user"
 	"github.com/teamgram/teamgram-server/pkg/phonenumber"
 
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
 
@@ -79,11 +80,9 @@ func (c *AccountCore) AccountChangePhone(in *mtproto.TLAccountChangePhone) (*mtp
 	if user, err = c.svcCtx.Dao.UserClient.UserGetImmutableUserByPhone(c.ctx, &userpb.TLUserGetImmutableUserByPhone{
 		Phone: phoneNumber,
 	}); err != nil {
-		if nErr, ok := status.FromError(err); ok {
-			// TODO: check if the error is mtproto.ErrPhoneNumberUnoccupied
-			// mtproto.ErrPhoneNumberUnoccupied
-			c.Logger.Errorf("checkPhoneNumberExist error: %v", err)
-			_ = nErr
+		nErr, ok := status.FromError(err)
+		if ok && (nErr.Code() == codes.NotFound ||
+			(nErr.Code() == status.Code(mtproto.ErrPhoneNumberUnoccupied) && nErr.Message() == status.Convert(mtproto.ErrPhoneNumberUnoccupied).Message())) {
 			err = nil
 		} else {
 			c.Logger.Errorf("checkPhoneNumberExist error: %v", err)
@@ -94,28 +93,29 @@ func (c *AccountCore) AccountChangePhone(in *mtproto.TLAccountChangePhone) (*mtp
 		return nil, mtproto.ErrPhoneNumberOccupied
 	}
 
-	codeData, err2 := c.svcCtx.AuthLogic.DoAuthChangePhone(c.ctx,
+	_, err = c.svcCtx.AuthLogic.DoAuthChangePhone(c.ctx,
 		c.MD.PermAuthKeyId,
 		phoneNumber,
 		phoneCode,
 		phoneCodeHash,
 		func(codeData2 *model.PhoneCodeTransaction) error {
-			return c.svcCtx.AuthLogic.VerifyCodeInterface.VerifySmsCode(c.ctx,
-				codeData2.PhoneCodeHash,
-				phoneCodeHash,
-				codeData2.PhoneCodeExtraData)
+			return c.consumeSMSChallenge(codeData2.PhoneCodeHash, phoneCode, challengePurposeChangePhone)
 		})
+	if err != nil {
+		c.Logger.Errorf("account.changePhone - auth error: %v", err)
+		return nil, err
+	}
 
-	_ = codeData
-	_ = err2
-
-	user, _ = c.svcCtx.Dao.UserClient.UserGetImmutableUser(c.ctx, &userpb.TLUserGetImmutableUser{
+	user, err = c.svcCtx.Dao.UserClient.UserGetImmutableUser(c.ctx, &userpb.TLUserGetImmutableUser{
 		Id: c.MD.UserId,
 	})
-	if user == nil {
-		c.Logger.Errorf("account.changePhone - error: %v")
-		// err = mtproto.ErrPhoneCodeInvalid
+	if err != nil {
+		c.Logger.Errorf("account.changePhone - get user error: %v", err)
 		return nil, err
+	}
+	if user == nil {
+		c.Logger.Errorf("account.changePhone - user not found")
+		return nil, mtproto.ErrInternalServerError
 	}
 
 	_, err = c.svcCtx.Dao.UserClient.UserChangePhone(c.ctx, &userpb.TLUserChangePhone{
@@ -123,8 +123,7 @@ func (c *AccountCore) AccountChangePhone(in *mtproto.TLAccountChangePhone) (*mtp
 		Phone:  phoneNumber,
 	})
 	if err != nil {
-		c.Logger.Errorf("account.changePhone - error: %v")
-		// err = mtproto.ErrPhoneCodeInvalid
+		c.Logger.Errorf("account.changePhone - change phone error: %v", err)
 		return nil, err
 	}
 

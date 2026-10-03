@@ -42,6 +42,14 @@ var (
 	GenContactCacheKey = genContactCacheKey
 )
 
+func getContactIdList(cached []int64, load func() ([]int64, error)) ([]int64, error) {
+	if len(cached) > 0 {
+		return cached, nil
+	}
+
+	return load()
+}
+
 type ContactItem struct {
 	C               *mtproto.InputContact
 	Unregistered    bool  // 未注册
@@ -75,11 +83,17 @@ func parseContactCacheKey(k string) (int64, int64) {
 
 func (d *Dao) GetUserContactList(ctx context.Context, id int64) []*mtproto.ContactData {
 	cacheUserData := d.GetCacheUserData(ctx, id)
-	if len(cacheUserData.GetContactIdList()) == 0 {
+	idList, err := getContactIdList(cacheUserData.GetContactIdList(), func() ([]int64, error) {
+		return d.UserContactsDAO.SelectUserContactIdList(ctx, id)
+	})
+	if err != nil {
+		return nil
+	}
+	if len(idList) == 0 {
 		return nil
 	}
 
-	return d.getContactListByIdList(ctx, id, cacheUserData.GetContactIdList())
+	return d.getContactListByIdList(ctx, id, idList)
 }
 
 func (d *Dao) GetUserContact(ctx context.Context, id, contactId int64) *mtproto.ContactData {
@@ -93,7 +107,12 @@ func (d *Dao) GetUserContact(ctx context.Context, id, contactId int64) *mtproto.
 
 func (d *Dao) GetUserContactListByIdList(ctx context.Context, id int64, contactId ...int64) []*mtproto.ContactData {
 	cacheUserData := d.GetCacheUserData(ctx, id)
-	idList := cacheUserData.GetContactIdList()
+	idList, err := getContactIdList(cacheUserData.GetContactIdList(), func() ([]int64, error) {
+		return d.UserContactsDAO.SelectUserContactIdList(ctx, id)
+	})
+	if err != nil {
+		return nil
+	}
 	if len(idList) == 0 {
 		return nil
 	}
@@ -111,8 +130,8 @@ func (d *Dao) GetUserContactListByIdList(ctx context.Context, id int64, contactI
 	return d.getContactListByIdList(ctx, id, idList2)
 }
 
-func (d *Dao) DeleteUserContact(ctx context.Context, id int64, contactId int64) {
-	_, affected, _ := d.CachedConn.Exec(
+func (d *Dao) DeleteUserContact(ctx context.Context, id int64, contactId int64) error {
+	_, affected, err := d.CachedConn.Exec(
 		ctx,
 		func(ctx context.Context, conn *sqlx.DB) (int64, int64, error) {
 			tR := sqlx.TxWrapper(
@@ -133,10 +152,62 @@ func (d *Dao) DeleteUserContact(ctx context.Context, id int64, contactId int64) 
 		},
 		genCacheUserDataCacheKey(id),
 		genContactCacheKey(id, contactId))
+	if err != nil {
+		return err
+	}
 
 	if affected != 0 {
-		d.CachedConn.DelCache(ctx, genContactCacheKey(contactId, id), genCacheUserDataCacheKey(contactId))
+		if err = d.CachedConn.DelCache(ctx, genContactCacheKey(contactId, id), genCacheUserDataCacheKey(contactId)); err != nil {
+			return err
+		}
 	}
+	return nil
+}
+
+func (d *Dao) ResetUserContacts(ctx context.Context, userId int64) error {
+	if userId <= 0 {
+		return mtproto.ErrInputRequestInvalid
+	}
+
+	contactIds, err := d.UserContactsDAO.SelectUserContactIdList(ctx, userId)
+	if err != nil {
+		return err
+	}
+	reverseContactIds, err := d.UserContactsDAO.SelectUserReverseContactIdList(ctx, userId)
+	if err != nil {
+		return err
+	}
+
+	cacheKeys := map[string]struct{}{genCacheUserDataCacheKey(userId): {}}
+	for _, id := range append(contactIds, reverseContactIds...) {
+		if id <= 0 || id == userId {
+			continue
+		}
+		cacheKeys[genCacheUserDataCacheKey(id)] = struct{}{}
+		cacheKeys[genContactCacheKey(userId, id)] = struct{}{}
+		cacheKeys[genContactCacheKey(id, userId)] = struct{}{}
+	}
+	keys := make([]string, 0, len(cacheKeys))
+	for key := range cacheKeys {
+		keys = append(keys, key)
+	}
+
+	_, _, err = d.CachedConn.Exec(ctx, func(ctx context.Context, conn *sqlx.DB) (int64, int64, error) {
+		tR := sqlx.TxWrapper(ctx, conn, func(tx *sqlx.Tx, result *sqlx.StoreResult) {
+			if _, result.Err = tx.Exec("UPDATE user_contacts SET is_deleted = 1, mutual = 0, close_friend = 0, stories_hidden = 0 WHERE owner_user_id = ? AND contact_user_id != 0 AND is_deleted = 0", userId); result.Err != nil {
+				return
+			}
+			if _, result.Err = tx.Exec("UPDATE user_contacts SET mutual = 0 WHERE contact_user_id = ? AND owner_user_id != ? AND is_deleted = 0", userId, userId); result.Err != nil {
+				return
+			}
+			if _, result.Err = tx.Exec("UPDATE imported_contacts SET deleted = 1 WHERE imported_user_id = ? AND deleted = 0", userId); result.Err != nil {
+				return
+			}
+			_, result.Err = tx.Exec("DELETE FROM unregistered_contacts WHERE importer_user_id = ?", userId)
+		})
+		return 0, 0, tR.Err
+	}, keys...)
+	return err
 }
 
 func (d *Dao) PutUserContact(ctx context.Context, changeMutual bool, do *dataobject.UserContactsDO) error {
@@ -180,13 +251,13 @@ func (d *Dao) PutUserContact(ctx context.Context, changeMutual bool, do *dataobj
 	return err
 }
 
-func (d *Dao) ClearContactCaches(ctx context.Context, userId int64, contactId ...int64) {
+func (d *Dao) ClearContactCaches(ctx context.Context, userId int64, contactId ...int64) error {
 	keys := []string{genCacheUserDataCacheKey(userId)}
 	for _, id := range contactId {
 		keys = append(keys, genContactCacheKey(userId, id))
 		keys = append(keys, genContactCacheKey(id, userId))
 	}
-	_ = d.CachedConn.DelCache(ctx, keys...)
+	return d.CachedConn.DelCache(ctx, keys...)
 }
 
 func (d *Dao) GetCloseFriendList(ctx context.Context, id int64) []*mtproto.ContactData {

@@ -25,17 +25,16 @@ import (
 // HelpGetNearestDc
 // help.getNearestDc#1fb33026 = NearestDc;
 func (c *ConfigurationCore) HelpGetNearestDc(in *mtproto.TLHelpGetNearestDc) (*mtproto.NearestDc, error) {
-	// TODO: not impl
 	_ = in
 
-	// TODO: not impl
-	c.Logger.Errorf("help.getNearestDc blocked, License key from https://teamgram.net required to unlock enterprise features.")
+	// No geo database is stored. This DC from help.getConfig is the only known DC.
+	var dc int32
+	if cfg := config.GetData2(); cfg != nil {
+		dc = cfg.GetThisDc()
+	}
 
-	rValue := mtproto.MakeTLNearestDc(&mtproto.NearestDc{
-		Country:   "CN",
-		ThisDc:    1,
-		NearestDc: 1,
-	}).To_NearestDc()
-
-	return rValue, nil
+	return mtproto.MakeTLNearestDc(&mtproto.NearestDc{
+		ThisDc:    dc,
+		NearestDc: dc,
+	}).To_NearestDc(), nil
 }

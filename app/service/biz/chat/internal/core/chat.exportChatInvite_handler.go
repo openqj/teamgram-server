@@ -19,10 +19,24 @@ import (
 // ChatExportChatInvite
 // chat.exportChatInvite flags:# chat_id:long admin_id:long legacy_revoke_permanent:flags.2?true request_needed:flags.3?true expire_date:flags.0?int usage_limit:flags.1?int title:flags.4?string = ExportedChatInvite;
 func (c *ChatCore) ChatExportChatInvite(in *chat.TLChatExportChatInvite) (*mtproto.ExportedChatInvite, error) {
+	callerId, err := c.requireInviteCaller()
+	if err != nil {
+		return nil, err
+	}
+	if in.AdminId != callerId {
+		return nil, mtproto.ErrUserIdInvalid
+	}
+	if _, err := c.requireInvitePermission(in.ChatId, callerId, 0); err != nil {
+		return nil, err
+	}
+	link := chat.GenChatInviteHash()
+	if c.isAPIFullChannel(in.ChatId) {
+		link = chat.GenChannelInviteHash()
+	}
 	chatInviteDO := &dataobject.ChatInvitesDO{
 		ChatId:        in.ChatId,
 		AdminId:       in.AdminId,
-		Link:          chat.GenChatInviteHash(),
+		Link:          link,
 		Permanent:     false,
 		Revoked:       false,
 		RequestNeeded: in.RequestNeeded,
@@ -35,7 +49,7 @@ func (c *ChatCore) ChatExportChatInvite(in *chat.TLChatExportChatInvite) (*mtpro
 		Date2:         time.Now().Unix(),
 	}
 
-	_, _, err := c.svcCtx.Dao.ChatInvitesDAO.Insert(c.ctx, chatInviteDO)
+	_, _, err = c.svcCtx.Dao.ChatInvitesDAO.Insert(c.ctx, chatInviteDO)
 	if err != nil {
 		c.Logger.Errorf("chat.exportChatInvite - error: %v", err)
 		return nil, err

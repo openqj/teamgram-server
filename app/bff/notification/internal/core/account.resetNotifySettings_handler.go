@@ -29,16 +29,21 @@ import (
 // AccountResetNotifySettings
 // account.resetNotifySettings#db7e1747 = Bool;
 func (c *NotificationCore) AccountResetNotifySettings(in *mtproto.TLAccountResetNotifySettings) (*mtproto.Bool, error) {
-	_, err := c.svcCtx.Dao.UserClient.UserResetNotifySettings(c.ctx, &userpb.TLUserResetNotifySettings{
+	result, err := c.svcCtx.Dao.UserClient.UserResetNotifySettings(c.ctx, &userpb.TLUserResetNotifySettings{
 		UserId: c.MD.UserId,
 	})
 	if err != nil {
 		c.Logger.Errorf("getNotifySettings error - %v", err)
-		// We ignore error
-		return mtproto.BoolFalse, nil
+		return nil, err
+	}
+	if result == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
+	if result.GetPredicateName() != mtproto.Predicate_boolTrue {
+		return result, nil
 	}
 
-	pushNotifySettingsFunc := func(peerType int32) {
+	pushNotifySettingsFunc := func(peerType int32) error {
 		peer := &mtproto.PeerUtil{
 			PeerType: peerType,
 			PeerId:   0,
@@ -52,17 +57,21 @@ func (c *NotificationCore) AccountResetNotifySettings(in *mtproto.TLAccountReset
 				Sound:        &wrapperspb.StringValue{Value: "default"},
 			}).To_PeerNotifySettings(),
 		}).To_Update())
-		c.svcCtx.Dao.SyncClient.SyncUpdatesNotMe(c.ctx, &sync.TLSyncUpdatesNotMe{
+		_, err := c.svcCtx.Dao.SyncClient.SyncUpdatesNotMe(c.ctx, &sync.TLSyncUpdatesNotMe{
 			Constructor:   0,
 			UserId:        c.MD.UserId,
 			PermAuthKeyId: c.MD.PermAuthKeyId,
 			Updates:       syncUpdates,
 		})
+		return err
 	}
 
-	pushNotifySettingsFunc(mtproto.PEER_USERS)
-	pushNotifySettingsFunc(mtproto.PEER_CHATS)
-	pushNotifySettingsFunc(mtproto.PEER_BROADCASTS)
+	for _, peerType := range []int32{mtproto.PEER_USERS, mtproto.PEER_CHATS, mtproto.PEER_BROADCASTS} {
+		if err = pushNotifySettingsFunc(peerType); err != nil {
+			c.Logger.Errorf("account.resetNotifySettings - sync update: %v", err)
+			return nil, err
+		}
+	}
 
 	return mtproto.BoolTrue, nil
 }

@@ -25,8 +25,8 @@ import (
 // HelpGetSupportName
 // help.getSupportName#d360e72c = help.SupportName;
 func (c *ConfigurationCore) HelpGetSupportName(in *mtproto.TLHelpGetSupportName) (*mtproto.Help_SupportName, error) {
-	// TODO: not impl
-	c.Logger.Errorf("help.getSupportName blocked, License key from https://teamgram.net required to unlock enterprise features.")
+	_ = in
 
-	return nil, mtproto.ErrEnterpriseIsBlocked
+	// No support user is stored.
+	return mtproto.MakeTLHelpSupportName(&mtproto.Help_SupportName{}).To_Help_SupportName(), nil
 }

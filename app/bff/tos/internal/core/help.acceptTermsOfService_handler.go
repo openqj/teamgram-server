@@ -20,13 +20,20 @@ package core
 
 import (
 	"github.com/teamgram/proto/mtproto"
+	"github.com/teamgram/teamgram-server/app/bff/apifull/persist"
 )
 
 // HelpAcceptTermsOfService
 // help.acceptTermsOfService#ee72f79a id:DataJSON = Bool;
 func (c *TosCore) HelpAcceptTermsOfService(in *mtproto.TLHelpAcceptTermsOfService) (*mtproto.Bool, error) {
-	// TODO: not impl
-	c.Logger.Errorf("help.acceptTermsOfService blocked, License key from https://teamgram.net required to unlock enterprise features.")
+	data := ""
+	if in.GetId() != nil {
+		data = in.GetId().GetData()
+	}
+	if err := persist.Default.Set(tosKey(c.MD.UserId), data); err != nil {
+		c.Logger.Errorf("help.acceptTermsOfService - error: %v", err)
+		return nil, err
+	}
 
 	return mtproto.BoolTrue, nil
 }

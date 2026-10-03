@@ -20,21 +20,49 @@ package core
 
 import (
 	"github.com/teamgram/proto/mtproto"
+	"github.com/teamgram/teamgram-server/app/bff/apifull/channelview"
 	msgpb "github.com/teamgram/teamgram-server/app/messenger/msg/msg/msg"
+
+	"google.golang.org/grpc/status"
 )
 
 // MessagesUpdatePinnedMessage
 // messages.updatePinnedMessage#d2aaf7ec flags:# silent:flags.0?true unpin:flags.1?true pm_oneside:flags.2?true peer:InputPeer id:int = Updates;
 func (c *MessagesCore) MessagesUpdatePinnedMessage(in *mtproto.TLMessagesUpdatePinnedMessage) (*mtproto.Updates, error) {
+	if c == nil || c.MD == nil || c.MD.UserId <= 0 {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
+	if in == nil || in.GetPeer() == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if c.svcCtx == nil || c.svcCtx.Dao == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
 	var (
 		peer     = mtproto.FromInputPeer2(c.MD.UserId, in.Peer)
 		rUpdates *mtproto.Updates
 	)
 
-	if !peer.IsChatOrUser() {
-		c.Logger.Errorf("invalid peer: %v", in.Peer)
-		err := mtproto.ErrPeerIdInvalid
-		return nil, err
+	if peer == nil || (!peer.IsChannel() && !peer.IsChatOrUser()) {
+		c.Logger.Errorf("invalid peer")
+		return nil, mtproto.ErrPeerIdInvalid
+	}
+	if peer.PeerId <= 0 {
+		return nil, mtproto.ErrPeerIdInvalid
+	}
+	if peer.IsChannel() {
+		rUpdates, err := channelview.Pin(c.MD.UserId, peer.PeerId, in.Id, in.Unpin)
+		if err != nil {
+			c.Logger.Errorf("messages.updatePinnedMessage - channel pin failed")
+			if _, ok := status.FromError(err); !ok {
+				err = mtproto.ErrInternalServerError
+			}
+			return nil, err
+		}
+		return rUpdates, nil
+	}
+	if c.svcCtx.Dao.MsgClient == nil {
+		return nil, mtproto.ErrInternalServerError
 	}
 
 	rUpdates, err := c.svcCtx.Dao.MsgClient.MsgUpdatePinnedMessage(c.ctx, &msgpb.TLMsgUpdatePinnedMessage{
@@ -50,6 +78,9 @@ func (c *MessagesCore) MessagesUpdatePinnedMessage(in *mtproto.TLMessagesUpdateP
 	if err != nil {
 		c.Logger.Errorf("messages.updatePinnedMessage - error: %v", in.Peer)
 		return nil, err
+	}
+	if rUpdates == nil {
+		return nil, mtproto.ErrInternalServerError
 	}
 
 	return rUpdates, nil

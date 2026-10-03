@@ -15,10 +15,15 @@ import (
 )
 
 // GetOffsetIdBackwardSavedHistoryMessages offset
-func (d *Dao) GetOffsetIdBackwardSavedHistoryMessages(ctx context.Context, userId int64, savedPeerId *mtproto.PeerUtil, offsetId, minId, maxId, limit int32, hash int64) (messages []*mtproto.MessageBox) {
+
+func (d *Dao) GetOffsetIdBackwardSavedHistoryMessages(ctx context.Context, userId int64, savedPeerId *mtproto.PeerUtil, offsetId, minId, maxId, limit int32, hash int64) (messages []*mtproto.MessageBox, err error) {
+	if savedPeerId == nil {
+		return nil, mtproto.ErrPeerIdInvalid
+	}
 	switch savedPeerId.PeerType {
 	case mtproto.PEER_SELF, mtproto.PEER_USER, mtproto.PEER_CHAT:
-		rList, _ := d.MessagesDAO.SelectBackwardSavedByOffsetIdLimitWithCB(
+		var rList []dataobject.MessagesDO
+		rList, err = d.MessagesDAO.SelectBackwardSavedByOffsetIdLimitWithCB(
 			ctx,
 			userId,
 			savedPeerId.PeerType,
@@ -29,19 +34,28 @@ func (d *Dao) GetOffsetIdBackwardSavedHistoryMessages(ctx context.Context, userI
 				messages = append(messages, d.MakeMessageBox(ctx, userId, v))
 			})
 		_ = rList
+		if err != nil {
+			return nil, err
+		}
 		// logx.WithContext(ctx).Infof("GetOffsetIdBackwardHistoryMessages: %v", rList)
 	case mtproto.PEER_CHANNEL:
 		logx.WithContext(ctx).Errorf("blocked, License key from https://teamgram.net required to unlock enterprise features.")
+		return nil, mtproto.ErrEnterpriseIsBlocked
+	default:
+		return nil, mtproto.ErrPeerIdInvalid
 	}
 
-	messages = mtproto.ToSafeMessageBoxList(messages)
-	return
+	return mtproto.ToSafeMessageBoxList(messages), nil
 }
 
-func (d *Dao) GetOffsetIdForwardSavedHistoryMessages(ctx context.Context, userId int64, savedPeerId *mtproto.PeerUtil, offsetId, minId, maxId, limit int32, hash int64) (messages []*mtproto.MessageBox) {
+func (d *Dao) GetOffsetIdForwardSavedHistoryMessages(ctx context.Context, userId int64, savedPeerId *mtproto.PeerUtil, offsetId, minId, maxId, limit int32, hash int64) (messages []*mtproto.MessageBox, err error) {
+	if savedPeerId == nil {
+		return nil, mtproto.ErrPeerIdInvalid
+	}
 	switch savedPeerId.PeerType {
 	case mtproto.PEER_SELF, mtproto.PEER_USER, mtproto.PEER_CHAT:
-		rList, _ := d.MessagesDAO.SelectForwardSavedByOffsetIdLimitWithCB(
+		var rList []dataobject.MessagesDO
+		rList, err = d.MessagesDAO.SelectForwardSavedByOffsetIdLimitWithCB(
 			ctx,
 			userId,
 			savedPeerId.PeerType,
@@ -52,18 +66,27 @@ func (d *Dao) GetOffsetIdForwardSavedHistoryMessages(ctx context.Context, userId
 				messages = append(messages, d.MakeMessageBox(ctx, userId, v))
 			})
 		_ = rList
+		if err != nil {
+			return nil, err
+		}
 	case mtproto.PEER_CHANNEL:
 		logx.WithContext(ctx).Errorf("blocked, License key from https://teamgram.net required to unlock enterprise features.")
+		return nil, mtproto.ErrEnterpriseIsBlocked
+	default:
+		return nil, mtproto.ErrPeerIdInvalid
 	}
 
-	messages = mtproto.ToSafeMessageBoxList(messages)
-	return
+	return mtproto.ToSafeMessageBoxList(messages), nil
 }
 
-func (d *Dao) GetOffsetDateBackwardSavedHistoryMessages(ctx context.Context, userId int64, savedPeerId *mtproto.PeerUtil, offsetDate, minId, maxId, limit int32, hash int64) (messages []*mtproto.MessageBox) {
+func (d *Dao) GetOffsetDateBackwardSavedHistoryMessages(ctx context.Context, userId int64, savedPeerId *mtproto.PeerUtil, offsetDate, minId, maxId, limit int32, hash int64) (messages []*mtproto.MessageBox, err error) {
+	if savedPeerId == nil {
+		return nil, mtproto.ErrPeerIdInvalid
+	}
 	switch savedPeerId.PeerType {
 	case mtproto.PEER_SELF, mtproto.PEER_USER, mtproto.PEER_CHAT:
-		rList, _ := d.MessagesDAO.SelectBackwardSavedByOffsetDateLimitWithCB(
+		var rList []dataobject.MessagesDO
+		rList, err = d.MessagesDAO.SelectBackwardSavedByOffsetDateLimitWithCB(
 			ctx,
 			userId,
 			savedPeerId.PeerType,
@@ -74,18 +97,27 @@ func (d *Dao) GetOffsetDateBackwardSavedHistoryMessages(ctx context.Context, use
 				messages = append(messages, d.MakeMessageBox(ctx, userId, v))
 			})
 		_ = rList
+		if err != nil {
+			return nil, err
+		}
 	case mtproto.PEER_CHANNEL:
 		logx.WithContext(ctx).Errorf("blocked, License key from https://teamgram.net required to unlock enterprise features.")
+		return nil, mtproto.ErrEnterpriseIsBlocked
+	default:
+		return nil, mtproto.ErrPeerIdInvalid
 	}
 
-	messages = mtproto.ToSafeMessageBoxList(messages)
-	return
+	return mtproto.ToSafeMessageBoxList(messages), nil
 }
 
-func (d *Dao) GetOffsetDateForwardSavedHistoryMessages(ctx context.Context, userId int64, savedPeerId *mtproto.PeerUtil, offsetDate, minId, maxId, limit int32, hash int64) (messages []*mtproto.MessageBox) {
+func (d *Dao) GetOffsetDateForwardSavedHistoryMessages(ctx context.Context, userId int64, savedPeerId *mtproto.PeerUtil, offsetDate, minId, maxId, limit int32, hash int64) (messages []*mtproto.MessageBox, err error) {
+	if savedPeerId == nil {
+		return nil, mtproto.ErrPeerIdInvalid
+	}
 	switch savedPeerId.PeerType {
 	case mtproto.PEER_SELF, mtproto.PEER_USER, mtproto.PEER_CHAT:
-		rList, _ := d.MessagesDAO.SelectForwardSavedByOffsetDateLimitWithCB(
+		var rList []dataobject.MessagesDO
+		rList, err = d.MessagesDAO.SelectForwardSavedByOffsetDateLimitWithCB(
 			ctx,
 			userId,
 			savedPeerId.PeerType,
@@ -96,10 +128,15 @@ func (d *Dao) GetOffsetDateForwardSavedHistoryMessages(ctx context.Context, user
 				messages = append(messages, d.MakeMessageBox(ctx, userId, v))
 			})
 		_ = rList
+		if err != nil {
+			return nil, err
+		}
 	case mtproto.PEER_CHANNEL:
 		logx.Errorf("blocked, License key from https://teamgram.net required to unlock enterprise features.")
+		return nil, mtproto.ErrEnterpriseIsBlocked
+	default:
+		return nil, mtproto.ErrPeerIdInvalid
 	}
 
-	messages = mtproto.ToSafeMessageBoxList(messages)
-	return
+	return mtproto.ToSafeMessageBoxList(messages), nil
 }

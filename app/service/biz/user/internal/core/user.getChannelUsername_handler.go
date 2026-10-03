@@ -19,8 +19,6 @@
 package core
 
 import (
-	"fmt"
-
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/service/biz/user/user"
 )
@@ -28,9 +26,13 @@ import (
 // UserGetChannelUsername
 // user.getChannelUsername channel_id:long = UsernameData;
 func (c *UserCore) UserGetChannelUsername(in *user.TLUserGetChannelUsername) (*user.UsernameData, error) {
-	do, _ := c.svcCtx.Dao.UsernameDAO.SelectByPeer(c.ctx, mtproto.PEER_CHANNEL, in.ChannelId)
-	if do == nil {
-		err := fmt.Errorf("channel_id's username empty")
+	do, err := c.svcCtx.Dao.UsernameDAO.SelectByPeer(c.ctx, mtproto.PEER_CHANNEL, in.ChannelId)
+	if err != nil {
+		c.Logger.Errorf("username.getChannelUsername - error: %v", err)
+		return nil, err
+	}
+	if do == nil || do.Username == "" {
+		err = mtproto.ErrUsernameNotOccupied
 		c.Logger.Errorf("username.getChannelUsername - error: %v", err)
 		return nil, err
 	}

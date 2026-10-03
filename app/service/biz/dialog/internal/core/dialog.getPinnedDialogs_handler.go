@@ -33,7 +33,7 @@ func (c *DialogCore) DialogGetPinnedDialogs(in *dialog.TLDialogGetPinnedDialogs)
 		}
 	} else {
 		// dIdList, err = c.svcCtx.Dao.GetFolderPinnedDialogIdList(c.ctx, meId)
-		dIdList, err = c.svcCtx.Dao.GetNoCacheFolderPinnedDialogIdList(c.ctx, meId)
+		dIdList, err = c.svcCtx.Dao.GetNoCacheFolderPinnedDialogIdList(c.ctx, meId, folderId)
 		if err != nil {
 			c.Logger.Errorf("dialog.getPinnedDialogs - error: %v", err)
 			return nil, err

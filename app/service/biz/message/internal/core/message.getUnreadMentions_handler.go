@@ -26,6 +26,7 @@ func (c *MessageCore) MessageGetUnreadMentions(in *message.TLMessageGetUnreadMen
 		maxId     = in.MaxInt
 		boxList   []*mtproto.MessageBox
 		peer      = mtproto.MakePeerUtil(in.PeerType, in.PeerId)
+		err       error
 	)
 
 	loadType := loadTypeBackward
@@ -46,7 +47,7 @@ func (c *MessageCore) MessageGetUnreadMentions(in *message.TLMessageGetUnreadMen
 		if offsetId == 0 {
 			offsetId = math.MaxInt32
 		}
-		boxList = c.svcCtx.Dao.GetOffsetIdBackwardUnreadMentions(
+		boxList, err = c.svcCtx.Dao.GetOffsetIdBackwardUnreadMentions(
 			c.ctx,
 			in.UserId,
 			peer,
@@ -54,8 +55,11 @@ func (c *MessageCore) MessageGetUnreadMentions(in *message.TLMessageGetUnreadMen
 			minId,
 			maxId,
 			addOffset+limit)
+		if err != nil {
+			return nil, err
+		}
 	case loadTypeFirstAroundDate:
-		boxList1 := c.svcCtx.Dao.GetOffsetIdForwardUnreadMentions(
+		boxList1, err := c.svcCtx.Dao.GetOffsetIdForwardUnreadMentions(
 			c.ctx,
 			in.UserId,
 			peer,
@@ -63,13 +67,16 @@ func (c *MessageCore) MessageGetUnreadMentions(in *message.TLMessageGetUnreadMen
 			minId,
 			maxId,
 			-addOffset)
+		if err != nil {
+			return nil, err
+		}
 
 		for i, j := 0, len(boxList1)-1; i < j; i, j = i+1, j-1 {
 			boxList1[i], boxList1[j] = boxList1[j], boxList1[i]
 		}
 		boxList = append(boxList, boxList1...)
 		// 降序
-		boxList2 := c.svcCtx.Dao.GetOffsetIdBackwardUnreadMentions(
+		boxList2, err := c.svcCtx.Dao.GetOffsetIdBackwardUnreadMentions(
 			c.ctx,
 			in.UserId,
 			peer,
@@ -77,10 +84,13 @@ func (c *MessageCore) MessageGetUnreadMentions(in *message.TLMessageGetUnreadMen
 			minId,
 			maxId,
 			limit+addOffset)
+		if err != nil {
+			return nil, err
+		}
 
 		boxList = append(boxList, boxList2...)
 	case loadTypeForward:
-		boxList = c.svcCtx.Dao.GetOffsetIdForwardUnreadMentions(
+		boxList, err = c.svcCtx.Dao.GetOffsetIdForwardUnreadMentions(
 			c.ctx,
 			in.UserId,
 			peer,
@@ -88,6 +98,9 @@ func (c *MessageCore) MessageGetUnreadMentions(in *message.TLMessageGetUnreadMen
 			minId,
 			maxId,
 			-addOffset)
+		if err != nil {
+			return nil, err
+		}
 		for i, j := 0, len(boxList)-1; i < j; i, j = i+1, j-1 {
 			boxList[i], boxList[j] = boxList[j], boxList[i]
 		}

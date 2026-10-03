@@ -31,6 +31,15 @@ import (
 // MessagesSaveDraft
 // messages.saveDraft#bc39e14b flags:# no_webpage:flags.1?true reply_to_msg_id:flags.0?int peer:InputPeer message:string entities:flags.3?Vector<MessageEntity> = Bool;
 func (c *DraftsCore) MessagesSaveDraft(in *mtproto.TLMessagesSaveDraft) (*mtproto.Bool, error) {
+	if c == nil || c.MD == nil || c.MD.UserId <= 0 {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
+	if in == nil || in.GetPeer() == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.DialogClient == nil || c.svcCtx.Dao.SyncClient == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
 	var (
 		peer                = mtproto.FromInputPeer2(c.MD.UserId, in.Peer)
 		draft               *mtproto.DraftMessage
@@ -53,11 +62,13 @@ func (c *DraftsCore) MessagesSaveDraft(in *mtproto.TLMessagesSaveDraft) (*mtprot
 			Date_FLAGINT32: mtproto.MakeFlagsInt32(date),
 		}).To_DraftMessage()
 
-		c.svcCtx.Dao.DialogClient.DialogClearDraftMessage(c.ctx, &dialog.TLDialogClearDraftMessage{
+		if _, err := c.svcCtx.Dao.DialogClient.DialogClearDraftMessage(c.ctx, &dialog.TLDialogClearDraftMessage{
 			UserId:   c.MD.UserId,
 			PeerType: peer.PeerType,
 			PeerId:   peer.PeerId,
-		})
+		}); err != nil {
+			return nil, err
+		}
 	} else {
 		draft = mtproto.MakeTLDraftMessage(&mtproto.DraftMessage{
 			NoWebpage:    in.GetNoWebpage(),
@@ -71,12 +82,19 @@ func (c *DraftsCore) MessagesSaveDraft(in *mtproto.TLMessagesSaveDraft) (*mtprot
 			Effect:       in.GetEffect(),
 		}).To_DraftMessage()
 
-		c.svcCtx.Dao.DialogClient.DialogSaveDraftMessage(c.ctx, &dialog.TLDialogSaveDraftMessage{
+		if _, err := c.svcCtx.Dao.DialogClient.DialogSaveDraftMessage(c.ctx, &dialog.TLDialogSaveDraftMessage{
 			UserId:   c.MD.UserId,
 			PeerType: peer.PeerType,
 			PeerId:   peer.PeerId,
 			Message:  draft,
-		})
+		}); err != nil {
+			return nil, err
+		}
+	}
+
+	if err := saveStoredDraft(c.MD.UserId, peer.PeerType, peer.PeerId, draft, isDraftMessageEmpty); err != nil {
+		c.Logger.Errorf("messages.saveDraft - error: %v", err)
+		return nil, err
 	}
 
 	syncUpdates := mtproto.MakeUpdatesByUpdates(mtproto.MakeTLUpdateDraftMessage(&mtproto.Update{
@@ -86,39 +104,73 @@ func (c *DraftsCore) MessagesSaveDraft(in *mtproto.TLMessagesSaveDraft) (*mtprot
 
 	switch peer.PeerType {
 	case mtproto.PEER_SELF:
-		user, _ := c.svcCtx.Dao.UserClient.UserGetImmutableUser(c.ctx, &userpb.TLUserGetImmutableUser{
+		if c.svcCtx.Dao.UserClient == nil {
+			return nil, mtproto.ErrInternalServerError
+		}
+		user, err := c.svcCtx.Dao.UserClient.UserGetImmutableUser(c.ctx, &userpb.TLUserGetImmutableUser{
 			Id: c.MD.UserId,
 		})
-		if user != nil {
-			syncUpdates.PushUser(user.ToSelfUser())
+		if err != nil {
+			return nil, err
 		}
+		if user == nil {
+			return nil, mtproto.ErrUserIdInvalid
+		}
+		syncUpdates.PushUser(user.ToSelfUser())
 	case mtproto.PEER_USER:
-		users, _ := c.svcCtx.Dao.UserClient.UserGetMutableUsers(c.ctx, &userpb.TLUserGetMutableUsers{
+		if c.svcCtx.Dao.UserClient == nil {
+			return nil, mtproto.ErrInternalServerError
+		}
+		users, err := c.svcCtx.Dao.UserClient.UserGetMutableUsers(c.ctx, &userpb.TLUserGetMutableUsers{
 			Id: []int64{c.MD.UserId, peer.PeerId},
 		})
-		user, _ := users.GetUnsafeUser(c.MD.UserId, peer.PeerId)
+		if err != nil {
+			return nil, err
+		}
+		if users == nil {
+			return nil, mtproto.ErrInternalServerError
+		}
+		user, err := users.GetUnsafeUser(c.MD.UserId, peer.PeerId)
+		if err != nil || user == nil {
+			if err != nil {
+				return nil, err
+			}
+			return nil, mtproto.ErrUserIdInvalid
+		}
 		syncUpdates.AddSafeUser(user)
 	case mtproto.PEER_CHAT:
-		chat, _ := c.svcCtx.Dao.ChatClient.ChatGetMutableChat(c.ctx, &chatpb.TLChatGetMutableChat{
+		if c.svcCtx.Dao.ChatClient == nil {
+			return nil, mtproto.ErrInternalServerError
+		}
+		chat, err := c.svcCtx.Dao.ChatClient.ChatGetMutableChat(c.ctx, &chatpb.TLChatGetMutableChat{
 			ChatId: peer.PeerId,
 		})
+		if err != nil {
+			return nil, err
+		}
+		if chat == nil || chat.GetChat() == nil {
+			return nil, mtproto.ErrChatIdInvalid
+		}
 		syncUpdates.AddSafeChat(chat.ToUnsafeChat(c.MD.UserId))
 	case mtproto.PEER_CHANNEL:
-		if c.svcCtx.Plugin != nil {
-			chats := c.svcCtx.Plugin.GetChannelListByIdList(c.ctx, c.MD.UserId, peer.PeerId)
-			syncUpdates.PushChat(chats...)
-		} else {
-			c.Logger.Errorf("messages.saveDraft blocked, License key from https://teamgram.net required to unlock enterprise features.")
-			return nil, mtproto.ErrEnterpriseIsBlocked
+		if c.svcCtx.Plugin == nil {
+			return nil, mtproto.ErrMethodNotImpl
 		}
+		chats := c.svcCtx.Plugin.GetChannelListByIdList(c.ctx, c.MD.UserId, peer.PeerId)
+		if len(chats) != 1 || chats[0] == nil || chats[0].GetId() != peer.PeerId {
+			return nil, mtproto.ErrInternalServerError
+		}
+		syncUpdates.PushChat(chats...)
 	}
 
 	// sync
-	c.svcCtx.Dao.SyncClient.SyncUpdatesNotMe(c.ctx, &sync.TLSyncUpdatesNotMe{
+	if _, err := c.svcCtx.Dao.SyncClient.SyncUpdatesNotMe(c.ctx, &sync.TLSyncUpdatesNotMe{
 		UserId:        c.MD.UserId,
 		PermAuthKeyId: c.MD.PermAuthKeyId,
 		Updates:       syncUpdates,
-	})
+	}); err != nil {
+		return nil, err
+	}
 
 	return mtproto.BoolTrue, nil
 }

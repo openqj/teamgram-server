@@ -37,6 +37,7 @@ func (c *UserCore) UserSetContactSignUpNotification(in *user.TLUserSetContactSig
 	})
 	if err != nil {
 		c.Logger.Errorf("user.setContactSignUpNotification - error: %v", err)
+		return nil, err
 	}
 
 	return mtproto.BoolTrue, nil

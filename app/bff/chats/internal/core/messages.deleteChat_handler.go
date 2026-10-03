@@ -29,6 +29,12 @@ import (
 // MessagesDeleteChat
 // messages.deleteChat#5bd0ee50 chat_id:long = Bool;
 func (c *ChatsCore) MessagesDeleteChat(in *mtproto.TLMessagesDeleteChat) (*mtproto.Bool, error) {
+	if c == nil || c.MD == nil {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
+	if in == nil || in.GetChatId() <= 0 {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
 	operatorId := c.MD.UserId
 	if c.MD.IsAdmin {
 		operatorId = 0
@@ -43,36 +49,69 @@ func (c *ChatsCore) MessagesDeleteChat(in *mtproto.TLMessagesDeleteChat) (*mtpro
 		c.Logger.Errorf("messages.deleteChat - error: %v", err)
 		return nil, err
 	}
+	if chat == nil || chat.GetChat() == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
 
 	pushUpdates := mtproto.MakeUpdatesByUpdatesChats(
 		[]*mtproto.Chat{chat.ToChatForbidden()},
 		mtproto.MakeUpdateChat(chat.Id()))
 
 	// 1. kicked all
+	var firstErr error
 	chat.Walk(func(userId int64, participant *mtproto.ImmutableChatParticipant) error {
-		c.svcCtx.Dao.DialogClient.DialogDeleteDialog(c.ctx, &dialog.TLDialogDeleteDialog{
+		if firstErr != nil {
+			return firstErr
+		}
+		if participant == nil {
+			firstErr = mtproto.ErrInternalServerError
+			return firstErr
+		}
+		if reply, deleteErr := c.svcCtx.Dao.DialogClient.DialogDeleteDialog(c.ctx, &dialog.TLDialogDeleteDialog{
 			UserId:   userId,
 			PeerType: mtproto.PEER_CHAT,
 			PeerId:   chat.Id(),
-		})
-
-		if userId == c.MD.UserId || participant.IsChatMemberStateNormal() {
-			c.svcCtx.Dao.SyncClient.SyncPushUpdates(c.ctx, &sync.TLSyncPushUpdates{
-				UserId:  userId,
-				Updates: pushUpdates,
-			})
+		}); deleteErr != nil {
+			firstErr = deleteErr
+			return firstErr
+		} else if reply == nil {
+			firstErr = mtproto.ErrInternalServerError
+			return firstErr
 		}
 
-		c.svcCtx.Dao.MsgClient.MsgDeleteHistory(c.ctx, &msgpb.TLMsgDeleteHistory{
+		if userId == c.MD.UserId || participant.IsChatMemberStateNormal() {
+			if reply, pushErr := c.svcCtx.Dao.SyncClient.SyncPushUpdates(c.ctx, &sync.TLSyncPushUpdates{
+				UserId:  userId,
+				Updates: pushUpdates,
+			}); pushErr != nil {
+				firstErr = pushErr
+				return firstErr
+			} else if reply == nil {
+				firstErr = mtproto.ErrInternalServerError
+				return firstErr
+			}
+		}
+
+		if reply, deleteErr := c.svcCtx.Dao.MsgClient.MsgDeleteHistory(c.ctx, &msgpb.TLMsgDeleteHistory{
 			UserId:    userId,
 			AuthKeyId: 0,
 			PeerType:  mtproto.PEER_CHAT,
 			PeerId:    chat.Id(),
 			JustClear: false,
 			Revoke:    false,
-		})
+		}); deleteErr != nil {
+			firstErr = deleteErr
+			return firstErr
+		} else if reply == nil {
+			firstErr = mtproto.ErrInternalServerError
+			return firstErr
+		}
 		return nil
 	})
+	if firstErr != nil {
+		c.Logger.Errorf("messages.deleteChat - cleanup error: %v", firstErr)
+		return nil, firstErr
+	}
 
 	return mtproto.BoolTrue, nil
 }

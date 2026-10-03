@@ -25,8 +25,21 @@ import (
 // AuthImportWebTokenAuthorization
 // auth.importWebTokenAuthorization#2db873a9 api_id:int api_hash:string web_auth_token:string = auth.Authorization;
 func (c *AuthorizationCore) AuthImportWebTokenAuthorization(in *mtproto.TLAuthImportWebTokenAuthorization) (*mtproto.Auth_Authorization, error) {
-	// TODO: not impl
-	c.Logger.Errorf("auth.importWebTokenAuthorization blocked, License key from https://teamgram.net required to unlock enterprise features.")
+	if in == nil || in.GetWebAuthToken() == "" {
+		if c != nil {
+			c.Logger.Errorf("auth.importWebTokenAuthorization - empty web_auth_token")
+		}
+		return nil, mtproto.ErrAccessTokenInvalid
+	}
+	if c == nil || c.svcCtx == nil || c.svcCtx.Dao == nil || c.MD == nil || c.MD.GetPermAuthKeyId() == 0 {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
+	if err := c.svcCtx.Dao.CheckApiIdAndHash(in.GetApiId(), in.GetApiHash()); err != nil {
+		c.Logger.Errorf("auth.importWebTokenAuthorization - api: %v", err)
+		return nil, err
+	}
 
-	return nil, mtproto.ErrEnterpriseIsBlocked
+	// No web-token verifier is configured. Do not create a user from an unchecked token.
+	c.Logger.Errorf("auth.importWebTokenAuthorization - verifier unavailable")
+	return nil, mtproto.ErrMethodNotImpl
 }

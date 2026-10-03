@@ -30,6 +30,10 @@ import (
 // DfsUploadThemeFile
 // dfs.uploadThemeFile flags:# creator:long file:InputFile thumb:flags.0?InputFile mime_type:string file_name:string = Document;
 func (c *DfsCore) DfsUploadThemeFile(in *dfs.TLDfsUploadThemeFile) (*mtproto.Document, error) {
+	if in == nil || in.GetFile() == nil {
+		return nil, mtproto.ErrThemeFileInvalid
+	}
+
 	var (
 		path string
 		err  error
@@ -47,11 +51,6 @@ func (c *DfsCore) DfsUploadThemeFile(in *dfs.TLDfsUploadThemeFile) (*mtproto.Doc
 	)
 
 	// upload file
-	if file == nil {
-		c.Logger.Errorf("dfs.uploadThemeFile - ErrInputRequestInvalid")
-		return nil, mtproto.ErrWallpaperFileInvalid
-	}
-
 	if err = model.CheckFileParts(file.Parts); err != nil {
 		c.Logger.Errorf("dfs.uploadThemeFile - %v", err)
 		return nil, err

@@ -35,21 +35,38 @@ func (c *MessagesCore) MessagesSendMessage(in *mtproto.TLMessagesSendMessage) (*
 		peer = mtproto.FromInputPeer2(c.MD.UserId, in.Peer)
 	)
 
+	if in.Message == "" {
+		err := mtproto.ErrMessageEmpty
+		c.Logger.Errorf("message empty: %v", err)
+		return nil, err
+	}
+	if in.GetScheduleDate().GetValue() != 0 && (in.GetReplyToMsgId() != nil || in.GetReplyTo() != nil) {
+		return nil, mtproto.ErrMethodNotImpl
+	}
+	replyToPeer, err := c.resolveMessageReplyPeer(peer, in.GetReplyTo(), in.GetReplyToMsgId())
+	if err != nil {
+		return nil, err
+	}
+	replyToMsgID, replyToTopID := storedReplyIDs(in.GetReplyTo(), in.GetReplyToMsgId())
+	if up, handled, err := c.deliverStored(in.GetPeer(), peer, in.GetScheduleDate().GetValue(), in.Message, replyToMsgID, replyToTopID); handled {
+		if err != nil {
+			c.Logger.Errorf("messages.sendMessage stored: %v", err)
+		}
+		return up, err
+	}
+
 	if !peer.IsChatOrUser() {
 		c.Logger.Errorf("invalid peer: %v", in.Peer)
-		err := mtproto.ErrEnterpriseIsBlocked
-		return nil, err
+		if peer.IsChannel() {
+			return nil, mtproto.ErrChannelInvalid
+		}
+		return nil, mtproto.ErrPeerIdInvalid
 	}
 
 	if peer.IsUser() && peer.IsSelfUser(c.MD.UserId) {
 		peer.PeerType = mtproto.PEER_USER
 	}
 
-	if in.Message == "" {
-		err := mtproto.ErrMessageEmpty
-		c.Logger.Errorf("message empty: %v", err)
-		return nil, err
-	}
 	// TODO(@benqi): calc utf16len(message)
 	//else if len(request.Message) > 4000 {
 	//	err = mtproto.ErrMessageTooLong
@@ -119,7 +136,7 @@ func (c *MessagesCore) MessagesSendMessage(in *mtproto.TLMessagesSendMessage) (*
 	}
 
 	// Fix ReplyToMsgId
-	if in.GetReplyToMsgId() != nil {
+	if in.GetReplyToMsgId() != nil && in.GetReplyTo() == nil {
 		outMessage.ReplyTo = mtproto.MakeTLMessageReplyHeader(&mtproto.MessageReplyHeader{
 			ReplyToScheduled:       false,
 			ForumTopic:             false,
@@ -146,7 +163,7 @@ func (c *MessagesCore) MessagesSendMessage(in *mtproto.TLMessagesSendMessage) (*
 				ReplyToMsgId:           replyTo.GetReplyToMsgId(),
 				ReplyToMsgId_INT32:     replyTo.GetReplyToMsgId(),
 				ReplyToMsgId_FLAGINT32: mtproto.MakeFlagsInt32(replyTo.GetReplyToMsgId()),
-				ReplyToPeerId:          nil,
+				ReplyToPeerId:          replyToPeer,
 				ReplyFrom:              nil,
 				ReplyMedia:             nil,
 				ReplyToTopId:           nil,
@@ -160,37 +177,8 @@ func (c *MessagesCore) MessagesSendMessage(in *mtproto.TLMessagesSendMessage) (*
 				outMessage.ReplyTo.QuoteEntities = replyTo.GetQuoteEntities()
 				outMessage.ReplyTo.QuoteOffset = replyTo.GetQuoteOffset()
 			}
-
-			// disable replyToPeerId
-			// TODO enable replyToPeerId
-			if replyTo.ReplyToPeerId != nil {
-				outMessage.ReplyTo = nil
-			}
-
 		case mtproto.Predicate_inputReplyToStory:
-			// TODO:
-			var (
-				rPeer  *mtproto.PeerUtil
-				userId int64
-			)
-
-			if replyTo.GetUserId() != nil {
-				rPeer = mtproto.FromInputUser(c.MD.UserId, replyTo.GetUserId())
-				userId = rPeer.PeerId
-			} else if replyTo.GetPeer() != nil {
-				rPeer = mtproto.FromInputPeer2(c.MD.UserId, replyTo.GetPeer())
-				if rPeer.IsUser() {
-					userId = peer.PeerId
-				}
-			}
-
-			if rPeer != nil {
-				outMessage.ReplyTo = mtproto.MakeTLMessageReplyStoryHeader(&mtproto.MessageReplyHeader{
-					UserId:  userId,
-					Peer:    rPeer.ToPeer(),
-					StoryId: replyTo.GetStoryId(),
-				}).To_MessageReplyHeader()
-			}
+			return nil, mtproto.ErrMethodNotImpl
 		}
 	}
 

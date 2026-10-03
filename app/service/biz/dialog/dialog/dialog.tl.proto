@@ -570,6 +570,8 @@ service RPCDialog {
       returns (SavedDialogList) {}
   rpc dialog_toggleSavedDialogPin(TL_dialog_toggleSavedDialogPin)
       returns (mtproto.Bool) {}
+  rpc dialog_markSavedHistoryRead(TL_dialog_insertOrUpdateDialog)
+      returns (mtproto.Bool) {}
   rpc dialog_reorderPinnedSavedDialogs(TL_dialog_reorderPinnedSavedDialogs)
       returns (mtproto.Bool) {}
   rpc dialog_getDialogFilter(TL_dialog_getDialogFilter)

@@ -164,6 +164,13 @@ func (sess *ShardingSessionClient) InvokeByKey(key string, cb func(client sessio
 	sess.failCounters[node]++
 	failCount := sess.failCounters[node]
 	if failCount >= maxNodeFailures {
+		if len(sess.sessions) == 1 {
+			sess.failCounters[node] = 0
+			sess.mu.Unlock()
+			logx.Errorf("session node %s failed repeatedly but is the only registered node; retaining it", node)
+			return err
+		}
+
 		logx.Errorf("session node %s unreachable (%d consecutive failures), removing from ring", node, failCount)
 		sess.dispatcher.Remove(node)
 		delete(sess.sessions, node)

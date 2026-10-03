@@ -23,10 +23,32 @@ import (
 )
 
 // MessagesGetSearchResultsCalendar
-// messages.getSearchResultsCalendar#49f0bde9 peer:InputPeer filter:MessagesFilter offset_id:int offset_date:int = messages.SearchResultsCalendar;
+// messages.getSearchResultsCalendar#6aa3f6bd flags:# peer:InputPeer saved_peer_id:flags.2?InputPeer filter:MessagesFilter offset_id:int offset_date:int = messages.SearchResultsCalendar;
 func (c *MessagesCore) MessagesGetSearchResultsCalendar(in *mtproto.TLMessagesGetSearchResultsCalendar) (*mtproto.Messages_SearchResultsCalendar, error) {
-	// TODO: not impl
-	c.Logger.Errorf("messages.getSearchResultsCalendar blocked, License key from https://teamgram.net required to unlock enterprise features.")
+	if in == nil || in.GetPeer() == nil {
+		return nil, mtproto.ErrPeerIdInvalid
+	}
+	if in.GetFilter() == nil {
+		return nil, mtproto.ErrInputFilterInvalid
+	}
 
-	return nil, mtproto.ErrEnterpriseIsBlocked
+	const limit int32 = 50
+	found, err := c.MessagesSearch(&mtproto.TLMessagesSearch{
+		Peer:        in.Peer,
+		SavedPeerId: in.SavedPeerId,
+		Filter:      in.Filter,
+		OffsetId:    in.OffsetId,
+		MaxDate:     in.OffsetDate,
+		Limit:       limit,
+	})
+	if err != nil {
+		c.Logger.Errorf("messages.getSearchResultsCalendar - error: %v", err)
+		return nil, err
+	}
+	if found == nil {
+		c.Logger.Errorf("messages.getSearchResultsCalendar - search returned nil result")
+		return nil, mtproto.ErrInternalServerError
+	}
+
+	return bucketByDay(found, int32(len(found.GetMessages())) >= limit), nil
 }

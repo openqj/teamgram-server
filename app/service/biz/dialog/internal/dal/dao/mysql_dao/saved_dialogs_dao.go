@@ -355,3 +355,20 @@ func (dao *SavedDialogsDAO) UpdateUserPeerPinnedTx(tx *sqlx.Tx, pinned int64, us
 
 	return
 }
+
+// UpdateReadMaxId advances the saved-history read cursor without rewinding it.
+func (dao *SavedDialogsDAO) UpdateReadMaxId(ctx context.Context, readMaxId int32, userId int64, peerType int32, peerId int64) (rowsAffected int64, err error) {
+	r, err := dao.db.Exec(ctx,
+		"update saved_dialogs set read_max_id = GREATEST(read_max_id, ?) where user_id = ? and peer_type = ? and peer_id = ? and deleted = 0",
+		readMaxId, userId, peerType, peerId)
+	if err != nil {
+		logx.WithContext(ctx).Errorf("exec in UpdateReadMaxId(_), error: %v", err)
+		return
+	}
+
+	rowsAffected, err = r.RowsAffected()
+	if err != nil {
+		logx.WithContext(ctx).Errorf("rowsAffected in UpdateReadMaxId(_), error: %v", err)
+	}
+	return
+}

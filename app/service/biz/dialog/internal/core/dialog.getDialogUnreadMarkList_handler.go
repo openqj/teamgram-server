@@ -17,8 +17,19 @@ import (
 // DialogGetDialogUnreadMarkList
 // dialog.getDialogUnreadMarkList user_id:long = Vector<DialogPeer>;
 func (c *DialogCore) DialogGetDialogUnreadMarkList(in *dialog.TLDialogGetDialogUnreadMarkList) (*dialog.Vector_DialogPeer, error) {
-	// TODO: not impl
-	c.Logger.Errorf("dialog.getDialogUnreadMarkList - error: method DialogGetDialogUnreadMarkList not impl")
-
-	return nil, mtproto.ErrMethodNotImpl
+	rows, err := c.svcCtx.Dao.DialogsDAO.SelectAllDialogs(c.ctx, in.UserId)
+	if err != nil {
+		c.Logger.Errorf("dialog.getDialogUnreadMarkList - error: %v", err)
+		return nil, err
+	}
+	datas := make([]*mtproto.DialogPeer, 0)
+	for _, row := range rows {
+		if !row.UnreadMark {
+			continue
+		}
+		datas = append(datas, mtproto.MakeTLDialogPeer(&mtproto.DialogPeer{
+			Peer: mtproto.MakePeer(row.PeerType, row.PeerId),
+		}).To_DialogPeer())
+	}
+	return &dialog.Vector_DialogPeer{Datas: datas}, nil
 }

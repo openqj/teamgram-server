@@ -20,13 +20,54 @@ package core
 
 import (
 	"github.com/teamgram/proto/mtproto"
+	verification "github.com/teamgram/teamgram-server/pkg/code"
 )
 
 // AuthRequestPasswordRecovery
 // auth.requestPasswordRecovery#d897bc66 = auth.PasswordRecovery;
 func (c *AuthorizationCore) AuthRequestPasswordRecovery(in *mtproto.TLAuthRequestPasswordRecovery) (*mtproto.Auth_PasswordRecovery, error) {
-	// TODO: not impl
-	c.Logger.Errorf("auth.requestPasswordRecovery blocked, License key from https://teamgram.net required to unlock enterprise features.")
+	_ = in
+	if c == nil {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
+	if c.MD == nil || c.MD.GetUserId() == 0 {
+		c.Logger.Errorf("auth.requestPasswordRecovery - user not bound")
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
+	if c.svcCtx == nil || c.svcCtx.Challenges == nil {
+		c.Logger.Errorf("auth.requestPasswordRecovery - challenge provider unavailable")
+		return nil, mtproto.ErrSendCodeUnavailable
+	}
 
-	return nil, mtproto.ErrEnterpriseIsBlocked
+	st, err := loadAcctPasswordState(c.MD.GetUserId())
+	if err != nil {
+		c.Logger.Errorf("auth.requestPasswordRecovery - error: %v", err)
+		return nil, err
+	}
+	changed, err := rejectUndeliveredPasswordRecovery(&st)
+	if changed {
+		if saveErr := saveAcctPasswordState(c.MD.GetUserId(), st); saveErr != nil {
+			c.Logger.Errorf("auth.requestPasswordRecovery - clear legacy recovery code: %v", saveErr)
+			return nil, saveErr
+		}
+	}
+	if err != nil {
+		c.Logger.Errorf("auth.requestPasswordRecovery - unavailable: %v", err)
+		return nil, err
+	}
+	email := st.recoveryEmail()
+	issued, err := c.svcCtx.Challenges.Issue(c.ctx, verification.IssueRequest{
+		Channel: verification.ChannelEmail, Purpose: challengePurposePasswordRecovery,
+		Subject: email, Scope: verification.ScopeID(c.MD.GetUserId()),
+		ChallengeID: verification.PurposeID(challengePurposePasswordRecovery, verification.ScopeID(c.MD.GetUserId())),
+		CodeLength:  6,
+	})
+	_ = issued
+	if err != nil {
+		c.Logger.Errorf("auth.requestPasswordRecovery - delivery: %v", err)
+		return nil, mapEmailChallengeError(err)
+	}
+	return mtproto.MakeTLAuthPasswordRecovery(&mtproto.Auth_PasswordRecovery{
+		EmailPattern: maskEmail(email),
+	}).To_Auth_PasswordRecovery(), nil
 }

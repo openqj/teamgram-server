@@ -32,13 +32,19 @@ type Dao struct {
 	user_client.UserClient
 	chat_client.ChatClient
 	authsession_client.AuthsessionClient
+	SecretUpdates SecretUpdatesReader
 }
 
 func New(c config.Config) *Dao {
+	secretUpdates, err := NewSecretUpdatesReader(c.MysqlDSN)
+	if err != nil {
+		secretUpdates = &unavailableSecretUpdatesReader{err: err}
+	}
 	return &Dao{
 		UpdatesClient:     updates_client.NewUpdatesClient(rpcx.GetCachedRpcClient(c.UpdatesClient)),
 		UserClient:        user_client.NewUserClient(rpcx.GetCachedRpcClient(c.UserClient)),
 		ChatClient:        chat_client.NewChatClient(rpcx.GetCachedRpcClient(c.ChatClient)),
 		AuthsessionClient: authsession_client.NewAuthsessionClient(rpcx.GetCachedRpcClient(c.AuthsessionClient)),
+		SecretUpdates:     secretUpdates,
 	}
 }

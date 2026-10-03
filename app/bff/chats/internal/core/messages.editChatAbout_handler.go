@@ -26,11 +26,17 @@ import (
 // MessagesEditChatAbout
 // messages.editChatAbout#def60797 peer:InputPeer about:string = Bool;
 func (c *ChatsCore) MessagesEditChatAbout(in *mtproto.TLMessagesEditChatAbout) (*mtproto.Bool, error) {
+	if c == nil || c.MD == nil {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
+	if in == nil || in.GetPeer() == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
 	peer := mtproto.FromInputPeer2(c.MD.UserId, in.Peer)
 
 	switch peer.PeerType {
-	case mtproto.PEER_CHAT:
-		_, err := c.svcCtx.Dao.ChatClient.Client().ChatEditChatAbout(c.ctx, &chatpb.TLChatEditChatAbout{
+	case mtproto.PEER_CHAT, mtproto.PEER_CHANNEL:
+		chat, err := c.svcCtx.Dao.ChatClient.Client().ChatEditChatAbout(c.ctx, &chatpb.TLChatEditChatAbout{
 			ChatId:     peer.PeerId,
 			EditUserId: c.MD.UserId,
 			About:      in.About,
@@ -39,10 +45,9 @@ func (c *ChatsCore) MessagesEditChatAbout(in *mtproto.TLMessagesEditChatAbout) (
 			c.Logger.Errorf("messages.editChatAbout - error: %v", err)
 			return nil, err
 		}
-	case mtproto.PEER_CHANNEL:
-		c.Logger.Errorf("messages.editChatAbout blocked, License key from https://teamgram.net required to unlock enterprise features.")
-
-		return nil, mtproto.ErrEnterpriseIsBlocked
+		if chat == nil || chat.GetChat() == nil {
+			return nil, mtproto.ErrInternalServerError
+		}
 	default:
 		err := mtproto.ErrPeerIdInvalid
 		c.Logger.Errorf("invalid peer type: {%v}")

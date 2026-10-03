@@ -20,13 +20,63 @@ package core
 
 import (
 	"github.com/teamgram/proto/mtproto"
+	"github.com/teamgram/teamgram-server/app/messenger/sync/sync"
+	"github.com/teamgram/teamgram-server/app/service/authsession/authsession"
 )
 
 // AuthResetAuthorizations
 // auth.resetAuthorizations#9fab0d1a = Bool;
 func (c *AuthorizationCore) AuthResetAuthorizations(in *mtproto.TLAuthResetAuthorizations) (*mtproto.Bool, error) {
-	// TODO: not impl
-	c.Logger.Errorf("auth.resetAuthorizations blocked, License key from https://teamgram.net required to unlock enterprise features.")
+	_ = in
+	if c.MD.GetUserId() == 0 {
+		c.Logger.Errorf("auth.resetAuthorizations - user not bound")
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
+	if c.MD.PermAuthKeyId == 0 {
+		c.Logger.Errorf("auth.resetAuthorizations - perm auth key empty")
+		return nil, mtproto.ErrAuthKeyInvalid
+	}
 
-	return nil, mtproto.ErrEnterpriseIsBlocked
+	// hash 0 revokes every session except AuthKeyId (the current one).
+	tKeyIdList, err := c.svcCtx.Dao.AuthsessionClient.AuthsessionResetAuthorization(c.ctx, &authsession.TLAuthsessionResetAuthorization{
+		UserId:    c.MD.GetUserId(),
+		AuthKeyId: c.MD.PermAuthKeyId,
+		Hash:      0,
+	})
+	if err != nil {
+		c.Logger.Errorf("auth.resetAuthorizations - error: %v", err)
+		return nil, err
+	}
+	if tKeyIdList == nil {
+		c.Logger.Errorf("auth.resetAuthorizations - authsession returned no result")
+		return nil, mtproto.ErrInternalServerError
+	}
+
+	for _, id := range tKeyIdList.Datas {
+		if _, err = c.svcCtx.Dao.SyncClient.SyncUpdatesMe(
+			c.ctx,
+			&sync.TLSyncUpdatesMe{
+				UserId:        c.MD.GetUserId(),
+				PermAuthKeyId: id,
+				Updates:       mtproto.MakeTLUpdatesTooLong(nil).To_Updates(),
+			}); err != nil {
+			c.Logger.Errorf("auth.resetAuthorizations - notify updates too long: %v", err)
+			return nil, err
+		}
+		if _, err = c.svcCtx.Dao.SyncClient.SyncUpdatesMe(
+			c.ctx,
+			&sync.TLSyncUpdatesMe{
+				UserId:        c.MD.GetUserId(),
+				PermAuthKeyId: id,
+				Updates: mtproto.MakeTLUpdateAccountResetAuthorization(&mtproto.Updates{
+					UserId:    c.MD.GetUserId(),
+					AuthKeyId: id,
+				}).To_Updates(),
+			}); err != nil {
+			c.Logger.Errorf("auth.resetAuthorizations - notify reset: %v", err)
+			return nil, err
+		}
+	}
+
+	return mtproto.BoolTrue, nil
 }

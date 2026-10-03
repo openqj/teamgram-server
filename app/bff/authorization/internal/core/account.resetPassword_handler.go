@@ -24,13 +24,54 @@ import (
 	"github.com/teamgram/proto/mtproto"
 )
 
+const passwordResetWait = 7 * 24 * 60 * 60
+
+func ensurePasswordResetWait(st *acctPasswordState, now int64) bool {
+	changed := false
+	if st.ResetRequestedAt == 0 {
+		st.ResetRequestedAt = now
+		changed = true
+	}
+	if st.ResetUntilDate == 0 {
+		st.ResetUntilDate = st.ResetRequestedAt + passwordResetWait
+		changed = true
+	}
+	if st.ResetDeclined && st.ResetRetryDate == 0 {
+		st.ResetRetryDate = now + passwordResetWait
+		changed = true
+	}
+	return changed
+}
+
 // AccountResetPassword
 // account.resetPassword#9308ce1b = account.ResetPasswordResult;
 func (c *AuthorizationCore) AccountResetPassword(in *mtproto.TLAccountResetPassword) (*mtproto.Account_ResetPasswordResult, error) {
-	// TODO: not impl
-	c.Logger.Errorf("account.resetPassword blocked, License key from https://teamgram.net required to unlock enterprise features.")
-
-	return mtproto.MakeTLAccountResetPasswordFailedWait(&mtproto.Account_ResetPasswordResult{
-		RetryDate: int32(time.Now().Unix() + 30*24*60*60),
+	_ = in
+	if c.MD.GetUserId() == 0 {
+		c.Logger.Errorf("account.resetPassword - user not bound")
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
+	userID := c.MD.GetUserId()
+	st, err := loadAcctPasswordState(userID)
+	if err != nil {
+		c.Logger.Errorf("account.resetPassword - error: %v", err)
+		return nil, err
+	}
+	if !st.HasPassword {
+		return mtproto.MakeTLAccountResetPasswordOk(nil).To_Account_ResetPasswordResult(), nil
+	}
+	if ensurePasswordResetWait(&st, time.Now().Unix()) {
+		if err = saveAcctPasswordState(userID, st); err != nil {
+			c.Logger.Errorf("account.resetPassword - save wait state: %v", err)
+			return nil, err
+		}
+	}
+	if st.ResetDeclined {
+		return mtproto.MakeTLAccountResetPasswordFailedWait(&mtproto.Account_ResetPasswordResult{
+			RetryDate: int32(st.ResetRetryDate),
+		}).To_Account_ResetPasswordResult(), nil
+	}
+	return mtproto.MakeTLAccountResetPasswordRequestedWait(&mtproto.Account_ResetPasswordResult{
+		UntilDate: int32(st.ResetUntilDate),
 	}).To_Account_ResetPasswordResult(), nil
 }

@@ -979,6 +979,7 @@ message Vector_Long {
 }
 message Vector_PeerBlocked {
   repeated mtproto.PeerBlocked datas = 1;
+  int32 total_count = 2;
 }
 message Vector_ContactData {
   repeated mtproto.ContactData datas = 1;

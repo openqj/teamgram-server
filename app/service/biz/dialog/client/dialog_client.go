@@ -55,6 +55,7 @@ type DialogClient interface {
 	DialogGetSavedDialogs(ctx context.Context, in *dialog.TLDialogGetSavedDialogs) (*dialog.SavedDialogList, error)
 	DialogGetPinnedSavedDialogs(ctx context.Context, in *dialog.TLDialogGetPinnedSavedDialogs) (*dialog.SavedDialogList, error)
 	DialogToggleSavedDialogPin(ctx context.Context, in *dialog.TLDialogToggleSavedDialogPin) (*mtproto.Bool, error)
+	DialogMarkSavedHistoryRead(ctx context.Context, in *dialog.TLDialogInsertOrUpdateDialog) (*mtproto.Bool, error)
 	DialogReorderPinnedSavedDialogs(ctx context.Context, in *dialog.TLDialogReorderPinnedSavedDialogs) (*mtproto.Bool, error)
 	DialogGetDialogFilter(ctx context.Context, in *dialog.TLDialogGetDialogFilter) (*dialog.DialogFilterExt, error)
 	DialogGetDialogFilterBySlug(ctx context.Context, in *dialog.TLDialogGetDialogFilterBySlug) (*dialog.DialogFilterExt, error)
@@ -425,6 +426,16 @@ func (m *defaultDialogClient) DialogToggleSavedDialogPin(ctx context.Context, in
 	}
 	client := dialog.NewRPCDialogClient(m.cli.Conn())
 	return client.DialogToggleSavedDialogPin(ctx, in)
+}
+
+// DialogMarkSavedHistoryRead stores the per-user cursor for a saved-history peer.
+func (m *defaultDialogClient) DialogMarkSavedHistoryRead(ctx context.Context, in *dialog.TLDialogInsertOrUpdateDialog) (*mtproto.Bool, error) {
+	md := metadata.RpcMetadataFromIncoming(ctx)
+	if md != nil {
+		ctx, _ = metadata.RpcMetadataToOutgoing(ctx, md)
+	}
+	client := dialog.NewRPCDialogClient(m.cli.Conn())
+	return client.DialogMarkSavedHistoryRead(ctx, in)
 }
 
 // DialogReorderPinnedSavedDialogs

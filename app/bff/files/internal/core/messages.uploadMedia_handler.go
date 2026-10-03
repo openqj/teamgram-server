@@ -31,6 +31,10 @@ import (
 // MessagesUploadMedia
 // messages.uploadMedia#519bc2b1 peer:InputPeer media:InputMedia = MessageMedia;
 func (c *FilesCore) MessagesUploadMedia(in *mtproto.TLMessagesUploadMedia) (*mtproto.MessageMedia, error) {
+	if in == nil || in.GetMedia() == nil {
+		c.Logger.Errorf("messages.uploadMedia - empty request")
+		return nil, mtproto.ErrInputRequestInvalid
+	}
 	rValue, err := c.makeMediaByInputMedia(in.GetMedia())
 	if err != nil {
 		c.Logger.Errorf("messages.uploadMedia - error: %v", err)
@@ -41,6 +45,9 @@ func (c *FilesCore) MessagesUploadMedia(in *mtproto.TLMessagesUploadMedia) (*mtp
 }
 
 func (c *FilesCore) makeMediaByInputMedia(media *mtproto.InputMedia) (messageMedia *mtproto.MessageMedia, err error) {
+	if media == nil {
+		return nil, mtproto.ErrMediaInvalid
+	}
 	var (
 		now = int32(time.Now().Unix())
 	)
@@ -56,6 +63,9 @@ func (c *FilesCore) makeMediaByInputMedia(media *mtproto.InputMedia) (messageMed
 		//	stickers:flags.0?Vector<InputDocument>
 		//	ttl_seconds:flags.1?int = InputMedia;
 
+		if media.GetFile() == nil || media.GetFile().GetId_INT64() == 0 {
+			return nil, mtproto.ErrFileIdInvalid
+		}
 		var (
 			photo *mtproto.Photo
 		)
@@ -80,9 +90,18 @@ func (c *FilesCore) makeMediaByInputMedia(media *mtproto.InputMedia) (messageMed
 		//	ttl_seconds:flags.0?int = InputMedia;
 
 		mediaPhoto := media.To_InputMediaPhoto()
-		sizeList, _ := c.svcCtx.Dao.MediaClient.MediaGetPhotoSizeList(c.ctx, &mediapb.TLMediaGetPhotoSizeList{
+		if mediaPhoto == nil || mediaPhoto.GetId_INPUTPHOTO() == nil || mediaPhoto.GetId_INPUTPHOTO().GetId() == 0 {
+			return nil, mtproto.ErrPhotoIdInvalid
+		}
+		sizeList, err2 := c.svcCtx.Dao.MediaClient.MediaGetPhotoSizeList(c.ctx, &mediapb.TLMediaGetPhotoSizeList{
 			SizeId: mediaPhoto.GetId_INPUTPHOTO().GetId(),
 		})
+		if err2 != nil {
+			return nil, err2
+		}
+		if sizeList == nil {
+			return nil, mtproto.ErrPhotoInvalid
+		}
 
 		photo := mtproto.MakeTLPhoto(&mtproto.Photo{
 			Id:          mediaPhoto.GetId_INPUTPHOTO().GetId(),
@@ -139,6 +158,9 @@ func (c *FilesCore) makeMediaByInputMedia(media *mtproto.InputMedia) (messageMed
 		//	attributes:Vector<DocumentAttribute>
 		//	stickers:flags.0?Vector<InputDocument>
 		//	ttl_seconds:flags.1?int = InputMedia;
+		if media.GetFile() == nil || media.GetFile().GetId_INT64() == 0 || media.GetMimeType() == "" {
+			return nil, mtproto.ErrMediaInvalid
+		}
 		documentMedia, err2 := c.svcCtx.Dao.MediaClient.MediaUploadedDocumentMedia(c.ctx, &mediapb.TLMediaUploadedDocumentMedia{
 			OwnerId: c.MD.PermAuthKeyId,
 			Media:   media,
@@ -154,16 +176,26 @@ func (c *FilesCore) makeMediaByInputMedia(media *mtproto.InputMedia) (messageMed
 		//	ttl_seconds:flags.0?int
 		//	query:flags.1?string = InputMedia;
 
-		id := media.To_InputMediaDocument().GetId_INPUTDOCUMENT()
-		document3, _ := c.svcCtx.Dao.MediaClient.MediaGetDocument(c.ctx, &mediapb.TLMediaGetDocument{
+		mediaDocument := media.To_InputMediaDocument()
+		if mediaDocument == nil || mediaDocument.GetId_INPUTDOCUMENT() == nil || mediaDocument.GetId_INPUTDOCUMENT().GetId() == 0 {
+			return nil, mtproto.ErrDocumentInvalid
+		}
+		id := mediaDocument.GetId_INPUTDOCUMENT()
+		document3, err2 := c.svcCtx.Dao.MediaClient.MediaGetDocument(c.ctx, &mediapb.TLMediaGetDocument{
 			Id: id.GetId(),
 		})
+		if err2 != nil {
+			return nil, err2
+		}
+		if document3 == nil || document3.GetPredicateName() == mtproto.Predicate_documentEmpty {
+			return nil, mtproto.ErrDocumentInvalid
+		}
 
 		// messageMediaDocument#7c4414d3 flags:# document:flags.0?Document caption:flags.1?string ttl_seconds:flags.2?int = MessageMedia;
 		messageMedia = mtproto.MakeTLMessageMediaDocument(&mtproto.MessageMedia{
 			Document: document3,
 			// Caption:    media.To_InputMediaDocument().GetCaption(),
-			TtlSeconds: media.To_InputMediaDocument().GetTtlSeconds(),
+			TtlSeconds: mediaDocument.GetTtlSeconds(),
 		}).To_MessageMedia()
 	case mtproto.Predicate_inputMediaVenue:
 		// inputMediaVenue#c13d1c11
@@ -186,21 +218,22 @@ func (c *FilesCore) makeMediaByInputMedia(media *mtproto.InputMedia) (messageMed
 	case mtproto.Predicate_inputMediaPhotoExternal:
 		// inputMediaPhotoExternal#e5bbfe1a flags:# url:string ttl_seconds:flags.0?int = InputMedia;
 
-		messageMedia = mtproto.MakeTLMessageMediaUnsupported(nil).To_MessageMedia()
+		return nil, mtproto.ErrMethodNotImpl
 	case mtproto.Predicate_inputMediaDocumentExternal:
-		// TODO(@benqi): MessageMedia???
-		// inputMediaDocumentExternal#fb52dc99 flags:# url:string ttl_seconds:flags.0?int = InputMedia;
-		messageMedia = mtproto.MakeTLMessageMediaUnsupported(nil).To_MessageMedia()
+		// No remote fetch/provider is configured for external media. Returning a
+		// successful MessageMediaUnsupported would make the caller believe the
+		// upload succeeded while no bytes were persisted.
+		return nil, mtproto.ErrMethodNotImpl
 	case mtproto.Predicate_inputMediaGame:
 		// inputMediaGame#d33f43f3 id:InputGame = InputMedia;
 
 		// TODO(@benqi): Not impl inputMediaGame
-		messageMedia = mtproto.MakeTLMessageMediaUnsupported(nil).To_MessageMedia()
+		return nil, mtproto.ErrMethodNotImpl
 	case mtproto.Predicate_inputMediaInvoice:
 		// inputMediaInvoice#d9799874 flags:# title:string description:string photo:flags.0?InputWebDocument invoice:Invoice payload:bytes provider:string provider_data:DataJSON start_param:flags.1?string = InputMedia;
 
 		// TODO(@benqi): Not impl inputMediaGame
-		messageMedia = mtproto.MakeTLMessageMediaUnsupported(nil).To_MessageMedia()
+		return nil, mtproto.ErrMethodNotImpl
 	case mtproto.Predicate_inputMediaGeoLive:
 		// inputMediaGeoLive#971fa843 flags:# stopped:flags.0?true geo_point:InputGeoPoint heading:flags.2?int period:flags.1?int proximity_notification_radius:flags.3?int = InputMedia;
 
@@ -210,6 +243,9 @@ func (c *FilesCore) makeMediaByInputMedia(media *mtproto.InputMedia) (messageMed
 		}).To_MessageMedia()
 	case mtproto.Predicate_inputMediaPoll:
 		// inputMediaPoll#f94e5f1 flags:# poll:Poll correct_answers:flags.0?Vector<bytes> solution:flags.1?string solution_entities:flags.1?Vector<MessageEntity> = InputMedia;
+		if media.GetPoll() == nil {
+			return nil, mtproto.ErrMediaInvalid
+		}
 		messageMedia = mtproto.MakeTLMessageMediaPoll(&mtproto.MessageMedia{
 			Poll:    media.Poll,
 			Results: nil,
@@ -233,11 +269,18 @@ func (c *FilesCore) makeMediaByInputMedia(media *mtproto.InputMedia) (messageMed
 				Value:    rand.Int31()%5 + 1,
 				Emoticon: media.Emoticon,
 			}).To_MessageMedia()
-		} else {
+		} else if media.Emoticon == "⚽" || media.Emoticon == "🎳" {
 			messageMedia = mtproto.MakeTLMessageMediaDice(&mtproto.MessageMedia{
 				Value:    rand.Int31()%6 + 1,
 				Emoticon: media.Emoticon,
 			}).To_MessageMedia()
+		} else if media.Emoticon == "🎰" {
+			messageMedia = mtproto.MakeTLMessageMediaDice(&mtproto.MessageMedia{
+				Value:    rand.Int31()%64 + 1,
+				Emoticon: media.Emoticon,
+			}).To_MessageMedia()
+		} else {
+			return nil, mtproto.ErrMediaInvalid
 		}
 
 	default:

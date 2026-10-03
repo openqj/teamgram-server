@@ -612,7 +612,7 @@ func (c *session) onRpcResult(ctx context.Context, rpcResult *rpcApiMessage) {
 			}
 		}
 	case *mtproto.TLAuthImportAuthorization:
-		if rpcErr == nil && c.sessList.cb.state == mtproto.AuthStateNeedPassword && rpcResult.rpcResult != nil && rpcResult.rpcResult.Result != nil {
+		if rpcErr == nil && rpcResult.rpcResult != nil && rpcResult.rpcResult.Result != nil {
 			authAuthorization, _ := rpcResult.rpcResult.Result.(*mtproto.Auth_Authorization)
 			if authAuthorization != nil && authAuthorization.GetPredicateName() == mtproto.Predicate_auth_authorization && authAuthorization.GetUser() != nil {
 				c.sessList.cb.changeAuthState(ctx, mtproto.AuthStateNormal, authAuthorization.GetUser().GetId())

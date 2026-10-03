@@ -17,8 +17,14 @@ import (
 // MediaGetEncryptedFile
 // media.getEncryptedFile id:long access_hash:long = EncryptedFile;
 func (c *MediaCore) MediaGetEncryptedFile(in *media.TLMediaGetEncryptedFile) (*mtproto.EncryptedFile, error) {
-	// TODO: not impl
-	c.Logger.Errorf("media.getEncryptedFile blocked, License key from https://teamgram.net required to unlock enterprise features.")
+	if in == nil || in.GetId() <= 0 || in.GetAccessHash() == 0 {
+		return nil, mtproto.ErrMediaInvalid
+	}
 
-	return nil, mtproto.ErrEnterpriseIsBlocked
+	// Encrypted files are written by DFS, but this service has no authoritative
+	// metadata lookup that can verify the access hash before returning a file.
+	// Do not manufacture an EncryptedFile or bypass that check.
+	c.Logger.Errorf("media.getEncryptedFile - encrypted file metadata provider unavailable")
+
+	return nil, mtproto.ErrMethodNotImpl
 }

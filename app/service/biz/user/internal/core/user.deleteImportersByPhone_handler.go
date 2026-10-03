@@ -19,14 +19,26 @@
 package core
 
 import (
+	"strings"
+
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/service/biz/user/user"
 )
 
 // UserDeleteImportersByPhone
 // user.deleteImportersByPhone phone:string = Bool;
+// The owner is taken from RPC metadata so other importers remain unaffected.
 func (c *UserCore) UserDeleteImportersByPhone(in *user.TLUserDeleteImportersByPhone) (*mtproto.Bool, error) {
-	c.svcCtx.Dao.UnregisteredContactsDAO.DeleteImportersByPhone(c.ctx, in.Phone)
+	if in == nil || strings.TrimSpace(in.GetPhone()) == "" {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if c.MD == nil || c.MD.GetUserId() <= 0 {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
+	if _, err := c.svcCtx.Dao.UnregisteredContactsDAO.DeleteImporterByUserAndPhone(c.ctx, in.GetPhone(), c.MD.GetUserId()); err != nil {
+		c.Logger.Errorf("user.deleteImportersByPhone - error: %v", err)
+		return nil, err
+	}
 
 	return mtproto.BoolTrue, nil
 }

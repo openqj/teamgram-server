@@ -390,15 +390,15 @@ func (dao *DialogsDAO) SelectFolderPinnedDialogs(ctx context.Context, userId int
 }
 
 // SelectFolderPinnedDialogsWithCB
-// select id, user_id, peer_type, peer_id, peer_dialog_id, pinned, top_message, pinned_msg_id, read_inbox_max_id, read_outbox_max_id, unread_count, unread_mentions_count, unread_reactions_count, unread_mark, draft_type, draft_message_data, folder_id, folder_pinned, has_scheduled, ttl_period, theme_emoticon, wallpaper_id, wallpaper_overridden, date2 from dialogs where user_id = :user_id and folder_id = 1 and folder_pinned > 0 and deleted = 0
-func (dao *DialogsDAO) SelectFolderPinnedDialogsWithCB(ctx context.Context, userId int64, cb func(sz, i int, v *dataobject.DialogsDO)) (rList []dataobject.DialogsDO, err error) {
+// select dialogs pinned in folder_id for user_id
+func (dao *DialogsDAO) SelectFolderPinnedDialogsWithCB(ctx context.Context, userId int64, folderId int32, cb func(sz, i int, v *dataobject.DialogsDO)) (rList []dataobject.DialogsDO, err error) {
 	var (
 		query  string
 		values []dataobject.DialogsDO
 	)
-	query = "select id, user_id, peer_type, peer_id, peer_dialog_id, pinned, top_message, pinned_msg_id, read_inbox_max_id, read_outbox_max_id, unread_count, unread_mentions_count, unread_reactions_count, unread_mark, draft_type, draft_message_data, folder_id, folder_pinned, has_scheduled, ttl_period, theme_emoticon, wallpaper_id, wallpaper_overridden, date2 from dialogs where user_id = ? and folder_id = 1 and folder_pinned > 0 and deleted = 0"
+	query = "select id, user_id, peer_type, peer_id, peer_dialog_id, pinned, top_message, pinned_msg_id, read_inbox_max_id, read_outbox_max_id, unread_count, unread_mentions_count, unread_reactions_count, unread_mark, draft_type, draft_message_data, folder_id, folder_pinned, has_scheduled, ttl_period, theme_emoticon, wallpaper_id, wallpaper_overridden, date2 from dialogs where user_id = ? and folder_id = ? and folder_pinned > 0 and deleted = 0"
 
-	err = dao.db.QueryRowsPartial(ctx, &values, query, userId)
+	err = dao.db.QueryRowsPartial(ctx, &values, query, userId, folderId)
 
 	if err != nil {
 		logx.WithContext(ctx).Errorf("queryx in SelectFolderPinnedDialogs(_), error: %v", err)
@@ -650,15 +650,15 @@ func (dao *DialogsDAO) SelectExcludeFolderPinnedDialogs(ctx context.Context, use
 }
 
 // SelectExcludeFolderPinnedDialogsWithCB
-// select id, user_id, peer_type, peer_id, peer_dialog_id, pinned, top_message, pinned_msg_id, read_inbox_max_id, read_outbox_max_id, unread_count, unread_mentions_count, unread_reactions_count, unread_mark, draft_type, draft_message_data, folder_id, folder_pinned, has_scheduled, ttl_period, theme_emoticon, wallpaper_id, wallpaper_overridden, date2 from dialogs where user_id = :user_id and folder_id = 1 and folder_pinned = 0 and deleted = 0
-func (dao *DialogsDAO) SelectExcludeFolderPinnedDialogsWithCB(ctx context.Context, userId int64, cb func(sz, i int, v *dataobject.DialogsDO)) (rList []dataobject.DialogsDO, err error) {
+// select unpinned dialogs in folder_id for user_id
+func (dao *DialogsDAO) SelectExcludeFolderPinnedDialogsWithCB(ctx context.Context, userId int64, folderId int32, cb func(sz, i int, v *dataobject.DialogsDO)) (rList []dataobject.DialogsDO, err error) {
 	var (
 		query  string
 		values []dataobject.DialogsDO
 	)
-	query = "select id, user_id, peer_type, peer_id, peer_dialog_id, pinned, top_message, pinned_msg_id, read_inbox_max_id, read_outbox_max_id, unread_count, unread_mentions_count, unread_reactions_count, unread_mark, draft_type, draft_message_data, folder_id, folder_pinned, has_scheduled, ttl_period, theme_emoticon, wallpaper_id, wallpaper_overridden, date2 from dialogs where user_id = ? and folder_id = 1 and folder_pinned = 0 and deleted = 0"
+	query = "select id, user_id, peer_type, peer_id, peer_dialog_id, pinned, top_message, pinned_msg_id, read_inbox_max_id, read_outbox_max_id, unread_count, unread_mentions_count, unread_reactions_count, unread_mark, draft_type, draft_message_data, folder_id, folder_pinned, has_scheduled, ttl_period, theme_emoticon, wallpaper_id, wallpaper_overridden, date2 from dialogs where user_id = ? and folder_id = ? and folder_pinned = 0 and deleted = 0"
 
-	err = dao.db.QueryRowsPartial(ctx, &values, query, userId)
+	err = dao.db.QueryRowsPartial(ctx, &values, query, userId, folderId)
 
 	if err != nil {
 		logx.WithContext(ctx).Errorf("queryx in SelectExcludeFolderPinnedDialogs(_), error: %v", err)

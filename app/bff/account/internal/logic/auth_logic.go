@@ -69,8 +69,9 @@ func (m *AuthLogic) DoAuthSendCode(
 		}
 	}
 
-	// TODO(@benqi): after sendSms success, save codeData
-	_ = m.Dao.UpdatePhoneCodeData(ctx, authKeyId, phoneNumber, codeData.PhoneCodeHash, codeData)
+	if err = m.Dao.UpdatePhoneCodeData(ctx, authKeyId, phoneNumber, codeData.PhoneCodeHash, codeData); err != nil {
+		return nil, err
+	}
 
 	//if codeData.State == model.CodeStateSend {
 	//	//switch codeData.State {
@@ -143,7 +144,9 @@ func (m *AuthLogic) DoAuthReSendCode(ctx context.Context,
 		}
 	}
 
-	m.Dao.UpdatePhoneCodeData(context.Background(), authKeyId, phoneNumber, codeData.PhoneCodeHash, codeData)
+	if err = m.Dao.UpdatePhoneCodeData(ctx, authKeyId, phoneNumber, codeData.PhoneCodeHash, codeData); err != nil {
+		return nil, err
+	}
 
 	//go func() {
 	//	if m.VerifyCodeInterface != nil {
@@ -207,7 +210,6 @@ func (m *AuthLogic) DoAuthChangePhone(ctx context.Context,
 
 	if cb != nil {
 		if err = cb(codeData); err != nil {
-			err = mtproto.ErrPhoneCodeInvalid
 			return
 		}
 	}
@@ -242,11 +244,10 @@ func (m *AuthLogic) DoAuthSignUp(ctx context.Context, authKeyId int64, phoneNumb
 
 	// TODO(@benqi): 重复请求处理...
 	// check state invalid.
-	// TODO(@benqi): remote client error, state is Ok
-	if codeData.State != model.CodeStateOk &&
-		codeData.State != model.CodeStateSignIn &&
-		codeData.State != model.CodeStateDeleted &&
-		codeData.State != model.CodeStateSignUp {
+	// auth.signUp has no phone_code in the generated MTProto schema. The
+	// preceding auth.signIn consumes the challenge and marks this transaction
+	// SignIn, so stale/deleted cache states must not authorize signup.
+	if !isAuthSignUpStateAllowed(codeData.State) {
 		err = mtproto.ErrInputRequestInvalid
 		logx.WithContext(ctx).Errorf("invalid code state(%d) - err: %v", codeData.State, err)
 		return
@@ -292,4 +293,8 @@ func (m *AuthLogic) DoAuthSignUp(ctx context.Context, authKeyId int64, phoneNumb
 		m.PhoneCodeTransaction = codeData
 	*/
 	return
+}
+
+func isAuthSignUpStateAllowed(state int) bool {
+	return state == model.CodeStateOk || state == model.CodeStateSignIn
 }

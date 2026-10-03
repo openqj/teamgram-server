@@ -21,8 +21,10 @@ package core
 import (
 	"context"
 	"sort"
+	"sync"
 
 	"github.com/teamgram/proto/mtproto"
+	"github.com/teamgram/teamgram-server/app/bff/apifull/channelview"
 	chatpb "github.com/teamgram/teamgram-server/app/service/biz/chat/chat"
 	"github.com/teamgram/teamgram-server/app/service/biz/dialog/dialog"
 	"github.com/teamgram/teamgram-server/app/service/biz/message/message"
@@ -46,8 +48,8 @@ func (c *DialogsCore) MessagesGetDialogs(in *mtproto.TLMessagesGetDialogs) (*mtp
 		limit = 500
 	}
 
-	mr.FinishVoid(
-		func() {
+	if err := mr.Finish(
+		func() error {
 			dialogs, err := c.svcCtx.Dao.DialogClient.DialogGetDialogs(c.ctx, &dialog.TLDialogGetDialogs{
 				UserId:        c.MD.UserId,
 				ExcludePinned: mtproto.ToBool(in.ExcludePinned),
@@ -55,40 +57,49 @@ func (c *DialogsCore) MessagesGetDialogs(in *mtproto.TLMessagesGetDialogs) (*mtp
 			})
 			if err != nil {
 				c.Logger.Errorf("messages.getDialogs - error: %v", err)
-			} else {
-				dialogExtList = dialogs.GetDatas()
+				return err
 			}
+			dialogExtList = dialogs.GetDatas()
+			return nil
 		},
-		func() {
+		func() error {
 			settingsList, err := c.svcCtx.Dao.UserClient.UserGetAllNotifySettings(c.ctx, &userpb.TLUserGetAllNotifySettings{
 				UserId: c.MD.UserId,
 			})
 			if err != nil {
 				c.Logger.Errorf("messages.getDialogs - error: %v", err)
-			} else {
-				notifySettingsList = settingsList.GetDatas()
+				return err
 			}
-		})
+			notifySettingsList = settingsList.GetDatas()
+			return nil
+		}); err != nil {
+		return nil, err
+	}
 
 	if len(dialogExtList) == 0 {
-		return mtproto.MakeTLMessagesDialogsSlice(&mtproto.Messages_Dialogs{
+		out := mtproto.MakeTLMessagesDialogsSlice(&mtproto.Messages_Dialogs{
 			Dialogs:  []*mtproto.Dialog{},
 			Messages: []*mtproto.Message{},
 			Chats:    []*mtproto.Chat{},
 			Users:    []*mtproto.User{},
 			Count:    0,
-		}).To_Messages_Dialogs(), nil
+		}).To_Messages_Dialogs()
+		if in.OffsetId == 0 && in.OffsetDate == 0 {
+			channelview.AppendCreatorDialogs(out, c.MD.UserId, nil)
+		}
+		return out, nil
 	}
 
 	var (
-		dialogCount = int32(dialogExtList.Len())
+		dialogCount     = int32(dialogExtList.Len())
+		countedChannels = map[int64]struct{}{}
 	)
 
 	for _, dialogEx := range dialogExtList {
 		peer2 := mtproto.FromPeer(dialogEx.GetDialog().GetPeer())
 
 		if peer2.IsChannel() {
-			c.Logger.Errorf("messages.getDialogs blocked, License key from https://teamgram.net required to unlock enterprise features.")
+			countedChannels[peer2.PeerId] = struct{}{}
 		}
 
 		dialogEx.Dialog.NotifySettings = userpb.FindPeerPeerNotifySettings(notifySettingsList, peer2)
@@ -102,6 +113,17 @@ func (c *DialogsCore) MessagesGetDialogs(in *mtproto.TLMessagesGetDialogs) (*mtp
 		offsetPeer,
 		in.Limit)
 
+	var (
+		loadErr   error
+		loadErrMu sync.Mutex
+	)
+	recordLoadErr := func(err error) {
+		loadErrMu.Lock()
+		if loadErr == nil {
+			loadErr = err
+		}
+		loadErrMu.Unlock()
+	}
 	messageDialogs := dialogExtList.DoGetMessagesDialogs(
 		c.ctx,
 		c.MD.UserId,
@@ -113,15 +135,17 @@ func (c *DialogsCore) MessagesGetDialogs(in *mtproto.TLMessagesGetDialogs) (*mtp
 			for _, id2 := range id {
 				if !id2.Peer.IsChannel() {
 					msgIdList = append(msgIdList, id2.TopMessage)
-				} else {
-					c.Logger.Errorf("blocked, License key from https://teamgram.net required to unlock enterprise features.")
 				}
 			}
 			if len(msgIdList) > 0 {
-				boxList, _ := c.svcCtx.Dao.MessageClient.MessageGetUserMessageList(c.ctx, &message.TLMessageGetUserMessageList{
+				boxList, err := c.svcCtx.Dao.MessageClient.MessageGetUserMessageList(c.ctx, &message.TLMessageGetUserMessageList{
 					UserId: c.MD.UserId,
 					IdList: msgIdList,
 				})
+				if err != nil {
+					recordLoadErr(err)
+					return nil
+				}
 				boxList.Walk(func(idx int, v *mtproto.MessageBox) {
 					msgList = append(msgList, v.ToMessage(c.MD.UserId))
 				})
@@ -130,28 +154,46 @@ func (c *DialogsCore) MessagesGetDialogs(in *mtproto.TLMessagesGetDialogs) (*mtp
 			return msgList
 		},
 		func(ctx context.Context, selfUserId int64, id ...int64) []*mtproto.User {
-			users, _ := c.svcCtx.Dao.UserClient.UserGetMutableUsersV2(c.ctx,
+			users, err := c.svcCtx.Dao.UserClient.UserGetMutableUsersV2(c.ctx,
 				&userpb.TLUserGetMutableUsersV2{
 					Id:      id,
 					Privacy: true,
 					HasTo:   true,
 					To:      []int64{selfUserId},
 				})
+			if err != nil {
+				recordLoadErr(err)
+				return nil
+			}
 
 			return users.GetUserListByIdList(c.MD.UserId, id...)
 		},
 		func(ctx context.Context, selfUserId int64, id ...int64) []*mtproto.Chat {
-			chats, _ := c.svcCtx.Dao.ChatClient.ChatGetChatListByIdList(c.ctx,
+			chats, err := c.svcCtx.Dao.ChatClient.ChatGetChatListByIdList(c.ctx,
 				&chatpb.TLChatGetChatListByIdList{
 					IdList: id,
 				})
+			if err != nil {
+				recordLoadErr(err)
+				return nil
+			}
 
 			return chats.GetChatListByIdList(c.MD.UserId, id...)
 		},
 		func(ctx context.Context, selfUserId int64, id ...int64) []*mtproto.Chat {
-			c.Logger.Errorf("blocked, License key from https://teamgram.net required to unlock enterprise features.")
-			return []*mtproto.Chat{}
+			return channelview.ChatsByID(selfUserId, id)
 		})
+	loadErrMu.Lock()
+	err := loadErr
+	loadErrMu.Unlock()
+	if err != nil {
+		c.Logger.Errorf("messages.getDialogs - entity load error: %v", err)
+		return nil, err
+	}
 
-	return messageDialogs.ToMessagesDialogs(dialogCount), nil
+	out := messageDialogs.ToMessagesDialogs(dialogCount)
+	if in.OffsetId == 0 && in.OffsetDate == 0 {
+		channelview.AppendCreatorDialogs(out, c.MD.UserId, countedChannels)
+	}
+	return out, nil
 }

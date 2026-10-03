@@ -17,9 +17,13 @@ import (
 // UserGetAccountDaysTTL
 // user.getAccountDaysTTL user_id:int = AccountDaysTTL;
 func (c *UserCore) UserGetAccountDaysTTL(in *user.TLUserGetAccountDaysTTL) (*mtproto.AccountDaysTTL, error) {
-	userDO, _ := c.svcCtx.Dao.UsersDAO.SelectAccountDaysTTL(c.ctx, in.UserId)
+	userDO, err := c.svcCtx.Dao.UsersDAO.SelectAccountDaysTTL(c.ctx, in.UserId)
+	if err != nil {
+		c.Logger.Errorf("user.getAccountDaysTTL - error: %v", err)
+		return nil, err
+	}
 	if userDO == nil {
-		err := mtproto.ErrUserIdInvalid
+		err = mtproto.ErrUserIdInvalid
 		c.Logger.Errorf("user.getAccountDaysTTL - error: %v", err)
 		return nil, err
 	}

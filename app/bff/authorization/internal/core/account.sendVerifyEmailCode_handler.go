@@ -19,14 +19,50 @@
 package core
 
 import (
+	"strings"
+
 	"github.com/teamgram/proto/mtproto"
+	verification "github.com/teamgram/teamgram-server/pkg/code"
 )
 
 // AccountSendVerifyEmailCode
 // account.sendVerifyEmailCode#98e037bb purpose:EmailVerifyPurpose email:string = account.SentEmailCode;
 func (c *AuthorizationCore) AccountSendVerifyEmailCode(in *mtproto.TLAccountSendVerifyEmailCode) (*mtproto.Account_SentEmailCode, error) {
-	// TODO: not impl
-	c.Logger.Errorf("account.sendVerifyEmailCode blocked, License key from https://teamgram.net required to unlock enterprise features.")
+	if c == nil || in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if c.svcCtx == nil || c.svcCtx.Challenges == nil {
+		return nil, mtproto.ErrSendCodeUnavailable
+	}
+	email := strings.TrimSpace(in.GetEmail())
+	if !validEmail(email) {
+		c.Logger.Errorf("account.sendVerifyEmailCode - invalid email")
+		return nil, mtproto.ErrEmailInvalid
+	}
 
-	return nil, mtproto.ErrEnterpriseIsBlocked
+	purpose := in.GetPurpose()
+	if purpose == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	switch purpose.GetPredicateName() {
+	case mtproto.Predicate_emailVerifyPurposeLoginSetup,
+		mtproto.Predicate_emailVerifyPurposeLoginChange,
+		mtproto.Predicate_emailVerifyPurposePassport:
+	default:
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+
+	purposeID := emailPurposeID(purpose)
+	issued, err := c.svcCtx.Challenges.Issue(c.ctx, verification.IssueRequest{
+		Channel: verification.ChannelEmail, Purpose: challengePurposeVerifyEmail,
+		Subject: email, Scope: c.challengeScope(), ChallengeID: purposeID,
+		CodeLength: 6,
+	})
+	if err != nil {
+		return nil, mapEmailChallengeError(err)
+	}
+	return mtproto.MakeTLAccountSentEmailCode(&mtproto.Account_SentEmailCode{
+		EmailPattern: maskEmail(email),
+		Length:       int32(len(issued.Code)),
+	}).To_Account_SentEmailCode(), nil
 }

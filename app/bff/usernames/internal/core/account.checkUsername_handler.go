@@ -28,6 +28,16 @@ import (
 // AccountCheckUsername
 // account.checkUsername#2714d86c username:string = Bool;
 func (c *UsernamesCore) AccountCheckUsername(in *mtproto.TLAccountCheckUsername) (*mtproto.Bool, error) {
+	if c == nil || c.MD == nil || c.MD.UserId == 0 {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
+	if in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.UserClient == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
+
 	// Check username format
 	// You can choose a username on Telegram.
 	// If you do, other people will be able to find
@@ -51,14 +61,20 @@ func (c *UsernamesCore) AccountCheckUsername(in *mtproto.TLAccountCheckUsername)
 		if err != nil {
 			return nil, err
 		}
+		if existed == nil {
+			c.Logger.Errorf("account.checkUsername#2714d86c - user service returned an empty response")
+			return nil, mtproto.ErrInternalServerError
+		}
 
 		switch existed.GetPredicateName() {
 		case user.Predicate_usernameExistedNotMe:
-			err = mtproto.ErrUsernameOccupied
-			c.Logger.Errorf("account.checkUsername#2714d86c - exists username: %v", err)
+			c.Logger.Errorf("account.checkUsername#2714d86c - username is occupied")
 			return mtproto.BoolFalse, nil
+		case user.Predicate_usernameNotExisted, user.Predicate_usernameExistedIsMe:
+			return mtproto.BoolTrue, nil
 		default:
-			break
+			c.Logger.Errorf("account.checkUsername#2714d86c - user service returned unknown predicate: %q", existed.GetPredicateName())
+			return nil, mtproto.ErrInternalServerError
 		}
 	}
 

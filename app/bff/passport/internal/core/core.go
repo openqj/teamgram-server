@@ -32,6 +32,8 @@ type PassportCore struct {
 	svcCtx *svc.ServiceContext
 	logx.Logger
 	MD *metadata.RpcMetadata
+
+	userVerifier passportUserVerifier
 }
 
 func New(ctx context.Context, svcCtx *svc.ServiceContext) *PassportCore {

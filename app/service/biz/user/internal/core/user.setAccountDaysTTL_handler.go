@@ -17,7 +17,10 @@ import (
 // UserSetAccountDaysTTL
 // user.setAccountDaysTTL user_id:int ttl:int = Bool;
 func (c *UserCore) UserSetAccountDaysTTL(in *user.TLUserSetAccountDaysTTL) (*mtproto.Bool, error) {
-	_, _ = c.svcCtx.Dao.UsersDAO.UpdateAccountDaysTTL(c.ctx, in.Ttl, in.UserId)
+	if _, err := c.svcCtx.Dao.UsersDAO.UpdateAccountDaysTTL(c.ctx, in.Ttl, in.UserId); err != nil {
+		c.Logger.Errorf("user.setAccountDaysTTL - error: %v", err)
+		return nil, err
+	}
 
 	return mtproto.BoolTrue, nil
 }

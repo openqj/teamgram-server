@@ -26,9 +26,17 @@ import (
 // ContactsGetStatuses
 // contacts.getStatuses#c4a353ee = Vector<ContactStatus>;
 func (c *ContactsCore) ContactsGetStatuses(in *mtproto.TLContactsGetStatuses) (*mtproto.Vector_ContactStatus, error) {
-	cList, _ := c.svcCtx.Dao.UserClient.UserGetContactList(c.ctx, &userpb.TLUserGetContactList{
+	cList, err := c.svcCtx.Dao.UserClient.UserGetContactList(c.ctx, &userpb.TLUserGetContactList{
 		UserId: c.MD.UserId,
 	})
+	if err != nil {
+		c.Logger.Errorf("contacts.getStatuses - user.getContactList error: %v", err)
+		return nil, err
+	}
+	if cList == nil {
+		c.Logger.Errorf("contacts.getStatuses - user.getContactList returned no response")
+		return nil, mtproto.ErrInternalServerError
+	}
 
 	rList := &mtproto.Vector_ContactStatus{
 		Datas: make([]*mtproto.ContactStatus, 0, len(cList.GetDatas())),
@@ -36,17 +44,45 @@ func (c *ContactsCore) ContactsGetStatuses(in *mtproto.TLContactsGetStatuses) (*
 
 	idList := make([]int64, 0, len(cList.GetDatas()))
 	for _, id := range cList.GetDatas() {
+		if id == nil {
+			c.Logger.Errorf("contacts.getStatuses - user.getContactList returned a nil contact")
+			return nil, mtproto.ErrInternalServerError
+		}
 		idList = append(idList, id.ContactUserId)
 	}
+	if len(idList) == 0 {
+		return rList, nil
+	}
 
-	lastSeenList, _ := c.svcCtx.Dao.UserGetLastSeens(c.ctx, &userpb.TLUserGetLastSeens{
+	lastSeenList, err := c.svcCtx.Dao.UserGetLastSeens(c.ctx, &userpb.TLUserGetLastSeens{
 		Id: idList,
 	})
+	if err != nil {
+		c.Logger.Errorf("contacts.getStatuses - user.getLastSeens error: %v", err)
+		return nil, err
+	}
+	if lastSeenList == nil {
+		c.Logger.Errorf("contacts.getStatuses - user.getLastSeens returned no response")
+		return nil, mtproto.ErrInternalServerError
+	}
 
+	lastSeenByID := make(map[int64]int64, len(lastSeenList.GetDatas()))
 	for _, v := range lastSeenList.GetDatas() {
+		if v == nil {
+			c.Logger.Errorf("contacts.getStatuses - user.getLastSeens returned a nil last seen")
+			return nil, mtproto.ErrInternalServerError
+		}
+		lastSeenByID[v.GetUserId()] = v.GetLastSeenAt()
+	}
+
+	for _, userID := range idList {
+		status := mtproto.MakeTLUserStatusEmpty(nil).To_UserStatus()
+		if lastSeenAt, ok := lastSeenByID[userID]; ok {
+			status = userpb.MakeUserStatus(lastSeenAt, true)
+		}
 		rList.Datas = append(rList.Datas, mtproto.MakeTLContactStatus(&mtproto.ContactStatus{
-			UserId: v.UserId,
-			Status: userpb.MakeUserStatus(v.LastSeenAt, true),
+			UserId: userID,
+			Status: status,
 		}).To_ContactStatus())
 	}
 

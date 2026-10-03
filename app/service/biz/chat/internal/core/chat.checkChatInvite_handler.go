@@ -18,6 +18,10 @@ import (
 // ChatCheckChatInvite
 // chat.checkChatInvite self_id:long hash:string = ChatInvite;
 func (c *ChatCore) ChatCheckChatInvite(in *chat.TLChatCheckChatInvite) (*chat.ChatInviteExt, error) {
+	selfID, err := c.requireInviteSelf(in.SelfId)
+	if err != nil {
+		return nil, err
+	}
 	chatInviteDO, err := c.svcCtx.Dao.ChatInvitesDAO.SelectByLink(c.ctx, in.Hash)
 	if err != nil {
 		c.Logger.Errorf("chat.checkChatInvite - error: %v", err)
@@ -75,7 +79,7 @@ func (c *ChatCore) ChatCheckChatInvite(in *chat.TLChatCheckChatInvite) (*chat.Ch
 		return nil, err
 	}
 
-	me, _ := mChat.GetImmutableChatParticipant(in.SelfId)
+	me, _ := mChat.GetImmutableChatParticipant(selfID)
 	if me == nil || !me.IsChatMemberStateNormal() {
 		rValue := chat.MakeTLChatInvite(&chat.ChatInviteExt{
 			RequestNeeded:     chatInviteDO.RequestNeeded,

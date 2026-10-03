@@ -41,6 +41,9 @@ func (s *Server) onTcpData(ctx *connContext, c gnet.Conn) (action gnet.Action) {
 			logx.Errorf("conn(%s) create codec error: %v", c, err)
 			return gnet.Close
 		}
+		if dcID, ok := codec.DCID(ctx.codec); ok {
+			ctx.setDCID(dcID)
+		}
 	}
 
 	for {

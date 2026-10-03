@@ -24,8 +24,10 @@ import (
 // AccountUpdateWebBrowserSettings
 // account.updateWebBrowserSettings#9adf82fe flags:# open_external_browser:flags.0?true display_close_button:flags.1?true = account.WebBrowserSettings;
 func (c *WebBrowserCore) AccountUpdateWebBrowserSettings(in *mtproto.TLAccountUpdateWebBrowserSettings) (*mtproto.Account_WebBrowserSettings, error) {
-	// TODO: not impl
-	c.Logger.Errorf("account.updateWebBrowserSettings blocked, License key from https://teamgram.net required to unlock enterprise features.")
-
-	return nil, mtproto.ErrEnterpriseIsBlocked
+	var openExternal, displayClose bool
+	if in != nil {
+		openExternal = in.GetOpenExternalBrowser()
+		displayClose = in.GetDisplayCloseButton()
+	}
+	return c.webBrowserUpdate(openExternal, displayClose)
 }

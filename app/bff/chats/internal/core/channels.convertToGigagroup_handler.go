@@ -25,8 +25,32 @@ import (
 // ChannelsConvertToGigagroup
 // channels.convertToGigagroup#b290c69 channel:InputChannel = Updates;
 func (c *ChatsCore) ChannelsConvertToGigagroup(in *mtproto.TLChannelsConvertToGigagroup) (*mtproto.Updates, error) {
-	// TODO: not impl
-	c.Logger.Errorf("channels.convertToGigagroup blocked, License key from https://teamgram.net required to unlock enterprise features.")
+	if in == nil {
+		return nil, mtproto.ErrPeerIdInvalid
+	}
+	channelId, err := inputChannelId(in.GetChannel())
+	if err != nil {
+		return nil, err
+	}
+	chat, err := c.loadMutableChat(channelId)
+	if err != nil {
+		return nil, err
+	}
+	me, err := c.requireCreatorOrAdmin(chat, false)
+	if err != nil {
+		c.Logger.Errorf("channels.convertToGigagroup - error: %v", err)
+		return nil, err
+	}
 
-	return nil, mtproto.ErrEnterpriseIsBlocked
+	var accessHash int64
+	if migrated := chat.MigratedTo(); migrated != nil {
+		accessHash = migrated.GetAccessHash()
+	}
+	channel := megagroupChannel(channelId, accessHash, chat.Title(), me.IsChatMemberCreator(), true)
+	updates := mtproto.MakeUpdatesByUpdatesChats(
+		[]*mtproto.Chat{channel},
+		mtproto.MakeTLUpdateChat(&mtproto.Update{ChatId_INT64: channelId}).To_Update(),
+	)
+	c.pushChatUpdates(chat, updates)
+	return updates, nil
 }

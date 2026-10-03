@@ -1,5 +1,6 @@
 Name: bff.bff
 ListenOn: 127.0.0.1:20010
+DcId: 1
 Etcd:
   Hosts:
     - 127.0.0.1:2379
@@ -9,6 +10,7 @@ Log:
   Path: ../logs/bff
 KV:
   - Host: localhost:6379
+MysqlDSN: root:root@tcp(127.0.0.1:3306)/teamgram?charset=utf8mb4&parseTime=true
 
 Code:
   Name: "none"

@@ -20,13 +20,45 @@ package core
 
 import (
 	"github.com/teamgram/proto/mtproto"
+	"github.com/teamgram/teamgram-server/app/service/dfs/dfs"
 )
 
 // MessagesUploadEncryptedFile
 // messages.uploadEncryptedFile#5057c497 peer:InputEncryptedChat file:InputEncryptedFile = EncryptedFile;
 func (c *FilesCore) MessagesUploadEncryptedFile(in *mtproto.TLMessagesUploadEncryptedFile) (*mtproto.EncryptedFile, error) {
-	// TODO: not impl
-	c.Logger.Errorf("messages.uploadEncryptedFile blocked, License key from https://teamgram.net required to unlock enterprise features.")
+	file := in.GetFile()
+	if file == nil || file.GetPredicateName() == mtproto.Predicate_inputEncryptedFileEmpty || file.GetId() == 0 {
+		c.Logger.Errorf("messages.uploadEncryptedFile - empty file")
+		return nil, mtproto.ErrFileIdInvalid
+	}
+	switch file.GetPredicateName() {
+	case mtproto.Predicate_inputEncryptedFileUploaded, mtproto.Predicate_inputEncryptedFileBigUploaded:
+		if file.GetParts() <= 0 {
+			c.Logger.Errorf("messages.uploadEncryptedFile - invalid parts")
+			return nil, mtproto.ErrFilePartsInvalid
+		}
+	case mtproto.Predicate_inputEncryptedFile:
+	default:
+		c.Logger.Errorf("messages.uploadEncryptedFile - invalid file: %s", file.GetPredicateName())
+		return nil, mtproto.ErrFileIdInvalid
+	}
 
-	return nil, mtproto.ErrEnterpriseIsBlocked
+	// Same part store as upload.saveFilePart; DFS assembles it into an EncryptedFile.
+	encrypted, err := c.svcCtx.Dao.DfsClient.DfsUploadEncryptedFileV2(c.ctx, &dfs.TLDfsUploadEncryptedFileV2{
+		Creator: c.MD.PermAuthKeyId,
+		File:    file,
+	})
+	if err != nil {
+		c.Logger.Errorf("messages.uploadEncryptedFile - error: %v", err)
+		return nil, err
+	}
+	if encrypted == nil {
+		c.Logger.Errorf("messages.uploadEncryptedFile - empty encrypted file")
+		return nil, mtproto.ErrFileIdInvalid
+	}
+	if encrypted.GetKeyFingerprint() == 0 {
+		encrypted.KeyFingerprint = file.GetKeyFingerprint()
+	}
+
+	return encrypted, nil
 }

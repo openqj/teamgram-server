@@ -1017,6 +1017,32 @@ func (dao *MessagesDAO) SelectByMediaTypeWithCB(ctx context.Context, userId int6
 	return
 }
 
+// SelectSentByMediaTypeWithCB returns media messages authored by the user
+// across all dialogs. The messages table is already sharded by user_id, so
+// this query remains scoped to the caller's persisted view.
+func (dao *MessagesDAO) SelectSentByMediaTypeWithCB(ctx context.Context, userId int64, messageFilterType int32, userMessageBoxId int32, limit int32, cb func(sz, i int, v *dataobject.MessagesDO)) (rList []dataobject.MessagesDO, err error) {
+	var (
+		query  string
+		values []dataobject.MessagesDO
+	)
+	query = strings.Replace("select user_id, user_message_box_id, dialog_id1, dialog_id2, dialog_message_id, sender_user_id, peer_type, peer_id, random_id, message_filter_type, message_data, message, mentioned, media_unread, pinned, has_reaction, reaction, reaction_date, reaction_unread, saved_peer_type, saved_peer_id, date2, ttl_period from __TABLE__ where user_id = ? and sender_user_id = ? and message_filter_type = ? and user_message_box_id < ? and deleted = 0 order by user_message_box_id desc limit ?", "__TABLE__", dao.CalcTableName(userId), -1)
+
+	err = dao.db.QueryRowsPartial(ctx, &values, query, userId, userId, messageFilterType, userMessageBoxId, limit)
+	if err != nil {
+		logx.WithContext(ctx).Errorf("queryx in SelectSentByMediaTypeWithCB(_), error: %v", err)
+		return
+	}
+
+	rList = values
+	if cb != nil {
+		sz := len(rList)
+		for i := range rList {
+			cb(sz, i, &rList[i])
+		}
+	}
+	return
+}
+
 // SelectPhoneCallList
 // select user_id, user_message_box_id, dialog_id1, dialog_id2, dialog_message_id, sender_user_id, peer_type, peer_id, random_id, message_filter_type, message_data, message, mentioned, media_unread, pinned, has_reaction, reaction, reaction_date, reaction_unread, saved_peer_type, saved_peer_id, date2, ttl_period from messages where user_id = :user_id and message_filter_type = :message_filter_type and user_message_box_id < :user_message_box_id and deleted = 0 order by user_message_box_id desc limit :limit
 func (dao *MessagesDAO) SelectPhoneCallList(ctx context.Context, userId int64, messageFilterType int32, userMessageBoxId int32, limit int32) (rList []dataobject.MessagesDO, err error) {
@@ -1187,14 +1213,24 @@ func (dao *MessagesDAO) SelectBackwardUnreadMentionsByOffsetIdLimit(ctx context.
 
 // SelectBackwardUnreadMentionsByOffsetIdLimitWithCB
 // select user_id, user_message_box_id, dialog_id1, dialog_id2, dialog_message_id, sender_user_id, peer_type, peer_id, random_id, message_filter_type, message_data, message, mentioned, media_unread, pinned, has_reaction, reaction, reaction_date, reaction_unread, saved_peer_type, saved_peer_id, date2, ttl_period from messages where user_id = :user_id and (dialog_id1 = :dialog_id1 and dialog_id2 = :dialog_id2) and user_message_box_id < :user_message_box_id and mentioned = 1 and media_unread = 1 and deleted = 0 order by user_message_box_id desc limit :limit
-func (dao *MessagesDAO) SelectBackwardUnreadMentionsByOffsetIdLimitWithCB(ctx context.Context, userId int64, dialogId1 int64, dialogId2 int64, userMessageBoxId int32, limit int32, cb func(sz, i int, v *dataobject.MessagesDO)) (rList []dataobject.MessagesDO, err error) {
+func (dao *MessagesDAO) SelectBackwardUnreadMentionsByOffsetIdLimitWithCB(ctx context.Context, userId int64, dialogId1 int64, dialogId2 int64, userMessageBoxId, minId, maxId, limit int32, cb func(sz, i int, v *dataobject.MessagesDO)) (rList []dataobject.MessagesDO, err error) {
 	var (
 		query  string
 		values []dataobject.MessagesDO
 	)
 	query = strings.Replace("select user_id, user_message_box_id, dialog_id1, dialog_id2, dialog_message_id, sender_user_id, peer_type, peer_id, random_id, message_filter_type, message_data, message, mentioned, media_unread, pinned, has_reaction, reaction, reaction_date, reaction_unread, saved_peer_type, saved_peer_id, date2, ttl_period from __TABLE__ where user_id = ? and (dialog_id1 = ? and dialog_id2 = ?) and user_message_box_id < ? and mentioned = 1 and media_unread = 1 and deleted = 0 order by user_message_box_id desc limit ?", "__TABLE__", dao.CalcTableName(userId), -1)
+	args := []any{userId, dialogId1, dialogId2, userMessageBoxId}
+	if maxId > 0 {
+		query = strings.Replace(query, " and mentioned = 1", " and user_message_box_id < ? and mentioned = 1", 1)
+		args = append(args, maxId)
+	}
+	if minId > 0 {
+		query = strings.Replace(query, " and mentioned = 1", " and user_message_box_id > ? and mentioned = 1", 1)
+		args = append(args, minId)
+	}
+	args = append(args, limit)
 
-	err = dao.db.QueryRowsPartial(ctx, &values, query, userId, dialogId1, dialogId2, userMessageBoxId, limit)
+	err = dao.db.QueryRowsPartial(ctx, &values, query, args...)
 
 	if err != nil {
 		logx.WithContext(ctx).Errorf("queryx in SelectBackwardUnreadMentionsByOffsetIdLimit(_), error: %v", err)
@@ -1236,14 +1272,24 @@ func (dao *MessagesDAO) SelectForwardUnreadMentionsByOffsetIdLimit(ctx context.C
 
 // SelectForwardUnreadMentionsByOffsetIdLimitWithCB
 // select user_id, user_message_box_id, dialog_id1, dialog_id2, dialog_message_id, sender_user_id, peer_type, peer_id, random_id, message_filter_type, message_data, message, mentioned, media_unread, pinned, has_reaction, reaction, reaction_date, reaction_unread, saved_peer_type, saved_peer_id, date2, ttl_period from messages where user_id = :user_id and (dialog_id1 = :dialog_id1 and dialog_id2 = :dialog_id2) and user_message_box_id >= :user_message_box_id and mentioned = 1 and media_unread = 1 and deleted = 0 order by user_message_box_id asc limit :limit
-func (dao *MessagesDAO) SelectForwardUnreadMentionsByOffsetIdLimitWithCB(ctx context.Context, userId int64, dialogId1 int64, dialogId2 int64, userMessageBoxId int32, limit int32, cb func(sz, i int, v *dataobject.MessagesDO)) (rList []dataobject.MessagesDO, err error) {
+func (dao *MessagesDAO) SelectForwardUnreadMentionsByOffsetIdLimitWithCB(ctx context.Context, userId int64, dialogId1 int64, dialogId2 int64, userMessageBoxId, minId, maxId, limit int32, cb func(sz, i int, v *dataobject.MessagesDO)) (rList []dataobject.MessagesDO, err error) {
 	var (
 		query  string
 		values []dataobject.MessagesDO
 	)
 	query = strings.Replace("select user_id, user_message_box_id, dialog_id1, dialog_id2, dialog_message_id, sender_user_id, peer_type, peer_id, random_id, message_filter_type, message_data, message, mentioned, media_unread, pinned, has_reaction, reaction, reaction_date, reaction_unread, saved_peer_type, saved_peer_id, date2, ttl_period from __TABLE__ where user_id = ? and (dialog_id1 = ? and dialog_id2 = ?) and user_message_box_id >= ? and mentioned = 1 and media_unread = 1 and deleted = 0 order by user_message_box_id asc limit ?", "__TABLE__", dao.CalcTableName(userId), -1)
+	args := []any{userId, dialogId1, dialogId2, userMessageBoxId}
+	if maxId > 0 {
+		query = strings.Replace(query, " and mentioned = 1", " and user_message_box_id < ? and mentioned = 1", 1)
+		args = append(args, maxId)
+	}
+	if minId > 0 {
+		query = strings.Replace(query, " and mentioned = 1", " and user_message_box_id > ? and mentioned = 1", 1)
+		args = append(args, minId)
+	}
+	args = append(args, limit)
 
-	err = dao.db.QueryRowsPartial(ctx, &values, query, userId, dialogId1, dialogId2, userMessageBoxId, limit)
+	err = dao.db.QueryRowsPartial(ctx, &values, query, args...)
 
 	if err != nil {
 		logx.WithContext(ctx).Errorf("queryx in SelectForwardUnreadMentionsByOffsetIdLimit(_), error: %v", err)

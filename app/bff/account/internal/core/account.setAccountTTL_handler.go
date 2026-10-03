@@ -55,6 +55,7 @@ func (c *AccountCore) AccountSetAccountTTL(in *mtproto.TLAccountSetAccountTTL) (
 		Ttl:    ttl,
 	}); err != nil {
 		c.Logger.Errorf("account.setAccountTTL - error: %v", err)
+		return nil, err
 	}
 
 	return mtproto.BoolTrue, nil

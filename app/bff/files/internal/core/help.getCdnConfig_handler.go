@@ -25,12 +25,7 @@ import (
 // HelpGetCdnConfig
 // help.getCdnConfig#52029342 = CdnConfig;
 func (c *FilesCore) HelpGetCdnConfig(in *mtproto.TLHelpGetCdnConfig) (*mtproto.CdnConfig, error) {
-	// TODO: not impl
-	c.Logger.Errorf("help.getCdnConfig blocked, License key from https://teamgram.net required to unlock enterprise features.")
-
-	rValue := mtproto.MakeTLCdnConfig(&mtproto.CdnConfig{
-		PublicKeys: []*mtproto.CdnPublicKey{},
-	}).To_CdnConfig()
-
-	return rValue, nil
+	_ = in
+	c.Logger.Errorf("help.getCdnConfig - error: %v", mtproto.ErrCdnMethodInvalid)
+	return nil, mtproto.ErrCdnMethodInvalid
 }

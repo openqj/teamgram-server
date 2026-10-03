@@ -18,15 +18,37 @@
 
 package core
 
-import (
-	"github.com/teamgram/proto/mtproto"
-)
+import "github.com/teamgram/proto/mtproto"
 
 // ChannelsRestrictSponsoredMessages
 // channels.restrictSponsoredMessages#9ae91519 channel:InputChannel restricted:Bool = Updates;
 func (c *SponsoredMessagesCore) ChannelsRestrictSponsoredMessages(in *mtproto.TLChannelsRestrictSponsoredMessages) (*mtproto.Updates, error) {
-	// TODO: not impl
-	c.Logger.Errorf("channels.restrictSponsoredMessages blocked, License key from https://teamgram.net required to unlock enterprise features.")
-
-	return nil, mtproto.ErrEnterpriseIsBlocked
+	if _, err := c.requireSponsoredUser(); err != nil {
+		return nil, err
+	}
+	if in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	channel := in.GetChannel()
+	if channel == nil {
+		return nil, mtproto.ErrChannelInvalid
+	}
+	switch channel.GetPredicateName() {
+	case mtproto.Predicate_inputChannel:
+		if channel.GetChannelId() <= 0 || channel.GetAccessHash() == 0 {
+			return nil, mtproto.ErrChannelInvalid
+		}
+	case mtproto.Predicate_inputChannelFromMessage:
+		if channel.GetChannelId() <= 0 || channel.GetPeer() == nil || channel.GetMsgId() <= 0 {
+			return nil, mtproto.ErrChannelInvalid
+		}
+	default:
+		return nil, mtproto.ErrChannelInvalid
+	}
+	switch in.GetRestricted().GetPredicateName() {
+	case mtproto.Predicate_boolTrue, mtproto.Predicate_boolFalse:
+		return nil, mtproto.ErrMethodNotImpl
+	default:
+		return nil, mtproto.ErrInputRequestInvalid
+	}
 }

@@ -25,10 +25,15 @@ import (
 // MessagesReceivedMessages
 // messages.receivedMessages#5a954c0 max_id:int = Vector<ReceivedNotifyMessage>;
 func (c *MessagesCore) MessagesReceivedMessages(in *mtproto.TLMessagesReceivedMessages) (*mtproto.Vector_ReceivedNotifyMessage, error) {
-	// TODO: not impl
-	rValueList := &mtproto.Vector_ReceivedNotifyMessage{
-		Datas: []*mtproto.ReceivedNotifyMessage{},
+	if c == nil || c.MD == nil || c.MD.UserId <= 0 {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
+	if in == nil {
+		return nil, mtproto.ErrInputConstructorInvalid
+	}
+	if in.GetMaxId() < 0 {
+		return nil, mtproto.ErrMessageIdInvalid
 	}
 
-	return rValueList, nil
+	return nil, mtproto.ErrMethodNotImpl
 }

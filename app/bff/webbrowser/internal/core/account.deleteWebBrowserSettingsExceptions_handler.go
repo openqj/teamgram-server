@@ -24,8 +24,7 @@ import (
 // AccountDeleteWebBrowserSettingsExceptions
 // account.deleteWebBrowserSettingsExceptions#86a0765d = account.WebBrowserSettings;
 func (c *WebBrowserCore) AccountDeleteWebBrowserSettingsExceptions(in *mtproto.TLAccountDeleteWebBrowserSettingsExceptions) (*mtproto.Account_WebBrowserSettings, error) {
-	// TODO: not impl
-	c.Logger.Errorf("account.deleteWebBrowserSettingsExceptions blocked, License key from https://teamgram.net required to unlock enterprise features.")
-
-	return nil, mtproto.ErrEnterpriseIsBlocked
+	_ = in
+	// Layer 229 has no peer list; an empty list deletes every exception.
+	return c.webBrowserDeleteExceptions(nil)
 }

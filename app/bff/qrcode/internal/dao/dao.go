@@ -26,18 +26,29 @@ import (
 	sync_client "github.com/teamgram/teamgram-server/app/messenger/sync/client"
 	authsession_client "github.com/teamgram/teamgram-server/app/service/authsession/client"
 	user_client "github.com/teamgram/teamgram-server/app/service/biz/user/client"
+	"github.com/teamgram/teamgram-server/pkg/twofa"
 )
 
 type Dao struct {
-	kv kv.ExtStore
+	kv               kv.ExtStore
+	passwordStore    twofa.ProofStore
+	passwordStoreErr error
 	user_client.UserClient
 	authsession_client.AuthsessionClient
 	sync_client.SyncClient
 }
 
 func New(c config.Config) *Dao {
+	kvStore := kv.NewStore(c.KV)
+	var passwordStore twofa.ProofStore = twofa.NewRedisProofStore(kvStore)
+	var passwordStoreErr error
+	if c.MysqlDSN != "" {
+		passwordStore, passwordStoreErr = twofa.OpenMySQLProofStore(c.MysqlDSN)
+	}
 	return &Dao{
-		kv:                kv.NewStore(c.KV),
+		kv:                kvStore,
+		passwordStore:     passwordStore,
+		passwordStoreErr:  passwordStoreErr,
 		UserClient:        user_client.NewUserClient(rpcx.GetCachedRpcClient(c.UserClient)),
 		AuthsessionClient: authsession_client.NewAuthsessionClient(rpcx.GetCachedRpcClient(c.AuthSessionClient)),
 		SyncClient:        sync_client.NewSyncMqClient(kafka.MustKafkaProducer(c.SyncClient)),

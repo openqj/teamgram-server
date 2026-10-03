@@ -25,8 +25,6 @@ import (
 // PaymentsCanPurchaseStore
 // payments.canPurchaseStore#4fdc5ea7 purpose:InputStorePaymentPurpose = Bool;
 func (c *PremiumCore) PaymentsCanPurchaseStore(in *mtproto.TLPaymentsCanPurchaseStore) (*mtproto.Bool, error) {
-	// TODO: not impl
-	c.Logger.Errorf("payments.canPurchaseStore blocked, License key from https://teamgram.net required to unlock enterprise features.")
-
-	return nil, mtproto.ErrEnterpriseIsBlocked
+	_ = in
+	return nil, mtproto.ErrMethodNotImpl
 }

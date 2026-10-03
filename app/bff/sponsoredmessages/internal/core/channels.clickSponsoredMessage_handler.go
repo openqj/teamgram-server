@@ -25,8 +25,25 @@ import (
 // ChannelsClickSponsoredMessage
 // channels.clickSponsoredMessage#18afbc93 channel:InputChannel random_id:bytes = Bool;
 func (c *SponsoredMessagesCore) ChannelsClickSponsoredMessage(in *mtproto.TLChannelsClickSponsoredMessage) (*mtproto.Bool, error) {
-	// TODO: not impl
-	c.Logger.Errorf("channels.clickSponsoredMessage blocked, License key from https://teamgram.net required to unlock enterprise features.")
-
-	return nil, mtproto.ErrEnterpriseIsBlocked
+	uid, err := c.requireSponsoredUser()
+	if err != nil {
+		return nil, err
+	}
+	rid, err := sponsoredRandom(in.GetRandomId())
+	if err != nil {
+		return nil, err
+	}
+	var channelID int64
+	if in.GetChannel() != nil {
+		channelID = in.GetChannel().GetChannelId()
+	}
+	if err = sponsoredSet(uid, "channel_click:"+rid, map[string]any{
+		"random_id":  rid,
+		"channel_id": channelID,
+		"media":      in.GetMedia(),
+		"fullscreen": in.GetFullscreen(),
+	}); err != nil {
+		return nil, err
+	}
+	return mtproto.BoolTrue, nil
 }

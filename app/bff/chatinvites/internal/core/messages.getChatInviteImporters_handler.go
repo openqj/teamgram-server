@@ -20,6 +20,7 @@ package core
 
 import (
 	"github.com/teamgram/proto/mtproto"
+	"github.com/teamgram/teamgram-server/app/bff/apifull/channelview"
 	chatpb "github.com/teamgram/teamgram-server/app/service/biz/chat/chat"
 	userpb "github.com/teamgram/teamgram-server/app/service/biz/user/user"
 
@@ -34,6 +35,7 @@ func (c *ChatInvitesCore) MessagesGetChatInviteImporters(in *mtproto.TLMessagesG
 		offsetPeer = mtproto.FromInputUser(c.MD.UserId, in.OffsetUser)
 		link       *wrapperspb.StringValue
 		limit      = in.GetLimit()
+		err        error
 	)
 
 	if in.Link != nil {
@@ -49,14 +51,52 @@ func (c *ChatInvitesCore) MessagesGetChatInviteImporters(in *mtproto.TLMessagesG
 		return nil, err
 	}
 
-	if !peer.IsChat() {
+	if !peer.IsChat() && !peer.IsChannel() {
 		err := mtproto.ErrPeerIdInvalid
 		c.Logger.Errorf("messages.getChatInviteImporters - error: ", err)
 		return nil, err
 	}
-
 	if limit == 0 {
 		limit = 50
+	}
+
+	var importers []*mtproto.ChatInviteImporter
+	if peer.IsChannel() {
+		if _, err := channelview.ValidateInputPeer(c.MD.UserId, in.Peer); err != nil {
+			return nil, err
+		}
+		importers, err = channelview.InviteImporters(
+			c.MD.UserId,
+			peer.PeerId,
+			link.GetValue(),
+			in.Requested,
+			in.GetQ().GetValue(),
+			in.OffsetDate,
+			offsetPeer.PeerId,
+			limit,
+		)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		if err := c.requireInvitePermission(peer.PeerId, 0); err != nil {
+			return nil, err
+		}
+		inviteImporters, err := c.svcCtx.Dao.ChatClient.ChatGetChatInviteImporters(c.ctx, &chatpb.TLChatGetChatInviteImporters{
+			SelfId:     c.MD.UserId,
+			ChatId:     peer.PeerId,
+			Requested:  in.Requested,
+			Link:       link,
+			Q:          in.Q,
+			OffsetDate: in.OffsetDate,
+			OffsetUser: offsetPeer.PeerId,
+			Limit:      limit,
+		})
+		if err != nil {
+			c.Logger.Errorf("messages.getChatInviteImporters - error: ", err)
+			return nil, err
+		}
+		importers = inviteImporters.Datas
 	}
 
 	rValues := mtproto.MakeTLMessagesChatInviteImporters(&mtproto.Messages_ChatInviteImporters{
@@ -64,23 +104,7 @@ func (c *ChatInvitesCore) MessagesGetChatInviteImporters(in *mtproto.TLMessagesG
 		Importers: []*mtproto.ChatInviteImporter{},
 		Users:     []*mtproto.User{},
 	}).To_Messages_ChatInviteImporters()
-
-	inviteImporters, err := c.svcCtx.Dao.ChatClient.ChatGetChatInviteImporters(c.ctx, &chatpb.TLChatGetChatInviteImporters{
-		SelfId:     c.MD.UserId,
-		ChatId:     peer.PeerId,
-		Requested:  in.Requested,
-		Link:       link,
-		Q:          in.Q,
-		OffsetDate: in.OffsetDate,
-		OffsetUser: offsetPeer.PeerId,
-		Limit:      limit,
-	})
-	if err != nil {
-		c.Logger.Errorf("messages.getChatInviteImporters - error: ", err)
-		return nil, err
-	}
-
-	rValues.Importers = inviteImporters.Datas
+	rValues.Importers = importers
 
 	if len(rValues.Importers) == 0 {
 		return rValues, nil

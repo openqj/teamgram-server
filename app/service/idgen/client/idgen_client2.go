@@ -27,6 +27,13 @@ type IDGenClient2 struct {
 	cli IdgenClient
 }
 
+// Available reports whether the client has an RPC transport configured.  A
+// zero-value IDGenClient2 is useful in unit tests and during partially wired
+// service startup, but calling NextId on it must not panic.
+func (m IDGenClient2) Available() bool {
+	return m.cli != nil
+}
+
 func NewIDGenClient2(cli zrpc.Client) IDGenClient2 {
 	return IDGenClient2{
 		cli: NewIdgenClient(cli),
@@ -34,10 +41,13 @@ func NewIDGenClient2(cli zrpc.Client) IDGenClient2 {
 }
 
 func (m *IDGenClient2) NextId(ctx context.Context) (id int64) {
+	if m == nil || m.cli == nil {
+		return 0
+	}
 	rVal, err := m.cli.IdgenNextId(ctx, &idgen.TLIdgenNextId{})
 	if err != nil {
 		logx.WithContext(ctx).Errorf("idgen.nextId - error: %v", err)
-	} else {
+	} else if rVal != nil {
 		id = rVal.V
 	}
 

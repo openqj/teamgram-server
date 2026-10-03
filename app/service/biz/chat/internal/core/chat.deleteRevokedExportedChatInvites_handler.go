@@ -17,9 +17,17 @@ import (
 // ChatDeleteRevokedExportedChatInvites
 // chat.deleteRevokedExportedChatInvites self_id:long chat_id:long admin_id:long = Bool;
 func (c *ChatCore) ChatDeleteRevokedExportedChatInvites(in *chat.TLChatDeleteRevokedExportedChatInvites) (*mtproto.Bool, error) {
-	_, err := c.svcCtx.Dao.ChatInvitesDAO.DeleteByRevoked(c.ctx, in.ChatId, in.AdminId)
+	selfID, err := c.requireInviteSelf(in.SelfId)
+	if err != nil {
+		return nil, err
+	}
+	if _, err = c.requireInvitePermission(in.ChatId, selfID, in.AdminId); err != nil {
+		return nil, err
+	}
+	_, err = c.svcCtx.Dao.ChatInvitesDAO.DeleteByRevoked(c.ctx, in.ChatId, in.AdminId)
 	if err != nil {
 		c.Logger.Errorf("chat.deleteRevokedExportedChatInvites - error: %v", err)
+		return nil, err
 	}
 
 	return mtproto.BoolTrue, nil

@@ -25,9 +25,21 @@ import (
 // ContactsGetSaved
 // contacts.getSaved#82f1e39f = Vector<SavedContact>;
 func (c *ContactsCore) ContactsGetSaved(in *mtproto.TLContactsGetSaved) (*mtproto.Vector_SavedContact, error) {
-	// TODO: not impl
+	saved, err := loadSavedContacts(c.MD.UserId)
+	if err != nil {
+		c.Logger.Errorf("contacts.getSaved - error: %v", err)
+		return nil, err
+	}
 
-	return &mtproto.Vector_SavedContact{
-		Datas: []*mtproto.SavedContact{},
-	}, nil
+	datas := make([]*mtproto.SavedContact, 0, len(saved))
+	for _, row := range saved {
+		datas = append(datas, mtproto.MakeTLSavedPhoneContact(&mtproto.SavedContact{
+			Phone:     row.Phone,
+			FirstName: row.FirstName,
+			LastName:  row.LastName,
+			Date:      row.Date,
+		}).To_SavedContact())
+	}
+
+	return &mtproto.Vector_SavedContact{Datas: datas}, nil
 }

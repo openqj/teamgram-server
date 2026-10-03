@@ -19,10 +19,19 @@
 package conf
 
 type SmsVerifyCodeConfig struct {
-	Name          string
-	SendCodeUrl   string
-	VerifyCodeUrl string
-	Key           string
-	Secret        string
-	RegionId      string
+	Name                   string
+	SMSProvider            string `json:",optional"`
+	EmailProvider          string `json:",optional"`
+	SendCodeUrl            string
+	EmailSendCodeUrl       string `json:",optional"`
+	VerifyCodeUrl          string
+	Key                    string
+	Secret                 string
+	RegionId               string
+	ProviderTimeoutSeconds int `json:",optional"`
+	ProviderRetryCount     int `json:",optional"`
+	ChallengeTTLSeconds    int `json:",optional"`
+	RateLimit              int `json:",optional"`
+	RateWindowSeconds      int `json:",optional"`
+	MaxAttempts            int `json:",optional"`
 }

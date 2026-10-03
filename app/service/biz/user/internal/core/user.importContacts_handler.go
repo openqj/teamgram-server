@@ -10,289 +10,223 @@
 package core
 
 import (
-	"context"
+	"strings"
 	"time"
 
 	"github.com/teamgram/marmota/pkg/container2"
-	"github.com/teamgram/marmota/pkg/threading2"
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/service/biz/user/internal/dal/dataobject"
 	"github.com/teamgram/teamgram-server/app/service/biz/user/internal/dao"
 	"github.com/teamgram/teamgram-server/app/service/biz/user/user"
+	"github.com/teamgram/teamgram-server/pkg/phonenumber"
 )
 
 type (
 	contactItem = dao.ContactItem
 )
 
-//	c               *mtproto.InputContact
-//	unregistered    bool  // 未注册
-//	userId          int64 // 已经注册的用户ID
-//	contactId       int64 // 已经注册是我的联系人
-//	importContactId int64 // 已经注册的反向联系人
-//}
-
 // UserImportContacts
 // user.importContacts user_id:long contacts:Vector<InputContact> = UserImportedContacts;
 func (c *UserCore) UserImportContacts(in *user.TLUserImportContacts) (*user.UserImportedContacts, error) {
-	var (
-		contacts         = in.Contacts
-		importedContacts = make([]*mtproto.ImportedContact, 0, len(contacts))
-		// popularContactMap = make(map[string]*mtproto.TLPopularContact, len(contacts))
-		updList = make([]int64, 0, len(contacts))
-		idList  = make([]int64, 0, len(contacts))
-	)
-
-	importContacts := make(map[string]*contactItem)
-	// 1. 整理
-	phoneList := make([]string, 0, len(contacts))
-	for _, c2 := range contacts {
-		phoneList = append(phoneList, c2.Phone)
-		importContacts[c2.Phone] = &contactItem{Unregistered: true, C: c2}
+	if in == nil || in.GetUserId() <= 0 {
+		return nil, mtproto.ErrInputRequestInvalid
 	}
 
-	myUserData := c.svcCtx.Dao.GetCacheUserData(c.ctx, in.UserId)
+	contacts := in.GetContacts()
+	items, itemByPhone, phones, err := prepareImportContacts(contacts)
+	if err != nil {
+		return nil, err
+	}
+	if len(contacts) == 0 {
+		return user.MakeTLUserImportedContacts(&user.UserImportedContacts{
+			Imported:       []*mtproto.ImportedContact{},
+			PopularInvites: []*mtproto.PopularContact{},
+			RetryContacts:  []int64{},
+			Users:          []*mtproto.User{},
+			UpdateIdList:   []int64{},
+		}).To_UserImportedContacts(), nil
+	}
+
+	myUserData := c.svcCtx.Dao.GetCacheUserData(c.ctx, in.GetUserId())
 	if myUserData == nil {
 		c.Logger.Errorf("UserImportContacts - myUserData == nil")
 		return nil, mtproto.ErrInternalServerError
 	}
 
-	// 2. 已注册
-	// registeredContacts, _ := c.svcCtx.Dao.UsersDAO.SelectUsersByPhoneList(c.ctx, phoneList)
-	// var contactIdList []int64
-
-	//// clear phoneList
-	//// phoneList = phoneList[0:0]
-	//for i := 0; i < len(registeredContacts); i++ {
-	//	if c2, ok := importContacts[registeredContacts[i].Phone]; ok {
-	//		c2.Unregistered = false
-	//		c2.UserId = registeredContacts[i].Id
-	//		phoneList = append(phoneList, registeredContacts[i].Phone)
-	//		contactIdList = append(contactIdList, registeredContacts[i].Id)
-	//	} else {
-	//		c2.Unregistered = true
-	//	}
-	//}
-	//
-
-	// check unregistered contacts
-	_, _ = c.svcCtx.Dao.UsersDAO.SelectUsersByPhoneListWithCB(
-		c.ctx,
-		phoneList,
-		func(sz, i int, v *dataobject.UsersDO) {
-			if c2, ok := importContacts[v.Phone]; ok {
-				c2.Unregistered = false
-				c2.UserId = v.Id
-				phoneList = append(phoneList, v.Phone)
-				//	// 3. 我的联系人
-				if container2.ContainsInt64(myUserData.ContactIdList, v.Id) {
-					c2.ContactId = v.Id
-				}
-				//	// 4. 反向联系人
-				if container2.ContainsInt64(myUserData.ReverseContactIdList, v.Id) {
-					c2.ImportContactId = v.Id
-				}
-			} else {
-				c2.Unregistered = true
-			}
-		})
-
-	//if len(contactIdList) > 0 {
-	//	// 3. 我的联系人
-	//	myContacts, _ := c.svcCtx.Dao.UserContactsDAO.SelectListByIdList(c.ctx, in.UserId, contactIdList)
-	//	c.Logger.Infof("myContacts - %v", myContacts)
-	//	for i := 0; i < len(myContacts); i++ {
-	//		if c2, ok := importContacts[myContacts[i].ContactPhone]; ok {
-	//			c2.ContactId = myContacts[i].ContactUserId
-	//		}
-	//	}
-	//}
-	//
-	//if len(contactIdList) > 0 {
-	//	// 4. 反向联系人
-	//	importedMyContacts, _ := c.svcCtx.Dao.ImportedContactsDAO.SelectListByImportedList(c.ctx, in.UserId, contactIdList)
-	//	c.Logger.Infof("importedMyContacts - %v", importedMyContacts)
-	//	for i := 0; i < len(importedMyContacts); i++ {
-	//		for _, c2 := range importContacts {
-	//			if c2.UserId == importedMyContacts[i].ImportedUserId {
-	//				c2.ImportContactId = c2.UserId
-	//				break
-	//			}
-	//		}
-	//	}
-	//}
-
-	// clear phoneList
-	// phoneList = phoneList[0:0]
-	for _, c2 := range importContacts {
-		if c2.Unregistered {
-			//	threading2.GoSafeContext(c.ctx, func(ctx context.Context) {
-			//		// 1. 未注册 - popular inviter
-			//		unregisteredContactsDO := &dataobject.UnregisteredContactsDO{
-			//			Phone:           c2.C.Phone,
-			//			ImporterUserId:  in.UserId,
-			//			ImportFirstName: c2.C.FirstName,
-			//			ImportLastName:  c2.C.LastName,
-			//		}
-			//		_, _, _ = c.svcCtx.Dao.UnregisteredContactsDAO.InsertOrUpdate(ctx, unregisteredContactsDO)
-			//	})
-			//	////func() {
-			//	//	// 1. 未注册 - popular inviter
-			//	//	unregisteredContactsDO := &dataobject.UnregisteredContactsDO{
-			//	//		Phone:           c2.C.Phone,
-			//	//		ImporterUserId:  in.UserId,
-			//	//		ImportFirstName: c2.C.FirstName,
-			//	//		ImportLastName:  c2.C.LastName,
-			//	//	}
-			//	//	_, _, _ = c.svcCtx.Dao.UnregisteredContactsDAO.InsertOrUpdate(c.ctx, unregisteredContactsDO)
-			//	//// }()
-			//
-			//	//popularContactsDO := &dataobject.PopularContactsDO{
-			//	//	Phone:     c2.c.Phone,
-			//	//	Importers: 1,
-			//	//}
-			//	//c.dao.PopularContactsDAO.InsertOrUpdate(popularContactsDO)
-			//	phoneList = append(phoneList, c2.C.Phone)
-			//	popularContact := mtproto.MakeTLPopularContact(&mtproto.PopularContact{
-			//		ClientId:  c2.C.ClientId,
-			//		Importers: 1, // TODO(@benqi): get importers
-			//	})
-			//	popularContactMap[c2.C.Phone] = popularContact
-			//	// &popularContactData{c2.c.Phone, c2.c.ClientId})
-		} else {
-			// 已经注册
-			userContactsDO := &dataobject.UserContactsDO{
-				OwnerUserId:      in.UserId,
-				ContactUserId:    c2.UserId,
-				ContactPhone:     c2.C.Phone,
-				ContactFirstName: c2.C.FirstName,
-				ContactLastName:  c2.C.LastName,
-				Mutual:           false,
-				CloseFriend:      false,
-				StoriesHidden:    false,
-				IsDeleted:        false,
-				Date2:            time.Now().Unix(),
-			}
-
-			if c2.ContactId > 0 {
-				if c2.ImportContactId > 0 {
-					updList = append(updList, c2.ImportContactId)
-				}
-
-				// 联系人已经存在，刷新first_name, last_name
-				_, _ = c.svcCtx.Dao.UserContactsDAO.UpdateContactName(
-					c.ctx,
-					userContactsDO.ContactFirstName,
-					userContactsDO.ContactLastName,
-					userContactsDO.OwnerUserId,
-					userContactsDO.ContactUserId)
-			} else {
-				userContactsDO.IsDeleted = false
-				if c2.ImportContactId > 0 {
-					userContactsDO.Mutual = true
-
-					// need update to contact
-					updList = append(updList, c2.ImportContactId)
-					_, _ = c.svcCtx.Dao.UserContactsDAO.UpdateMutual(c.ctx, true, userContactsDO.ContactUserId, userContactsDO.OwnerUserId)
-				} else {
-					importedContactsDO := &dataobject.ImportedContactsDO{
-						UserId:         userContactsDO.ContactUserId,
-						ImportedUserId: userContactsDO.OwnerUserId,
-					}
-					_, _, _ = c.svcCtx.Dao.ImportedContactsDAO.InsertOrUpdate(c.ctx, importedContactsDO)
-				}
-				_, _, _ = c.svcCtx.Dao.UserContactsDAO.InsertOrUpdate(c.ctx, userContactsDO)
-			}
-
-			c.Logger.Infof("userContactsDO - %v", userContactsDO)
-			c.Logger.Infof("c2 - %v", c2)
-
-			importedContact := mtproto.MakeTLImportedContact(&mtproto.ImportedContact{
-				UserId:   userContactsDO.ContactUserId,
-				ClientId: c2.C.ClientId,
-			})
-			importedContacts = append(importedContacts, importedContact.To_ImportedContact())
-			idList = append(idList, userContactsDO.ContactUserId)
+	if _, err := c.svcCtx.Dao.UsersDAO.SelectUsersByPhoneListWithCB(c.ctx, phones, func(_ int, _ int, row *dataobject.UsersDO) {
+		if row == nil {
+			return
 		}
+		item, ok := itemByPhone[row.Phone]
+		if !ok {
+			return
+		}
+		item.Unregistered = false
+		item.UserId = row.Id
+		if container2.ContainsInt64(myUserData.ContactIdList, row.Id) {
+			item.ContactId = row.Id
+		}
+		if container2.ContainsInt64(myUserData.ReverseContactIdList, row.Id) {
+			item.ImportContactId = row.Id
+		}
+	}); err != nil {
+		c.Logger.Errorf("UserImportContacts - select users by phone error: %v", err)
+		return nil, err
 	}
 
-	//
-	//popularContacts := make([]*mtproto.PopularContact, 0, len(phoneList))
-	//if len(phoneList) > 0 {
-	//	popularDOList, _ := c.svcCtx.Dao.PopularContactsDAO.SelectImportersList(c.ctx, phoneList)
-	//	for i := 0; i < len(popularDOList); i++ {
-	//		if c2, ok := popularContactMap[popularDOList[i].Phone]; ok {
-	//			c2.SetImporters(popularDOList[i].Importers + 1)
-	//		}
-	//	}
-	//
-	//	for _, c2 := range popularContactMap {
-	//		popularContacts = append(popularContacts, c2.To_PopularContact())
-	//	}
-	//
-	//	//go func() {
-	//	//	// TODO:
-	//	//	// m.PopularContactsDAO.IncreaseImportersList(context.Background(), phoneList)
-	//	//}()
-	//}
+	importedContacts := make([]*mtproto.ImportedContact, 0, len(contacts))
+	updateIDs := make([]int64, 0, len(contacts))
+	userIDs := make([]int64, 0, len(contacts))
+	for _, item := range items {
+		if item.Unregistered {
+			continue
+		}
+		contact := &dataobject.UserContactsDO{
+			OwnerUserId:      in.GetUserId(),
+			ContactUserId:    item.UserId,
+			ContactPhone:     item.C.GetPhone(),
+			ContactFirstName: item.C.GetFirstName(),
+			ContactLastName:  item.C.GetLastName(),
+			Mutual:           item.ImportContactId > 0,
+			CloseFriend:      false,
+			StoriesHidden:    false,
+			IsDeleted:        false,
+			Date2:            time.Now().Unix(),
+		}
 
-	c.svcCtx.Dao.ClearContactCaches(c.ctx, in.UserId, idList...)
-	users, _ := c.UserGetMutableUsers(&user.TLUserGetMutableUsers{
-		Id: append(idList, in.UserId),
-	})
-
-	//// importedContacts, popularContacts, updList
-	//rImportContacts := user.MakeTLUserImportedContacts(&user.UserImportedContacts{
-	//	Imported:       importedContacts,
-	//	PopularInvites: popularContacts,
-	//	RetryContacts:  []int64{},
-	//	Users:          users.GetUserListByIdList(in.UserId, idList...),
-	//	UpdateIdList:   updList,
-	//}).To_UserImportedContacts()
-
-	// return rImportContacts, nil
-	return threading2.WrapperGoFunc(
-		c.ctx,
-		user.MakeTLUserImportedContacts(&user.UserImportedContacts{
-			Imported:       importedContacts,
-			PopularInvites: []*mtproto.PopularContact{},
-			RetryContacts:  []int64{},
-			Users:          users.GetUserListByIdList(in.UserId, idList...),
-			UpdateIdList:   updList,
-		}).To_UserImportedContacts(),
-		func(ctx context.Context) {
-			for _, c2 := range importContacts {
-				// 1. 未注册 - popular inviter
-				_, _, _ = c.svcCtx.Dao.UnregisteredContactsDAO.InsertOrUpdate(ctx, &dataobject.UnregisteredContactsDO{
-					Phone:           c2.C.Phone,
-					ImporterUserId:  in.UserId,
-					ImportFirstName: c2.C.FirstName,
-					ImportLastName:  c2.C.LastName,
-				})
-				//})
-				////func() {
-				//	// 1. 未注册 - popular inviter
-				//	unregisteredContactsDO := &dataobject.UnregisteredContactsDO{
-				//		Phone:           c2.C.Phone,
-				//		ImporterUserId:  in.UserId,
-				//		ImportFirstName: c2.C.FirstName,
-				//		ImportLastName:  c2.C.LastName,
-				//	}
-				//	_, _, _ = c.svcCtx.Dao.UnregisteredContactsDAO.InsertOrUpdate(c.ctx, unregisteredContactsDO)
-				//// }()
-
-				//popularContactsDO := &dataobject.PopularContactsDO{
-				//	Phone:     c2.c.Phone,
-				//	Importers: 1,
-				//}
-				//c.dao.PopularContactsDAO.InsertOrUpdate(popularContactsDO)
-				//phoneList = append(phoneList, c2.C.Phone)
-				//popularContact := mtproto.MakeTLPopularContact(&mtproto.PopularContact{
-				//	ClientId:  c2.C.ClientId,
-				//	Importers: 1, // TODO(@benqi): get importers
-				//})
-				// popularContactMap[c2.C.Phone] = popularContact
-				// &popularContactData{c2.c.Phone, c2.c.ClientId})
+		if item.ContactId > 0 {
+			if item.ImportContactId > 0 {
+				updateIDs = append(updateIDs, item.ImportContactId)
 			}
-		}).(*user.UserImportedContacts), nil
+			if _, err := c.svcCtx.Dao.UserContactsDAO.UpdateContactName(c.ctx, contact.ContactFirstName, contact.ContactLastName, contact.OwnerUserId, contact.ContactUserId); err != nil {
+				return nil, err
+			}
+		} else {
+			if item.ImportContactId > 0 {
+				if _, err := c.svcCtx.Dao.UserContactsDAO.UpdateMutual(c.ctx, true, contact.ContactUserId, contact.OwnerUserId); err != nil {
+					return nil, err
+				}
+				updateIDs = append(updateIDs, item.ImportContactId)
+			} else {
+				if _, _, err := c.svcCtx.Dao.ImportedContactsDAO.InsertOrUpdate(c.ctx, &dataobject.ImportedContactsDO{
+					UserId:         contact.ContactUserId,
+					ImportedUserId: contact.OwnerUserId,
+				}); err != nil {
+					return nil, err
+				}
+			}
+			if _, _, err := c.svcCtx.Dao.UserContactsDAO.InsertOrUpdate(c.ctx, contact); err != nil {
+				return nil, err
+			}
+		}
+
+		importedContacts = append(importedContacts, mtproto.MakeTLImportedContact(&mtproto.ImportedContact{
+			UserId:   item.UserId,
+			ClientId: item.C.GetClientId(),
+		}).To_ImportedContact())
+		userIDs = append(userIDs, item.UserId)
+	}
+
+	if err := c.svcCtx.Dao.ClearContactCaches(c.ctx, in.GetUserId(), userIDs...); err != nil {
+		c.Logger.Errorf("UserImportContacts - clear contact cache error: %v", err)
+		return nil, err
+	}
+	users, err := c.UserGetMutableUsers(&user.TLUserGetMutableUsers{Id: append(userIDs, in.GetUserId())})
+	if err != nil {
+		c.Logger.Errorf("UserImportContacts - get mutable users error: %v", err)
+		return nil, err
+	}
+	if users == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
+
+	for _, item := range items {
+		if !item.Unregistered {
+			continue
+		}
+		if _, _, err := c.svcCtx.Dao.UnregisteredContactsDAO.InsertOrUpdate(c.ctx, &dataobject.UnregisteredContactsDO{
+			Phone:           item.C.GetPhone(),
+			ImporterUserId:  in.GetUserId(),
+			ImportFirstName: item.C.GetFirstName(),
+			ImportLastName:  item.C.GetLastName(),
+		}); err != nil {
+			c.Logger.Errorf("UserImportContacts - save unregistered contact error: %v", err)
+			return nil, err
+		}
+	}
+	popularInvites, err := c.getPopularInvites(items)
+	if err != nil {
+		return nil, err
+	}
+
+	return user.MakeTLUserImportedContacts(&user.UserImportedContacts{
+		Imported:       importedContacts,
+		PopularInvites: popularInvites,
+		RetryContacts:  []int64{},
+		Users:          users.GetUserListByIdList(in.GetUserId(), userIDs...),
+		UpdateIdList:   updateIDs,
+	}).To_UserImportedContacts(), nil
+}
+
+func prepareImportContacts(contacts []*mtproto.InputContact) ([]*contactItem, map[string]*contactItem, []string, error) {
+	items := make([]*contactItem, 0, len(contacts))
+	itemByPhone := make(map[string]*contactItem, len(contacts))
+	seenClientIDs := make(map[int64]struct{}, len(contacts))
+	phones := make([]string, 0, len(contacts))
+	for _, contact := range contacts {
+		if contact == nil || contact.GetPredicateName() != mtproto.Predicate_inputPhoneContact || strings.TrimSpace(contact.GetPhone()) == "" {
+			return nil, nil, nil, mtproto.ErrInputRequestInvalid
+		}
+		_, phone, err := phonenumber.CheckPhoneNumberInvalid(contact.GetPhone())
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		contact.Phone = phone
+		if _, ok := itemByPhone[phone]; ok {
+			return nil, nil, nil, mtproto.ErrInputRequestInvalid
+		}
+		if _, ok := seenClientIDs[contact.GetClientId()]; ok {
+			return nil, nil, nil, mtproto.ErrInputRequestInvalid
+		}
+		seenClientIDs[contact.GetClientId()] = struct{}{}
+		item := &contactItem{Unregistered: true, C: contact}
+		items = append(items, item)
+		itemByPhone[phone] = item
+		phones = append(phones, phone)
+	}
+	return items, itemByPhone, phones, nil
+}
+
+func (c *UserCore) getPopularInvites(items []*contactItem) ([]*mtproto.PopularContact, error) {
+	phones := make([]string, 0, len(items))
+	for _, item := range items {
+		if item.Unregistered {
+			phones = append(phones, item.C.GetPhone())
+		}
+	}
+	if len(phones) == 0 {
+		return []*mtproto.PopularContact{}, nil
+	}
+
+	importersByPhone, err := c.svcCtx.Dao.UnregisteredContactsDAO.SelectDistinctImporterCountsByPhoneList(c.ctx, phones)
+	if err != nil {
+		c.Logger.Errorf("UserImportContacts - select unregistered contact importers error: %v", err)
+		return nil, err
+	}
+
+	return makePopularInvites(items, importersByPhone), nil
+}
+
+func makePopularInvites(items []*contactItem, importersByPhone map[string]int32) []*mtproto.PopularContact {
+	popularInvites := make([]*mtproto.PopularContact, 0, len(items))
+	for _, item := range items {
+		if !item.Unregistered {
+			continue
+		}
+		popularInvites = append(popularInvites, mtproto.MakeTLPopularContact(&mtproto.PopularContact{
+			ClientId:  item.C.GetClientId(),
+			Importers: importersByPhone[item.C.GetPhone()],
+		}).To_PopularContact())
+	}
+	return popularInvites
 }

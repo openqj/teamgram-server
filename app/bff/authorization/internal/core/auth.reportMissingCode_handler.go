@@ -25,8 +25,25 @@ import (
 // AuthReportMissingCode
 // auth.reportMissingCode#cb9deff6 phone_number:string phone_code_hash:string mnc:string = Bool;
 func (c *AuthorizationCore) AuthReportMissingCode(in *mtproto.TLAuthReportMissingCode) (*mtproto.Bool, error) {
-	// TODO: not impl
-	c.Logger.Errorf("auth.reportMissingCode blocked, License key from https://teamgram.net required to unlock enterprise features.")
+	if in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if c == nil {
+		return nil, mtproto.ErrMethodNotImpl
+	}
+	_, phoneNumber, err := checkPhoneNumberInvalid(in.GetPhoneNumber())
+	if err != nil {
+		c.Logger.Errorf("auth.reportMissingCode - phone: %v", err)
+		return nil, mtproto.ErrPhoneNumberInvalid
+	}
+	if in.GetPhoneCodeHash() == "" {
+		c.Logger.Errorf("auth.reportMissingCode - empty phone_code_hash")
+		return nil, mtproto.ErrPhoneCodeHashEmpty
+	}
 
-	return nil, mtproto.ErrEnterpriseIsBlocked
+	_ = phoneNumber
+	// There is no delivery-provider incident/report sink. A local phone-code
+	// row is not evidence that the report was accepted by a provider.
+	c.Logger.Errorf("auth.reportMissingCode - report provider unavailable")
+	return nil, mtproto.ErrMethodNotImpl
 }

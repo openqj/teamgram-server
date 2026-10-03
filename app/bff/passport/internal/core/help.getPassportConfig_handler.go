@@ -18,15 +18,6 @@
 
 package core
 
-import (
-	"github.com/teamgram/proto/mtproto"
-)
-
 // HelpGetPassportConfig
 // help.getPassportConfig#c661ad08 hash:int = help.PassportConfig;
-func (c *PassportCore) HelpGetPassportConfig(in *mtproto.TLHelpGetPassportConfig) (*mtproto.Help_PassportConfig, error) {
-	// TODO: not impl
-	c.Logger.Errorf("help.getPassportConfig blocked, License key from https://teamgram.net required to unlock enterprise features.")
-
-	return nil, mtproto.ErrEnterpriseIsBlocked
-}
+// Implemented in passport_impl.go.

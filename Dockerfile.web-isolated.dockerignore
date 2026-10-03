@@ -1,0 +1,14 @@
+**
+!teamgram-server/
+!teamgram-server/**
+!proto/
+!proto/**
+**/.git
+**/.git/**
+**/node_modules
+**/node_modules/**
+teamgram-server/data/
+teamgram-server/logs/
+teamgram-server/teamgramd/logs/
+teamgram-server/**/.env*
+teamgram-server/**/*.log

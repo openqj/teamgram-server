@@ -18,15 +18,6 @@
 
 package core
 
-import (
-	"github.com/teamgram/proto/mtproto"
-)
-
 // AccountSendVerifyPhoneCode
 // account.sendVerifyPhoneCode#a5a356f9 phone_number:string settings:CodeSettings = auth.SentCode;
-func (c *PassportCore) AccountSendVerifyPhoneCode(in *mtproto.TLAccountSendVerifyPhoneCode) (*mtproto.Auth_SentCode, error) {
-	// TODO: not impl
-	c.Logger.Errorf("account.sendVerifyPhoneCode blocked, License key from https://teamgram.net required to unlock enterprise features.")
-
-	return nil, mtproto.ErrEnterpriseIsBlocked
-}
+// Implemented in passport_impl.go.

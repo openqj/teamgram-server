@@ -25,8 +25,22 @@ import (
 // AuthImportBotAuthorization
 // auth.importBotAuthorization#67a3ff2c flags:int api_id:int api_hash:string bot_auth_token:string = auth.Authorization;
 func (c *AuthorizationCore) AuthImportBotAuthorization(in *mtproto.TLAuthImportBotAuthorization) (*mtproto.Auth_Authorization, error) {
-	// TODO: not impl
-	c.Logger.Errorf("auth.importBotAuthorization blocked, License key from https://teamgram.net required to unlock enterprise features.")
+	if in == nil || in.GetBotAuthToken() == "" {
+		if c != nil {
+			c.Logger.Errorf("auth.importBotAuthorization - empty bot_auth_token")
+		}
+		return nil, mtproto.ErrAccessTokenInvalid
+	}
+	if c == nil || c.svcCtx == nil || c.svcCtx.Dao == nil || c.MD == nil || c.MD.GetPermAuthKeyId() == 0 {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
+	if err := c.svcCtx.Dao.CheckApiIdAndHash(in.GetApiId(), in.GetApiHash()); err != nil {
+		c.Logger.Errorf("auth.importBotAuthorization - api: %v", err)
+		return nil, err
+	}
 
-	return nil, mtproto.ErrEnterpriseIsBlocked
+	// The bot token lookup is authoritative, but this service has no trusted
+	// API credential registry. Do not bind an auth key for a syntax-only pair.
+	c.Logger.Errorf("auth.importBotAuthorization - API credential verifier unavailable")
+	return nil, mtproto.ErrMethodNotImpl
 }

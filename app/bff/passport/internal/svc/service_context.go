@@ -21,16 +21,20 @@ package svc
 import (
 	"github.com/teamgram/teamgram-server/app/bff/passport/internal/config"
 	"github.com/teamgram/teamgram-server/app/bff/passport/internal/dao"
+	verification "github.com/teamgram/teamgram-server/pkg/code"
 )
 
 type ServiceContext struct {
 	Config config.Config
 	*dao.Dao
+	Challenges *verification.ChallengeService
 }
 
 func NewServiceContext(c config.Config) *ServiceContext {
+	d := dao.New(c)
 	return &ServiceContext{
-		Config: c,
-		Dao:    dao.New(c),
+		Config:     c,
+		Dao:        d,
+		Challenges: verification.NewChallengeService(d.VerificationStore, verification.ChallengeSettingsFromConfig(c.Code), verification.NewSMSProvider(c.Code, nil), verification.NewEmailProvider(c.Code)),
 	}
 }

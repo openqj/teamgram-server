@@ -19,14 +19,37 @@
 package core
 
 import (
+	"encoding/base64"
+
 	"github.com/teamgram/proto/mtproto"
 )
 
 // AccountDeletePasskey
 // account.deletePasskey#f5b5563f id:string = Bool;
 func (c *PasskeyCore) AccountDeletePasskey(in *mtproto.TLAccountDeletePasskey) (*mtproto.Bool, error) {
-	// TODO: not impl
-	c.Logger.Errorf("account.deletePasskey blocked, License key from https://teamgram.net required to unlock enterprise features.")
-
-	return nil, mtproto.ErrEnterpriseIsBlocked
+	userID, err := passkeyRequireUser(c)
+	if err != nil {
+		return nil, err
+	}
+	if in == nil || in.GetId() == "" {
+		return nil, mtproto.ErrAuthTokenInvalid
+	}
+	if err = c.requireProvider(); err != nil {
+		return nil, err
+	}
+	if c.svcCtx.Dao == nil {
+		return nil, mtproto.ErrMethodNotImpl
+	}
+	id, err := base64.RawURLEncoding.DecodeString(in.GetId())
+	if err != nil || len(id) == 0 {
+		return nil, mtproto.ErrAuthTokenInvalid
+	}
+	deleted, err := c.svcCtx.Dao.DeleteCredential(c.ctx, userID, id)
+	if err != nil {
+		return nil, passkeyStorageError(err)
+	}
+	if !deleted {
+		return mtproto.BoolFalse, nil
+	}
+	return mtproto.BoolTrue, nil
 }

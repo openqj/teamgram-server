@@ -169,6 +169,18 @@ type Codec interface {
 	EncodeQuickAck(token uint32) []byte
 }
 
+// DCID reports the DC selected by a transport when that transport carries a
+// trusted DC marker (currently the obfuscated MTProto transport). Plain TCP
+// transports return false because they do not identify a DC on the wire.
+func DCID(c Codec) (int32, bool) {
+	transport, ok := c.(interface{ DCID() int32 })
+	if !ok {
+		return 0, false
+	}
+	dcID := transport.DCID()
+	return dcID, dcID > 0
+}
+
 // CreateCodec chooses either the official MTProto transports or the custom
 // ntproto variant based on global flags, and performs the initial handshake
 // and transport detection on the underlying connection.

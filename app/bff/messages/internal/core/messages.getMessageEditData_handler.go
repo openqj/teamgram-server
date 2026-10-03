@@ -20,6 +20,7 @@ package core
 
 import (
 	"github.com/teamgram/proto/mtproto"
+	"github.com/teamgram/teamgram-server/app/bff/apifull/channelview"
 	chatpb "github.com/teamgram/teamgram-server/app/service/biz/chat/chat"
 	"github.com/teamgram/teamgram-server/app/service/biz/message/message"
 )
@@ -127,10 +128,12 @@ func (c *MessagesCore) MessagesGetMessageEditData(in *mtproto.TLMessagesGetMessa
 			}
 		}
 	case mtproto.PEER_CHANNEL:
-		// TODO: not impl
-		c.Logger.Errorf("messages.getMessageEditData blocked, License key from https://teamgram.net required to unlock enterprise features.")
-
-		return nil, mtproto.ErrEnterpriseIsBlocked
+		editData, err := channelview.GetMessageEditData(c.MD.UserId, in.Peer, in.Id)
+		if err != nil {
+			c.Logger.Errorf("messages.getMessageEditData - error: %v", err)
+			return nil, err
+		}
+		return editData, nil
 	default:
 		err = mtproto.ErrPeerIdInvalid
 		c.Logger.Errorf("messages.getMessageEditData - error: %v", err)

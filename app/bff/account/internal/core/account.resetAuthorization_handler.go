@@ -42,10 +42,13 @@ func (c *AccountCore) AccountResetAuthorization(in *mtproto.TLAccountResetAuthor
 		c.Logger.Errorf("account.resetAuthorization#df77f3bc - error: %v", err)
 		return nil, err
 	}
+	if tKeyIdList == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
 
 	for _, id := range tKeyIdList.Datas {
 		// notify kill session
-		c.svcCtx.Dao.SyncClient.SyncUpdatesMe(
+		if _, err = c.svcCtx.Dao.SyncClient.SyncUpdatesMe(
 			c.ctx,
 			&sync.TLSyncUpdatesMe{
 				UserId:        c.MD.UserId,
@@ -54,9 +57,12 @@ func (c *AccountCore) AccountResetAuthorization(in *mtproto.TLAccountResetAuthor
 				AuthKeyId:     nil,
 				SessionId:     nil,
 				Updates:       mtproto.MakeTLUpdatesTooLong(nil).To_Updates(),
-			})
+			}); err != nil {
+			c.Logger.Errorf("account.resetAuthorization - notify updates too long: %v", err)
+			return nil, err
+		}
 
-		c.svcCtx.Dao.SyncClient.SyncUpdatesMe(
+		if _, err = c.svcCtx.Dao.SyncClient.SyncUpdatesMe(
 			c.ctx,
 			&sync.TLSyncUpdatesMe{
 				UserId:        c.MD.UserId,
@@ -68,7 +74,10 @@ func (c *AccountCore) AccountResetAuthorization(in *mtproto.TLAccountResetAuthor
 					UserId:    c.MD.UserId,
 					AuthKeyId: id,
 				}).To_Updates(),
-			})
+			}); err != nil {
+			c.Logger.Errorf("account.resetAuthorization - notify reset: %v", err)
+			return nil, err
+		}
 	}
 
 	return mtproto.BoolTrue, nil

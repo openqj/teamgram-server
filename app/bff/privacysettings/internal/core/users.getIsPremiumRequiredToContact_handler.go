@@ -25,8 +25,28 @@ import (
 // UsersGetIsPremiumRequiredToContact
 // users.getIsPremiumRequiredToContact#a622aa10 id:Vector<InputUser> = Vector<Bool>;
 func (c *PrivacySettingsCore) UsersGetIsPremiumRequiredToContact(in *mtproto.TLUsersGetIsPremiumRequiredToContact) (*mtproto.Vector_Bool, error) {
-	// TODO: not impl
-	c.Logger.Errorf("users.getIsPremiumRequiredToContact blocked, License key from https://teamgram.net required to unlock enterprise features.")
+	if c == nil || c.MD == nil || c.MD.UserId <= 0 {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
+	if in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	selfPremium, premiumKnown, err := c.selfPremiumKnown()
+	if err != nil {
+		c.Logger.Errorf("users.getIsPremiumRequiredToContact - error: %v", err)
+		return nil, err
+	}
+	datas := make([]*mtproto.Bool, 0, len(in.GetId()))
+	for _, id := range in.GetId() {
+		req, err := c.requirementToContact(id, selfPremium, premiumKnown)
+		if err != nil {
+			c.Logger.Errorf("users.getIsPremiumRequiredToContact - error: %v", err)
+			return nil, err
+		}
+		datas = append(datas, mtproto.ToBool(req.GetPredicateName() == mtproto.Predicate_requirementToContactPremium))
+	}
 
-	return nil, mtproto.ErrEnterpriseIsBlocked
+	return &mtproto.Vector_Bool{
+		Datas: datas,
+	}, nil
 }

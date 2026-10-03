@@ -23,15 +23,23 @@ import (
 	"github.com/teamgram/teamgram-server/app/bff/passport/internal/config"
 	authsession_client "github.com/teamgram/teamgram-server/app/service/authsession/client"
 	user_client "github.com/teamgram/teamgram-server/app/service/biz/user/client"
+	verification "github.com/teamgram/teamgram-server/pkg/code"
+	"github.com/zeromicro/go-zero/core/stores/kv"
 )
 
 type Dao struct {
+	VerificationStore verification.ChallengeStore
 	authsession_client.AuthsessionClient
 	user_client.UserClient
 }
 
 func New(c config.Config) *Dao {
+	var verificationStore verification.ChallengeStore
+	if len(c.KV) > 0 {
+		verificationStore = verification.NewRedisChallengeStore(kv.NewStore(c.KV))
+	}
 	return &Dao{
+		VerificationStore: verificationStore,
 		AuthsessionClient: authsession_client.NewAuthsessionClient(rpcx.GetCachedRpcClient(c.AuthsessionClient)),
 		UserClient:        user_client.NewUserClient(rpcx.GetCachedRpcClient(c.UserClient)),
 	}

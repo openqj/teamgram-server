@@ -265,6 +265,7 @@ func (c *MessageCore) MessageGetHistoryMessages(in *message.TLMessageGetHistoryM
 		maxId      = in.MaxId
 		hash       = in.Hash
 		boxList    []*mtproto.MessageBox
+		err        error
 	)
 
 	loadType := loadTypeBackward
@@ -287,20 +288,31 @@ func (c *MessageCore) MessageGetHistoryMessages(in *message.TLMessageGetHistoryM
 			if offsetId == 0 {
 				offsetId = math.MaxInt32
 			}
-			// c.svcCtx.Dao.MessageClient.MessageGet
-			boxList = c.svcCtx.Dao.GetOffsetDateBackwardHistoryMessages(c.ctx, selfUserId, peer, offsetDate, minId, maxId, addOffset+limit, hash)
+			boxList, err = c.svcCtx.Dao.GetOffsetDateBackwardHistoryMessages(c.ctx, selfUserId, peer, offsetDate, minId, maxId, addOffset+limit, hash)
+			if err != nil {
+				return nil, err
+			}
 		case loadTypeFirstAroundDate:
-			boxList1 := c.svcCtx.GetOffsetDateForwardHistoryMessages(c.ctx, selfUserId, peer, offsetDate, minId, maxId, -addOffset, hash)
+			boxList1, err := c.svcCtx.GetOffsetDateForwardHistoryMessages(c.ctx, selfUserId, peer, offsetDate, minId, maxId, -addOffset, hash)
+			if err != nil {
+				return nil, err
+			}
 			for i, j := 0, len(boxList1)-1; i < j; i, j = i+1, j-1 {
 				boxList1[i], boxList1[j] = boxList1[j], boxList1[i]
 			}
 			boxList = append(boxList, boxList1...)
 			// 降序
-			boxList2 := c.svcCtx.Dao.GetOffsetDateBackwardHistoryMessages(c.ctx, selfUserId, peer, offsetDate, minId, maxId, limit+addOffset, hash)
+			boxList2, err := c.svcCtx.Dao.GetOffsetDateBackwardHistoryMessages(c.ctx, selfUserId, peer, offsetDate, minId, maxId, limit+addOffset, hash)
+			if err != nil {
+				return nil, err
+			}
 			// log.Infof("%v", messages2)
 			boxList = append(boxList, boxList2...)
 		case loadTypeForward:
-			boxList = c.svcCtx.Dao.GetOffsetDateForwardHistoryMessages(c.ctx, selfUserId, peer, offsetDate, minId, maxId, -addOffset, hash)
+			boxList, err = c.svcCtx.Dao.GetOffsetDateForwardHistoryMessages(c.ctx, selfUserId, peer, offsetDate, minId, maxId, -addOffset, hash)
+			if err != nil {
+				return nil, err
+			}
 			for i, j := 0, len(boxList)-1; i < j; i, j = i+1, j-1 {
 				boxList[i], boxList[j] = boxList[j], boxList[i]
 			}
@@ -311,20 +323,31 @@ func (c *MessageCore) MessageGetHistoryMessages(in *message.TLMessageGetHistoryM
 			if offsetId == 0 {
 				offsetId = math.MaxInt32
 			}
-			// c.svcCtx.Dao.MessageClient.MessageGet
-			boxList = c.svcCtx.Dao.GetOffsetIdBackwardHistoryMessages(c.ctx, selfUserId, peer, offsetId, minId, maxId, addOffset+limit, hash)
+			boxList, err = c.svcCtx.Dao.GetOffsetIdBackwardHistoryMessages(c.ctx, selfUserId, peer, offsetId, minId, maxId, addOffset+limit, hash)
+			if err != nil {
+				return nil, err
+			}
 		case loadTypeFirstAroundDate:
-			boxList1 := c.svcCtx.GetOffsetIdForwardHistoryMessages(c.ctx, selfUserId, peer, offsetId, minId, maxId, -addOffset, hash)
+			boxList1, err := c.svcCtx.GetOffsetIdForwardHistoryMessages(c.ctx, selfUserId, peer, offsetId, minId, maxId, -addOffset, hash)
+			if err != nil {
+				return nil, err
+			}
 			for i, j := 0, len(boxList1)-1; i < j; i, j = i+1, j-1 {
 				boxList1[i], boxList1[j] = boxList1[j], boxList1[i]
 			}
 			boxList = append(boxList, boxList1...)
 			// 降序
-			boxList2 := c.svcCtx.Dao.GetOffsetIdBackwardHistoryMessages(c.ctx, selfUserId, peer, offsetId, minId, maxId, limit+addOffset, hash)
+			boxList2, err := c.svcCtx.Dao.GetOffsetIdBackwardHistoryMessages(c.ctx, selfUserId, peer, offsetId, minId, maxId, limit+addOffset, hash)
+			if err != nil {
+				return nil, err
+			}
 			// log.Infof("%v", messages2)
 			boxList = append(boxList, boxList2...)
 		case loadTypeForward:
-			boxList = c.svcCtx.Dao.GetOffsetIdForwardHistoryMessages(c.ctx, selfUserId, peer, offsetId, minId, maxId, -addOffset, hash)
+			boxList, err = c.svcCtx.Dao.GetOffsetIdForwardHistoryMessages(c.ctx, selfUserId, peer, offsetId, minId, maxId, -addOffset, hash)
+			if err != nil {
+				return nil, err
+			}
 			for i, j := 0, len(boxList)-1; i < j; i, j = i+1, j-1 {
 				boxList[i], boxList[j] = boxList[j], boxList[i]
 			}

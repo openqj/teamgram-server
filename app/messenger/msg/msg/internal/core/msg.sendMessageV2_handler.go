@@ -26,6 +26,8 @@ import (
 	"github.com/zeromicro/go-zero/core/timex"
 )
 
+const chatInboxFanoutWorkers = 16
+
 // MsgSendMessageV2
 // msg.sendMessageV2 user_id:long auth_key_id:long peer_type:int peer_id:long message:Vector<OutboxMessage> = Updates;
 func (c *MsgCore) MsgSendMessageV2(in *msg.TLMsgSendMessageV2) (*mtproto.Updates, error) {
@@ -44,11 +46,11 @@ func (c *MsgCore) MsgSendMessageV2(in *msg.TLMsgSendMessageV2) (*mtproto.Updates
 		return nil, err
 	}
 
-	for _, outBox := range outBoxList {
-		if outBox.GetScheduleDate().GetValue() != 0 {
-			c.Logger.Errorf("msg.sendMessageV2 blocked, License key from https://teamgram.net required to unlock enterprise features.")
-			return nil, mtproto.ErrEnterpriseIsBlocked
+	if ups, handled, err := c.persistScheduled(in); handled {
+		if err != nil {
+			return nil, err
 		}
+		return ups, nil
 	}
 
 	switch peer.PeerType {
@@ -88,8 +90,11 @@ func (c *MsgCore) MsgSendMessageV2(in *msg.TLMsgSendMessageV2) (*mtproto.Updates
 			}
 		}
 	case mtproto.PEER_CHANNEL:
-		c.Logger.Errorf("msg.sendMessageV2 blocked, License key from https://teamgram.net required to unlock enterprise features.")
-		return nil, mtproto.ErrEnterpriseIsBlocked
+		rUpdates, err = c.persistChannelSend(in)
+		if err != nil {
+			c.Logger.Errorf("msg.sendMessageV2 - channel persist failed")
+			return nil, err
+		}
 	default:
 		c.Logger.Errorf("msg.sendMessageV2 - error: invalid peer(%v)", peer)
 		err = mtproto.ErrPeerIdInvalid
@@ -345,38 +350,46 @@ func (c *MsgCore) sendChatOutgoingMessageV2(fromUserId, fromAuthKeyId, peerChatI
 			box, err2 := c.svcCtx.Dao.SendChatMessageV2(ctx, fromUserId, peerChatId, outBox)
 			if err2 != nil {
 				c.Logger.Error(err2.Error())
-				return err
+				return err2
 			}
 
-			chat.Walk(func(userId int64, participant *mtproto.ImmutableChatParticipant) error {
-				if !participant.IsChatMemberStateNormal() && !participant.IsChatMemberStateMigrated() {
-					return nil
-				}
-				if err2 != nil {
-					return nil
-				}
-
-				toUsers := make([]*mtproto.User, 0, sUserList.Length())
-				sUserList.Visit(func(it *mtproto.ImmutableUser) {
-					toUsers = append(toUsers, it.ToUser(participant.UserId))
-				})
-				_, err2 = c.svcCtx.Dao.InboxClient.InboxSendUserMessageToInboxV2(ctx, &inbox.TLInboxSendUserMessageToInboxV2{
-					UserId:        participant.UserId,
-					Out:           participant.UserId == fromUserId,
-					FromId:        fromUserId,
-					FromAuthKeyId: fromAuthKeyId,
-					PeerType:      mtproto.PEER_CHAT,
-					PeerId:        peerChatId,
-					BoxList:       []*mtproto.MessageBox{box},
-					Users:         toUsers,
-					Chats:         []*mtproto.Chat{chat.ToUnsafeChat(participant.UserId)},
-				})
-				return nil
-			})
-
+			err2 = mr.MapReduceVoid(
+				func(source chan<- *mtproto.ImmutableChatParticipant) {
+					chat.Walk(func(_ int64, participant *mtproto.ImmutableChatParticipant) error {
+						if participant.IsChatMemberStateNormal() || participant.IsChatMemberStateMigrated() {
+							source <- participant
+						}
+						return nil
+					})
+				},
+				func(participant *mtproto.ImmutableChatParticipant, _ mr.Writer[any], cancel func(error)) {
+					userId := participant.UserId
+					toUsers := make([]*mtproto.User, 0, sUserList.Length())
+					sUserList.Visit(func(it *mtproto.ImmutableUser) {
+						toUsers = append(toUsers, it.ToUser(userId))
+					})
+					_, err2 := c.svcCtx.Dao.InboxClient.InboxSendUserMessageToInboxV2(ctx, &inbox.TLInboxSendUserMessageToInboxV2{
+						UserId:        userId,
+						Out:           userId == fromUserId,
+						FromId:        fromUserId,
+						FromAuthKeyId: fromAuthKeyId,
+						PeerType:      mtproto.PEER_CHAT,
+						PeerId:        peerChatId,
+						BoxList:       []*mtproto.MessageBox{box},
+						Users:         toUsers,
+						Chats:         []*mtproto.Chat{chat.ToUnsafeChat(userId)},
+					})
+					if err2 != nil {
+						cancel(err2)
+					}
+				},
+				func(_ <-chan any, _ func(error)) {},
+				mr.WithContext(ctx),
+				mr.WithWorkers(chatInboxFanoutWorkers),
+			)
 			if err2 != nil {
 				c.Logger.Error(err2.Error())
-				return err
+				return err2
 			}
 
 			*v.(**mtproto.Updates) = mtproto.MakeReplyUpdates(

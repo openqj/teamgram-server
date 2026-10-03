@@ -143,3 +143,26 @@ func (d *Dao) SetUserPeerNotifySettings(ctx context.Context, id int64, peerType 
 
 	return err
 }
+
+// ResetUserNotifySettings removes all per-peer overrides and invalidates every
+// cached peer value that was active for the user.
+func (d *Dao) ResetUserNotifySettings(ctx context.Context, id int64) error {
+	rows, err := d.UserNotifySettingsDAO.SelectAll(ctx, id)
+	if err != nil {
+		return err
+	}
+
+	keys := make([]string, 0, len(rows))
+	for _, row := range rows {
+		keys = append(keys, genUserNotifySettingsCacheKey(id, row.PeerType, row.PeerId))
+	}
+
+	_, _, err = d.CachedConn.Exec(
+		ctx,
+		func(ctx context.Context, conn *sqlx.DB) (int64, int64, error) {
+			affected, err := d.UserNotifySettingsDAO.DeleteAll(ctx, id)
+			return 0, affected, err
+		},
+		keys...)
+	return err
+}

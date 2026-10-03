@@ -24,8 +24,9 @@ import (
 // AccountGetWebBrowserSettings
 // account.getWebBrowserSettings#56655768 hash:long = account.WebBrowserSettings;
 func (c *WebBrowserCore) AccountGetWebBrowserSettings(in *mtproto.TLAccountGetWebBrowserSettings) (*mtproto.Account_WebBrowserSettings, error) {
-	// TODO: not impl
-	c.Logger.Errorf("account.getWebBrowserSettings blocked, License key from https://teamgram.net required to unlock enterprise features.")
-
-	return nil, mtproto.ErrEnterpriseIsBlocked
+	var hash int64
+	if in != nil {
+		hash = in.GetHash()
+	}
+	return c.webBrowserSettingsReply(hash)
 }

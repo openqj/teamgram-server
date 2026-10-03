@@ -19,19 +19,62 @@
 package core
 
 import (
+	"time"
+
 	"github.com/teamgram/proto/mtproto"
+	chatpb "github.com/teamgram/teamgram-server/app/service/biz/chat/chat"
+	userpb "github.com/teamgram/teamgram-server/app/service/biz/user/user"
 )
 
 // MessagesGetOnlines
 // messages.getOnlines#6e2be050 peer:InputPeer = ChatOnlines;
 func (c *DialogsCore) MessagesGetOnlines(in *mtproto.TLMessagesGetOnlines) (*mtproto.ChatOnlines, error) {
-	// TODO:
-	onlines := mtproto.MakeTLChatOnlines(&mtproto.ChatOnlines{
-		Onlines: 1,
-	}).To_ChatOnlines()
+	if in == nil || in.GetPeer() == nil {
+		c.Logger.Errorf("messages.getOnlines - error: %v", mtproto.ErrPeerIdInvalid)
+		return nil, mtproto.ErrPeerIdInvalid
+	}
+	peer := mtproto.FromInputPeer2(c.MD.UserId, in.Peer)
+	if peer == nil || peer.PeerType != mtproto.PEER_CHAT || peer.PeerId == 0 {
+		c.Logger.Errorf("messages.getOnlines - error: %v", mtproto.ErrPeerIdInvalid)
+		return nil, mtproto.ErrPeerIdInvalid
+	}
+	onlines, ok := c.chatOnlineCount(peer.PeerId)
+	if !ok {
+		c.Logger.Errorf("messages.getOnlines - error: online count unavailable")
+		return nil, mtproto.ErrInternalServerError
+	}
 
-	// TODO: not impl
-	c.Logger.Errorf("messages.getOnlines - error: method MessagesGetOnlines not impl")
+	return mtproto.MakeTLChatOnlines(&mtproto.ChatOnlines{
+		Onlines: onlines,
+	}).To_ChatOnlines(), nil
+}
 
-	return onlines, nil
+// chatOnlineCount uses the same online window as user.MakeUserStatus (last seen within 60s).
+func (c *DialogsCore) chatOnlineCount(chatID int64) (int32, bool) {
+	chat, err := c.svcCtx.Dao.ChatClient.ChatGetMutableChat(c.ctx, &chatpb.TLChatGetMutableChat{
+		ChatId: chatID,
+	})
+	if err != nil || chat == nil {
+		c.Logger.Errorf("messages.getOnlines - error: %v", err)
+		return 0, false
+	}
+	ids := chat.ParticipantIdList()
+	if len(ids) == 0 {
+		return 0, true
+	}
+	seens, err := c.svcCtx.Dao.UserClient.UserGetLastSeens(c.ctx, &userpb.TLUserGetLastSeens{
+		Id: ids,
+	})
+	if err != nil || seens == nil {
+		c.Logger.Errorf("messages.getOnlines - error: %v", err)
+		return 0, false
+	}
+	now := time.Now().Unix()
+	var n int32
+	for _, v := range seens.GetDatas() {
+		if v != nil && now <= v.LastSeenAt+60 {
+			n++
+		}
+	}
+	return n, true
 }

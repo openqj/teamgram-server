@@ -19,6 +19,10 @@ import (
 // ChatEditExportedChatInvite
 // chat.editExportedChatInvite flags:# self_id:long chat_id:long revoked:flags.2?true link:string expire_date:flags.0?int usage_limit:flags.1?int request_needed:flags.3?Bool title:flags.4?string = ExportedChatInvite;
 func (c *ChatCore) ChatEditExportedChatInvite(in *chat.TLChatEditExportedChatInvite) (*chat.Vector_ExportedChatInvite, error) {
+	selfID, err := c.requireInviteSelf(in.SelfId)
+	if err != nil {
+		return nil, err
+	}
 	var (
 		hash        = chat.GetInviteHashByLink(in.Link)
 		chatInvites = make([]*mtproto.ExportedChatInvite, 0, 2)
@@ -29,28 +33,40 @@ func (c *ChatCore) ChatEditExportedChatInvite(in *chat.TLChatEditExportedChatInv
 		c.Logger.Errorf("chat.editExportedChatInvite - error: %v", err)
 		return nil, err
 	} else if chatInviteDO == nil {
-		err = mtproto.ErrInternalServerError
+		err = mtproto.ErrInviteHashInvalid
 		c.Logger.Errorf("chat.editExportedChatInvite - error: %v", err)
+		return nil, err
+	}
+	if chatInviteDO.ChatId != in.ChatId {
+		return nil, mtproto.ErrInviteHashInvalid
+	}
+	if _, err = c.requireInvitePermission(in.ChatId, selfID, chatInviteDO.AdminId); err != nil {
 		return nil, err
 	}
 
 	if in.Revoked {
-		c.svcCtx.Dao.ChatInvitesDAO.Update(
+		if _, err = c.svcCtx.Dao.ChatInvitesDAO.Update(
 			c.ctx,
 			map[string]interface{}{
 				"revoked": in.Revoked,
 			},
 			in.ChatId,
-			hash)
+			hash); err != nil {
+			return nil, err
+		}
 		chatInviteDO.Revoked = in.Revoked
 		chatInvites = append(chatInvites, c.svcCtx.Dao.MakeChatInviteExported(c.ctx, chatInviteDO))
 
 		// chatInvites
 		if chatInviteDO.Permanent {
+			link := chat.GenChatInviteHash()
+			if c.isAPIFullChannel(in.ChatId) {
+				link = chat.GenChannelInviteHash()
+			}
 			chatInviteDO = &dataobject.ChatInvitesDO{
 				ChatId:        in.ChatId,
 				AdminId:       chatInviteDO.AdminId,
-				Link:          chat.GenChatInviteHash(),
+				Link:          link,
 				Permanent:     chatInviteDO.Permanent,
 				Revoked:       false,
 				RequestNeeded: false,
@@ -62,13 +78,17 @@ func (c *ChatCore) ChatEditExportedChatInvite(in *chat.TLChatEditExportedChatInv
 				Title:         "",
 				Date2:         time.Now().Unix(),
 			}
-			c.svcCtx.Dao.ChatInvitesDAO.Insert(c.ctx, chatInviteDO)
+			if _, _, err = c.svcCtx.Dao.ChatInvitesDAO.Insert(c.ctx, chatInviteDO); err != nil {
+				return nil, err
+			}
 			chatInvites = append(chatInvites, c.svcCtx.Dao.MakeChatInviteExported(c.ctx, chatInviteDO))
-			c.svcCtx.Dao.ChatParticipantsDAO.UpdateLink(
+			if _, err = c.svcCtx.Dao.ChatParticipantsDAO.UpdateLink(
 				c.ctx,
 				chatInviteDO.Link,
 				in.ChatId,
-				chatInviteDO.AdminId)
+				chatInviteDO.AdminId); err != nil {
+				return nil, err
+			}
 		}
 	} else {
 		cMap := map[string]interface{}{}
@@ -90,11 +110,13 @@ func (c *ChatCore) ChatEditExportedChatInvite(in *chat.TLChatEditExportedChatInv
 			chatInviteDO.Title = in.GetTitle().GetValue()
 		}
 
-		c.svcCtx.Dao.ChatInvitesDAO.Update(
+		if _, err = c.svcCtx.Dao.ChatInvitesDAO.Update(
 			c.ctx,
 			cMap,
 			in.ChatId,
-			hash)
+			hash); err != nil {
+			return nil, err
+		}
 		chatInvites = append(chatInvites, c.svcCtx.Dao.MakeChatInviteExported(c.ctx, chatInviteDO))
 	}
 

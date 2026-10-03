@@ -17,6 +17,10 @@ import (
 // ChatGetExportedChatInvite
 // chat.getExportedChatInvite chat_id:long link:string = ExportedChatInvite;
 func (c *ChatCore) ChatGetExportedChatInvite(in *chat.TLChatGetExportedChatInvite) (*mtproto.ExportedChatInvite, error) {
+	callerID, err := c.requireInviteCaller()
+	if err != nil {
+		return nil, err
+	}
 	var (
 		link = chat.GetInviteHashByLink(in.Link)
 	)
@@ -26,8 +30,14 @@ func (c *ChatCore) ChatGetExportedChatInvite(in *chat.TLChatGetExportedChatInvit
 		c.Logger.Errorf("chat.getExportedChatInvite - error: %v", err)
 		return nil, err
 	} else if chatInviteDO == nil {
-		err = mtproto.ErrChatLinkExists
+		err = mtproto.ErrInviteHashInvalid
 		c.Logger.Errorf("chat.getExportedChatInvite - error: %v", err)
+		return nil, err
+	}
+	if chatInviteDO.ChatId != in.ChatId {
+		return nil, mtproto.ErrInviteHashInvalid
+	}
+	if _, err = c.requireInvitePermission(in.ChatId, callerID, chatInviteDO.AdminId); err != nil {
 		return nil, err
 	}
 

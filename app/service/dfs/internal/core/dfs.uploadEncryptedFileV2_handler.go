@@ -22,6 +22,10 @@ import (
 // DfsUploadEncryptedFileV2
 // dfs.uploadEncryptedFileV2 creator:long file:InputEncryptedFile = EncryptedFile;
 func (c *DfsCore) DfsUploadEncryptedFileV2(in *dfs.TLDfsUploadEncryptedFileV2) (*mtproto.EncryptedFile, error) {
+	if in == nil || in.GetFile() == nil {
+		return nil, mtproto.ErrMediaInvalid
+	}
+
 	var (
 		file            = in.GetFile()
 		creatorId       = in.GetCreator()

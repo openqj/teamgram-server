@@ -20,26 +20,49 @@ package core
 
 import (
 	"github.com/teamgram/proto/mtproto"
+	"github.com/teamgram/teamgram-server/app/bff/apifull/channelview"
 	msgpb "github.com/teamgram/teamgram-server/app/messenger/msg/msg/msg"
 )
 
 // MessagesReadHistory
 // messages.readHistory#e306d3a peer:InputPeer max_id:int = messages.AffectedMessages;
 func (c *MessagesCore) MessagesReadHistory(in *mtproto.TLMessagesReadHistory) (*mtproto.Messages_AffectedMessages, error) {
-	var (
-		peer  = mtproto.FromInputPeer2(c.MD.UserId, in.Peer)
-		maxId = in.MaxId
-	)
+	if c == nil || c.MD == nil || c.MD.UserId <= 0 {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
+	if in == nil {
+		return nil, mtproto.ErrInputConstructorInvalid
+	}
+	if in.GetPeer() == nil {
+		return nil, mtproto.ErrPeerIdInvalid
+	}
+	if in.GetMaxId() < 0 {
+		return nil, mtproto.ErrMessageIdInvalid
+	}
 
+	peer := mtproto.FromInputPeer2(c.MD.UserId, in.GetPeer())
+	if peer == nil || peer.PeerId <= 0 {
+		err := mtproto.ErrPeerIdInvalid
+		c.Logger.Errorf("messages.readHistory - error: %v", err)
+		return nil, err
+	}
+	if peer.PeerType == mtproto.PEER_CHANNEL {
+		// APIFull owns channel read cursors. Standalone messages workers do not
+		// have that store, so keep the historical peer error there rather than
+		// claiming a successful read without persistence.
+		if !channelview.Ready() {
+			return nil, mtproto.ErrPeerIdInvalid
+		}
+		return channelview.ReadHistoryForInputPeer(c.MD.UserId, in.GetPeer(), in.GetMaxId())
+	}
 	if !peer.IsChatOrUser() {
 		err := mtproto.ErrPeerIdInvalid
 		c.Logger.Errorf("messages.readHistory - error: %v", err)
 		return nil, err
 	}
-
-	//if maxId == 0 || maxId >= 1000000000 {
-	//	maxId = math.MaxInt32
-	//}
+	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.MsgClient == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
 
 	rV, err := c.svcCtx.Dao.MsgClient.MsgReadHistoryV2(
 		c.ctx,
@@ -48,11 +71,14 @@ func (c *MessagesCore) MessagesReadHistory(in *mtproto.TLMessagesReadHistory) (*
 			AuthKeyId: c.MD.PermAuthKeyId,
 			PeerType:  peer.PeerType,
 			PeerId:    peer.PeerId,
-			MaxId:     maxId,
+			MaxId:     in.GetMaxId(),
 		})
 	if err != nil {
 		c.Logger.Errorf("messages.readHistory - error: %v", err)
 		return nil, err
+	}
+	if rV == nil {
+		return nil, mtproto.ErrInternalServerError
 	}
 
 	return rV, nil

@@ -36,6 +36,10 @@ import (
 // DfsUploadRingtoneFile
 // dfs.uploadRingtoneFile creator:long file:InputFile mime_type:string file_name:string = Document;
 func (c *DfsCore) DfsUploadRingtoneFile(in *dfs.TLDfsUploadRingtoneFile) (*mtproto.Document, error) {
+	if in == nil || in.GetFile() == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+
 	var (
 		err error
 
@@ -48,11 +52,6 @@ func (c *DfsCore) DfsUploadRingtoneFile(in *dfs.TLDfsUploadRingtoneFile) (*mtpro
 	)
 
 	// upload file
-	if file == nil {
-		c.Logger.Errorf("dfs.uploadRingtoneFile - ErrInputRequestInvalid")
-		return nil, mtproto.ErrInputRequestInvalid
-	}
-
 	if err = model.CheckFileParts(file.Parts); err != nil {
 		c.Logger.Errorf("dfs.uploadRingtoneFile - %v", err)
 		return nil, err

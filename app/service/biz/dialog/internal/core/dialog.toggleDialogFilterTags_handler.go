@@ -26,8 +26,20 @@ import (
 // DialogToggleDialogFilterTags
 // dialog.toggleDialogFilterTags user_id:long enabled:Bool = Bool;
 func (c *DialogCore) DialogToggleDialogFilterTags(in *dialog.TLDialogToggleDialogFilterTags) (*mtproto.Bool, error) {
-	// TODO: not impl
-	c.Logger.Errorf("dialog.toggleDialogFilterTags blocked, License key from https://teamgram.net required to unlock enterprise features.")
-
-	return nil, mtproto.ErrEnterpriseIsBlocked
+	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.DB == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
+	var userID int64
+	enabled := false
+	if in != nil {
+		userID = in.UserId
+		enabled = mtproto.FromBool(in.Enabled)
+	}
+	if err := c.svcCtx.Dao.SetDialogFilterTags(c.ctx, userID, enabled); err != nil {
+		if c.Logger != nil {
+			c.Logger.Errorf("dialog.toggleDialogFilterTags: %v", err)
+		}
+		return nil, err
+	}
+	return mtproto.BoolTrue, nil
 }

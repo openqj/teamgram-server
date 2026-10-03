@@ -24,7 +24,7 @@ func (c *DialogCore) DialogEditPeerFolders(in *dialog.TLDialogEditPeerFolders) (
 		dialogPinnedList dialog.DialogPinnedExtList
 	)
 
-	c.svcCtx.Dao.DialogsDAO.SelectPeerDialogListWithCB(c.ctx,
+	_, err := c.svcCtx.Dao.DialogsDAO.SelectPeerDialogListWithCB(c.ctx,
 		in.UserId,
 		in.PeerDialogList,
 		func(sz, i int, v *dataobject.DialogsDO) {
@@ -46,10 +46,14 @@ func (c *DialogCore) DialogEditPeerFolders(in *dialog.TLDialogEditPeerFolders) (
 				}
 			}
 		})
+	if err != nil {
+		c.Logger.Errorf("dialog.editPeerFolders - select peers error: %v", err)
+		return nil, err
+	}
 
 	if len(dialogPinnedList) > 0 {
 		if in.FolderId == 0 {
-			c.svcCtx.Dao.DialogsDAO.SelectPinnedDialogsWithCB(c.ctx,
+			_, err = c.svcCtx.Dao.DialogsDAO.SelectPinnedDialogsWithCB(c.ctx,
 				in.UserId,
 				func(sz, i int, v *dataobject.DialogsDO) {
 					dialogPinnedList = append(dialogPinnedList, &dialog.DialogPinnedExt{
@@ -59,8 +63,9 @@ func (c *DialogCore) DialogEditPeerFolders(in *dialog.TLDialogEditPeerFolders) (
 					})
 				})
 		} else {
-			c.svcCtx.Dao.DialogsDAO.SelectFolderPinnedDialogsWithCB(c.ctx,
+			_, err = c.svcCtx.Dao.DialogsDAO.SelectFolderPinnedDialogsWithCB(c.ctx,
 				in.UserId,
+				in.FolderId,
 				func(sz, i int, v *dataobject.DialogsDO) {
 					dialogPinnedList = append(dialogPinnedList, &dialog.DialogPinnedExt{
 						Order:    v.FolderPinned,
@@ -69,13 +74,20 @@ func (c *DialogCore) DialogEditPeerFolders(in *dialog.TLDialogEditPeerFolders) (
 					})
 				})
 		}
+		if err != nil {
+			c.Logger.Errorf("dialog.editPeerFolders - select pinned peers error: %v", err)
+			return nil, err
+		}
 	}
 
 	sd := sort.Reverse(dialogPinnedList)
 	sort.Sort(sd)
 
 	// update
-	c.svcCtx.Dao.DialogsDAO.UpdatePeerDialogListFolderId(c.ctx, in.FolderId, in.UserId, in.PeerDialogList)
+	if _, err = c.svcCtx.Dao.DialogsDAO.UpdatePeerDialogListFolderId(c.ctx, in.FolderId, in.UserId, in.PeerDialogList); err != nil {
+		c.Logger.Errorf("dialog.editPeerFolders - update folder error: %v", err)
+		return nil, err
+	}
 
 	if in.FolderId == 0 {
 		// cut
@@ -86,7 +98,10 @@ func (c *DialogCore) DialogEditPeerFolders(in *dialog.TLDialogEditPeerFolders) (
 			}
 
 			//
-			c.svcCtx.Dao.DialogsDAO.UpdatePeerDialogListPinned(c.ctx, 0, in.UserId, unpinnedList)
+			if _, err = c.svcCtx.Dao.DialogsDAO.UpdatePeerDialogListPinned(c.ctx, 0, in.UserId, unpinnedList); err != nil {
+				c.Logger.Errorf("dialog.editPeerFolders - unpin peers error: %v", err)
+				return nil, err
+			}
 			dialogPinnedList = dialogPinnedList[:5]
 		}
 	}

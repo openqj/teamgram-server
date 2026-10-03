@@ -56,12 +56,16 @@ func (c *UserCore) UserSearch(in *user.TLUserSearch) (*user.UsersFound, error) {
 	q := in.Q + "%"
 	q2 := "%" + in.Q + "%"
 
-	rList, _ := c.svcCtx.Dao.UsersDAO.SearchByQueryString(
+	rList, err := c.svcCtx.Dao.UsersDAO.SearchByQueryString(
 		c.ctx,
 		q,
 		q2,
 		[]int64{0},
 		in.Limit)
+	if err != nil {
+		c.Logger.Errorf("user.search - error: %v", err)
+		return nil, err
+	}
 
 	if isData {
 		userDataList, _ := c.UserGetUserDataListByIdList(&user.TLUserGetUserDataListByIdList{

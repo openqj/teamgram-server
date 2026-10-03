@@ -26,11 +26,33 @@ import (
 // UserGetBirthdays
 // user.getBirthdays user_id:long = Vector<ContactBirthday>;
 func (c *UserCore) UserGetBirthdays(in *user.TLUserGetBirthdays) (*user.Vector_ContactBirthday, error) {
-	// TODO: not impl
-	// c.Logger.Errorf("user.getBirthdays - method not impl")
-
 	rV := &user.Vector_ContactBirthday{
 		Datas: make([]*mtproto.ContactBirthday, 0),
+	}
+	if in == nil || in.GetUserId() <= 0 {
+		return nil, mtproto.ErrUserIdInvalid
+	}
+
+	cacheUserData := c.svcCtx.Dao.GetCacheUserData(c.ctx, in.GetUserId())
+	if cacheUserData == nil {
+		return nil, mtproto.ErrUserIdInvalid
+	}
+	for _, contactID := range cacheUserData.GetContactIdList() {
+		if contactID <= 0 {
+			continue
+		}
+		contact := c.svcCtx.Dao.GetCacheUserData(c.ctx, contactID)
+		if contact == nil || contact.GetUserData() == nil {
+			continue
+		}
+		birthday := mtproto.FromBirthdayString(contact.GetUserData().GetBirthday())
+		if birthday == nil {
+			continue
+		}
+		rV.Datas = append(rV.Datas, mtproto.MakeTLContactBirthday(&mtproto.ContactBirthday{
+			ContactId: contactID,
+			Birthday:  birthday,
+		}).To_ContactBirthday())
 	}
 
 	return rV, nil

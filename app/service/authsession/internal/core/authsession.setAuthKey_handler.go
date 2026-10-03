@@ -18,6 +18,9 @@ import (
 // AuthsessionSetAuthKey
 // authsession.setAuthKey auth_key:AuthKeyInfo future_salt:FutureSalt = Bool;
 func (c *AuthsessionCore) AuthsessionSetAuthKey(in *authsession.TLAuthsessionSetAuthKey) (*mtproto.Bool, error) {
+	if in == nil {
+		return nil, mtproto.ErrAuthKeyInvalid
+	}
 	var (
 		keyInfo = in.GetAuthKey()
 		salt    *mtproto.TLFutureSalt
@@ -26,6 +29,9 @@ func (c *AuthsessionCore) AuthsessionSetAuthKey(in *authsession.TLAuthsessionSet
 
 	if in.FutureSalt != nil {
 		salt = in.FutureSalt.To_FutureSalt()
+	}
+	if keyInfo == nil || keyInfo.AuthKeyId == 0 || len(keyInfo.AuthKey) == 0 {
+		return nil, mtproto.ErrAuthKeyInvalid
 	}
 	if salt == nil {
 		err = c.svcCtx.Dao.SetAuthKeyV2(c.ctx, keyInfo, in.ExpiresIn)
@@ -41,7 +47,7 @@ func (c *AuthsessionCore) AuthsessionSetAuthKey(in *authsession.TLAuthsessionSet
 
 	if err != nil {
 		c.Logger.Errorf("authsession.setAuthKey - error: %v", err)
-		return mtproto.BoolFalse, nil
+		return nil, err
 	}
 
 	return mtproto.BoolTrue, nil

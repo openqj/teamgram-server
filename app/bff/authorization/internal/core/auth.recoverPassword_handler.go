@@ -19,14 +19,79 @@
 package core
 
 import (
+	"errors"
+
 	"github.com/teamgram/proto/mtproto"
+	userpb "github.com/teamgram/teamgram-server/app/service/biz/user/user"
+	verification "github.com/teamgram/teamgram-server/pkg/code"
 )
 
 // AuthRecoverPassword
 // auth.recoverPassword#37096c70 flags:# code:string new_settings:flags.0?account.PasswordInputSettings = auth.Authorization;
 func (c *AuthorizationCore) AuthRecoverPassword(in *mtproto.TLAuthRecoverPassword) (*mtproto.Auth_Authorization, error) {
-	// TODO: not impl
-	c.Logger.Errorf("auth.recoverPassword blocked, License key from https://teamgram.net required to unlock enterprise features.")
+	if c == nil || in == nil {
+		if c == nil {
+			return nil, mtproto.ErrAuthKeyUnregistered
+		}
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if c.MD == nil || c.MD.GetUserId() == 0 {
+		c.Logger.Errorf("auth.recoverPassword - user not bound")
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
+	if c.svcCtx == nil || c.svcCtx.Challenges == nil {
+		c.Logger.Errorf("auth.recoverPassword - challenge provider unavailable")
+		return nil, mtproto.ErrPasswordRecoveryExpired
+	}
 
-	return nil, mtproto.ErrEnterpriseIsBlocked
+	st, err := loadAcctPasswordState(c.MD.GetUserId())
+	if err != nil {
+		c.Logger.Errorf("auth.recoverPassword - error: %v", err)
+		return nil, err
+	}
+	if st.recoveryEmail() == "" {
+		c.Logger.Errorf("auth.recoverPassword - no recovery email")
+		return nil, mtproto.ErrPasswordRecoveryNa
+	}
+	if err = st.checkRecoveryCode(in.GetCode()); err != nil {
+		c.Logger.Errorf("auth.recoverPassword - code: %v", err)
+		return nil, err
+	}
+	_, err = c.svcCtx.Challenges.Consume(c.ctx, verification.VerifyRequest{
+		Channel: verification.ChannelEmail, Purpose: challengePurposePasswordRecovery,
+		Scope:       verification.ScopeID(c.MD.GetUserId()),
+		ChallengeID: verification.PurposeID(challengePurposePasswordRecovery, verification.ScopeID(c.MD.GetUserId())),
+		Code:        in.GetCode(),
+	})
+	if err != nil {
+		if errors.Is(err, verification.ErrChallengeInvalid) {
+			return nil, mtproto.ErrCodeInvalid
+		}
+		if errors.Is(err, verification.ErrChallengeNotFound) || errors.Is(err, verification.ErrChallengeExpired) {
+			return nil, mtproto.ErrPasswordRecoveryExpired
+		}
+		return nil, mtproto.ErrInternalServerError
+	}
+	if err = applyRecoveredPassword(&st, in.GetNewSettings()); err != nil {
+		c.Logger.Errorf("auth.recoverPassword - settings: %v", err)
+		return nil, err
+	}
+	if err = saveAcctPasswordState(c.MD.GetUserId(), st); err != nil {
+		c.Logger.Errorf("auth.recoverPassword - save: %v", err)
+		return nil, err
+	}
+
+	user, err := c.svcCtx.Dao.UserGetImmutableUser(c.ctx, &userpb.TLUserGetImmutableUser{
+		Id: c.MD.GetUserId(),
+	})
+	if err != nil {
+		c.Logger.Errorf("auth.recoverPassword - user: %v", err)
+		return nil, err
+	}
+	if user == nil {
+		c.Logger.Errorf("auth.recoverPassword - user is nil")
+		return nil, mtproto.ErrInternalServerError
+	}
+
+	return authAuthorization(user), nil
 }

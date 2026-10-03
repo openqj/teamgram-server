@@ -27,6 +27,15 @@ import (
 // ContactsUnblock
 // contacts.unblock#bea65d50 id:InputPeer = Bool;
 func (c *ContactsCore) ContactsUnblock(in *mtproto.TLContactsUnblock) (*mtproto.Bool, error) {
+	if c == nil || c.MD == nil || c.MD.UserId <= 0 {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
+	if in == nil || in.GetId() == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.UserClient == nil || c.svcCtx.Dao.SyncClient == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
 	var (
 		mUsers    *userpb.Vector_ImmutableUser
 		err       error
@@ -65,6 +74,13 @@ func (c *ContactsCore) ContactsUnblock(in *mtproto.TLContactsUnblock) (*mtproto.
 	mUsers, err = c.svcCtx.Dao.UserClient.UserGetMutableUsers(c.ctx, &userpb.TLUserGetMutableUsers{
 		Id: []int64{c.MD.UserId, unblockId.PeerId},
 	})
+	if err != nil {
+		c.Logger.Errorf("contacts.unblock - error: %v", err)
+		return nil, err
+	}
+	if mUsers == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
 
 	// me, _ := users.GetImmutableUser(c.MD.UserId)
 	blocked, _ := mUsers.GetImmutableUser(unblockId.PeerId)
@@ -73,16 +89,27 @@ func (c *ContactsCore) ContactsUnblock(in *mtproto.TLContactsUnblock) (*mtproto.
 		err = mtproto.ErrContactIdInvalid
 		c.Logger.Errorf("contacts.unblock - error: %v", err)
 		return nil, err
+	} else if blocked.GetUser() == nil {
+		return nil, mtproto.ErrInternalServerError
 	} else if blocked.GetUser().GetDeleted() {
 		err = mtproto.ErrInputUserDeactivated
 		c.Logger.Errorf("contacts.unblock - error: %v", err)
 		return nil, err
 	}
-	c.svcCtx.Dao.UserClient.UserUnBlockPeer(c.ctx, &userpb.TLUserUnBlockPeer{
+	unblockedReply, err := c.svcCtx.Dao.UserClient.UserUnBlockPeer(c.ctx, &userpb.TLUserUnBlockPeer{
 		UserId:   c.MD.UserId,
 		PeerType: unblockId.PeerType,
 		PeerId:   unblockId.PeerId,
 	})
+	if err != nil {
+		c.Logger.Errorf("contacts.unblock - error: %v", err)
+		return nil, err
+	}
+	if unblockedReply == nil || !mtproto.FromBool(unblockedReply) {
+		err = mtproto.ErrInternalServerError
+		c.Logger.Errorf("contacts.unblock - error: %v", err)
+		return nil, err
+	}
 	idHelper.AppendUsers(unblockId.PeerId)
 
 	syncUpdates := mtproto.MakeUpdatesByUpdates(mtproto.MakeTLUpdatePeerBlocked(&mtproto.Update{
@@ -101,11 +128,14 @@ func (c *ContactsCore) ContactsUnblock(in *mtproto.TLContactsUnblock) (*mtproto.
 		func(channelIdList []int64) {
 		})
 
-	c.svcCtx.Dao.SyncClient.SyncUpdatesNotMe(c.ctx, &sync.TLSyncUpdatesNotMe{
+	if _, err = c.svcCtx.Dao.SyncClient.SyncUpdatesNotMe(c.ctx, &sync.TLSyncUpdatesNotMe{
 		UserId:        c.MD.UserId,
 		PermAuthKeyId: c.MD.PermAuthKeyId,
 		Updates:       syncUpdates,
-	})
+	}); err != nil {
+		c.Logger.Errorf("contacts.unblock - sync error: %v", err)
+		return nil, err
+	}
 
 	return mtproto.BoolTrue, nil
 }

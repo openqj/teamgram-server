@@ -19,9 +19,11 @@
 package core
 
 import (
+	"errors"
 	"time"
 
 	"github.com/teamgram/proto/mtproto"
+	updatesdao "github.com/teamgram/teamgram-server/app/bff/updates/internal/dao"
 	"github.com/teamgram/teamgram-server/app/service/authsession/authsession"
 	chatpb "github.com/teamgram/teamgram-server/app/service/biz/chat/chat"
 	"github.com/teamgram/teamgram-server/app/service/biz/updates/updates"
@@ -29,8 +31,21 @@ import (
 )
 
 // UpdatesGetDifference
-// updates.getDifference#25939651 flags:# pts:int pts_total_limit:flags.0?int date:int qts:int = updates.Difference;
+// updates.getDifference#19c2f763 flags:# pts:int pts_limit:flags.1?int pts_total_limit:flags.0?int date:int qts:int qts_limit:flags.2?int = updates.Difference;
 func (c *UpdatesCore) UpdatesGetDifference(in *mtproto.TLUpdatesGetDifference) (*mtproto.Updates_Difference, error) {
+	qtsLimit := int32(0)
+	if in.GetQtsLimit() != nil {
+		qtsLimit = in.GetQtsLimit().GetValue()
+	}
+	secretDiff, err := c.svcCtx.Dao.GetSecretDifference(c.ctx, c.MD.UserId, in.GetQts(), qtsLimit)
+	if err != nil {
+		if errors.Is(err, updatesdao.ErrMaxQTSInvalid) {
+			return nil, mtproto.ErrMaxQtsInvalid
+		}
+		c.Logger.Errorf("updates.getDifference - secret difference error: %v", err)
+		return nil, err
+	}
+
 	keyId, err := c.svcCtx.Dao.AuthsessionClient.AuthsessionGetPermAuthKeyId(c.ctx, &authsession.TLAuthsessionGetPermAuthKeyId{
 		AuthKeyId: c.MD.PermAuthKeyId,
 	})
@@ -53,45 +68,73 @@ func (c *UpdatesCore) UpdatesGetDifference(in *mtproto.TLUpdatesGetDifference) (
 	}
 
 	var (
-		idHelper    = mtproto.NewIDListHelper(c.MD.UserId)
-		rDifference *mtproto.Updates_Difference
+		idHelper     = mtproto.NewIDListHelper(c.MD.UserId)
+		rDifference  *mtproto.Updates_Difference
+		state        *mtproto.Updates_State
+		newMessages  []*mtproto.Message
+		otherUpdates []*mtproto.Update
+		normalSlice  bool
+		normalEmpty  bool
 	)
 
 	switch updatesDiff.GetPredicateName() {
 	case updates.Predicate_differenceEmpty:
-		return mtproto.MakeTLUpdatesDifferenceEmpty(&mtproto.Updates_Difference{
-			Date: updatesDiff.GetState().GetDate(),
-			Seq:  updatesDiff.GetState().GetSeq(),
-		}).To_Updates_Difference(), nil
+		normalEmpty = true
+		state = updatesDiff.GetState()
 	case updates.Predicate_difference:
 		// TODO: fix date
 		updatesDiff.State.Date = int32(time.Now().Unix())
-
-		rDifference = mtproto.MakeTLUpdatesDifference(&mtproto.Updates_Difference{
-			NewMessages:          updatesDiff.NewMessages,
-			NewEncryptedMessages: []*mtproto.EncryptedMessage{},
-			OtherUpdates:         updatesDiff.OtherUpdates,
-			Chats:                nil,
-			Users:                nil,
-			State:                updatesDiff.State,
-		}).To_Updates_Difference()
+		state = updatesDiff.GetState()
+		newMessages = updatesDiff.GetNewMessages()
+		otherUpdates = updatesDiff.GetOtherUpdates()
 	case updates.Predicate_differenceSlice:
-		rDifference = mtproto.MakeTLUpdatesDifferenceSlice(&mtproto.Updates_Difference{
-			NewMessages:          updatesDiff.NewMessages,
-			NewEncryptedMessages: []*mtproto.EncryptedMessage{},
-			OtherUpdates:         updatesDiff.OtherUpdates,
-			Chats:                nil,
-			Users:                nil,
-			IntermediateState:    updatesDiff.IntermediateState,
-		}).To_Updates_Difference()
-
-		// TODO: fix IntermediateState
+		normalSlice = true
+		state = updatesDiff.GetIntermediateState()
+		newMessages = updatesDiff.GetNewMessages()
+		otherUpdates = updatesDiff.GetOtherUpdates()
 	case updates.Predicate_differenceTooLong:
 		// TODO: iOS
-		rDifference = mtproto.MakeTLUpdatesDifferenceTooLong(&mtproto.Updates_Difference{
+		return mtproto.MakeTLUpdatesDifferenceTooLong(&mtproto.Updates_Difference{
 			Pts: updatesDiff.Pts,
-		}).To_Updates_Difference()
+		}).To_Updates_Difference(), nil
 	default:
+		return nil, mtproto.ErrInternalServerError
+	}
+
+	if state == nil {
+		state = mtproto.MakeTLUpdatesState(&mtproto.Updates_State{}).To_Updates_State()
+	}
+	state.Qts = secretDiff.CurrentQTS
+	encryptedMessages := make([]*mtproto.EncryptedMessage, 0, len(secretDiff.Messages))
+	for _, message := range secretDiff.Messages {
+		encryptedMessages = append(encryptedMessages, secretEncryptedMessage(message))
+	}
+	if secretDiff.HasMore && len(secretDiff.Messages) > 0 {
+		state.Qts = secretDiff.Messages[len(secretDiff.Messages)-1].QTS
+	} else if secretDiff.HasMore {
+		secretDiff.HasMore = false
+	}
+
+	if normalEmpty && len(encryptedMessages) == 0 && in.GetQts() == secretDiff.CurrentQTS {
+		return mtproto.MakeTLUpdatesDifferenceEmpty(&mtproto.Updates_Difference{
+			Date: state.GetDate(),
+			Seq:  state.GetSeq(),
+		}).To_Updates_Difference(), nil
+	}
+
+	data := &mtproto.Updates_Difference{
+		NewMessages:          newMessages,
+		NewEncryptedMessages: encryptedMessages,
+		OtherUpdates:         otherUpdates,
+		Chats:                nil,
+		Users:                nil,
+	}
+	if normalSlice || secretDiff.HasMore {
+		data.IntermediateState = state
+		rDifference = mtproto.MakeTLUpdatesDifferenceSlice(data).To_Updates_Difference()
+	} else {
+		data.State = state
+		rDifference = mtproto.MakeTLUpdatesDifference(data).To_Updates_Difference()
 	}
 
 	idHelper.PickByMessages(rDifference.NewMessages...)
@@ -116,4 +159,29 @@ func (c *UpdatesCore) UpdatesGetDifference(in *mtproto.TLUpdatesGetDifference) (
 		})
 
 	return rDifference, nil
+}
+
+func secretEncryptedMessage(message updatesdao.SecretMessage) *mtproto.EncryptedMessage {
+	data := &mtproto.EncryptedMessage{
+		RandomId: message.RandomID,
+		ChatId:   message.ChatID,
+		Date:     message.Date,
+		Bytes:    message.Data,
+	}
+	if message.Service {
+		return mtproto.MakeTLEncryptedMessageService(data).To_EncryptedMessage()
+	}
+	if message.File == nil {
+		data.File = mtproto.MakeTLEncryptedFileEmpty(nil).To_EncryptedFile()
+	} else {
+		data.File = mtproto.MakeTLEncryptedFile(&mtproto.EncryptedFile{
+			Id:             message.File.ID,
+			AccessHash:     message.File.AccessHash,
+			Size2_INT32:    int32(message.File.Size),
+			Size2_INT64:    message.File.Size,
+			DcId:           message.File.DCID,
+			KeyFingerprint: message.File.KeyFingerprint,
+		}).To_EncryptedFile()
+	}
+	return mtproto.MakeTLEncryptedMessage(data).To_EncryptedMessage()
 }

@@ -29,6 +29,16 @@ import (
 // MessagesGetMessages
 // messages.getMessages#63c66506 id:Vector<InputMessage> = messages.Messages;
 func (c *MessagesCore) MessagesGetMessages(in *mtproto.TLMessagesGetMessages) (*mtproto.Messages_Messages, error) {
+	if c == nil || c.MD == nil || c.MD.UserId <= 0 {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
+	if in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.MessageClient == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
+
 	var (
 		idList    []int32
 		rMessages = linkedmap.New()
@@ -40,15 +50,25 @@ func (c *MessagesCore) MessagesGetMessages(in *mtproto.TLMessagesGetMessages) (*
 	)
 
 	for _, id := range in.GetId_VECTORINPUTMESSAGE() {
+		if id == nil || id.GetId() <= 0 {
+			return nil, mtproto.ErrMessageIdInvalid
+		}
 		switch id.PredicateName {
 		case mtproto.Predicate_inputMessageID:
 			idList = append(idList, id.Id)
 		case mtproto.Predicate_inputMessageReplyTo:
 			idList = append(idList, id.Id)
 		case mtproto.Predicate_inputMessagePinned:
-			// TODO: not impl
+			err := mtproto.ErrInputConstructorInvalid
+			c.Logger.Errorf("messages.getMessages - error: %v", err)
+			return nil, err
 		case mtproto.Predicate_inputMessageCallbackQuery:
-			// TODO: not impl
+			if id.GetId() == 0 {
+				err := mtproto.ErrMessageIdInvalid
+				c.Logger.Errorf("messages.getMessages - error: %v", err)
+				return nil, err
+			}
+			idList = append(idList, id.GetId())
 		default:
 			// client not use: inputMessageReplyTo, inputMessagePinned
 			err := mtproto.ErrInputConstructorInvalid
@@ -57,6 +77,11 @@ func (c *MessagesCore) MessagesGetMessages(in *mtproto.TLMessagesGetMessages) (*
 		}
 	}
 	if len(in.GetId_VECTORINT32()) > 0 {
+		for _, id := range in.GetId_VECTORINT32() {
+			if id <= 0 {
+				return nil, mtproto.ErrMessageIdInvalid
+			}
+		}
 		idList = append(idList, in.Id_VECTORINT32...)
 	}
 
@@ -71,16 +96,28 @@ func (c *MessagesCore) MessagesGetMessages(in *mtproto.TLMessagesGetMessages) (*
 		}
 	}
 
-	boxList, _ := c.svcCtx.Dao.MessageClient.MessageGetUserMessageList(
+	boxList, err := c.svcCtx.Dao.MessageClient.MessageGetUserMessageList(
 		c.ctx,
 		&message.TLMessageGetUserMessageList{
 			UserId: c.MD.UserId,
 			IdList: idList,
 		})
+	if err != nil {
+		c.Logger.Errorf("messages.getMessages - message lookup error: %v", err)
+		return nil, err
+	}
+	if boxList == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
 
+	var readErr error
 	boxList.Visit(c.MD.UserId,
 		func(messageList []*mtproto.Message) {
 			for _, msg := range messageList {
+				if msg == nil || msg.GetId() <= 0 {
+					readErr = mtproto.ErrInternalServerError
+					return
+				}
 				rMessages.Add(msg.Id, msg)
 			}
 			for i := rMessages.First(); i != nil; i = i.Next() {
@@ -88,32 +125,60 @@ func (c *MessagesCore) MessagesGetMessages(in *mtproto.TLMessagesGetMessages) (*
 			}
 		},
 		func(userIdList []int64) {
-			mUsers, _ := c.svcCtx.Dao.UserClient.UserGetMutableUsers(
+			if readErr != nil {
+				return
+			}
+			if c.svcCtx.Dao.UserClient == nil {
+				readErr = mtproto.ErrInternalServerError
+				return
+			}
+			mUsers, err := c.svcCtx.Dao.UserClient.UserGetMutableUsers(
 				c.ctx,
 				&userpb.TLUserGetMutableUsers{
 					Id: userIdList,
 				})
+			if err != nil {
+				readErr = err
+				return
+			}
+			if mUsers == nil {
+				readErr = mtproto.ErrInternalServerError
+				return
+			}
 			rValues.Users = append(rValues.Users, mUsers.GetUserListByIdList(c.MD.UserId, userIdList...)...)
 		},
 		func(chatIdList []int64) {
-			mChats, _ := c.svcCtx.Dao.ChatClient.Client().ChatGetChatListByIdList(
+			if readErr != nil {
+				return
+			}
+			if c.svcCtx.Dao.ChatClient == nil || c.svcCtx.Dao.ChatClient.Client() == nil {
+				readErr = mtproto.ErrInternalServerError
+				return
+			}
+			mChats, err := c.svcCtx.Dao.ChatClient.Client().ChatGetChatListByIdList(
 				c.ctx,
 				&chatpb.TLChatGetChatListByIdList{
 					IdList: chatIdList,
 				})
+			if err != nil {
+				readErr = err
+				return
+			}
+			if mChats == nil {
+				readErr = mtproto.ErrInternalServerError
+				return
+			}
 			rValues.Chats = append(rValues.Chats, mChats.GetChatListByIdList(c.MD.UserId, chatIdList...)...)
 		},
 		func(channelIdList []int64) {
-			//mChannels, _ := c.svcCtx.Dao.ChannelClient.ChannelGetChannelListByIdList(
-			//	c.ctx,
-			//	&channelpb.TLChannelGetChannelListByIdList{
-			//		SelfUserId: c.MD.UserId,
-			//		Id:         channelIdList,
-			//	})
-			//if len(mChannels.GetDatas()) > 0 {
-			//	rValues.Chats = append(rValues.Chats, mChannels.GetDatas()...)
-			//}
+			if readErr == nil && len(channelIdList) > 0 {
+				readErr = mtproto.ErrMethodNotImpl
+			}
 		})
+	if readErr != nil {
+		c.Logger.Errorf("messages.getMessages - entity hydration error: %v", readErr)
+		return nil, readErr
+	}
 
 	return rValues, nil
 }

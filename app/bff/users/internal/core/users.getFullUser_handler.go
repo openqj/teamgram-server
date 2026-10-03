@@ -29,9 +29,109 @@ import (
 	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
+func getFullUserUsers(mutableUsers *mtproto.MutableUsers, selfId, peerId int64) (*mtproto.ImmutableUser, *mtproto.ImmutableUser, error) {
+	if mutableUsers != nil {
+		var me, peer *mtproto.ImmutableUser
+		for _, candidate := range mutableUsers.GetUsers() {
+			if candidate == nil || candidate.GetUser() == nil {
+				continue
+			}
+			id := candidate.GetUser().GetId()
+			if id == selfId {
+				me = candidate
+			}
+			if id == peerId {
+				peer = candidate
+			}
+		}
+		if me != nil && peer != nil {
+			return me, peer, nil
+		}
+	}
+
+	return nil, nil, mtproto.ErrInternalServerError
+}
+
+func (c *UsersCore) checkFullUserPrivacy(owner *mtproto.ImmutableUser, ownerId, viewerId int64, rules []*mtproto.PrivacyRule) (bool, error) {
+	if owner == nil || owner.GetUser() == nil {
+		return false, mtproto.ErrInternalServerError
+	}
+
+	var groupIds []int64
+	for _, rule := range rules {
+		if rule == nil {
+			return false, mtproto.ErrInternalServerError
+		}
+		switch rule.GetPredicateName() {
+		case mtproto.Predicate_privacyValueAllowChatParticipants, mtproto.Predicate_privacyValueDisallowChatParticipants:
+			for _, id := range rule.GetChats() {
+				if id <= 0 {
+					return false, mtproto.ErrInternalServerError
+				}
+				if !mtproto.ChatIdIsChat(id) {
+					return false, mtproto.ErrMethodNotImpl
+				}
+				groupIds = append(groupIds, id)
+			}
+		}
+	}
+
+	memberChatIds := make(map[int64]struct{})
+	if len(groupIds) > 0 {
+		memberships, err := c.svcCtx.Dao.ChatClient.ChatGetUsersChatIdList(c.ctx, &chatpb.TLChatGetUsersChatIdList{
+			Id: []int64{viewerId},
+		})
+		if err != nil {
+			return false, err
+		}
+		if memberships == nil {
+			return false, mtproto.ErrInternalServerError
+		}
+		for _, userChats := range memberships.GetDatas() {
+			if userChats == nil {
+				return false, mtproto.ErrInternalServerError
+			}
+			if userChats.GetUserId() != viewerId {
+				continue
+			}
+			for _, id := range userChats.GetChatIdList() {
+				if !mtproto.ChatIdIsChat(id) {
+					return false, mtproto.ErrInternalServerError
+				}
+				memberChatIds[id] = struct{}{}
+			}
+		}
+	}
+
+	allowed := mtproto.CheckPrivacyIsAllow(
+		ownerId,
+		rules,
+		viewerId,
+		func(_, checkId int64) bool {
+			contact, _ := owner.CheckContact(checkId)
+			return contact
+		},
+		func(checkId int64, chatIds []int64) bool {
+			if checkId != viewerId {
+				return false
+			}
+			for _, id := range chatIds {
+				if _, ok := memberChatIds[id]; ok {
+					return true
+				}
+			}
+			return false
+		})
+	return allowed, nil
+}
+
 // UsersGetFullUser
 // users.getFullUser#b60f5918 id:InputUser = users.UserFull;
 func (c *UsersCore) UsersGetFullUser(in *mtproto.TLUsersGetFullUser) (*mtproto.Users_UserFull, error) {
+	if in == nil || in.Id == nil {
+		return nil, mtproto.ErrUserIdInvalid
+	}
+
 	var (
 		peerId int64
 		id     = mtproto.FromInputUser(c.MD.UserId, in.Id)
@@ -57,17 +157,10 @@ func (c *UsersCore) UsersGetFullUser(in *mtproto.TLUsersGetFullUser) (*mtproto.U
 	if err != nil {
 		c.Logger.Errorf("users.getFullUser - error: %v", err)
 		return nil, err
-	} else if len(mutableUsers.GetUsers()) == 0 {
-		err = mtproto.ErrInternalServerError
-		c.Logger.Errorf("users.getFullUser - error: %v", err)
-		return nil, err
 	}
 
-	me, _ = mutableUsers.GetImmutableUser(c.MD.UserId)
-	user, _ = mutableUsers.GetImmutableUser(peerId)
-
-	if user == nil {
-		err = mtproto.ErrInternalServerError
+	me, user, err = getFullUserUsers(mutableUsers, c.MD.UserId, peerId)
+	if err != nil {
 		c.Logger.Errorf("users.getFullUser - error: %v", err)
 		return nil, err
 	}
@@ -152,50 +245,95 @@ func (c *UsersCore) UsersGetFullUser(in *mtproto.TLUsersGetFullUser) (*mtproto.U
 			}).To_PremiumGiftOption(),
 		}
 	}
-	mr.FinishVoid(
-		func() {
+	err = mr.Finish(
+		func() error {
 			// blocked
 			if c.MD.UserId != peerId {
-				blocked, _ := c.svcCtx.Dao.UserClient.UserBlockedByUser(
+				blocked, err := c.svcCtx.Dao.UserClient.UserBlockedByUser(
 					c.ctx,
 					&userpb.TLUserBlockedByUser{
 						UserId:     c.MD.UserId,
 						PeerUserId: peerId,
 					})
+				if err != nil {
+					c.Logger.Errorf("users.getFullUser - error: %v", err)
+					return err
+				}
+				if blocked == nil {
+					return mtproto.ErrInternalServerError
+				}
 				userFull.Blocked = mtproto.FromBool(blocked)
 			}
+			return nil
 		},
-		func() {
-			userFull.Settings, _ = c.svcCtx.Dao.UserClient.UserGetPeerSettings(c.ctx, &userpb.TLUserGetPeerSettings{
+		func() error {
+			settings, err := c.svcCtx.Dao.UserClient.UserGetPeerSettings(c.ctx, &userpb.TLUserGetPeerSettings{
 				UserId:   c.MD.UserId,
 				PeerType: mtproto.PEER_USER,
 				PeerId:   peerId,
 			})
+			if err != nil {
+				c.Logger.Errorf("users.getFullUser - error: %v", err)
+				return err
+			}
+			if settings == nil {
+				return mtproto.ErrInternalServerError
+			}
+			userFull.Settings = settings
+			return nil
 		},
-		func() {
-			userFull.NotifySettings, _ = c.svcCtx.Dao.UserClient.UserGetNotifySettings(c.ctx, &userpb.TLUserGetNotifySettings{
+		func() error {
+			settings, err := c.svcCtx.Dao.UserClient.UserGetNotifySettings(c.ctx, &userpb.TLUserGetNotifySettings{
 				UserId:   c.MD.UserId,
 				PeerType: mtproto.PEER_USER,
 				PeerId:   peerId,
 			})
+			if err != nil {
+				c.Logger.Errorf("users.getFullUser - error: %v", err)
+				return err
+			}
+			if settings == nil {
+				return mtproto.ErrInternalServerError
+			}
+			userFull.NotifySettings = settings
+			return nil
 		},
-		func() {
+		func() error {
 			if user.GetUser().GetBot() != nil {
 				userFull.PhoneCallsAvailable = false
 				userFull.PhoneCallsPrivate = false
 				userFull.VideoCallsAvailable = false
-				userFull.BotInfo, _ = c.svcCtx.Dao.UserClient.UserGetBotInfo(c.ctx, &userpb.TLUserGetBotInfo{
+				botInfo, err := c.svcCtx.Dao.UserClient.UserGetBotInfo(c.ctx, &userpb.TLUserGetBotInfo{
 					BotId: peerId,
 				})
+				if err != nil {
+					c.Logger.Errorf("users.getFullUser - error: %v", err)
+					return err
+				}
+				if botInfo == nil {
+					return mtproto.ErrInternalServerError
+				}
+				userFull.BotInfo = botInfo
 			}
+			return nil
 		},
-		func() {
+		func() error {
 			// TODO: PinnedMsgId:         nil,
 			if c.MD.UserId != peerId {
-				usersChatIdList, _ := c.svcCtx.Dao.ChatClient.ChatGetUsersChatIdList(c.ctx, &chatpb.TLChatGetUsersChatIdList{
+				usersChatIdList, err := c.svcCtx.Dao.ChatClient.ChatGetUsersChatIdList(c.ctx, &chatpb.TLChatGetUsersChatIdList{
 					Id: []int64{c.MD.UserId, peerId},
 				})
-				if usersChatIdList != nil && len(usersChatIdList.Datas) == 2 {
+				if err != nil {
+					c.Logger.Errorf("users.getFullUser - error: %v", err)
+					return err
+				}
+				if usersChatIdList == nil {
+					return mtproto.ErrInternalServerError
+				}
+				if len(usersChatIdList.Datas) == 2 {
+					if usersChatIdList.Datas[0] == nil || usersChatIdList.Datas[1] == nil {
+						return mtproto.ErrInternalServerError
+					}
 					commonChats := utils.Int64Intersect(
 						usersChatIdList.Datas[0].ChatIdList,
 						usersChatIdList.Datas[1].ChatIdList)
@@ -203,15 +341,20 @@ func (c *UsersCore) UsersGetFullUser(in *mtproto.TLUsersGetFullUser) (*mtproto.U
 				}
 				// TODO: Fetch CommonChannelsCount
 			}
+			return nil
 		},
-		func() {
+		func() error {
 			if peerId != c.MD.UserId {
 				// theme_emoticon
-				dialogExt, _ := c.svcCtx.Dao.DialogClient.DialogGetDialogById(c.ctx, &dialog.TLDialogGetDialogById{
+				dialogExt, err := c.svcCtx.Dao.DialogClient.DialogGetDialogById(c.ctx, &dialog.TLDialogGetDialogById{
 					UserId:   c.MD.UserId,
 					PeerType: mtproto.PEER_USER,
 					PeerId:   peerId,
 				})
+				if err != nil {
+					c.Logger.Errorf("users.getFullUser - error: %v", err)
+					return err
+				}
 				if dialogExt != nil {
 					userFull.ThemeEmoticon = mtproto.MakeFlagsString(dialogExt.ThemeEmoticon)
 					userFull.TtlPeriod = mtproto.MakeFlagsInt32(dialogExt.TtlPeriod)
@@ -221,59 +364,59 @@ func (c *UsersCore) UsersGetFullUser(in *mtproto.TLUsersGetFullUser) (*mtproto.U
 					}
 				}
 			}
+			return nil
 		},
-		func() {
-			rules, _ := c.svcCtx.Dao.UserClient.UserGetPrivacy(c.ctx, &userpb.TLUserGetPrivacy{
+		func() error {
+			rules, err := c.svcCtx.Dao.UserClient.UserGetPrivacy(c.ctx, &userpb.TLUserGetPrivacy{
 				UserId:  peerId,
 				KeyType: mtproto.VOICE_MESSAGES,
 			})
-			if rules != nil && len(rules.Datas) > 0 {
-				allow := mtproto.CheckPrivacyIsAllow(
-					peerId,
-					rules.Datas,
-					c.MD.UserId,
-					func(id, checkId int64) bool {
-						contact, _ := user.CheckContact(checkId)
-						return contact
-					},
-					func(checkId int64, idList []int64) bool {
-						// TODO
-						chatIdList, _ := mtproto.SplitChatAndChannelIdList(idList)
-						_ = chatIdList
-						// return c.svcCtx.Dao.ChatClient.CheckParticipantIsExist(c.ctx, checkId, chatIdList)
-						return false
-					})
-				userFull.VoiceMessagesForbidden = !allow
+			if err != nil {
+				c.Logger.Errorf("users.getFullUser - error: %v", err)
+				return err
 			}
+			if rules == nil {
+				return mtproto.ErrInternalServerError
+			}
+			if rules != nil && len(rules.Datas) > 0 {
+				allowed, err := c.checkFullUserPrivacy(user, peerId, c.MD.UserId, rules.Datas)
+				if err != nil {
+					c.Logger.Errorf("users.getFullUser - error: %v", err)
+					return err
+				}
+				userFull.VoiceMessagesForbidden = !allowed
+			}
+			return nil
 		},
-		func() {
+		func() error {
 			if user.GetUser().GetSavedMusic() != nil {
-				rules, _ := c.svcCtx.Dao.UserClient.UserGetPrivacy(c.ctx, &userpb.TLUserGetPrivacy{
+				rules, err := c.svcCtx.Dao.UserClient.UserGetPrivacy(c.ctx, &userpb.TLUserGetPrivacy{
 					UserId:  peerId,
 					KeyType: mtproto.SAVED_MUSIC,
 				})
+				if err != nil {
+					c.Logger.Errorf("users.getFullUser - error: %v", err)
+					return err
+				}
+				if rules == nil {
+					return mtproto.ErrInternalServerError
+				}
 				if rules != nil && len(rules.Datas) > 0 {
-					allow := mtproto.CheckPrivacyIsAllow(
-						peerId,
-						rules.Datas,
-						c.MD.UserId,
-						func(id, checkId int64) bool {
-							contact, _ := user.CheckContact(checkId)
-							return contact
-						},
-						func(checkId int64, idList []int64) bool {
-							// TODO
-							chatIdList, _ := mtproto.SplitChatAndChannelIdList(idList)
-							_ = chatIdList
-							// return c.svcCtx.Dao.ChatClient.CheckParticipantIsExist(c.ctx, checkId, chatIdList)
-							return false
-						})
-					if allow {
+					allowed, err := c.checkFullUserPrivacy(user, peerId, c.MD.UserId, rules.Datas)
+					if err != nil {
+						c.Logger.Errorf("users.getFullUser - error: %v", err)
+						return err
+					}
+					if allowed {
 						userFull.SavedMusic = user.GetUser().GetSavedMusic()
 					}
 				}
 			}
+			return nil
 		})
+	if err != nil {
+		return nil, err
+	}
 
 	// TODO: FolderId:    0,
 
@@ -311,27 +454,24 @@ func (c *UsersCore) UsersGetFullUser(in *mtproto.TLUsersGetFullUser) (*mtproto.U
 		// userFull.Birthday = user.Birthday()
 		if user.Birthday() != nil {
 			//if user.GetUser().GetSavedMusic() != nil {
-			rules, _ := c.svcCtx.Dao.UserClient.UserGetPrivacy(c.ctx, &userpb.TLUserGetPrivacy{
+			rules, err := c.svcCtx.Dao.UserClient.UserGetPrivacy(c.ctx, &userpb.TLUserGetPrivacy{
 				UserId:  peerId,
 				KeyType: mtproto.BIRTHDAY,
 			})
+			if err != nil {
+				c.Logger.Errorf("users.getFullUser - error: %v", err)
+				return nil, err
+			}
+			if rules == nil {
+				return nil, mtproto.ErrInternalServerError
+			}
 			if rules != nil && len(rules.Datas) > 0 {
-				allow := mtproto.CheckPrivacyIsAllow(
-					peerId,
-					rules.Datas,
-					c.MD.UserId,
-					func(id, checkId int64) bool {
-						contact, _ := user.CheckContact(checkId)
-						return contact
-					},
-					func(checkId int64, idList []int64) bool {
-						// TODO
-						chatIdList, _ := mtproto.SplitChatAndChannelIdList(idList)
-						_ = chatIdList
-						// return c.svcCtx.Dao.ChatClient.CheckParticipantIsExist(c.ctx, checkId, chatIdList)
-						return false
-					})
-				if allow {
+				allowed, err := c.checkFullUserPrivacy(user, peerId, c.MD.UserId, rules.Datas)
+				if err != nil {
+					c.Logger.Errorf("users.getFullUser - error: %v", err)
+					return nil, err
+				}
+				if allowed {
 					userFull.Birthday = user.Birthday()
 				}
 			}

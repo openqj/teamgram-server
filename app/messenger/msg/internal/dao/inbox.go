@@ -55,6 +55,23 @@ func (d *Dao) makeMessageInBox(fromId int64, peer *mtproto.PeerUtil, toUserId in
 	}
 }
 
+func replyPeerMatchesCurrentDialog(peer *mtproto.PeerUtil, replyPeer *mtproto.Peer) bool {
+	if peer == nil || replyPeer == nil {
+		return false
+	}
+
+	switch peer.PeerType {
+	case mtproto.PEER_USER:
+		return replyPeer.PredicateName == mtproto.Predicate_peerUser && replyPeer.UserId == peer.PeerId
+	case mtproto.PEER_CHAT:
+		return replyPeer.PredicateName == mtproto.Predicate_peerChat && replyPeer.ChatId == peer.PeerId
+	case mtproto.PEER_CHANNEL:
+		return replyPeer.PredicateName == mtproto.Predicate_peerChannel && replyPeer.ChannelId == peer.PeerId
+	default:
+		return false
+	}
+}
+
 func (d *Dao) sendMessageToInbox(ctx context.Context, fromId int64, peer *mtproto.PeerUtil, toUserId int64, dialogMessageId, clientRandomId int64, message2 *mtproto.Message) (*mtproto.MessageBox, error) {
 	var (
 		inBoxMsgId = d.IDGenClient2.NextMessageBoxId(ctx, toUserId)
@@ -76,6 +93,10 @@ func (d *Dao) sendMessageToInbox(ctx context.Context, fromId int64, peer *mtprot
 	message.Id = inBoxMsgId
 	switch message.GetReplyTo().GetPredicateName() {
 	case mtproto.Predicate_messageReplyHeader:
+		replyToPeer := message.GetReplyTo().GetReplyToPeerId()
+		if replyToPeer != nil && !replyPeerMatchesCurrentDialog(peer, replyToPeer) {
+			break
+		}
 		if replyId, _ := d.MessagesDAO.SelectPeerUserMessage(ctx, toUserId, fromId, message.GetReplyTo().GetFixedReplyToMsgId()); replyId != nil {
 			// message.ReplyToMsgId.Value = replyId.UserMessageBoxId
 			if message.ReplyTo != nil {

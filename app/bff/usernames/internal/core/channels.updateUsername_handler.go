@@ -20,13 +20,76 @@ package core
 
 import (
 	"github.com/teamgram/proto/mtproto"
+	"github.com/teamgram/teamgram-server/app/bff/apifull/channelview"
+	userpb "github.com/teamgram/teamgram-server/app/service/biz/user/user"
 )
 
 // ChannelsUpdateUsername
 // channels.updateUsername#3514b3de channel:InputChannel username:string = Bool;
 func (c *UsernamesCore) ChannelsUpdateUsername(in *mtproto.TLChannelsUpdateUsername) (*mtproto.Bool, error) {
-	// TODO: not impl
-	c.Logger.Errorf("channels.updateUsername blocked, License key from https://teamgram.net required to unlock enterprise features.")
+	channelId, err := channelID(in.GetChannel())
+	if err != nil {
+		c.Logger.Errorf("channels.updateUsername - error: %v", err)
+		return nil, err
+	}
+	if err = c.requireChannelAdmin(channelId); err != nil {
+		c.Logger.Errorf("channels.updateUsername - error: %v", err)
+		return nil, err
+	}
 
-	return nil, mtproto.ErrEnterpriseIsBlocked
+	username2 := in.GetUsername()
+	current := ""
+	got, gerr := c.svcCtx.Dao.UserClient.UserGetChannelUsername(c.ctx, &userpb.TLUserGetChannelUsername{
+		ChannelId: channelId,
+	})
+	if gerr == nil && got != nil {
+		current = got.GetUsername()
+	}
+	if username2 != current {
+		if err = c.assignChannelUsername(channelId, current, username2); err != nil {
+			c.Logger.Errorf("channels.updateUsername - error: %v", err)
+			return nil, err
+		}
+	}
+	if err = channelview.UpdateChannelUsername(channelId, username2); err != nil {
+		c.Logger.Errorf("channels.updateUsername - persist channel username: %v", err)
+		return nil, err
+	}
+	return mtproto.BoolTrue, nil
+}
+
+// assignChannelUsername writes the username row the same way account.updateUsername
+// does for users, with the peer set to this channel. It does not touch the users table.
+func (c *UsernamesCore) assignChannelUsername(channelId int64, from, username2 string) error {
+	if username2 != "" {
+		if usernameFormatInvalid(username2) {
+			err := mtproto.ErrUsernameInvalid
+			c.Logger.Errorf("channels.updateUsername - format error: %v", err)
+			return err
+		}
+		ok, err := c.svcCtx.Dao.UserClient.UserUpdateUsernameByUsername(c.ctx, &userpb.TLUserUpdateUsernameByUsername{
+			PeerType: mtproto.PEER_CHANNEL,
+			PeerId:   channelId,
+			Username: username2,
+		})
+		if err != nil {
+			c.Logger.Errorf("channels.updateUsername - error: %v", err)
+			return err
+		}
+		if !mtproto.FromBool(ok) {
+			err = mtproto.ErrUsernameOccupied
+			c.Logger.Errorf("channels.updateUsername - error: %v", err)
+			return err
+		}
+	}
+
+	if from != "" {
+		if _, err := c.svcCtx.Dao.UserClient.UserDeleteUsername(c.ctx, &userpb.TLUserDeleteUsername{
+			Username: from,
+		}); err != nil {
+			c.Logger.Errorf("channels.updateUsername - error: %v", err)
+			return err
+		}
+	}
+	return nil
 }

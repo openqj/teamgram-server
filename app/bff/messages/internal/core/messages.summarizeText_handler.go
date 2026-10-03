@@ -25,13 +25,5 @@ import (
 // MessagesSummarizeText
 // messages.summarizeText#9d4104e2 flags:# peer:InputPeer id:int to_lang:flags.0?string = TextWithEntities;
 func (c *MessagesCore) MessagesSummarizeText(in *mtproto.TLMessagesSummarizeText) (*mtproto.TextWithEntities, error) {
-	// TODO: not impl
-	// c.Logger.Errorf("messages.summarizeText - error: method MessagesSummarizeText not impl")
-
-	rV := mtproto.MakeTLTextWithEntities(&mtproto.TextWithEntities{
-		Text:     "",
-		Entities: []*mtproto.MessageEntity{},
-	}).To_TextWithEntities()
-
-	return rV, nil
+	return nil, mtproto.ErrMethodNotImpl
 }

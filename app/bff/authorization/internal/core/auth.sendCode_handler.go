@@ -29,7 +29,9 @@ import (
 	"github.com/teamgram/teamgram-server/app/service/authsession/authsession"
 	userpb "github.com/teamgram/teamgram-server/app/service/biz/user/user"
 	statuspb "github.com/teamgram/teamgram-server/app/service/status/status"
+	verification "github.com/teamgram/teamgram-server/pkg/code"
 
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
 
@@ -135,6 +137,10 @@ func (c *AuthorizationCore) AuthSendCode(in *mtproto.TLAuthSendCode) (*mtproto.A
 }
 
 func (c *AuthorizationCore) authSendCode(authKeyId, sessionId int64, request *mtproto.TLAuthSendCode) (reply *mtproto.Auth_SentCode, err error) {
+	if request == nil || request.GetSettings() == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	settings := request.GetSettings()
 	// 1. check api_id and api_hash
 	if err = c.svcCtx.Dao.CheckApiIdAndHash(request.ApiId, request.ApiHash); err != nil {
 		c.Logger.Errorf("invalid api: {api_id: %d, api_hash: %s}", request.ApiId, request.ApiHash)
@@ -237,14 +243,11 @@ func (c *AuthorizationCore) authSendCode(authKeyId, sessionId int64, request *mt
 	if user, err = c.svcCtx.Dao.UserClient.UserGetImmutableUserByPhone(c.ctx, &userpb.TLUserGetImmutableUserByPhone{
 		Phone: phoneNumber,
 	}); err != nil {
-		if nErr, ok := status.FromError(err); ok {
-			// mtproto.ErrPhoneNumberUnoccupied
-			_ = nErr
-			err = nil
-		} else {
+		if !isPhoneNumberUnoccupiedError(err) {
 			c.Logger.Errorf("checkPhoneNumberExist error: %v", err)
 			return
 		}
+		err = nil
 		//st, ok := errors.Cause(err).(*status.Error)
 		//if !ok {
 		//	c.Logger.Errorf("checkPhoneNumberExist error: %v, type: %s", st, reflect.TypeOf(err))
@@ -273,27 +276,41 @@ func (c *AuthorizationCore) authSendCode(authKeyId, sessionId int64, request *mt
 		// TODO:
 		//  At all times, the future auth token database should contain at most 20 tokens:
 		//  evict older tokens as new tokens are added to stay below this limit.
-		for _, v := range request.Settings.GetLogoutTokens() {
+		for _, v := range settings.GetLogoutTokens() {
 			id, _ := c.svcCtx.Dao.GetFutureAuthToken(c.ctx, v)
 			if id == user.Id() {
 				// Bind authKeyId and userId
-				_, _ = c.svcCtx.Dao.AuthsessionClient.AuthsessionBindAuthKeyUser(c.ctx, &authsession.TLAuthsessionBindAuthKeyUser{
+				bindHash, bindErr := c.svcCtx.Dao.AuthsessionClient.AuthsessionBindAuthKeyUser(c.ctx, &authsession.TLAuthsessionBindAuthKeyUser{
 					AuthKeyId: c.MD.PermAuthKeyId,
 					UserId:    user.User.Id,
 				})
+				if bindErr != nil {
+					c.Logger.Errorf("auth.sendCode - future token auth key bind: %v", bindErr)
+					return nil, bindErr
+				}
+				if bindHash == nil || bindHash.GetV() == 0 {
+					c.Logger.Errorf("auth.sendCode - future token auth key bind did not persist")
+					return nil, mtproto.ErrInternalServerError
+				}
 
 				// Del
-				_ = c.svcCtx.Dao.DelFutureAuthToken(c.ctx, v)
+				if err = c.svcCtx.Dao.DelFutureAuthToken(c.ctx, v); err != nil {
+					c.Logger.Errorf("auth.sendCode - delete consumed future token: %v", err)
+					return nil, err
+				}
 
-				// Check SESSION_PASSWORD_NEEDED
-				if c.svcCtx.Plugin != nil {
-					if c.svcCtx.Plugin.CheckSessionPasswordNeeded(c.ctx, user.User.Id) {
-						// hack
-						// err = mtproto.ErrSessionPasswordNeeded
-						err = status.Error(mtproto.ErrUnauthorized, fmt.Sprintf("SESSION_PASSWORD_NEEDED_%d", user.Id()))
-						c.Logger.Infof("auth.sendCode - future-auth-tokens, next step auth.checkPassword: %v", err)
-						return nil, err
-					}
+				// Check SESSION_PASSWORD_NEEDED from the password state shared with APIFull.
+				passwordNeeded, checkErr := c.svcCtx.Dao.CheckSessionPasswordNeeded(user.User.Id)
+				if checkErr != nil {
+					return nil, checkErr
+				}
+				if c.svcCtx.Plugin != nil && c.svcCtx.Plugin.CheckSessionPasswordNeeded(c.ctx, user.User.Id) {
+					passwordNeeded = true
+				}
+				if passwordNeeded {
+					err = status.Error(mtproto.ErrUnauthorized, fmt.Sprintf("SESSION_PASSWORD_NEEDED_%d", user.Id()))
+					c.Logger.Infof("auth.sendCode - future-auth-tokens, next step auth.checkPassword: %v", err)
+					return nil, err
 				}
 
 				return mtproto.MakeTLAuthSentCodeSuccess(&mtproto.Auth_SentCode{
@@ -316,104 +333,39 @@ func (c *AuthorizationCore) authSendCode(authKeyId, sessionId int64, request *mt
 		sessionId,
 		phoneNumber,
 		phoneRegistered,
-		request.Settings.AllowFlashcall,
-		request.Settings.CurrentNumber,
+		settings.GetAllowFlashcall(),
+		settings.GetCurrentNumber(),
 		request.ApiId,
 		request.ApiHash,
 		func(codeData2 *model.PhoneCodeTransaction) error {
-			if codeData2.State == model.CodeStateSent {
-				c.Logger.Infof("codeSent")
-				return nil
-			}
-
-			var (
-				needSendSms = true
-			)
-
+			channel := verification.ChannelSMS
+			requestedCode := ""
 			if phoneRegistered {
 				if user.GetUser().GetUserType() == userpb.UserTypeTest {
-					needSendSms = false
+					channel = verification.ChannelApp
+					requestedCode = "12345"
 					codeData2.SentCodeType = model.SentCodeTypeApp
-					codeData2.PhoneCode = "12345"
-					codeData2.PhoneCodeExtraData = "12345"
-					c.Logger.Infof("is test server: %v", codeData2)
 				} else {
 					if status2, _ := c.svcCtx.StatusClient.StatusGetUserOnlineSessions(c.ctx, &statuspb.TLStatusGetUserOnlineSessions{
 						UserId: user.User.Id,
 					}); len(status2.GetUserSessions()) > 0 {
-						c.Logger.Infof("user online")
-						needSendSms = false
+						channel = verification.ChannelApp
 						codeData2.SentCodeType = model.SentCodeTypeApp
-						codeData2.PhoneCodeExtraData = codeData2.PhoneCode
 					}
 				}
+			}
+			issuedCode, issueErr := c.issuePhoneChallenge(codeData2, channel, challengePurposeAuthLogin, requestedCode)
+			if issueErr != nil {
+				return issueErr
+			}
+			if channel == verification.ChannelSMS {
+				codeData2.SentCodeType = model.SentCodeTypeSms
+			} else if phoneRegistered {
 				threading2.WrapperGoFunc(c.ctx, nil, func(ctx context.Context) {
-					c.pushSignInMessage(ctx, user.Id(), codeData2.PhoneCode)
+					c.pushSignInMessage(ctx, user.Id(), issuedCode)
 				})
 			}
-
-			if needSendSms {
-				c.Logger.Infof("send code by sms")
-				extraData, err2 := c.svcCtx.AuthLogic.VerifyCodeInterface.SendSmsVerifyCode(
-					context.Background(),
-					phoneNumber,
-					codeData2.PhoneCode,
-					codeData2.PhoneCodeHash)
-				if err2 != nil {
-					c.Logger.Errorf("send sms code error: %v", err2)
-					return err2
-				} else {
-					// codeData2.SentCodeType = model.CodeTypeSms
-					codeData2.SentCodeType = model.SentCodeTypeSms
-					codeData2.PhoneCodeExtraData = extraData
-				}
-			}
-
-			//if user.User.UserType == userpb.UserTypeTest {
-			//	c.Logger.Infof("test user: %s, %s", phoneNumber, user)
-			//	codeData2.SentCodeType = model.CodeTypeApp
-			//	codeData2.PhoneCode = "12345"
-			//	codeData2.PhoneCodeExtraData = "12345"
-			//	go func() {
-			//		// c.pushSignInMessage(context.Background(), user.Id, codeData2.PhoneCode)
-			//	}()
-			//} else {
-			//	var (
-			//		online = false
-			//	)
-			//
-			//	if phoneRegistered {
-			//		if status, _ := c.svcCtx.StatusClient.StatusGetUserOnlineSessions(c.ctx, &status.TLStatusGetUserOnlineSessions{
-			//			UserId: user.User.Id,
-			//		}); len(status.GetUserSessions()) > 0 {
-			//			c.Logger.Infof("user online")
-			//			online = true
-			//
-			//			codeData2.SentCodeType = model.CodeTypeApp
-			//			codeData2.PhoneCodeExtraData = codeData2.PhoneCode
-			//			go func() {
-			//				// s.pushSignInMessage(context.Background(), user.Id, codeData2.PhoneCode)
-			//			}()
-			//		}
-			//		// &&
-			//	}
-			//
-			//	if !phoneRegistered || !online {
-			//		c.Logger.Infof("send code by sms")
-			//		if extraData, err := c.svcCtx.AuthLogic.VerifyCodeInterface.SendSmsVerifyCode(
-			//			context.Background(),
-			//			phoneNumber,
-			//			codeData2.PhoneCode,
-			//			codeData2.PhoneCodeHash); err != nil {
-			//			return err
-			//		} else {
-			//			codeData2.SentCodeType = model.CodeTypeSms
-			//			codeData2.PhoneCodeExtraData = extraData
-			//		}
-			//	}
-			//}
-
-			codeData2.NextCodeType = model.CodeTypeSms
+			codeData2.NextCodeType = model.CodeTypeNone
 			codeData2.State = model.CodeStateSent
 			codeData2.PhoneNumberRegistered = phoneRegistered
 
@@ -428,4 +380,17 @@ func (c *AuthorizationCore) authSendCode(authKeyId, sessionId int64, request *mt
 
 	reply = codeData.ToAuthSentCode()
 	return
+}
+
+// isPhoneNumberUnoccupiedError only accepts the user service's documented
+// not-found result. Other gRPC failures must stop the login flow instead of
+// being treated as an unregistered phone number.
+func isPhoneNumberUnoccupiedError(err error) bool {
+	nErr, ok := status.FromError(err)
+	if !ok {
+		return false
+	}
+	return nErr.Code() == codes.NotFound ||
+		(nErr.Code() == status.Code(mtproto.ErrPhoneNumberUnoccupied) &&
+			nErr.Message() == status.Convert(mtproto.ErrPhoneNumberUnoccupied).Message())
 }

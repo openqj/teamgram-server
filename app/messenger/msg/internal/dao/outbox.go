@@ -548,6 +548,7 @@ func (d *Dao) DeletePhoneCallHistory(ctx context.Context, userId int64) ([]int32
 	)
 	if err != nil {
 		logx.WithContext(ctx).Errorf("error: %v", err)
+		return nil, nil, err
 	}
 
 	if len(dialogIdMap) == 0 {
@@ -559,12 +560,15 @@ func (d *Dao) DeletePhoneCallHistory(ctx context.Context, userId int64) ([]int32
 	for dialogId, msgIds := range dialogIdMap {
 		_, err = d.MessagesDAO.DeleteMessagesByMessageIdList(ctx, userId, msgIds)
 		if err != nil {
-			continue
+			return nil, nil, err
 		}
 
 		// TODO: performance optimization
-		lastMessageId, _ := d.MessagesDAO.SelectDialogLastMessageId(ctx, userId, dialogId.A, dialogId.B)
-		d.CachedConn.Exec(
+		lastMessageId, err := d.MessagesDAO.SelectDialogLastMessageId(ctx, userId, dialogId.A, dialogId.B)
+		if err != nil {
+			return nil, nil, err
+		}
+		_, _, err = d.CachedConn.Exec(
 			ctx,
 			func(ctx context.Context, conn *sqlx.DB) (int64, int64, error) {
 				_, err2 := d.DialogsDAO.UpdateCustomMap(
@@ -577,6 +581,9 @@ func (d *Dao) DeletePhoneCallHistory(ctx context.Context, userId int64) ([]int32
 				return 0, 0, err2
 			},
 			dialog.GetDialogCacheKeyByPeer(userId, mtproto.PEER_USER, mtproto.GetPeerIdByDialogId(userId, dialogId)))
+		if err != nil {
+			return nil, nil, err
+		}
 	}
 
 	return deletedIdList, deletedMsgDataIdList, nil

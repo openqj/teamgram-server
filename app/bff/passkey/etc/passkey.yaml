@@ -1,2 +1,7 @@
 Name: bff.passkey
 ListenOn: 0.0.0.0:27960
+Provider:
+  RelyingPartyId: ""
+  RelyingPartyDisplayName: ""
+  Origins: []
+  TrustedApps: []

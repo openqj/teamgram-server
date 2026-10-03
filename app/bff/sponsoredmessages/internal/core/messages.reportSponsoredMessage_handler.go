@@ -18,15 +18,19 @@
 
 package core
 
-import (
-	"github.com/teamgram/proto/mtproto"
-)
+import "github.com/teamgram/proto/mtproto"
 
 // MessagesReportSponsoredMessage
-// messages.reportSponsoredMessage#1af3dbb8 peer:InputPeer random_id:bytes option:bytes = channels.SponsoredMessageReportResult;
+// messages.reportSponsoredMessage#12cbf0c4 random_id:bytes option:bytes = channels.SponsoredMessageReportResult;
 func (c *SponsoredMessagesCore) MessagesReportSponsoredMessage(in *mtproto.TLMessagesReportSponsoredMessage) (*mtproto.Channels_SponsoredMessageReportResult, error) {
-	// TODO: not impl
-	c.Logger.Errorf("messages.reportSponsoredMessage blocked, License key from https://teamgram.net required to unlock enterprise features.")
-
-	return nil, mtproto.ErrEnterpriseIsBlocked
+	if _, err := c.requireSponsoredUser(); err != nil {
+		return nil, err
+	}
+	if in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if _, err := sponsoredRandom(in.GetRandomId()); err != nil {
+		return nil, err
+	}
+	return nil, mtproto.ErrMethodNotImpl
 }

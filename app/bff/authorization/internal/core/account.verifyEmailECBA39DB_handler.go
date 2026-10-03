@@ -19,14 +19,46 @@
 package core
 
 import (
+	"strings"
+
 	"github.com/teamgram/proto/mtproto"
+	verification "github.com/teamgram/teamgram-server/pkg/code"
 )
 
 // AccountVerifyEmailECBA39DB
 // account.verifyEmail#ecba39db email:string code:string = Bool;
 func (c *AuthorizationCore) AccountVerifyEmailECBA39DB(in *mtproto.TLAccountVerifyEmailECBA39DB) (*mtproto.Bool, error) {
-	// TODO: not impl
-	c.Logger.Errorf("account.verifyEmailECBA39DB blocked, License key from https://teamgram.net required to unlock enterprise features.")
-
-	return nil, mtproto.ErrEnterpriseIsBlocked
+	if c == nil || in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if c.svcCtx == nil || c.svcCtx.Challenges == nil {
+		return nil, mtproto.ErrEmailVerifyExpired
+	}
+	email := strings.TrimSpace(in.GetEmail())
+	code := strings.TrimSpace(in.GetCode())
+	if !validEmail(email) {
+		return nil, mtproto.ErrEmailInvalid
+	}
+	if code == "" {
+		return nil, mtproto.ErrCodeEmpty
+	}
+	request := verification.VerifyRequest{
+		Channel: verification.ChannelEmail, Purpose: challengePurposeVerifyEmail,
+		Scope:       c.challengeScope(),
+		ChallengeID: verification.PurposeID(mtproto.Predicate_emailVerifyPurposePassport, "", ""),
+		Code:        code,
+	}
+	challenge, err := c.svcCtx.Challenges.Check(c.ctx, request)
+	if err != nil {
+		c.Logger.Errorf("account.verifyEmail - error: %v", err)
+		return nil, mapEmailChallengeError(err)
+	}
+	if challenge == nil || !strings.EqualFold(strings.TrimSpace(challenge.Subject), email) {
+		return nil, mtproto.ErrCodeInvalid
+	}
+	if _, err = c.svcCtx.Challenges.Consume(c.ctx, request); err != nil {
+		c.Logger.Errorf("account.verifyEmail - consume error: %v", err)
+		return nil, mapEmailChallengeError(err)
+	}
+	return mtproto.BoolTrue, nil
 }

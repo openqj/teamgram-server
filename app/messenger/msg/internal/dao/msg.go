@@ -20,13 +20,59 @@ package dao
 
 import (
 	"context"
+	"fmt"
 
+	"github.com/teamgram/marmota/pkg/stores/sqlx"
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/messenger/msg/internal/dal/dataobject"
+	"github.com/teamgram/teamgram-server/app/service/biz/dialog/dialog"
 
 	"github.com/zeromicro/go-zero/core/jsonx"
 	"github.com/zeromicro/go-zero/core/logx"
 )
+
+// ClearMentions clears only the mentioned marker for a basic-group dialog and
+// refreshes the dialog's persisted unread mention count in the same transaction.
+func (d *Dao) ClearMentions(ctx context.Context, userId, peerId int64, topMsgId int32, hasTopMsgId bool) (int32, error) {
+	var cleared int32
+	table := d.MessagesDAO.CalcTableName(userId)
+	result := sqlx.TxWrapper(ctx, d.DB, func(tx *sqlx.Tx, storeResult *sqlx.StoreResult) {
+		query := fmt.Sprintf("UPDATE %s SET mentioned = 0 WHERE user_id = ? AND peer_type = ? AND peer_id = ? AND mentioned = 1 AND deleted = 0", table)
+		args := []interface{}{userId, mtproto.PEER_CHAT, peerId}
+		if hasTopMsgId {
+			query += " AND user_message_box_id <= ?"
+			args = append(args, topMsgId)
+		}
+		rows, err := tx.Exec(query, args...)
+		if err != nil {
+			storeResult.Err = err
+			return
+		}
+		rowsAffected, err := rows.RowsAffected()
+		if err != nil {
+			storeResult.Err = err
+			return
+		}
+		cleared = int32(rowsAffected)
+
+		var unreadCount int32
+		countQuery := fmt.Sprintf("SELECT COUNT(id) FROM %s WHERE user_id = ? AND peer_type = ? AND peer_id = ? AND mentioned = 1 AND deleted = 0", table)
+		if err = tx.QueryRowPartial(&unreadCount, countQuery, userId, mtproto.PEER_CHAT, peerId); err != nil {
+			storeResult.Err = err
+			return
+		}
+		_, storeResult.Err = d.DialogsDAO.UpdateCustomMapTx(tx, map[string]interface{}{
+			"unread_mentions_count": unreadCount,
+		}, userId, mtproto.PEER_CHAT, peerId)
+	})
+	if result.Err != nil {
+		return 0, result.Err
+	}
+	if err := d.CachedConn.DelCache(ctx, dialog.GetDialogCacheKeyByPeer(userId, mtproto.PEER_CHAT, peerId)); err != nil {
+		return 0, err
+	}
+	return cleared, nil
+}
 
 func (d *Dao) DeleteByMessageIdList(ctx context.Context, userId int64, idList []int32) (rowsAffected int64, err error) {
 	if len(idList) == 0 {

@@ -39,6 +39,7 @@ const (
 	RPCMsg_MsgDeleteChatHistory_FullMethodName      = "/msg.RPCMsg/msg_deleteChatHistory"
 	RPCMsg_MsgReadHistory_FullMethodName            = "/msg.RPCMsg/msg_readHistory"
 	RPCMsg_MsgReadHistoryV2_FullMethodName          = "/msg.RPCMsg/msg_readHistoryV2"
+	RPCMsg_MsgReadMentions_FullMethodName           = "/msg.RPCMsg/msg_readMentions"
 	RPCMsg_MsgUpdatePinnedMessage_FullMethodName    = "/msg.RPCMsg/msg_updatePinnedMessage"
 	RPCMsg_MsgUnpinAllMessages_FullMethodName       = "/msg.RPCMsg/msg_unpinAllMessages"
 )
@@ -57,6 +58,7 @@ type RPCMsgClient interface {
 	MsgDeleteChatHistory(ctx context.Context, in *TLMsgDeleteChatHistory, opts ...grpc.CallOption) (*mtproto.Bool, error)
 	MsgReadHistory(ctx context.Context, in *TLMsgReadHistory, opts ...grpc.CallOption) (*mtproto.Messages_AffectedMessages, error)
 	MsgReadHistoryV2(ctx context.Context, in *TLMsgReadHistoryV2, opts ...grpc.CallOption) (*mtproto.Messages_AffectedMessages, error)
+	MsgReadMentions(ctx context.Context, in *TLMsgReadMentions, opts ...grpc.CallOption) (*mtproto.Messages_AffectedHistory, error)
 	MsgUpdatePinnedMessage(ctx context.Context, in *TLMsgUpdatePinnedMessage, opts ...grpc.CallOption) (*mtproto.Updates, error)
 	MsgUnpinAllMessages(ctx context.Context, in *TLMsgUnpinAllMessages, opts ...grpc.CallOption) (*mtproto.Messages_AffectedHistory, error)
 }
@@ -169,6 +171,16 @@ func (c *rPCMsgClient) MsgReadHistoryV2(ctx context.Context, in *TLMsgReadHistor
 	return out, nil
 }
 
+func (c *rPCMsgClient) MsgReadMentions(ctx context.Context, in *TLMsgReadMentions, opts ...grpc.CallOption) (*mtproto.Messages_AffectedHistory, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(mtproto.Messages_AffectedHistory)
+	err := c.cc.Invoke(ctx, RPCMsg_MsgReadMentions_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *rPCMsgClient) MsgUpdatePinnedMessage(ctx context.Context, in *TLMsgUpdatePinnedMessage, opts ...grpc.CallOption) (*mtproto.Updates, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(mtproto.Updates)
@@ -203,6 +215,7 @@ type RPCMsgServer interface {
 	MsgDeleteChatHistory(context.Context, *TLMsgDeleteChatHistory) (*mtproto.Bool, error)
 	MsgReadHistory(context.Context, *TLMsgReadHistory) (*mtproto.Messages_AffectedMessages, error)
 	MsgReadHistoryV2(context.Context, *TLMsgReadHistoryV2) (*mtproto.Messages_AffectedMessages, error)
+	MsgReadMentions(context.Context, *TLMsgReadMentions) (*mtproto.Messages_AffectedHistory, error)
 	MsgUpdatePinnedMessage(context.Context, *TLMsgUpdatePinnedMessage) (*mtproto.Updates, error)
 	MsgUnpinAllMessages(context.Context, *TLMsgUnpinAllMessages) (*mtproto.Messages_AffectedHistory, error)
 }
@@ -243,6 +256,9 @@ func (UnimplementedRPCMsgServer) MsgReadHistory(context.Context, *TLMsgReadHisto
 }
 func (UnimplementedRPCMsgServer) MsgReadHistoryV2(context.Context, *TLMsgReadHistoryV2) (*mtproto.Messages_AffectedMessages, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method MsgReadHistoryV2 not implemented")
+}
+func (UnimplementedRPCMsgServer) MsgReadMentions(context.Context, *TLMsgReadMentions) (*mtproto.Messages_AffectedHistory, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method MsgReadMentions not implemented")
 }
 func (UnimplementedRPCMsgServer) MsgUpdatePinnedMessage(context.Context, *TLMsgUpdatePinnedMessage) (*mtproto.Updates, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method MsgUpdatePinnedMessage not implemented")
@@ -450,6 +466,24 @@ func _RPCMsg_MsgReadHistoryV2_Handler(srv interface{}, ctx context.Context, dec 
 	return interceptor(ctx, in, info, handler)
 }
 
+func _RPCMsg_MsgReadMentions_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(TLMsgReadMentions)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RPCMsgServer).MsgReadMentions(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RPCMsg_MsgReadMentions_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RPCMsgServer).MsgReadMentions(ctx, req.(*TLMsgReadMentions))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _RPCMsg_MsgUpdatePinnedMessage_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(TLMsgUpdatePinnedMessage)
 	if err := dec(in); err != nil {
@@ -532,6 +566,10 @@ var RPCMsg_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "msg_readHistoryV2",
 			Handler:    _RPCMsg_MsgReadHistoryV2_Handler,
+		},
+		{
+			MethodName: "msg_readMentions",
+			Handler:    _RPCMsg_MsgReadMentions_Handler,
 		},
 		{
 			MethodName: "msg_updatePinnedMessage",

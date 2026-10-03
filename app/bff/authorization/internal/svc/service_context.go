@@ -30,18 +30,27 @@ type ServiceContext struct {
 	Config config.Config
 	*dao.Dao
 	*logic.AuthLogic
-	Plugin plugin.AuthorizationPlugin
+	Challenges *code.ChallengeService
+	Plugin     plugin.AuthorizationPlugin
 }
 
 func NewServiceContext(c config.Config, code2 code.VerifyCodeInterface, plugin plugin.AuthorizationPlugin) *ServiceContext {
 	d := dao.New(c)
+	injected := code2
 	if code2 == nil {
 		code2 = code.NewVerifyCode(c.Code)
 	}
+	challenges := code.NewChallengeService(
+		d.VerificationStore,
+		code.ChallengeSettingsFromConfig(c.Code),
+		code.NewSMSProvider(c.Code, injected),
+		code.NewEmailProvider(c.Code),
+	)
 	return &ServiceContext{
-		Config:    c,
-		Dao:       d,
-		AuthLogic: logic.NewAuthSignLogic(d, code2),
-		Plugin:    plugin,
+		Config:     c,
+		Dao:        d,
+		AuthLogic:  logic.NewAuthSignLogic(d, code2),
+		Challenges: challenges,
+		Plugin:     plugin,
 	}
 }

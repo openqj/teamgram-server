@@ -33,6 +33,7 @@ enum TLConstructor {
   CRC32_msg_deletePhoneCallHistory = 649568574;
   CRC32_msg_deleteChatHistory = -283155749;
   CRC32_msg_readHistory = 1510960658;
+  CRC32_msg_readMentions = 292070214;
   CRC32_msg_readHistoryV2 = 263827974;
   CRC32_msg_updatePinnedMessage = -441560663;
   CRC32_msg_unpinAllMessages = -1199153371;
@@ -190,6 +191,16 @@ message TL_msg_readHistoryV2 {
 }
 
 //--------------------------------------------------------------------------------------------
+message TL_msg_readMentions {
+  TLConstructor constructor = 1;
+  int64 user_id = 3;
+  int64 auth_key_id = 4;
+  int32 peer_type = 5;
+  int64 peer_id = 6;
+  google.protobuf.Int32Value top_msg_id = 7;
+}
+
+//--------------------------------------------------------------------------------------------
 message TL_msg_updatePinnedMessage {
   TLConstructor constructor = 1;
   int64 user_id = 3;
@@ -234,6 +245,8 @@ service RPCMsg {
       returns (mtproto.messages_AffectedMessages) {}
   rpc msg_readHistoryV2(TL_msg_readHistoryV2)
       returns (mtproto.messages_AffectedMessages) {}
+  rpc msg_readMentions(TL_msg_readMentions)
+      returns (mtproto.messages_AffectedHistory) {}
   rpc msg_updatePinnedMessage(TL_msg_updatePinnedMessage)
       returns (mtproto.Updates) {}
   rpc msg_unpinAllMessages(TL_msg_unpinAllMessages)

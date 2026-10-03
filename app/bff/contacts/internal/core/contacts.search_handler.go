@@ -19,6 +19,8 @@
 package core
 
 import (
+	"fmt"
+
 	"github.com/teamgram/proto/mtproto"
 	userpb "github.com/teamgram/teamgram-server/app/service/biz/user/user"
 )
@@ -26,38 +28,25 @@ import (
 // ContactsSearch
 // contacts.search#11f812d8 q:string limit:int = contacts.Found;
 func (c *ContactsCore) ContactsSearch(in *mtproto.TLContactsSearch) (*mtproto.Contacts_Found, error) {
-	var (
-		limit = in.GetLimit()
-	)
-
-	if limit > 50 {
-		limit = 50
-	}
-	if limit == 0 {
+	limit := in.GetLimit()
+	if limit > 50 || limit == 0 {
 		limit = 50
 	}
 
-	q := in.Q
-
+	q := in.GetQ()
 	if q == "" {
-		err := mtproto.ErrSearchQueryEmpty
-		c.Logger.Errorf("contacts.search - error: %v", err)
-		return nil, err
+		return nil, mtproto.ErrSearchQueryEmpty
 	}
-
 	if q[0] == '@' {
 		q = q[1:]
 	}
-
 	if len(q) < 3 {
-		err := mtproto.ErrQueryTooShort
-		c.Logger.Errorf("contacts.search - error: %v", err)
-		return nil, err
+		return nil, mtproto.ErrQueryTooShort
 	}
 
-	var (
-		idHelper = mtproto.NewIDListHelper(c.MD.UserId)
-	)
+	internalError := func(format string, args ...interface{}) error {
+		return fmt.Errorf("contacts.search: %s: %w", fmt.Sprintf(format, args...), mtproto.ErrInternalServerError)
+	}
 
 	found := mtproto.MakeTLContactsFound(&mtproto.Contacts_Found{
 		MyResults: []*mtproto.Peer{},
@@ -65,85 +54,177 @@ func (c *ContactsCore) ContactsSearch(in *mtproto.TLContactsSearch) (*mtproto.Co
 		Users:     []*mtproto.User{},
 		Chats:     []*mtproto.Chat{},
 	}).To_Contacts_Found()
-
-	// TODO(@benqi):
-	// This method will exclude the current user's contacts from the search results. It is assumed that searches among the user's contacts can be handled locally by the client.
-	//
-
-	// Check query string and limit
-	if len(q) >= 3 && limit > 0 {
-		contacts, _ := c.svcCtx.Dao.UserClient.UserGetContactIdList(c.ctx, &userpb.TLUserGetContactIdList{
-			UserId: c.MD.UserId,
-		})
-
-		// c.Logger.Debugf("q: %s", q)
-		rVList, err := c.svcCtx.Dao.UserClient.UserSearchUsername(c.ctx, &userpb.TLUserSearchUsername{
-			Q:                q,
-			ExcludedContacts: append(contacts.GetDatas(), c.MD.UserId),
-			Limit:            limit,
-		})
-		if err != nil {
-			c.Logger.Errorf("contacts.search - error: %v", err)
-			return found, nil
-		}
-
-		for _, v := range rVList.GetDatas() {
-			// c.Logger.Debugf("v: %v", v)
-			idHelper.PickByPeer(v.Peer)
-		}
-
-		rVList2, err := c.svcCtx.Dao.UserClient.UserSearch(c.ctx, &userpb.TLUserSearch{
-			Q:                in.Q,
-			ExcludedContacts: append(contacts.GetDatas(), c.MD.UserId),
-			Offset:           0,
-			Limit:            limit,
-		})
-
-		for _, v := range rVList2.GetIdList() {
-			idHelper.PickByPeerUtil(mtproto.PEER_USER, v)
-		}
+	if limit <= 0 {
+		return found, nil
 	}
 
-	idHelper.Visit(
-		func(userIdList []int64) {
-			users, _ := c.svcCtx.Dao.UserClient.UserGetMutableUsers(c.ctx,
-				&userpb.TLUserGetMutableUsers{
-					Id: userIdList,
-				})
+	contacts, err := c.svcCtx.Dao.UserClient.UserGetContactIdList(c.ctx, &userpb.TLUserGetContactIdList{
+		UserId: c.MD.UserId,
+	})
+	if err != nil {
+		c.Logger.Errorf("contacts.search - error: %v", err)
+		return nil, err
+	}
+	if contacts == nil {
+		return nil, internalError("user.getContactIdList returned no response")
+	}
+	excludedContacts := append(append([]int64{}, contacts.GetDatas()...), c.MD.UserId)
+	myContactIDs := make(map[int64]struct{}, len(contacts.GetDatas()))
+	for _, id := range contacts.GetDatas() {
+		myContactIDs[id] = struct{}{}
+	}
 
-			users.Visit(func(it *mtproto.ImmutableUser) {
-				if it.Deleted() {
-					return
-				}
+	usernameResults, err := c.svcCtx.Dao.UserClient.UserSearchUsername(c.ctx, &userpb.TLUserSearchUsername{
+		Q:                q,
+		ExcludedContacts: excludedContacts,
+		Limit:            limit,
+	})
+	if err != nil {
+		c.Logger.Errorf("contacts.search - error: %v", err)
+		return nil, err
+	}
+	if usernameResults == nil {
+		return nil, internalError("user.searchUsername returned no response")
+	}
 
-				peer := mtproto.MakeTLPeerUser(&mtproto.Peer{
-					UserId: it.Id(),
-				})
-				if ok, _ := it.CheckContact(c.MD.UserId); ok {
-					found.MyResults = append(found.MyResults, peer.To_Peer())
-				} else {
-					found.Results = append(found.Results, peer.To_Peer())
-				}
-			})
-
-			found.Users = users.GetUserListByIdList(c.MD.UserId, userIdList...)
-		},
-		func(chatIdList []int64) {
-		},
-		func(channelIdList []int64) {
-			if c.svcCtx.Plugin != nil {
-				chats := c.svcCtx.Plugin.GetChannelListByIdList(c.ctx, c.MD.UserId, channelIdList...)
-				for _, ch := range chats {
-					if ch.PredicateName == mtproto.Predicate_chatEmpty {
-						continue
-					}
-					found.Chats = append(found.Chats, ch)
-					found.Results = append(found.Results, mtproto.MakePeerChannel(ch.GetId()))
-				}
-			} else {
-				c.Logger.Errorf("contacts.search blocked, License key from https://teamgram.net required to unlock enterprise features.")
+	idHelper := mtproto.NewIDListHelper(c.MD.UserId)
+	for _, item := range usernameResults.GetDatas() {
+		if item == nil || item.GetPeer() == nil {
+			return nil, internalError("user.searchUsername returned a result without a peer")
+		}
+		peer := item.GetPeer()
+		switch peer.GetPredicateName() {
+		case mtproto.Predicate_peerUser:
+			if peer.GetUserId() == 0 {
+				return nil, internalError("user.searchUsername returned a user peer without an id")
 			}
-		})
+		case mtproto.Predicate_peerChannel:
+			if peer.GetChannelId() == 0 {
+				return nil, internalError("user.searchUsername returned a channel peer without an id")
+			}
+		case mtproto.Predicate_peerChat:
+			if peer.GetChatId() == 0 {
+				return nil, internalError("user.searchUsername returned a chat peer without an id")
+			}
+		default:
+			return nil, internalError("user.searchUsername returned an unsupported peer type %q", peer.GetPredicateName())
+		}
+		idHelper.PickByPeer(peer)
+	}
+
+	userResults, err := c.svcCtx.Dao.UserClient.UserSearch(c.ctx, &userpb.TLUserSearch{
+		Q:                q,
+		ExcludedContacts: excludedContacts,
+		Offset:           0,
+		Limit:            limit,
+	})
+	if err != nil {
+		c.Logger.Errorf("contacts.search - error: %v", err)
+		return nil, err
+	}
+	if userResults == nil {
+		return nil, internalError("user.search returned no response")
+	}
+	if userResults.GetPredicateName() != userpb.Predicate_usersIdFound {
+		return nil, internalError("user.search returned %q, want %q", userResults.GetPredicateName(), userpb.Predicate_usersIdFound)
+	}
+	// user.search currently uses ExcludedContacts to select an ID-only response,
+	// but its implementation's SQL excludes only the zero ID. Classify matching
+	// contacts from the authoritative contact ID list returned above.
+	for _, id := range userResults.GetIdList() {
+		if id == 0 {
+			return nil, internalError("user.search returned a user id of zero")
+		}
+		idHelper.PickByPeerUtil(mtproto.PEER_USER, id)
+	}
+
+	// The chat service only exposes query search here. It does not return a
+	// proof that each result belongs to the current user, so accepting those
+	// entities would allow an unscoped group to leak through contacts.search.
+	// Keep this path fail-closed until a user-scoped chat lookup is available.
+	if len(idHelper.ChatIdList) > 0 {
+		return nil, internalError("chat search has no user-scoped search contract")
+	}
+
+	userIds := make([]int64, 0, len(idHelper.UserIdList))
+	for _, id := range idHelper.UserIdList {
+		if id != c.MD.UserId {
+			userIds = append(userIds, id)
+		}
+	}
+	if len(userIds) > 0 {
+		lookupIds := append([]int64{c.MD.UserId}, userIds...)
+		users, err := c.svcCtx.Dao.UserClient.UserGetMutableUsers(c.ctx, &userpb.TLUserGetMutableUsers{Id: lookupIds})
+		if err != nil {
+			c.Logger.Errorf("contacts.search - error: %v", err)
+			return nil, err
+		}
+		if users == nil {
+			return nil, internalError("user.getMutableUsers returned no response")
+		}
+		for _, user := range users.GetDatas() {
+			if user == nil || user.GetUser() == nil {
+				return nil, internalError("user.getMutableUsers returned an invalid user entity")
+			}
+		}
+
+		me, ok := users.GetImmutableUser(c.MD.UserId)
+		if !ok || me == nil || me.GetUser() == nil {
+			return nil, internalError("user.getMutableUsers did not return the current user required for safe entity construction")
+		}
+
+		resolvedIds := make([]int64, 0, len(userIds))
+		for _, id := range userIds {
+			user, ok := users.GetImmutableUser(id)
+			if !ok || user == nil || user.GetUser() == nil {
+				return nil, internalError("user.getMutableUsers did not return search result user %d", id)
+			}
+			if user.Deleted() {
+				continue
+			}
+			resolvedIds = append(resolvedIds, id)
+			peer := mtproto.MakePeerUser(id)
+			if _, isContact := myContactIDs[id]; isContact {
+				found.MyResults = append(found.MyResults, peer)
+			} else {
+				found.Results = append(found.Results, peer)
+			}
+		}
+		found.Users = users.GetUserListByIdList(c.MD.UserId, resolvedIds...)
+	}
+
+	if len(idHelper.ChannelIdList) > 0 {
+		if c.svcCtx.Plugin == nil {
+			return nil, internalError("channel search results require a configured ContactsPlugin.GetChannelListByIdList resolver; the contacts server currently wires Plugin=nil")
+		}
+
+		channels := c.svcCtx.Plugin.GetChannelListByIdList(c.ctx, c.MD.UserId, idHelper.ChannelIdList...)
+		requestedChannels := make(map[int64]struct{}, len(idHelper.ChannelIdList))
+		for _, id := range idHelper.ChannelIdList {
+			requestedChannels[id] = struct{}{}
+		}
+		byID := make(map[int64]*mtproto.Chat, len(channels))
+		for _, channel := range channels {
+			if channel == nil || (channel.GetPredicateName() != mtproto.Predicate_channel && channel.GetPredicateName() != mtproto.Predicate_channelForbidden) || channel.GetId() == 0 {
+				return nil, internalError("channel resolver returned an invalid channel entity")
+			}
+			if _, requested := requestedChannels[channel.GetId()]; !requested {
+				return nil, internalError("channel resolver returned unrequested channel %d", channel.GetId())
+			}
+			if _, duplicate := byID[channel.GetId()]; duplicate {
+				return nil, internalError("channel resolver returned duplicate channel %d", channel.GetId())
+			}
+			byID[channel.GetId()] = channel
+		}
+		for _, id := range idHelper.ChannelIdList {
+			channel := byID[id]
+			if channel == nil {
+				return nil, internalError("channel resolver did not return search result channel %d", id)
+			}
+			found.Chats = append(found.Chats, channel)
+			found.Results = append(found.Results, mtproto.MakePeerChannel(id))
+		}
+	}
 
 	return found, nil
 }

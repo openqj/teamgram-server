@@ -21,9 +21,11 @@ package core
 import (
 	"context"
 
+	"github.com/teamgram/proto/mtproto"
 	"github.com/zeromicro/go-zero/core/logx"
 
 	"github.com/teamgram/proto/mtproto/rpc/metadata"
+	"github.com/teamgram/teamgram-server/app/bff/apifull/channelview"
 	"github.com/teamgram/teamgram-server/app/bff/usernames/internal/svc"
 )
 
@@ -31,14 +33,16 @@ type UsernamesCore struct {
 	ctx    context.Context
 	svcCtx *svc.ServiceContext
 	logx.Logger
-	MD *metadata.RpcMetadata
+	MD               *metadata.RpcMetadata
+	channelChatsByID func(userID int64, ids []int64) []*mtproto.Chat
 }
 
 func New(ctx context.Context, svcCtx *svc.ServiceContext) *UsernamesCore {
 	return &UsernamesCore{
-		ctx:    ctx,
-		svcCtx: svcCtx,
-		Logger: logx.WithContext(ctx),
-		MD:     metadata.RpcMetadataFromIncoming(ctx),
+		ctx:              ctx,
+		svcCtx:           svcCtx,
+		Logger:           logx.WithContext(ctx),
+		channelChatsByID: channelview.ChatsByID,
+		MD:               metadata.RpcMetadataFromIncoming(ctx),
 	}
 }

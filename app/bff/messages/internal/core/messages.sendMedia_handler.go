@@ -62,6 +62,20 @@ func (c *MessagesCore) MessagesSendMedia(in *mtproto.TLMessagesSendMedia) (*mtpr
 		c.Logger.Errorf("messages.sendMedia: %v", err)
 		return nil, err
 	}
+	if in.GetScheduleDate().GetValue() != 0 && (in.GetReplyToMsgId() != nil || in.GetReplyTo() != nil) {
+		return nil, mtproto.ErrMethodNotImpl
+	}
+	replyToPeer, err := c.resolveMessageReplyPeer(peer, in.GetReplyTo(), in.GetReplyToMsgId())
+	if err != nil {
+		return nil, err
+	}
+	replyToMsgID, replyToTopID := storedReplyIDs(in.GetReplyTo(), in.GetReplyToMsgId())
+	if up, handled, err := c.deliverStored(in.GetPeer(), peer, in.GetScheduleDate().GetValue(), in.GetMessage(), replyToMsgID, replyToTopID); handled {
+		if err != nil {
+			c.Logger.Errorf("messages.sendMedia stored: %v", err)
+		}
+		return up, err
+	}
 
 	outMessage := mtproto.MakeTLMessage(&mtproto.Message{
 		Out:                  true,
@@ -107,7 +121,7 @@ func (c *MessagesCore) MessagesSendMedia(in *mtproto.TLMessagesSendMedia) (*mtpr
 	}
 
 	// Fix ReplyToMsgId
-	if in.GetReplyToMsgId() != nil {
+	if in.GetReplyToMsgId() != nil && in.GetReplyTo() == nil {
 		outMessage.ReplyTo = mtproto.MakeTLMessageReplyHeader(&mtproto.MessageReplyHeader{
 			ReplyToMsgId:           in.GetReplyToMsgId().GetValue(),
 			ReplyToMsgId_INT32:     in.GetReplyToMsgId().GetValue(),
@@ -122,7 +136,7 @@ func (c *MessagesCore) MessagesSendMedia(in *mtproto.TLMessagesSendMedia) (*mtpr
 				ReplyToMsgId:           in.GetReplyTo().GetReplyToMsgId(),
 				ReplyToMsgId_INT32:     in.GetReplyTo().GetReplyToMsgId(),
 				ReplyToMsgId_FLAGINT32: mtproto.MakeFlagsInt32(in.GetReplyTo().GetReplyToMsgId()),
-				ReplyToPeerId:          nil,
+				ReplyToPeerId:          replyToPeer,
 				ReplyToTopId:           nil,
 			}).To_MessageReplyHeader()
 			if in.GetReplyTo().GetQuoteText() != nil {
@@ -132,7 +146,7 @@ func (c *MessagesCore) MessagesSendMedia(in *mtproto.TLMessagesSendMedia) (*mtpr
 				outMessage.ReplyTo.QuoteOffset = in.GetReplyTo().GetQuoteOffset()
 			}
 		case mtproto.Predicate_inputReplyToStory:
-			// TODO:
+			return nil, mtproto.ErrMethodNotImpl
 		}
 	}
 

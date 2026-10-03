@@ -25,8 +25,11 @@ import (
 // HelpGetSupport
 // help.getSupport#9cdf08cd = help.Support;
 func (c *ConfigurationCore) HelpGetSupport(in *mtproto.TLHelpGetSupport) (*mtproto.Help_Support, error) {
-	// TODO: not impl
-	c.Logger.Errorf("help.getSupport blocked, License key from https://teamgram.net required to unlock enterprise features.")
+	_ = in
 
-	return nil, mtproto.ErrEnterpriseIsBlocked
+	// No support user in this package's config; userEmpty allows id 0.
+	return mtproto.MakeTLHelpSupport(&mtproto.Help_Support{
+		PhoneNumber: "",
+		User:        mtproto.MakeTLUserEmpty(&mtproto.User{Id: 0}).To_User(),
+	}).To_Help_Support(), nil
 }

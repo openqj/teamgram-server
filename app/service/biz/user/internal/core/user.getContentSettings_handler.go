@@ -21,7 +21,12 @@ func (c *UserCore) UserGetContentSettings(in *user.TLUserGetContentSettings) (*m
 		rV = false
 	)
 
-	if do, _ := c.svcCtx.Dao.UserSettingsDAO.SelectByKey(c.ctx, in.UserId, "sensitive_enabled"); do != nil {
+	do, err := c.svcCtx.Dao.UserSettingsDAO.SelectByKey(c.ctx, in.UserId, "sensitive_enabled")
+	if err != nil {
+		c.Logger.Errorf("user.getContentSettings - error: %v", err)
+		return nil, err
+	}
+	if do != nil {
 		if do.Value == "true" {
 			rV = true
 		}

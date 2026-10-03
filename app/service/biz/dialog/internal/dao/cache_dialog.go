@@ -150,7 +150,7 @@ func (d *Dao) GetNotPinnedDialogIdList(ctx context.Context, userId int64) ([]int
 	return dialogIdList, nil
 }
 
-func (d *Dao) GetNoCacheFolderPinnedDialogIdList(ctx context.Context, userId int64) ([]int64, error) {
+func (d *Dao) GetNoCacheFolderPinnedDialogIdList(ctx context.Context, userId int64, folderId int32) ([]int64, error) {
 	var (
 		dialogIdList []int64
 	)
@@ -158,6 +158,7 @@ func (d *Dao) GetNoCacheFolderPinnedDialogIdList(ctx context.Context, userId int
 	_, err := d.DialogsDAO.SelectFolderPinnedDialogsWithCB(
 		ctx,
 		userId,
+		folderId,
 		func(sz, i int, v *dataobject.DialogsDO) {
 			if i == 0 {
 				dialogIdList = make([]int64, 0, sz)
@@ -192,6 +193,7 @@ func (d *Dao) GetFolderPinnedDialogIdList(ctx context.Context, userId int64) ([]
 			_, err := d.DialogsDAO.SelectFolderPinnedDialogsWithCB(
 				ctx,
 				userId,
+				1,
 				func(sz, i int, v *dataobject.DialogsDO) {
 					if i == 0 {
 						idList = make([]int64, 0, sz)
@@ -217,7 +219,7 @@ func (d *Dao) GetFolderPinnedDialogIdList(ctx context.Context, userId int64) ([]
 	return dialogIdList, nil
 }
 
-func (d *Dao) GetNoCacheFolderNotPinnedDialogIdList(ctx context.Context, userId int64) ([]int64, error) {
+func (d *Dao) GetNoCacheFolderNotPinnedDialogIdList(ctx context.Context, userId int64, folderId int32) ([]int64, error) {
 	var (
 		dialogIdList []int64
 	)
@@ -225,6 +227,7 @@ func (d *Dao) GetNoCacheFolderNotPinnedDialogIdList(ctx context.Context, userId 
 	_, err := d.DialogsDAO.SelectExcludeFolderPinnedDialogsWithCB(
 		ctx,
 		userId,
+		folderId,
 		func(sz, i int, v *dataobject.DialogsDO) {
 			if i == 0 {
 				dialogIdList = make([]int64, 0, sz)
@@ -259,6 +262,7 @@ func (d *Dao) GetFolderNotPinnedDialogIdList(ctx context.Context, userId int64) 
 			_, err := d.DialogsDAO.SelectExcludeFolderPinnedDialogsWithCB(
 				ctx,
 				userId,
+				1,
 				func(sz, i int, v *dataobject.DialogsDO) {
 					if i == 0 {
 						idList = make([]int64, 0, sz)

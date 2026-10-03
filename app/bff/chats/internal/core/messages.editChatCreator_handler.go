@@ -19,13 +19,86 @@ package core
 
 import (
 	"github.com/teamgram/proto/mtproto"
+	chatpb "github.com/teamgram/teamgram-server/app/service/biz/chat/chat"
+	userpb "github.com/teamgram/teamgram-server/app/service/biz/user/user"
 )
 
 // MessagesEditChatCreator
 // messages.editChatCreator#f743b857 peer:InputPeer user_id:InputUser password:InputCheckPasswordSRP = Updates;
 func (c *ChatsCore) MessagesEditChatCreator(in *mtproto.TLMessagesEditChatCreator) (*mtproto.Updates, error) {
-	// TODO: not impl
-	c.Logger.Errorf("messages.editChatCreator blocked, License key from https://teamgram.net required to unlock enterprise features.")
+	if in == nil || c.MD == nil {
+		return nil, mtproto.ErrPeerIdInvalid
+	}
+	chatId, err := chatPeerId(c.MD.UserId, in.Peer)
+	if err != nil {
+		return nil, err
+	}
+	if in.UserId == nil {
+		return nil, mtproto.ErrUserIdInvalid
+	}
+	target := mtproto.FromInputUser(c.MD.UserId, in.UserId)
+	if target.PeerType == mtproto.PEER_SELF {
+		target.PeerType = mtproto.PEER_USER
+		target.PeerId = c.MD.UserId
+	}
+	if target.PeerType != mtproto.PEER_USER || target.PeerId == 0 {
+		return nil, mtproto.ErrUserIdInvalid
+	}
 
-	return nil, mtproto.ErrEnterpriseIsBlocked
+	chat, err := c.loadMutableChat(chatId)
+	if err != nil {
+		return nil, err
+	}
+	if _, err = c.requireCreatorOrAdmin(chat, false); err != nil {
+		c.Logger.Errorf("messages.editChatCreator - error: %v", err)
+		return nil, err
+	}
+
+	to, ok := chat.GetImmutableChatParticipant(target.PeerId)
+	if !ok || to == nil || !to.IsChatMemberStateNormal() {
+		return nil, mtproto.ErrPeerIdInvalid
+	}
+	if to.IsChatMemberCreator() || chat.Creator() == target.PeerId {
+		return nil, mtproto.ErrChatNotModified
+	}
+
+	chat, err = c.svcCtx.Dao.ChatClient.Client().ChatEditChatAdmin(c.ctx, &chatpb.TLChatEditChatAdmin{
+		ChatId:          chatId,
+		OperatorId:      c.MD.UserId,
+		EditChatAdminId: target.PeerId,
+		IsAdmin:         mtproto.BoolTrue,
+	})
+	if err != nil {
+		c.Logger.Errorf("messages.editChatCreator - error: %v", err)
+		return nil, err
+	}
+
+	var idList []int64
+	chat.Walk(func(userId int64, participant *mtproto.ImmutableChatParticipant) error {
+		if participant != nil && participant.IsChatMemberStateNormal() {
+			idList = append(idList, userId)
+		}
+		return nil
+	})
+
+	var users []*mtproto.User
+	mUsers, err := c.svcCtx.Dao.UserClient.UserGetMutableUsers(c.ctx, &userpb.TLUserGetMutableUsers{
+		Id: idList,
+	})
+	if err != nil {
+		c.Logger.Errorf("messages.editChatCreator - error: %v", err)
+	} else if mUsers != nil {
+		users = mUsers.GetUserListByIdList(c.MD.UserId, idList...)
+	}
+
+	updateChatParticipants := mtproto.MakeTLUpdateChatParticipants(&mtproto.Update{
+		Participants_CHATPARTICIPANTS: chat.ToChatParticipants(0),
+	}).To_Update()
+	updates := mtproto.MakeUpdatesByUpdatesUsersChats(
+		users,
+		[]*mtproto.Chat{chat.ToUnsafeChat(c.MD.UserId)},
+		updateChatParticipants,
+	)
+	c.pushChatUpdates(chat, updates)
+	return updates, nil
 }

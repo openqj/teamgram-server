@@ -10,13 +10,22 @@
 package core
 
 import (
+	"errors"
+
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/service/authsession/authsession"
+	"github.com/teamgram/teamgram-server/app/service/authsession/internal/dao"
 )
 
 // AuthsessionBindAuthKeyUser
 // authsession.bindAuthKeyUser auth_key_id:long user_id:long = Int64;
 func (c *AuthsessionCore) AuthsessionBindAuthKeyUser(in *authsession.TLAuthsessionBindAuthKeyUser) (*mtproto.Int64, error) {
+	if in == nil || in.GetAuthKeyId() == 0 {
+		return nil, mtproto.ErrAuthKeyInvalid
+	}
+	if in.GetUserId() <= 0 {
+		return nil, mtproto.ErrUserIdInvalid
+	}
 	var (
 		inKeyId = in.GetAuthKeyId()
 	)
@@ -30,7 +39,14 @@ func (c *AuthsessionCore) AuthsessionBindAuthKeyUser(in *authsession.TLAuthsessi
 		return nil, mtproto.ErrAuthKeyPermEmpty
 	}
 
-	hash := c.svcCtx.Dao.BindAuthKeyUser(c.ctx, keyData.PermAuthKeyId, in.GetUserId())
+	hash, err := c.svcCtx.Dao.BindAuthKeyUser(c.ctx, keyData.PermAuthKeyId, in.GetUserId())
+	if errors.Is(err, dao.ErrAuthKeyOwnedByAnotherUser) {
+		return nil, mtproto.ErrAuthKeyInvalid
+	}
+	if err != nil {
+		c.Logger.Errorf("bindAuthKeyUser(%d, %d) is error: %v", keyData.PermAuthKeyId, in.GetUserId(), err)
+		return nil, mtproto.ErrInternalServerError
+	}
 
 	return &mtproto.Int64{V: hash}, nil
 }

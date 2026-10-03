@@ -7,18 +7,22 @@
 package dao
 
 import (
+	"encoding/hex"
 	"net"
 
+	"github.com/teamgram/proto/mtproto"
 	"github.com/zeromicro/go-zero/core/logx"
 )
 
 func (d *Dao) CheckApiIdAndHash(apiId int32, apiHash string) error {
-	// TODO(@benqi): check api_id and api_hash
-	// 400	API_ID_INVALID	API ID无效
-	// 400	API_ID_PUBLISHED_FLOOD	这个API ID已发布在某个地方，您现在不能使用
-
-	_ = apiId
-	_ = apiHash
+	// Validate syntax only; there is no trusted registry here to authenticate
+	// the api_id/api_hash pair.
+	if apiId <= 0 || len(apiHash) != 32 {
+		return mtproto.ErrApiIdInvalid
+	}
+	if _, err := hex.DecodeString(apiHash); err != nil {
+		return mtproto.ErrApiIdInvalid
+	}
 
 	return nil
 }

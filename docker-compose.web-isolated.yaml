@@ -1,0 +1,199 @@
+services:
+  teamgram:
+    build:
+      context: ${TEAMGRAM_WORKSPACE_DIR:?run web-isolated.sh up first}
+      dockerfile: teamgram-server/Dockerfile.web-isolated
+      target: teamgram-app
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      etcd:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+      mysql-fixture:
+        condition: service_completed_successfully
+      jaeger:
+        condition: service_started
+    environment:
+      ISOLATED_MYSQL_DATABASE: teamgram
+      ISOLATED_MYSQL_USER: ${ISOLATED_MYSQL_USER:?run web-isolated.sh up first}
+      ISOLATED_MYSQL_PASSWORD: ${ISOLATED_MYSQL_PASSWORD:?run web-isolated.sh up first}
+      ISOLATED_MINIO_ROOT_USER: ${ISOLATED_MINIO_ROOT_USER:?run web-isolated.sh up first}
+      ISOLATED_MINIO_ROOT_PASSWORD: ${ISOLATED_MINIO_ROOT_PASSWORD:?run web-isolated.sh up first}
+    networks:
+      - isolated
+
+  gateway:
+    build:
+      context: ${TEAMGRAM_WORKSPACE_DIR:?run web-isolated.sh up first}
+      dockerfile: teamgram-server/Dockerfile.web-isolated
+      target: isolated-gateway
+    entrypoint: ["/usr/bin/socat"]
+    command:
+      - "TCP-LISTEN:11443,bind=0.0.0.0,reuseaddr,fork"
+      - "TCP:teamgram:11443"
+    depends_on:
+      teamgram:
+        condition: service_started
+    ports:
+      - "127.0.0.1:31443:11443"
+    networks:
+      - isolated
+      - frontdoor
+
+  mysql:
+    build:
+      context: ${TEAMGRAM_WORKSPACE_DIR:?run web-isolated.sh up first}
+      dockerfile: teamgram-server/Dockerfile.web-isolated
+      target: isolated-mysql
+    environment:
+      MYSQL_DATABASE: teamgram
+      MYSQL_USER: ${ISOLATED_MYSQL_USER:?run web-isolated.sh up first}
+      MYSQL_PASSWORD: ${ISOLATED_MYSQL_PASSWORD:?run web-isolated.sh up first}
+      MYSQL_ROOT_PASSWORD: ${ISOLATED_MYSQL_ROOT_PASSWORD:?run web-isolated.sh up first}
+    healthcheck:
+      test: ["CMD-SHELL", "MYSQL_PWD=\"$$MYSQL_ROOT_PASSWORD\" mysqladmin ping -h 127.0.0.1 -uroot --silent"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    volumes:
+      - mysql_data:/var/lib/mysql
+    networks:
+      - isolated
+
+  mysql-fixture:
+    build:
+      context: ${TEAMGRAM_WORKSPACE_DIR:?run web-isolated.sh up first}
+      dockerfile: teamgram-server/Dockerfile.web-isolated
+      target: isolated-mysql-fixture
+    environment:
+      MYSQL_DATABASE: teamgram
+      MYSQL_USER: ${ISOLATED_MYSQL_USER:?run web-isolated.sh up first}
+      MYSQL_PASSWORD: ${ISOLATED_MYSQL_PASSWORD:?run web-isolated.sh up first}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        export MYSQL_PWD="$$MYSQL_PASSWORD"
+        until mysqladmin ping -h mysql -u"$$MYSQL_USER" --silent >/dev/null 2>&1; do sleep 2; done
+        mysql -h mysql -u"$$MYSQL_USER" "$$MYSQL_DATABASE" < /opt/zz-web-isolated-test-accounts.sql
+        unset MYSQL_PWD
+    depends_on:
+      mysql:
+        condition: service_healthy
+    networks:
+      - isolated
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    volumes:
+      - redis_data:/data
+    networks:
+      - isolated
+
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.11
+    environment:
+      ETCD_NAME: isolated
+      ETCD_DATA_DIR: /etcd-data
+      ETCD_LISTEN_CLIENT_URLS: http://0.0.0.0:2379
+      ETCD_ADVERTISE_CLIENT_URLS: http://etcd:2379
+      ETCD_LISTEN_PEER_URLS: http://0.0.0.0:2380
+      ETCD_INITIAL_ADVERTISE_PEER_URLS: http://etcd:2380
+      ETCD_INITIAL_CLUSTER: isolated=http://etcd:2380
+      ETCD_INITIAL_CLUSTER_TOKEN: ${ISOLATED_ETCD_CLUSTER_TOKEN:?run web-isolated.sh up first}
+      ETCD_INITIAL_CLUSTER_STATE: new
+      ETCD_AUTO_COMPACTION_RETENTION: "1"
+    healthcheck:
+      test: ["CMD", "etcdctl", "endpoint", "health", "--endpoints=http://127.0.0.1:2379"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    volumes:
+      - etcd_data:/etcd-data
+    networks:
+      - isolated
+
+  kafka:
+    image: apache/kafka:3.9.0
+    environment:
+      KAFKA_HEAP_OPTS: "-Xms256m -Xmx512m"
+      KAFKA_NODE_ID: "1"
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://kafka:9092,CONTROLLER://kafka:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "1"
+      KAFKA_NUM_PARTITIONS: "3"
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+    healthcheck:
+      test: ["CMD", "/opt/kafka/bin/kafka-topics.sh", "--bootstrap-server", "kafka:9092", "--list"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+    networks:
+      - isolated
+
+  minio:
+    image: minio/minio:latest
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${ISOLATED_MINIO_ROOT_USER:?run web-isolated.sh up first}
+      MINIO_ROOT_PASSWORD: ${ISOLATED_MINIO_ROOT_PASSWORD:?run web-isolated.sh up first}
+    volumes:
+      - minio_data:/data
+    networks:
+      - isolated
+
+  minio-init:
+    image: minio/minio:latest
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        export MC_HOST_isolated="http://$$MINIO_ROOT_USER:$$MINIO_ROOT_PASSWORD@minio:9000"
+        until mc ls isolated >/dev/null 2>&1; do sleep 2; done
+        for bucket in documents encryptedfiles photos videos; do
+          mc mb "isolated/$$bucket" --ignore-existing >/dev/null 2>&1
+        done
+    environment:
+      MINIO_ROOT_USER: ${ISOLATED_MINIO_ROOT_USER:?run web-isolated.sh up first}
+      MINIO_ROOT_PASSWORD: ${ISOLATED_MINIO_ROOT_PASSWORD:?run web-isolated.sh up first}
+    depends_on:
+      - minio
+    networks:
+      - isolated
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.63.0
+    networks:
+      - isolated
+
+volumes:
+  mysql_data:
+  redis_data:
+  etcd_data:
+  kafka_data:
+  minio_data:
+
+networks:
+  isolated:
+    internal: true
+  frontdoor:

@@ -27,6 +27,16 @@ type ObfuscatedCodec struct {
 	dc int16
 }
 
+// DCID returns the target DC selected by the obfuscated transport header.
+// Plain transports do not implement this method and therefore have no
+// trusted per-connection DC identity.
+func (c *ObfuscatedCodec) DCID() int32 {
+	if c == nil {
+		return 0
+	}
+	return int32(c.dc)
+}
+
 func newMTProtoObfuscatedCodec(d, e *crypto.AesCTR128Encrypt, protocolType uint32, dc int16) *ObfuscatedCodec {
 	codec := new(ObfuscatedCodec)
 	codec.dc = dc

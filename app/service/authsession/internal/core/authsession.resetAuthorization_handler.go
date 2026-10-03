@@ -17,6 +17,9 @@ import (
 // AuthsessionResetAuthorization
 // authsession.resetAuthorization user_id:long auth_key_id:long hash:long = Vector<long>;
 func (c *AuthsessionCore) AuthsessionResetAuthorization(in *authsession.TLAuthsessionResetAuthorization) (*authsession.Vector_Long, error) {
+	if in == nil || in.UserId <= 0 {
+		return nil, mtproto.ErrUserIdInvalid
+	}
 	var (
 		excludeKeyId = in.AuthKeyId
 	)
@@ -35,21 +38,15 @@ func (c *AuthsessionCore) AuthsessionResetAuthorization(in *authsession.TLAuthse
 		}
 	}
 
-	keyIdList := c.svcCtx.Dao.ResetAuthorization(c.ctx, in.UserId, excludeKeyId, in.Hash)
+	keyIdList, err := c.svcCtx.Dao.ResetAuthorization(c.ctx, in.UserId, excludeKeyId, in.Hash)
+	if err != nil {
+		c.Logger.Errorf("authsession.resetAuthorization - error: %v", err)
+		return nil, err
+	}
 	// log.Debugf("keyIdList: %v", keyIdList)
 
-	keyIdL2ist := make([]int64, 0, len(keyIdList))
-	for _, keyId := range keyIdList {
-		keyData, _ := c.svcCtx.Dao.QueryAuthKeyV2(c.ctx, keyId)
-		if keyData != nil {
-			if keyData.TempAuthKeyId != 0 {
-				keyIdL2ist = append(keyIdL2ist, keyData.TempAuthKeyId)
-			} else {
-				keyIdL2ist = append(keyIdL2ist, keyId)
-			}
-		}
-	}
-
+	// auth_users and callers identify authorizations by permanent auth key ID.
+	// Keep returning those IDs even when a permanent key currently has a temp key bound.
 	return &authsession.Vector_Long{
 		Datas: keyIdList,
 	}, nil

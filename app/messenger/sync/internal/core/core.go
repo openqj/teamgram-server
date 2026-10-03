@@ -49,6 +49,15 @@ func New(ctx context.Context, svcCtx *svc.ServiceContext) *SyncCore {
 
 func (c *SyncCore) processUpdates(syncType SyncType, userId int64, isBot bool, ups *mtproto.Updates) (needPush bool, err error) {
 	mtproto.VisitUpdates(userId, ups, map[string]mtproto.UpdateVisitedFunc{
+		mtproto.Predicate_updateNewEncryptedMessage: func(
+			userId int64,
+			update *mtproto.Update,
+			users []*mtproto.User,
+			chats []*mtproto.Chat,
+			date int32,
+		) {
+			needPush = true
+		},
 		mtproto.Predicate_updateNewMessage: func(
 			userId int64,
 			update *mtproto.Update,

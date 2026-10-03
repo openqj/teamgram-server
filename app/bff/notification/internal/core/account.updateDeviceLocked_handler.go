@@ -19,14 +19,24 @@
 package core
 
 import (
+	"fmt"
+	"strconv"
+
 	"github.com/teamgram/proto/mtproto"
+	"github.com/teamgram/teamgram-server/app/bff/apifull/persist"
 )
+
+func deviceLockedKey(userID int64) string {
+	return fmt.Sprintf("device_locked:%d", userID)
+}
 
 // AccountUpdateDeviceLocked
 // account.updateDeviceLocked#38df3532 period:int = Bool;
 func (c *NotificationCore) AccountUpdateDeviceLocked(in *mtproto.TLAccountUpdateDeviceLocked) (*mtproto.Bool, error) {
-	// TODO: not impl
-	c.Logger.Errorf("account.updateDeviceLocked blocked, License key from https://teamgram.net required to unlock enterprise features.")
+	if err := persist.Default.Set(deviceLockedKey(c.MD.UserId), strconv.FormatInt(int64(in.GetPeriod()), 10)); err != nil {
+		c.Logger.Errorf("account.updateDeviceLocked - error: %v", err)
+		return nil, err
+	}
 
 	return mtproto.BoolTrue, nil
 }

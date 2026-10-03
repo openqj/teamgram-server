@@ -20,6 +20,7 @@ package core
 
 import (
 	"github.com/teamgram/proto/mtproto"
+	"github.com/teamgram/teamgram-server/app/messenger/sync/sync"
 	"github.com/teamgram/teamgram-server/app/service/biz/dialog/dialog"
 )
 
@@ -29,6 +30,11 @@ func (c *DialogsCore) MessagesMarkDialogUnread(in *mtproto.TLMessagesMarkDialogU
 	var (
 		peer *mtproto.PeerUtil
 	)
+
+	if in.GetParentPeer() != nil {
+		c.Logger.Errorf("messages.markDialogUnread - error: parent peer is not supported")
+		return nil, mtproto.ErrMethodNotImpl
+	}
 
 	if c.MD.IsBot {
 		err := mtproto.ErrBotMethodInvalid
@@ -59,8 +65,27 @@ func (c *DialogsCore) MessagesMarkDialogUnread(in *mtproto.TLMessagesMarkDialogU
 		c.Logger.Errorf("messages.markDialogUnread - error: %v", err)
 		return nil, err
 	}
+	if rValue == nil {
+		c.Logger.Errorf("messages.markDialogUnread - error: dialog RPC returned no response")
+		return nil, mtproto.ErrInternalServerError
+	}
 
-	// TODO: updates ...
+	if mtproto.FromBool(rValue) {
+		updates := mtproto.MakeUpdatesByUpdates(mtproto.MakeTLUpdateDialogUnreadMark(&mtproto.Update{
+			Unread: in.Unread,
+			Peer_DIALOGPEER: mtproto.MakeTLDialogPeer(&mtproto.DialogPeer{
+				Peer: peer.ToPeer(),
+			}).To_DialogPeer(),
+		}).To_Update())
+		if _, err := c.svcCtx.Dao.SyncClient.SyncUpdatesNotMe(c.ctx, &sync.TLSyncUpdatesNotMe{
+			UserId:        c.MD.UserId,
+			PermAuthKeyId: c.MD.PermAuthKeyId,
+			Updates:       updates,
+		}); err != nil {
+			c.Logger.Errorf("messages.markDialogUnread - sync error: %v", err)
+			return nil, err
+		}
+	}
 
 	return rValue, nil
 }

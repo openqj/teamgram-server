@@ -20,12 +20,20 @@ import (
 // ChatImportChatInvite
 // chat.importChatInvite self_id:long hash:string = MutableChat;
 func (c *ChatCore) ChatImportChatInvite(in *chat.TLChatImportChatInvite) (*mtproto.MutableChat, error) {
+	if _, err := c.requireInviteSelf(in.SelfId); err != nil {
+		return nil, err
+	}
 	chatInviteDO, err := c.svcCtx.Dao.ChatInvitesDAO.SelectByLink(c.ctx, in.Hash)
 	if err != nil {
 		c.Logger.Errorf("chat.importChatInvite - error: %v", err)
 		return nil, err
 	} else if chatInviteDO == nil {
 		err = mtproto.ErrInviteHashInvalid
+		c.Logger.Errorf("chat.importChatInvite - error: %v", err)
+		return nil, err
+	}
+	if chatInviteDO.Revoked {
+		err = mtproto.ErrInviteHashExpired
 		c.Logger.Errorf("chat.importChatInvite - error: %v", err)
 		return nil, err
 	}
@@ -57,12 +65,15 @@ func (c *ChatCore) ChatImportChatInvite(in *chat.TLChatImportChatInvite) (*mtpro
 		return nil, err
 	}
 
-	c.svcCtx.Dao.ChatInviteParticipantsDAO.Insert(c.ctx, &dataobject.ChatInviteParticipantsDO{
+	if _, _, err = c.svcCtx.Dao.ChatInviteParticipantsDAO.Insert(c.ctx, &dataobject.ChatInviteParticipantsDO{
 		ChatId: chatInviteDO.ChatId,
 		Link:   in.Hash,
 		UserId: in.SelfId,
 		Date2:  time.Now().Unix(),
-	})
+	}); err != nil {
+		c.Logger.Errorf("chat.importChatInvite - error: %v", err)
+		return nil, err
+	}
 
 	return chat2, nil
 }

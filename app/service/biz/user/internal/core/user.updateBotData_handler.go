@@ -26,8 +26,56 @@ import (
 // UserUpdateBotData
 // user.updateBotData flags:# user_id:long bot_chat_history:flags.15?Bool bot_nochats:flags.16?Bool bot_inline_geo:flags.21?Bool bot_attach_menu:flags.27?Bool bot_inline_placeholder:flags.19?string = Bool;
 func (c *UserCore) UserUpdateBotData(in *user.TLUserUpdateBotData) (*mtproto.Bool, error) {
-	// TODO: not impl
-	c.Logger.Errorf("user.updateBotData blocked, License key from https://teamgram.net required to unlock enterprise features.")
+	if in == nil || in.GetBotId() <= 0 {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if c == nil || c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.DB == nil || c.svcCtx.Dao.BotsDAO == nil {
+		return nil, mtproto.ErrMethodNotImpl
+	}
+	if c.MD == nil || c.MD.GetUserId() <= 0 {
+		return nil, mtproto.ErrMethodNotImpl
+	}
 
-	return nil, mtproto.ErrEnterpriseIsBlocked
+	botDO, err := c.svcCtx.Dao.BotsDAO.Select(c.ctx, in.GetBotId())
+	if err != nil {
+		return nil, err
+	}
+	if botDO == nil || botDO.BotId != in.GetBotId() {
+		return nil, mtproto.ErrBotInvalid
+	}
+	if botDO.CreatorUserId <= 0 {
+		return nil, mtproto.ErrMethodNotImpl
+	}
+	if botDO.CreatorUserId != c.MD.GetUserId() {
+		return nil, mtproto.ErrForbiddenUserBotInvalid
+	}
+
+	changes := make(map[string]interface{}, 6)
+	if in.GetBotChatHistory() != nil {
+		changes["bot_chat_history"] = mtproto.FromBool(in.GetBotChatHistory())
+	}
+	if in.GetBotNochats() != nil {
+		changes["bot_nochats"] = mtproto.FromBool(in.GetBotNochats())
+	}
+	if in.GetBotInlineGeo() != nil {
+		changes["bot_inline_geo"] = mtproto.FromBool(in.GetBotInlineGeo())
+	}
+	if in.GetBotAttachMenu() != nil {
+		changes["bot_attach_menu"] = mtproto.FromBool(in.GetBotAttachMenu())
+	}
+	if in.GetBotInlinePlaceholder() != nil {
+		changes["bot_inline_placeholder"] = in.GetBotInlinePlaceholder().GetValue()
+	}
+	if in.GetBotHasMainApp() != nil {
+		changes["bot_has_main_app"] = mtproto.FromBool(in.GetBotHasMainApp())
+	}
+	if len(changes) == 0 {
+		return mtproto.BoolTrue, nil
+	}
+
+	if _, err = c.svcCtx.Dao.BotsDAO.Update(c.ctx, changes, in.GetBotId()); err != nil {
+		return nil, err
+	}
+
+	return mtproto.BoolTrue, nil
 }

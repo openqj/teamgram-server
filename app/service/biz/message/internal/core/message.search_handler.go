@@ -20,11 +20,27 @@ import (
 // MessageSearch
 // message.search user_id:long peer:PeerUtil q:string offset:int limit:int = Vector<MessageBox>;
 func (c *MessageCore) MessageSearch(in *message.TLMessageSearch) (*mtproto.MessageBoxList, error) {
+	if in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if in.UserId <= 0 || in.PeerId <= 0 {
+		return nil, mtproto.ErrPeerIdInvalid
+	}
+	if in.Q == "" {
+		return nil, mtproto.ErrSearchQueryEmpty
+	}
+	if in.Limit < 0 {
+		return nil, mtproto.ErrLimitInvalid
+	}
+	if c == nil || c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.Mysql == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
 	var (
 		offset  = in.Offset
 		q       = in.Q
 		boxList []*mtproto.MessageBox
 		limit   = in.Limit
+		err     error
 	)
 
 	// TODO(@benqi): check q
@@ -38,40 +54,49 @@ func (c *MessageCore) MessageSearch(in *message.TLMessageSearch) (*mtproto.Messa
 	switch in.PeerType {
 	case mtproto.PEER_SELF, mtproto.PEER_USER, mtproto.PEER_CHAT:
 		if q[0] == '#' {
-			idList, _ := c.svcCtx.Dao.HashTagsDAO.SelectPeerHashTagList(
+			idList, err := c.svcCtx.Dao.HashTagsDAO.SelectPeerHashTagList(
 				c.ctx,
 				in.UserId,
 				in.PeerType,
 				in.PeerId,
 				q)
+			if err != nil {
+				return nil, err
+			}
 
 			if len(idList) > 0 {
-				c.svcCtx.Dao.MessagesDAO.SelectByMessageIdListWithCB(
+				if _, err = c.svcCtx.Dao.MessagesDAO.SelectByMessageIdListWithCB(
 					c.ctx,
 					in.UserId,
 					idList,
 					func(sz, i int, v *dataobject.MessagesDO) {
 						boxList = append(boxList, c.svcCtx.Dao.MakeMessageBox(c.ctx, in.UserId, v))
-					})
+					}); err != nil {
+					return nil, err
+				}
 			}
 		} else {
 			dialogId := mtproto.MakeDialogId(in.UserId, in.PeerType, in.PeerId)
-			c.svcCtx.Dao.MessagesDAO.SearchWithCB(
+			if _, err = c.svcCtx.Dao.MessagesDAO.SearchWithCB(
 				c.ctx,
 				in.UserId,
 				dialogId.A,
 				dialogId.B,
-				in.Offset,
+				offset,
 				"%"+q+"%",
-				in.Limit,
+				limit,
 				func(sz, i int, v *dataobject.MessagesDO) {
 					boxList = append(boxList, c.svcCtx.Dao.MakeMessageBox(c.ctx, in.UserId, v))
-				})
+				}); err != nil {
+				return nil, err
+			}
 		}
 	case mtproto.PEER_CHANNEL:
 		c.Logger.Errorf("message.search blocked, License key from https://teamgram.net required to unlock enterprise features.")
 
 		return nil, mtproto.ErrEnterpriseIsBlocked
+	default:
+		return nil, mtproto.ErrPeerIdInvalid
 	}
 
 	if boxList == nil {

@@ -10,6 +10,9 @@
 package config
 
 import (
+	"net"
+	"strings"
+
 	"github.com/teamgram/marmota/pkg/container2"
 	"github.com/zeromicro/go-zero/zrpc"
 )
@@ -45,7 +48,7 @@ func (c GnetwayConfig) IsWebsocket(addr string) bool {
 	for _, server := range c.Server {
 		if server.Proto == "websocket" {
 			for _, address := range server.Addresses {
-				if address == addr {
+				if matchListenAddress(address, addr) {
 					return true
 				}
 			}
@@ -58,7 +61,7 @@ func (c GnetwayConfig) IsHttp(addr string) bool {
 	for _, server := range c.Server {
 		if server.Proto == "http" {
 			for _, address := range server.Addresses {
-				if address == addr {
+				if matchListenAddress(address, addr) {
 					return true
 				}
 			}
@@ -71,7 +74,7 @@ func (c GnetwayConfig) IsTcp(addr string) bool {
 	for _, server := range c.Server {
 		if server.Proto == "tcp" {
 			for _, address := range server.Addresses {
-				if address == addr {
+				if matchListenAddress(address, addr) {
 					return true
 				}
 			}
@@ -84,7 +87,7 @@ func (c GnetwayConfig) IsProxyProtocolV1(addr string) bool {
 	for _, server := range c.Server {
 		if server.PPV1 {
 			for _, address := range server.Addresses {
-				if address == addr {
+				if matchListenAddress(address, addr) {
 					return true
 				}
 			}
@@ -93,12 +96,28 @@ func (c GnetwayConfig) IsProxyProtocolV1(addr string) bool {
 	return false
 }
 
+func matchListenAddress(configured, actual string) bool {
+	if configured == actual {
+		return true
+	}
+
+	configuredHost, configuredPort, configuredErr := net.SplitHostPort(configured)
+	actualHost, actualPort, actualErr := net.SplitHostPort(actual)
+	if configuredErr != nil || actualErr != nil || configuredPort != actualPort {
+		return false
+	}
+
+	return configuredHost == "0.0.0.0" || configuredHost == "::" ||
+		(strings.Trim(configuredHost, "[]") == strings.Trim(actualHost, "[]"))
+}
+
 func (c GnetwayConfig) ToAddresses() []string {
 	var addresses []string
 	for _, server := range c.Server {
 		for _, address := range server.Addresses {
-			if ok := container2.ContainsString(addresses, address); !ok {
-				addresses = append(addresses, "tcp://"+address)
+			listenAddress := "tcp://" + address
+			if ok := container2.ContainsString(addresses, listenAddress); !ok {
+				addresses = append(addresses, listenAddress)
 			}
 		}
 	}

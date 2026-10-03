@@ -17,11 +17,14 @@ import (
 
 type Config struct {
 	zrpc.RpcServerConf
-	AuthSession      zrpc.RpcClientConf
-	StatusClient     zrpc.RpcClientConf
-	GatewayClient    zrpc.RpcClientConf
-	BFFProxyClients  conf.BFFProxyClients
-	UseStreamGateway bool `json:",default=false"`
+	AuthSession       zrpc.RpcClientConf
+	StatusClient      zrpc.RpcClientConf
+	GatewayClient     zrpc.RpcClientConf
+	BFFProxyClients   conf.BFFProxyClients
+	UserClient        zrpc.RpcClientConf `json:",optional"`
+	FirebaseProjectID string             `json:",optional"`
+	MysqlDSN          string             `json:",optional"`
+	UseStreamGateway  bool               `json:",default=false"`
 }
 
 // Routine routine.

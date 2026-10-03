@@ -18,15 +18,6 @@
 
 package core
 
-import (
-	"github.com/teamgram/proto/mtproto"
-)
-
 // AccountGetAuthorizationForm
 // account.getAuthorizationForm#a929597a bot_id:long scope:string public_key:string = account.AuthorizationForm;
-func (c *PassportCore) AccountGetAuthorizationForm(in *mtproto.TLAccountGetAuthorizationForm) (*mtproto.Account_AuthorizationForm, error) {
-	// TODO: not impl
-	c.Logger.Errorf("account.getAuthorizationForm blocked, License key from https://teamgram.net required to unlock enterprise features.")
-
-	return nil, mtproto.ErrEnterpriseIsBlocked
-}
+// Implemented in passport_impl.go.

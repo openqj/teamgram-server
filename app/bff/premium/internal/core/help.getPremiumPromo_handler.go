@@ -25,8 +25,17 @@ import (
 // HelpGetPremiumPromo
 // help.getPremiumPromo#b81b93d4 = help.PremiumPromo;
 func (c *PremiumCore) HelpGetPremiumPromo(in *mtproto.TLHelpGetPremiumPromo) (*mtproto.Help_PremiumPromo, error) {
-	// TODO: not impl
-	c.Logger.Errorf("help.getPremiumPromo blocked, License key from https://teamgram.net required to unlock enterprise features.")
+	_ = in
 
-	return nil, mtproto.ErrEnterpriseIsBlocked
+	// No store is configured. Empty period and user lists advertise nothing to buy.
+	return mtproto.MakeTLHelpPremiumPromo(&mtproto.Help_PremiumPromo{
+		StatusText:     "Telegram Premium is not offered on this server.",
+		StatusEntities: []*mtproto.MessageEntity{},
+		VideoSections:  []string{},
+		Videos:         []*mtproto.Document{},
+		PeriodOptions:  []*mtproto.PremiumSubscriptionOption{},
+		Users:          []*mtproto.User{},
+		Currency:       "USD",
+		MonthlyAmount:  0,
+	}).To_Help_PremiumPromo(), nil
 }

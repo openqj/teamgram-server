@@ -19,8 +19,8 @@
 package core
 
 import (
-	"github.com/teamgram/marmota/pkg/strings2"
-	"github.com/teamgram/marmota/pkg/utils"
+	"fmt"
+
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/messenger/sync/sync"
 	userpb "github.com/teamgram/teamgram-server/app/service/biz/user/user"
@@ -29,6 +29,21 @@ import (
 // AccountUpdateUsername
 // account.updateUsername#3e0bdd7c username:string = User;
 func (c *UsernamesCore) AccountUpdateUsername(in *mtproto.TLAccountUpdateUsername) (*mtproto.User, error) {
+	if c == nil || c.MD == nil || c.MD.UserId == 0 {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
+	if in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+
+	username := in.GetUsername()
+	if username != "" && usernameFormatInvalid(username) {
+		return nil, mtproto.ErrUsernameInvalid
+	}
+	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.UserClient == nil || c.svcCtx.Dao.SyncClient == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
+
 	me, err := c.svcCtx.Dao.UserClient.UserGetImmutableUser(c.ctx, &userpb.TLUserGetImmutableUser{
 		Id: c.MD.UserId,
 	})
@@ -36,77 +51,42 @@ func (c *UsernamesCore) AccountUpdateUsername(in *mtproto.TLAccountUpdateUsernam
 		c.Logger.Errorf("account.updateUsername - error: %v", err)
 		return nil, err
 	}
+	if me == nil || me.GetUser() == nil {
+		c.Logger.Errorf("account.updateUsername - user service returned an empty user")
+		return nil, mtproto.ErrInternalServerError
+	}
 
-	var (
-		username2 = in.GetUsername()
-	)
+	ok, err := c.svcCtx.Dao.UserClient.UserUpdateUsername(c.ctx, &userpb.TLUserUpdateUsername{
+		UserId:   c.MD.UserId,
+		Username: username,
+	})
+	if err != nil {
+		c.Logger.Errorf("account.updateUsername - error: %v", err)
+		return nil, err
+	}
+	if !mtproto.FromBool(ok) {
+		return nil, mtproto.ErrInternalServerError
+	}
 
-	if username2 != me.Username() {
-		// TODO: 分布式事物
-		if err = c.updateUsername(c.MD.UserId, me.Username(), username2); err != nil {
-			c.Logger.Errorf("account.updateUsername - error: %v", err)
-		} else if _, err = c.svcCtx.Dao.UserClient.UserUpdateUsername(c.ctx, &userpb.TLUserUpdateUsername{
-			UserId:   c.MD.UserId,
-			Username: username2,
-		}); err != nil {
-			c.Logger.Errorf("account.updateUsername - error: %v", err)
-		} else {
-			me.SetUsername(username2)
-
-			_, _ = c.svcCtx.Dao.SyncClient.SyncUpdatesNotMe(c.ctx, &sync.TLSyncUpdatesNotMe{
-				UserId:        c.MD.UserId,
-				PermAuthKeyId: c.MD.PermAuthKeyId,
-				Updates: mtproto.MakeUpdatesByUpdates(mtproto.MakeTLUpdateUserName(&mtproto.Update{
-					UserId:    c.MD.UserId,
-					FirstName: me.FirstName(),
-					LastName:  me.LastName(),
-					Username:  username2,
-				}).To_Update()),
-			})
-		}
+	me.SetUsername(username)
+	synced, err := c.svcCtx.Dao.SyncClient.SyncUpdatesNotMe(c.ctx, &sync.TLSyncUpdatesNotMe{
+		UserId:        c.MD.UserId,
+		PermAuthKeyId: c.MD.PermAuthKeyId,
+		Updates: mtproto.MakeUpdatesByUpdates(mtproto.MakeTLUpdateUserName(&mtproto.Update{
+			UserId:    c.MD.UserId,
+			FirstName: me.FirstName(),
+			LastName:  me.LastName(),
+			Username:  username,
+		}).To_Update()),
+	})
+	if err != nil {
+		c.Logger.Errorf("account.updateUsername - sync error: %v", err)
+		return nil, fmt.Errorf("account.updateUsername: username was saved but sync update failed: %w", err)
+	}
+	if synced == nil {
+		c.Logger.Errorf("account.updateUsername - sync returned an empty response")
+		return nil, fmt.Errorf("account.updateUsername: username was saved but sync returned an empty response")
 	}
 
 	return me.ToSelfUser(), nil
-}
-
-func (c *UsernamesCore) updateUsername(userId int64, from, username2 string) error {
-	if username2 != "" {
-		if len(username2) < userpb.MinUsernameLen ||
-			!strings2.IsAlNumString(username2) ||
-			utils.IsNumber(username2[0]) {
-			err := mtproto.ErrUsernameInvalid
-			c.Logger.Errorf("account.updateUsername - format error: %v", err)
-			return err
-		}
-
-		ok, err := c.svcCtx.Dao.UserClient.UserUpdateUsernameByUsername(c.ctx, &userpb.TLUserUpdateUsernameByUsername{
-			PeerType: mtproto.PEER_USER,
-			PeerId:   userId,
-			Username: username2,
-		})
-		// log.Debugf("ok: %v, err: %v", ok, err)
-		if err != nil {
-			c.Logger.Errorf("account.updateUsername - format error: %v", err)
-			return err
-		} else {
-			if !mtproto.FromBool(ok) {
-				err = mtproto.ErrUsernameOccupied
-				c.Logger.Errorf("account.updateUsername - format error: %v", err)
-				return err
-			}
-		}
-	}
-
-	if from != "" {
-		// delete username
-		_, err := c.svcCtx.Dao.UserClient.UserDeleteUsername(c.ctx, &userpb.TLUserDeleteUsername{
-			Username: from,
-		})
-		if err != nil {
-			c.Logger.Errorf("account.updateUsername - format error: %v", err)
-			return err
-		}
-	}
-
-	return nil
 }

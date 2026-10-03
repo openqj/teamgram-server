@@ -19,9 +19,10 @@
 package core
 
 import (
+	"fmt"
+
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/messenger/sync/sync"
-	chatpb "github.com/teamgram/teamgram-server/app/service/biz/chat/chat"
 	userpb "github.com/teamgram/teamgram-server/app/service/biz/user/user"
 )
 
@@ -40,54 +41,53 @@ func (c *PrivacySettingsCore) AccountSetPrivacy(in *mtproto.TLAccountSetPrivacy)
 	}
 
 	ruleList := mtproto.ToPrivacyRuleListByInput(c.MD.UserId, in.Rules)
+	users, chats, err := c.hydratePrivacyRuleObjects(ruleList)
+	if err != nil {
+		c.Logger.Errorf("account.setPrivacy - error: %v", err)
+		return nil, fmt.Errorf("account.setPrivacy: %w", err)
+	}
 
-	if _, err := c.svcCtx.Dao.UserClient.UserSetPrivacy(c.ctx, &userpb.TLUserSetPrivacy{
+	saved, err := c.svcCtx.Dao.UserClient.UserSetPrivacy(c.ctx, &userpb.TLUserSetPrivacy{
 		UserId:  c.MD.UserId,
 		KeyType: int32(key),
 		Rules:   ruleList,
-	}); err != nil {
+	})
+	if err != nil {
+		c.Logger.Errorf("account.setPrivacy - error: %v", err)
+		return nil, err
+	}
+	if saved == nil || saved.GetPredicateName() != mtproto.Predicate_boolTrue {
+		err = fmt.Errorf("account.setPrivacy: saving privacy rules returned false")
 		c.Logger.Errorf("account.setPrivacy - error: %v", err)
 		return nil, err
 	}
 
 	rValue := mtproto.MakeTLAccountPrivacyRules(&mtproto.Account_PrivacyRules{
 		Rules: ruleList,
-		Users: []*mtproto.User{}, // TODO
-		Chats: []*mtproto.Chat{}, // TODO
+		Users: users,
+		Chats: chats,
 	}).To_Account_PrivacyRules()
 	syncUpdates := mtproto.MakeUpdatesByUpdates(mtproto.MakeTLUpdatePrivacy(&mtproto.Update{
 		Key:   mtproto.ToPrivacyKey(key),
 		Rules: ruleList,
 	}).To_Update())
 
-	idHelper := mtproto.NewIDListHelper(c.MD.UserId)
-	idHelper.PickByRules(ruleList)
-	idHelper.Visit(
-		func(userIdList []int64) {
-			users, _ := c.svcCtx.Dao.UserClient.UserGetMutableUsers(c.ctx,
-				&userpb.TLUserGetMutableUsers{
-					Id: userIdList,
-				})
-			rValue.Users = users.GetUserListByIdList(c.MD.UserId, userIdList...)
-			syncUpdates.PushUser(rValue.Users...)
-		},
-		func(chatIdList []int64) {
-			chats, _ := c.svcCtx.Dao.ChatClient.ChatGetChatListByIdList(c.ctx,
-				&chatpb.TLChatGetChatListByIdList{
-					IdList: chatIdList,
-				})
-			rValue.Chats = chats.GetChatListByIdList(c.MD.UserId, chatIdList...)
-			syncUpdates.PushChat(rValue.Chats...)
-		},
-		func(channelIdList []int64) {
-			// TODO
-		})
+	syncUpdates.PushUser(rValue.Users...)
+	syncUpdates.PushChat(rValue.Chats...)
 
-	c.svcCtx.Dao.SyncClient.SyncUpdatesNotMe(c.ctx, &sync.TLSyncUpdatesNotMe{
+	// Persist the rules before publishing their update; delivery cannot be rolled back.
+	synced, err := c.svcCtx.Dao.SyncClient.SyncUpdatesNotMe(c.ctx, &sync.TLSyncUpdatesNotMe{
 		UserId:        c.MD.UserId,
 		PermAuthKeyId: c.MD.PermAuthKeyId,
 		Updates:       syncUpdates,
 	})
+	if err != nil {
+		c.Logger.Errorf("account.setPrivacy - sync error: %v", err)
+		return nil, fmt.Errorf("account.setPrivacy: privacy rules were saved but sync update failed: %w", err)
+	}
+	if synced == nil {
+		return nil, fmt.Errorf("account.setPrivacy: privacy rules were saved but sync returned an empty response")
+	}
 
 	return rValue, nil
 }

@@ -21,7 +21,8 @@ func (c *UserCore) UserGetContactSignUpNotification(in *user.TLUserGetContactSig
 		rV = false
 	)
 
-	if do, err := c.svcCtx.Dao.UserSettingsDAO.SelectByKey(c.ctx, in.UserId, "contactSignUpNotification"); do != nil {
+	do, err := c.svcCtx.Dao.UserSettingsDAO.SelectByKey(c.ctx, in.UserId, "contactSignUpNotification")
+	if do != nil {
 		if do.Value == "true" {
 			rV = true
 		}
@@ -29,6 +30,7 @@ func (c *UserCore) UserGetContactSignUpNotification(in *user.TLUserGetContactSig
 		rV = true
 	} else {
 		c.Logger.Errorf("user.getContactSignUpNotification - error: %v", err)
+		return nil, err
 	}
 
 	return mtproto.ToBool(rV), nil

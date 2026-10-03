@@ -22,9 +22,8 @@ import (
 	"time"
 
 	"github.com/teamgram/proto/mtproto"
+	"github.com/teamgram/teamgram-server/app/messenger/sync/sync"
 	userpb "github.com/teamgram/teamgram-server/app/service/biz/user/user"
-	"github.com/zeromicro/go-zero/core/contextx"
-	"github.com/zeromicro/go-zero/core/threading"
 )
 
 // AccountUpdateStatus
@@ -58,46 +57,25 @@ func (c *UserChannelProfilesCore) AccountUpdateStatus(in *mtproto.TLAccountUpdat
 		}).To_UserStatus()
 	}
 
-	// threading.GoSafe()
-	threading.GoSafe(func() {
-		c.svcCtx.Dao.UserClient.UserUpdateLastSeen(
-			contextx.ValueOnlyFrom(c.ctx),
-			&userpb.TLUserUpdateLastSeen{
-				Id:         c.MD.UserId,
-				LastSeenAt: now,
-				Expires:    expires,
-			})
-	})
+	if _, err := c.svcCtx.Dao.UserClient.UserUpdateLastSeen(
+		c.ctx,
+		&userpb.TLUserUpdateLastSeen{
+			Id:         c.MD.UserId,
+			LastSeenAt: now,
+			Expires:    expires,
+		}); err != nil {
+		c.Logger.Errorf("account.updateStatus - update last seen error: %v", err)
+		return nil, err
+	}
 
-	// TODO: push
-	//// log.Debugf("account.updateStatus - reply: {true}")
-	//return model.WrapperGoFunc(mtproto.BoolTrue, func() {
-	//	// log.Debugf("ready push to other contacts...")
-	//	// push to other contacts.
-	//	contactIdList := s.UserFacade.GetContactUserIdList(context.Background(), md.UserId)
-	//	blockedIdList := s.UserFacade.CheckBlockUserList(context.Background(), md.UserId, contactIdList)
-	//
-	//	// TODO(@benqi): push updateUserStatus规则
-	//	for _, id := range contactIdList {
-	//		if md.UserId == id {
-	//			// why??
-	//			continue
-	//		}
-	//
-	//		if blocked, _ := container2.Contains(id, blockedIdList); blocked {
-	//			continue
-	//		}
-	//
-	//		// log.Debugf("check blocked...")
-	//		blocked := s.UserFacade.IsBlockedByUser(context.Background(), md.UserId, id)
-	//		if blocked {
-	//			continue
-	//		}
-	//
-	//		sync_client.PushUpdates(context.Background(), id, pushUpdates)
-	//	}
-	//
-	//}).(*mtproto.Bool), nil
+	if _, err := c.svcCtx.Dao.SyncClient.SyncUpdatesNotMe(c.ctx, &sync.TLSyncUpdatesNotMe{
+		UserId:        c.MD.UserId,
+		PermAuthKeyId: c.MD.PermAuthKeyId,
+		Updates:       pushUpdates,
+	}); err != nil {
+		c.Logger.Errorf("account.updateStatus - push to other sessions error: %v", err)
+		return nil, err
+	}
 
 	return mtproto.BoolTrue, nil
 }

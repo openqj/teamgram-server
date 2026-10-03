@@ -96,6 +96,11 @@ var clazzIdRegisters2 = map[int32]func() mtproto.TLObject{
 			Constructor: 263827974,
 		}
 	},
+	292070214: func() mtproto.TLObject { // 0x1168a346
+		return &TLMsgReadMentions{
+			Constructor: 292070214,
+		}
+	},
 	-441560663: func() mtproto.TLObject { // 0xe5ae51a9
 		return &TLMsgUpdatePinnedMessage{
 			Constructor: -441560663,

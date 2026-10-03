@@ -27,7 +27,10 @@ import (
 
 type Config struct {
 	zrpc.RpcServerConf
+	DcId                      int32   `json:",optional"`
+	KnownDcIds                []int32 `json:",optional"`
 	KV                        kv.KvConf
+	MysqlDSN                  string `json:",optional"`
 	Code                      *conf.SmsVerifyCodeConfig
 	UserClient                zrpc.RpcClientConf
 	AuthsessionClient         zrpc.RpcClientConf
@@ -37,4 +40,22 @@ type Config struct {
 	SyncClient                *kafka.KafkaProducerConf
 	SignInServiceNotification []conf.MessageEntityConfig `json:",optional"`
 	SignInMessage             []conf.MessageEntityConfig `json:",optional"`
+}
+
+// SupportsDc reports whether this instance knows how to serve a DC. With no
+// KnownDcIds configured, only the local DC is supported; this keeps a
+// single-DC deployment from issuing credentials for an unreachable target.
+func (c Config) SupportsDc(dcID int32) bool {
+	if dcID <= 0 || c.DcId <= 0 {
+		return false
+	}
+	if dcID == c.DcId {
+		return true
+	}
+	for _, known := range c.KnownDcIds {
+		if known == dcID {
+			return true
+		}
+	}
+	return false
 }

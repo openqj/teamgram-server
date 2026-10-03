@@ -21,6 +21,9 @@ package core
 import (
 	"context"
 	"math/rand"
+	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/teamgram/marmota/pkg/threading2"
 	"github.com/teamgram/proto/mtproto"
@@ -92,12 +95,15 @@ func (c *AuthorizationCore) AuthSignUp(in *mtproto.TLAuthSignUp) (*mtproto.Auth_
 		return nil, err
 	}
 
-	// TODO(@benqi): register name ruler
-	// check first name invalid
-	if in.FirstName == "" {
-		c.Logger.Errorf("check first_name error - empty")
-		err = mtproto.ErrFirstnameInvalid
-		return nil, err
+	firstName, ok := normalizeSignupName(in.FirstName, true)
+	if !ok {
+		c.Logger.Errorf("check first_name error - invalid")
+		return nil, mtproto.ErrFirstnameInvalid
+	}
+	lastName, ok := normalizeSignupName(in.LastName, false)
+	if !ok {
+		c.Logger.Errorf("check last_name error - invalid")
+		return nil, mtproto.ErrLastnameInvalid
 	}
 
 	// TODO(@benqi): PHONE_NUMBER_FLOOD
@@ -140,11 +146,6 @@ func (c *AuthorizationCore) AuthSignUp(in *mtproto.TLAuthSignUp) (*mtproto.Auth_
 		return nil, err
 	}
 
-	var (
-		firstName = in.FirstName
-		lastName  = in.LastName
-	)
-
 	// Create new user
 	if user, err = c.svcCtx.UserClient.UserCreateNewUser(c.ctx, &userpb.TLUserCreateNewUser{
 		SecretKeyId: key.AuthKeyId(),
@@ -161,14 +162,17 @@ func (c *AuthorizationCore) AuthSignUp(in *mtproto.TLAuthSignUp) (*mtproto.Auth_
 	// user.Self = true
 
 	// bind auth_key and user_id
-	_, err = c.svcCtx.Dao.AuthsessionClient.AuthsessionBindAuthKeyUser(c.ctx, &authsession.TLAuthsessionBindAuthKeyUser{
+	bindHash, bindErr := c.svcCtx.Dao.AuthsessionClient.AuthsessionBindAuthKeyUser(c.ctx, &authsession.TLAuthsessionBindAuthKeyUser{
 		AuthKeyId: c.MD.PermAuthKeyId,
 		UserId:    user.User.Id,
 	})
-	if err != nil {
-		c.Logger.Errorf("bindAuthKeyUser error: %v", err)
-		err = mtproto.ErrInternalServerError
-		return nil, err
+	if bindErr != nil {
+		c.Logger.Errorf("bindAuthKeyUser error: %v", bindErr)
+		return nil, mtproto.ErrInternalServerError
+	}
+	if bindHash == nil || bindHash.GetV() == 0 {
+		c.Logger.Errorf("bindAuthKeyUser did not persist")
+		return nil, mtproto.ErrInternalServerError
 	}
 
 	return threading2.WrapperGoFunc(
@@ -187,6 +191,27 @@ func (c *AuthorizationCore) AuthSignUp(in *mtproto.TLAuthSignUp) (*mtproto.Auth_
 			c.onContactSignUp(ctx, c.MD.PermAuthKeyId, user.Id(), phoneNumber)
 		},
 	).(*mtproto.Auth_Authorization), nil
+}
+
+const maxSignupNameRunes = 64
+
+func normalizeSignupName(name string, required bool) (string, bool) {
+	if !utf8.ValidString(name) {
+		return "", false
+	}
+
+	name = strings.TrimSpace(name)
+	runes := []rune(name)
+	if (required && len(runes) == 0) || len(runes) > maxSignupNameRunes {
+		return "", false
+	}
+	for _, r := range runes {
+		if unicode.IsControl(r) {
+			return "", false
+		}
+	}
+
+	return name, true
 }
 
 func (c *AuthorizationCore) onContactSignUp(ctx context.Context, authKeyId, userId int64, phone string) {

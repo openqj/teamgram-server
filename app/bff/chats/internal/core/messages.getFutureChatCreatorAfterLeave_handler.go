@@ -19,13 +19,44 @@ package core
 
 import (
 	"github.com/teamgram/proto/mtproto"
+	userpb "github.com/teamgram/teamgram-server/app/service/biz/user/user"
 )
 
 // MessagesGetFutureChatCreatorAfterLeave
 // messages.getFutureChatCreatorAfterLeave#3b7d0ea6 peer:InputPeer = User;
 func (c *ChatsCore) MessagesGetFutureChatCreatorAfterLeave(in *mtproto.TLMessagesGetFutureChatCreatorAfterLeave) (*mtproto.User, error) {
-	// TODO: not impl
-	c.Logger.Errorf("messages.getFutureChatCreatorAfterLeave blocked, License key from https://teamgram.net required to unlock enterprise features.")
+	if in == nil || c.MD == nil {
+		return nil, mtproto.ErrPeerIdInvalid
+	}
+	chatId, err := chatPeerId(c.MD.UserId, in.Peer)
+	if err != nil {
+		return nil, err
+	}
+	chat, err := c.loadMutableChat(chatId)
+	if err != nil {
+		return nil, err
+	}
+	me, ok := chat.GetImmutableChatParticipant(c.MD.UserId)
+	if !ok || me == nil || !me.IsChatMemberStateNormal() {
+		c.Logger.Errorf("messages.getFutureChatCreatorAfterLeave - not participant: %d", chatId)
+		return nil, mtproto.ErrPeerIdInvalid
+	}
 
-	return nil, mtproto.ErrEnterpriseIsBlocked
+	userId := futureCreatorUserId(chat, c.MD.UserId)
+	if userId == 0 {
+		return mtproto.MakeTLUserEmpty(&mtproto.User{Id: 0}).To_User(), nil
+	}
+
+	mUsers, err := c.svcCtx.Dao.UserClient.UserGetMutableUsers(c.ctx, &userpb.TLUserGetMutableUsers{
+		Id: []int64{c.MD.UserId, userId},
+	})
+	if err == nil && mUsers != nil {
+		users := mUsers.GetUserListByIdList(c.MD.UserId, userId)
+		if len(users) > 0 && users[0] != nil {
+			return users[0], nil
+		}
+	} else if err != nil {
+		c.Logger.Errorf("messages.getFutureChatCreatorAfterLeave - error: %v", err)
+	}
+	return mtproto.MakeTLUser(&mtproto.User{Id: userId}).To_User(), nil
 }

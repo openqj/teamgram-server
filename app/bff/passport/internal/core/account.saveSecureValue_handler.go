@@ -18,15 +18,6 @@
 
 package core
 
-import (
-	"github.com/teamgram/proto/mtproto"
-)
-
 // AccountSaveSecureValue
 // account.saveSecureValue#899fe31d value:InputSecureValue secure_secret_id:long = SecureValue;
-func (c *PassportCore) AccountSaveSecureValue(in *mtproto.TLAccountSaveSecureValue) (*mtproto.SecureValue, error) {
-	// TODO: not impl
-	c.Logger.Errorf("account.saveSecureValue blocked, License key from https://teamgram.net required to unlock enterprise features.")
-
-	return nil, mtproto.ErrEnterpriseIsBlocked
-}
+// Implemented in passport_impl.go.

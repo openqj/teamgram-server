@@ -35,16 +35,19 @@ func (m *HandshakeStateCtx) DebugString() string {
 }
 
 type connContext struct {
-	codec      codec.Codec
-	authKey    *authKeyUtil
-	sessionId  int64
-	handshakes []*HandshakeStateCtx
-	clientIp   string
-	tcp        bool
-	websocket  bool
-	http       bool
-	wsCodec    *ws.WsCodec
-	httpCodec  *httpcodec.HttpCodec
+	codec             codec.Codec
+	dcID              int32
+	authKey           *authKeyUtil
+	sessionId         int64
+	handshakes        []*HandshakeStateCtx
+	clientIp          string
+	tcp               bool
+	websocket         bool
+	http              bool
+	transportSelected bool
+	metricOpened      bool
+	wsCodec           *ws.WsCodec
+	httpCodec         *httpcodec.HttpCodec
 	logx.Logger
 	newSession bool
 	nextSeqNo  int32
@@ -71,6 +74,16 @@ func (ctx *connContext) generateMessageSeqNo(increment bool) int32 {
 
 func (ctx *connContext) setClientIp(ip string) {
 	ctx.clientIp = ip
+}
+
+func (ctx *connContext) setDCID(dcID int32) {
+	if dcID > 0 {
+		ctx.dcID = dcID
+	}
+}
+
+func (ctx *connContext) getDCID() int32 {
+	return ctx.dcID
 }
 
 func (ctx *connContext) getAuthKey() *authKeyUtil {
