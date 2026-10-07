@@ -1377,22 +1377,11 @@ func (c *ApiFullCore) PhoneLeaveGroupCallPresentation(in *mtproto.TLPhoneLeaveGr
 }
 
 func (c *ApiFullCore) PhoneGetGroupCallStreamChannels(in *mtproto.TLPhoneGetGroupCallStreamChannels) (*mtproto.Phone_GroupCallStreamChannels, error) {
-	if _, err := c.requireUserId(); err != nil {
-		return nil, err
-	}
-	_ = in
-	// Participant records do not represent a media stream. A media controller
-	// must provide active sources and timestamps.
-	return nil, mtproto.ErrMethodNotImpl
+	return c.getGroupCallStreamChannels(in)
 }
 
 func (c *ApiFullCore) PhoneGetGroupCallStreamRtmpUrl(in *mtproto.TLPhoneGetGroupCallStreamRtmpUrl) (*mtproto.Phone_GroupCallStreamRtmpUrl, error) {
-	if _, err := c.requireUserId(); err != nil {
-		return nil, err
-	}
-	_ = in
-	// There is no relay authorization service to issue or revoke stream keys.
-	return nil, mtproto.ErrMethodNotImpl
+	return c.getGroupCallStreamRtmpUrl(in)
 }
 
 func (c *ApiFullCore) PhoneSendGroupCallMessageB1D11410(in *mtproto.TLPhoneSendGroupCallMessageB1D11410) (*mtproto.Updates, error) {

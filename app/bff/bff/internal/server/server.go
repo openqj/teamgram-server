@@ -119,6 +119,29 @@ func applyProviderEnvironment(c *config.Config) error {
 		}
 		c.PaymentProviderTimeoutSeconds = timeout
 	}
+	for _, override := range []struct {
+		name   string
+		target *string
+	}{
+		{name: "TEAMGRAM_GROUP_CALL_MEDIA_ENDPOINT", target: &c.GroupCallMediaEndpoint},
+		{name: "TEAMGRAM_GROUP_CALL_MEDIA_API_KEY", target: &c.GroupCallMediaAPIKey},
+		{name: "TEAMGRAM_GROUP_CALL_MEDIA_SIGNING_KEY", target: &c.GroupCallMediaSigningKey},
+		{name: "TEAMGRAM_GROUP_CALL_MEDIA_RTMP_HOST", target: &c.GroupCallMediaRTMPHost},
+	} {
+		if value, ok := os.LookupEnv(override.name); ok {
+			if override.name == "TEAMGRAM_GROUP_CALL_MEDIA_ENDPOINT" || override.name == "TEAMGRAM_GROUP_CALL_MEDIA_RTMP_HOST" {
+				value = strings.TrimSpace(value)
+			}
+			*override.target = value
+		}
+	}
+	if value, ok := os.LookupEnv("TEAMGRAM_GROUP_CALL_MEDIA_TIMEOUT_SECONDS"); ok {
+		timeout, err := strconv.Atoi(strings.TrimSpace(value))
+		if err != nil || timeout < 0 || timeout > 300 {
+			return errors.New("TEAMGRAM_GROUP_CALL_MEDIA_TIMEOUT_SECONDS must be an integer from 0 to 300")
+		}
+		c.GroupCallMediaTimeoutSeconds = timeout
+	}
 
 	if c.Code == nil {
 		c.Code = &codeconf.SmsVerifyCodeConfig{}
@@ -548,6 +571,11 @@ func (s *Server) Initialize() error {
 			PaymentProviderKey:            c.PaymentProviderKey,
 			PaymentProviderSigningKey:     c.PaymentProviderSigningKey,
 			PaymentProviderTimeoutSeconds: c.PaymentProviderTimeoutSeconds,
+			GroupCallMediaEndpoint:        c.GroupCallMediaEndpoint,
+			GroupCallMediaAPIKey:          c.GroupCallMediaAPIKey,
+			GroupCallMediaSigningKey:      c.GroupCallMediaSigningKey,
+			GroupCallMediaRTMPHost:        c.GroupCallMediaRTMPHost,
+			GroupCallMediaTimeoutSeconds:  c.GroupCallMediaTimeoutSeconds,
 			TurnHost:                      c.TurnHost,
 			TurnPort:                      c.TurnPort,
 			TurnUsername:                  c.TurnUsername,

@@ -30,6 +30,12 @@ MysqlDSN: "root:@tcp(127.0.0.1:3306)/teamgram?charset=utf8mb4&parseTime=true"
 SearchPostsFlood:
   TotalDaily: 10
 
+GroupCallMediaEndpoint: ""
+GroupCallMediaAPIKey: ""
+GroupCallMediaSigningKey: ""
+GroupCallMediaRTMPHost: ""
+GroupCallMediaTimeoutSeconds: 5
+
 TurnHost: "192.168.0.132"
 TurnPort: 3478
 

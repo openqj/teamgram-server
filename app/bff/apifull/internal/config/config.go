@@ -41,6 +41,11 @@ type Config struct {
 	PaymentProviderKey            string                    `json:",optional"`
 	PaymentProviderSigningKey     string                    `json:",optional"`
 	PaymentProviderTimeoutSeconds int                       `json:",optional"`
+	GroupCallMediaEndpoint        string                    `json:",optional"`
+	GroupCallMediaAPIKey          string                    `json:",optional"`
+	GroupCallMediaSigningKey      string                    `json:",optional"`
+	GroupCallMediaRTMPHost        string                    `json:",optional"`
+	GroupCallMediaTimeoutSeconds  int                       `json:",optional"`
 	TurnHost                      string                    `json:",optional"`
 	TurnPort                      int32                     `json:",optional"`
 	TurnUsername                  string                    `json:",optional"`
