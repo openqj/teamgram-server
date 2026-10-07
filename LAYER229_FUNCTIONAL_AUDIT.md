@@ -74,6 +74,14 @@
 - r25 启动后的 MySQL binlog 位置保持 `binlog.000004:6866222`，没有 `CREATE/ALTER/DROP`；mysql、redis、etcd 重启计数均为 0，Kafka 保持此前历史计数 2。Passkey/APIFull 只读启动保护和 dialog filter schema 存在性检查均随镜像生效。
 - 新增 `teamgramd/deploy/sql/migrate-20261007-apifull-schema-complete.sql`，显式覆盖 APIFull runtime 依赖的五张审计/Stars/支付表及频道配置列。当前生产库已有这些表，但实际挂载 SQL 目录尚未同步该文件；在新库或切换只读模式前必须先执行完整迁移并做 schema preflight。完整 Layer 229 仍不是 813/813，原生频道媒体、支付 provider、短信/邮件、Passkey 真实认证器等外部依赖继续按台账阻塞。
 
+## 2026-10-07 r25 用户名与联系人生产复验
+
+- `docker/production/probe-user-username-resolution.ts` 使用生产用户 `136907714` 和 `136907713` 经 DC2 WebSocket -> gateway -> session -> Usernames BFF -> User service -> MySQL 完成 `account.updateUsername` 与 `contacts.resolveUsername` 双账号回环。更新响应为 `User`，MySQL 用户资料和唯一活跃 username 索引一致；第二账号解析为正确 `contacts.ResolvedPeer`/`User`。清理通过 RPC 清空用户名，MySQL 确认 owner 与候选名均无活跃索引。共 2 次可逆业务写入。
+- `docker/production/probe-account-check-username-readonly.ts` 在 r25 返回类型化 `Boolean(true)`。本机浏览器 LevelDB 没有该用户的会话，因此探针从生产 MySQL 读取既有永久 auth key 到单次进程内存；密钥未输出或落盘，用户名检查没有业务写入。该结果不代表短信/邮件登录或浏览器新登录验收。
+- `docker/production/probe-contacts-readonly.ts` 在同一 r25 部署验证 `contacts.getContactIDs`、`contacts.getStatuses`、`contacts.getContacts`：联系人 ID、离线状态与 `user_contacts`/`user_presences` 一致；完整响应带 1 个 Contact 和 1 个 User，匹配 hash 返回 `contacts.ContactsNotModified`。关系与 presence 快照前后相同，业务写入为 0。
+- `docker/production/probe-contacts-search-readonly.ts` 返回 `contacts.Found`，生产 MySQL 样本 `777000` 不在该用户联系人列表中，且与 `results` 中的 `PeerUser` 和 hydration `User` 一致；返回数 `results=1`、`users=1`、`my_results=0`、`chats=0`，业务写入为 0。搜索的联系人分类、频道/群结果仍未验收。
+- 以上探针均针对运行中的 `teamgram-server-latest:20261007-r25-prod`。这些是部分生产 session 证据，不覆盖多联系人、缺失 presence、native channel、跨会话推送或进程重启持久性；813 项全量生产验收仍未完成。
+
 ## 2026-10-07 r24 `messages.getMessageEditData` 生产回归复测
 
 - `backend-backend-1` 当前为 `teamgram-server-latest:20261007-r24-prod`，容器 `running`、`restart=0`。使用同一生产用户、频道 `1790115796396772258` 和数据库确认的 TL `id=7`，按原始 `messages.getMessageEditData#fda68d36` / `InputPeerChannel` 请求只读调用；GramJS 构造器仍在运行时缺失，TL 帧仅在内存中编码。
