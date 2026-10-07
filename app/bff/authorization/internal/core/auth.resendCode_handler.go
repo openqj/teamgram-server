@@ -138,6 +138,14 @@ func (c *AuthorizationCore) AuthResendCode(in *mtproto.TLAuthResendCode) (*mtpro
 			codeData2.NextCodeType = model.CodeTypeNone
 			codeData2.State = model.CodeStateSent
 			return nil
+		}, func(codeData2 *model.PhoneCodeTransaction) {
+			if c.svcCtx.Challenges == nil || codeData2 == nil {
+				return
+			}
+			_ = c.svcCtx.Challenges.Revoke(c.ctx, verification.VerifyRequest{
+				Channel: verification.ChannelSMS, Purpose: challengePurposeAuthLogin,
+				Scope: c.challengeScope(), ChallengeID: codeData2.PhoneCodeHash,
+			})
 		})
 	if err2 != nil {
 		c.Logger.Errorf("auth.resendCode - error: %v", err2)

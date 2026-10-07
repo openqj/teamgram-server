@@ -27,7 +27,7 @@ import (
 // MediaUploadRingtoneFile
 // media.uploadRingtoneFile flags:# owner_id:long file:InputFile mime_type:string file_name:string = Document;
 func (c *MediaCore) MediaUploadRingtoneFile(in *media.TLMediaUploadRingtoneFile) (*mtproto.Document, error) {
-	if in == nil || in.GetFile() == nil {
+	if in == nil || in.GetOwnerId() <= 0 || in.GetFile() == nil || in.GetFile().GetId_INT64() <= 0 || in.GetFile().GetParts() <= 0 || in.GetFileName() == "" {
 		return nil, mtproto.ErrInputRequestInvalid
 	}
 

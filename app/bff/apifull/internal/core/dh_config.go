@@ -39,7 +39,7 @@ var telegramDHPrime = []byte{
 
 func dhRandom(n int32) ([]byte, error) {
 	if n <= 0 || n > 256 {
-		n = 256
+		return nil, mtproto.ErrRandomLengthInvalid
 	}
 	buf := make([]byte, n)
 	if _, err := rand.Read(buf); err != nil {

@@ -1,11 +1,15 @@
 package domain
 
 import (
+	"bytes"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"strings"
 	"time"
+
+	"github.com/teamgram/proto/mtproto"
 )
 
 var (
@@ -16,6 +20,8 @@ var (
 	ErrInvalidLocation       = errors.New("invalid channel location")
 	ErrChannelWriteForbidden = errors.New("channel write forbidden")
 	ErrDuplicateMessageID    = errors.New("duplicate channel message id")
+	ErrRandomIDConflict      = errors.New("channel random id reused with different content")
+	ErrRandomIDMissing       = errors.New("channel random id is required")
 )
 
 type ChannelMessage struct {
@@ -30,6 +36,32 @@ type ChannelMessage struct {
 	Pinned       bool
 	ReplyToMsgID int32
 	ReplyToTopID int32
+	Content      ChannelMessageContent
+}
+
+type ChannelMessageContent struct {
+	Media          *mtproto.MessageMedia    `json:"media,omitempty"`
+	Entities       []*mtproto.MessageEntity `json:"entities,omitempty"`
+	ReplyMarkup    *mtproto.ReplyMarkup     `json:"reply_markup,omitempty"`
+	GroupedID      int64                    `json:"grouped_id,omitempty"`
+	AlbumRandomIDs []int64                  `json:"album_random_ids,omitempty"`
+}
+
+func (c ChannelMessageContent) empty() bool {
+	return c.Media == nil && len(c.Entities) == 0 && c.ReplyMarkup == nil &&
+		c.GroupedID == 0 && len(c.AlbumRandomIDs) == 0
+}
+
+// ChannelMessageInput is one item in an atomic channel album write.
+// RequestFingerprint is calculated by the API boundary from the original
+// InputMedia and the complete album random-id list.
+type ChannelMessageInput struct {
+	Text               string
+	ReplyToMsgID       int32
+	ReplyToTopID       int32
+	RandomID           int64
+	Content            ChannelMessageContent
+	RequestFingerprint string
 }
 
 const (
@@ -40,16 +72,231 @@ const (
 )
 
 func InsertChannelMessage(channelID, sender, date int64, text string) (ChannelMessage, error) {
-	return insertChannelMessage(channelID, sender, date, text, 0, 0)
+	return insertChannelMessage(channelID, sender, date, text, 0, 0, 0, ChannelMessageContent{}, "")
 }
 
 // InsertChannelMessageWithReply persists the reply index used by channel
 // discussions. The root is validated inside the same writer transaction.
 func InsertChannelMessageWithReply(channelID, sender, date int64, text string, replyToMsgID, replyToTopID int32) (ChannelMessage, error) {
-	return insertChannelMessage(channelID, sender, date, text, replyToMsgID, replyToTopID)
+	return insertChannelMessage(channelID, sender, date, text, replyToMsgID, replyToTopID, 0, ChannelMessageContent{}, "")
 }
 
-func insertChannelMessage(channelID, sender, date int64, text string, replyToMsgID, replyToTopID int32) (ChannelMessage, error) {
+func InsertChannelMessageWithReplyAndRandomID(channelID, sender, date int64, text string, replyToMsgID, replyToTopID int32, randomID int64) (ChannelMessage, error) {
+	return insertChannelMessage(channelID, sender, date, text, replyToMsgID, replyToTopID, randomID, ChannelMessageContent{}, "")
+}
+
+func InsertChannelMessageWithContentAndRandomID(channelID, sender, date int64, text string, replyToMsgID, replyToTopID int32, randomID int64, content ChannelMessageContent, requestFingerprint string) (ChannelMessage, error) {
+	return insertChannelMessage(channelID, sender, date, text, replyToMsgID, replyToTopID, randomID, content, requestFingerprint)
+}
+
+// InsertChannelMessagesBatch inserts every album item and its channel events
+// in one transaction. A retry is accepted only when every item is already
+// present with the same request fingerprint and complete album random-id list.
+func InsertChannelMessagesBatch(channelID, sender, date int64, inputs []ChannelMessageInput) ([]ChannelMessage, error) {
+	if db == nil {
+		return nil, errors.New("domain mysql is not open")
+	}
+	if len(inputs) == 0 {
+		return nil, ErrInvalidMessageID
+	}
+	if date == 0 {
+		date = time.Now().Unix()
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	if err = validateChannelMessageWriteTx(tx, channelID, sender); err != nil {
+		return nil, err
+	}
+
+	type preparedInput struct {
+		input       ChannelMessageInput
+		contentJSON string
+		hash        [32]byte
+		row         ChannelMessage
+	}
+	prepared := make([]preparedInput, 0, len(inputs))
+	seenRandomIDs := make(map[int64]struct{}, len(inputs))
+	existingCount := 0
+	for _, input := range inputs {
+		if input.RandomID == 0 {
+			return nil, ErrRandomIDMissing
+		}
+		if _, ok := seenRandomIDs[input.RandomID]; ok {
+			return nil, ErrRandomIDConflict
+		}
+		seenRandomIDs[input.RandomID] = struct{}{}
+		if input.ReplyToMsgID < 0 || input.ReplyToTopID < 0 {
+			return nil, ErrInvalidMessageID
+		}
+		if input.ReplyToTopID > 0 && input.ReplyToMsgID == 0 {
+			input.ReplyToMsgID = input.ReplyToTopID
+		}
+		contentJSON, encodeErr := encodeChannelMessageContent(input.Content)
+		if encodeErr != nil {
+			return nil, encodeErr
+		}
+		requestData, marshalErr := json.Marshal(struct {
+			Text               string
+			ReplyToMsgID       int32
+			ReplyToTopID       int32
+			RequestFingerprint string
+		}{input.Text, input.ReplyToMsgID, input.ReplyToTopID, input.RequestFingerprint})
+		if marshalErr != nil {
+			return nil, marshalErr
+		}
+		preparedRow := preparedInput{input: input, contentJSON: contentJSON, hash: sha256.Sum256(requestData)}
+		var messageID, pts int32
+		var storedHash []byte
+		lookupErr := tx.QueryRow(`SELECT message_id, pts, request_hash FROM apifull_channel_message_request
+			WHERE channel_id=? AND sender_user_id=? AND random_id=? FOR UPDATE`, channelID, sender, input.RandomID).
+			Scan(&messageID, &pts, &storedHash)
+		if lookupErr == nil {
+			if !bytes.Equal(storedHash, preparedRow.hash[:]) {
+				return nil, ErrRandomIDConflict
+			}
+			var edited, pinned int
+			var storedContent sql.NullString
+			if lookupErr = tx.QueryRow(`SELECT message_id, sender_user_id, date, message, edited, edited_at, pinned, reply_to_msg_id, reply_to_top_id, COALESCE(content_json,'')
+				FROM apifull_channel_message WHERE channel_id=? AND message_id=?`, channelID, messageID).
+				Scan(&preparedRow.row.MessageID, &preparedRow.row.Sender, &preparedRow.row.Date, &preparedRow.row.Text, &edited, &preparedRow.row.EditedAt, &pinned, &preparedRow.row.ReplyToMsgID, &preparedRow.row.ReplyToTopID, &storedContent); lookupErr != nil {
+				if lookupErr == sql.ErrNoRows {
+					return nil, ErrMessageMissing
+				}
+				return nil, lookupErr
+			}
+			if err = decodeChannelMessageContent(storedContent.String, &preparedRow.row.Content); err != nil {
+				return nil, err
+			}
+			if !sameAlbumRandomIDs(preparedRow.row.Content.AlbumRandomIDs, input.Content.AlbumRandomIDs) {
+				return nil, ErrRandomIDConflict
+			}
+			preparedRow.row.ChannelID, preparedRow.row.Pts = channelID, pts
+			preparedRow.row.Edited, preparedRow.row.Pinned = edited != 0, pinned != 0
+			existingCount++
+		} else if lookupErr != sql.ErrNoRows {
+			return nil, lookupErr
+		}
+		prepared = append(prepared, preparedRow)
+	}
+	if existingCount != 0 {
+		if existingCount != len(prepared) {
+			return nil, ErrRandomIDConflict
+		}
+		rows := make([]ChannelMessage, len(prepared))
+		for i := range prepared {
+			rows[i] = prepared[i].row
+		}
+		if err = tx.Commit(); err != nil {
+			return nil, err
+		}
+		return rows, nil
+	}
+
+	lastID, pts, err := loadChannelMessageSequence(tx, channelID)
+	if err != nil {
+		return nil, err
+	}
+	rows := make([]ChannelMessage, 0, len(prepared))
+	for i := range prepared {
+		lastID++
+		pts++
+		input := prepared[i].input
+		if _, err = tx.Exec(`INSERT INTO apifull_channel_message
+			(channel_id, message_id, sender_user_id, date, message, edited, edited_at, reply_to_msg_id, reply_to_top_id, content_json)
+			VALUES (?,?,?,?,?,0,0,?,?,?)`, channelID, lastID, sender, date, input.Text, input.ReplyToMsgID, input.ReplyToTopID, prepared[i].contentJSON); err != nil {
+			return nil, err
+		}
+		if _, err = tx.Exec(`INSERT INTO apifull_channel_message_request
+			(channel_id, sender_user_id, random_id, message_id, pts, request_hash, created_at)
+			VALUES (?,?,?,?,?,?,?)`, channelID, sender, input.RandomID, lastID, pts, prepared[i].hash[:], date); err != nil {
+			return nil, err
+		}
+		if err = appendChannelEventTx(tx, channelID, pts, 1, channelEventNew, []int32{lastID}, sender, date, input.Text, prepared[i].contentJSON, 0, false); err != nil {
+			return nil, err
+		}
+		rows = append(rows, ChannelMessage{ChannelID: channelID, MessageID: lastID, Pts: pts, Sender: sender, Date: date,
+			Text: input.Text, ReplyToMsgID: input.ReplyToMsgID, ReplyToTopID: input.ReplyToTopID, Content: input.Content})
+	}
+	if err = saveChannelMessageSequence(tx, channelID, lastID, pts); err != nil {
+		return nil, err
+	}
+	if err = tx.Commit(); err != nil {
+		return nil, err
+	}
+	return rows, nil
+}
+
+func sameAlbumRandomIDs(left, right []int64) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if left[i] != right[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func ValidateChannelMessageWrite(channelID, sender int64) error {
+	if db == nil {
+		return errors.New("domain mysql is not open")
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err = validateChannelMessageWriteTx(tx, channelID, sender); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func validateChannelMessageWriteTx(tx *sql.Tx, channelID, sender int64) error {
+	var creator int64
+	var broadcast int
+	err := tx.QueryRow(`SELECT creator_user_id, broadcast FROM apifull_channel WHERE id=? FOR UPDATE`, channelID).Scan(&creator, &broadcast)
+	if err == sql.ErrNoRows {
+		return ErrChannelMissing
+	}
+	if err != nil {
+		return err
+	}
+	if creator == sender {
+		return nil
+	}
+	var rawRights, rawBanned string
+	err = tx.QueryRow(`SELECT admin_rights, banned_rights FROM apifull_channel_member
+		WHERE channel_id=? AND user_id=?`, channelID, sender).Scan(&rawRights, &rawBanned)
+	if err == sql.ErrNoRows {
+		return ErrNotChannelMember
+	}
+	if err != nil {
+		return err
+	}
+	if rawBanned != "" {
+		var banned ChannelBannedRights
+		if err = json.Unmarshal([]byte(rawBanned), &banned); err != nil {
+			return err
+		}
+		if banned.Active(time.Now().Unix()) && (banned.ViewMessages || banned.SendMessages || banned.SendPlain) {
+			return ErrChannelWriteForbidden
+		}
+	}
+	if broadcast != 0 {
+		var rights ChannelAdminRights
+		if rawRights == "" || json.Unmarshal([]byte(rawRights), &rights) != nil || !rights.PostMessages {
+			return ErrChannelWriteForbidden
+		}
+	}
+	return nil
+}
+
+func insertChannelMessage(channelID, sender, date int64, text string, replyToMsgID, replyToTopID int32, randomID int64, content ChannelMessageContent, requestFingerprint string) (ChannelMessage, error) {
 	var row ChannelMessage
 	if db == nil {
 		return row, errors.New("domain mysql is not open")
@@ -68,39 +315,66 @@ func insertChannelMessage(channelID, sender, date int64, text string, replyToMsg
 	if replyToTopID > 0 && replyToMsgID == 0 {
 		replyToMsgID = replyToTopID
 	}
-	var creator int64
-	var broadcast int
-	err = tx.QueryRow(`SELECT creator_user_id, broadcast FROM apifull_channel WHERE id=? FOR UPDATE`, channelID).Scan(&creator, &broadcast)
-	if err == sql.ErrNoRows {
-		return row, ErrChannelMissing
+	if err = validateChannelMessageWriteTx(tx, channelID, sender); err != nil {
+		return row, err
 	}
+	contentJSON, err := encodeChannelMessageContent(content)
 	if err != nil {
 		return row, err
 	}
-	if creator != sender {
-		var rawRights, rawBanned string
-		err = tx.QueryRow(`SELECT admin_rights, banned_rights FROM apifull_channel_member
-			WHERE channel_id=? AND user_id=?`, channelID, sender).Scan(&rawRights, &rawBanned)
-		if err == sql.ErrNoRows {
-			return row, ErrNotChannelMember
+	var requestHash [32]byte
+	if randomID != 0 {
+		var requestData []byte
+		var marshalErr error
+		if requestFingerprint == "" {
+			requestData, marshalErr = json.Marshal(struct {
+				Text         string
+				ReplyToMsgID int32
+				ReplyToTopID int32
+			}{text, replyToMsgID, replyToTopID})
+		} else {
+			requestData, marshalErr = json.Marshal(struct {
+				Text               string
+				ReplyToMsgID       int32
+				ReplyToTopID       int32
+				RequestFingerprint string
+			}{text, replyToMsgID, replyToTopID, requestFingerprint})
 		}
-		if err != nil {
-			return row, err
+		if marshalErr != nil {
+			return row, marshalErr
 		}
-		if rawBanned != "" {
-			var banned ChannelBannedRights
-			if err = json.Unmarshal([]byte(rawBanned), &banned); err != nil {
-				return row, err
+		requestHash = sha256.Sum256(requestData)
+		var messageID, pts int32
+		var storedHash []byte
+		lookupErr := tx.QueryRow(`SELECT message_id, pts, request_hash FROM apifull_channel_message_request
+			WHERE channel_id=? AND sender_user_id=? AND random_id=?`, channelID, sender, randomID).Scan(&messageID, &pts, &storedHash)
+		if lookupErr == nil {
+			if !bytes.Equal(storedHash, requestHash[:]) {
+				return row, ErrRandomIDConflict
 			}
-			if banned.Active(time.Now().Unix()) && (banned.ViewMessages || banned.SendMessages || banned.SendPlain) {
-				return row, ErrChannelWriteForbidden
+			var edited, pinned int
+			var contentJSON sql.NullString
+			lookupErr = tx.QueryRow(`SELECT message_id, sender_user_id, date, message, edited, edited_at, pinned, reply_to_msg_id, reply_to_top_id, COALESCE(content_json,'')
+				FROM apifull_channel_message WHERE channel_id=? AND message_id=?`, channelID, messageID).
+				Scan(&row.MessageID, &row.Sender, &row.Date, &row.Text, &edited, &row.EditedAt, &pinned, &row.ReplyToMsgID, &row.ReplyToTopID, &contentJSON)
+			if lookupErr == sql.ErrNoRows {
+				return row, ErrMessageMissing
 			}
+			if lookupErr != nil {
+				return row, lookupErr
+			}
+			row.ChannelID, row.Pts = channelID, pts
+			row.Edited, row.Pinned = edited != 0, pinned != 0
+			if err = decodeChannelMessageContent(contentJSON.String, &row.Content); err != nil {
+				return ChannelMessage{}, err
+			}
+			if err = tx.Commit(); err != nil {
+				return ChannelMessage{}, err
+			}
+			return row, nil
 		}
-		if broadcast != 0 {
-			var rights ChannelAdminRights
-			if rawRights == "" || json.Unmarshal([]byte(rawRights), &rights) != nil || !rights.PostMessages {
-				return row, ErrChannelWriteForbidden
-			}
+		if lookupErr != sql.ErrNoRows {
+			return row, lookupErr
 		}
 	}
 	lastID, pts, err := loadChannelMessageSequence(tx, channelID)
@@ -113,18 +387,43 @@ func insertChannelMessage(channelID, sender, date int64, text string, replyToMsg
 		return row, err
 	}
 	if _, err = tx.Exec(`INSERT INTO apifull_channel_message
-		(channel_id, message_id, sender_user_id, date, message, edited, edited_at, reply_to_msg_id, reply_to_top_id)
-		VALUES (?,?,?,?,?,0,0,?,?)`, channelID, next, sender, date, text, replyToMsgID, replyToTopID); err != nil {
+		(channel_id, message_id, sender_user_id, date, message, edited, edited_at, reply_to_msg_id, reply_to_top_id, content_json)
+		VALUES (?,?,?,?,?,0,0,?,?,?)`, channelID, next, sender, date, text, replyToMsgID, replyToTopID, contentJSON); err != nil {
 		return row, err
 	}
-	if err = appendChannelEventTx(tx, channelID, pts, 1, channelEventNew, []int32{next}, sender, date, text, 0, false); err != nil {
+	if randomID != 0 {
+		if _, err = tx.Exec(`INSERT INTO apifull_channel_message_request
+			(channel_id, sender_user_id, random_id, message_id, pts, request_hash, created_at)
+			VALUES (?,?,?,?,?,?,?)`, channelID, sender, randomID, next, pts, requestHash[:], date); err != nil {
+			return row, err
+		}
+	}
+	if err = appendChannelEventTx(tx, channelID, pts, 1, channelEventNew, []int32{next}, sender, date, text, contentJSON, 0, false); err != nil {
 		return row, err
 	}
 	if err = tx.Commit(); err != nil {
 		return row, err
 	}
 	return ChannelMessage{ChannelID: channelID, MessageID: next, Pts: pts, Sender: sender, Date: date, Text: text,
-		ReplyToMsgID: replyToMsgID, ReplyToTopID: replyToTopID}, nil
+		ReplyToMsgID: replyToMsgID, ReplyToTopID: replyToTopID, Content: content}, nil
+}
+
+func encodeChannelMessageContent(content ChannelMessageContent) (string, error) {
+	if content.empty() {
+		return "", nil
+	}
+	encoded, err := json.Marshal(content)
+	if err != nil {
+		return "", err
+	}
+	return string(encoded), nil
+}
+
+func decodeChannelMessageContent(encoded string, content *ChannelMessageContent) error {
+	if encoded == "" || encoded == "null" {
+		return nil
+	}
+	return json.Unmarshal([]byte(encoded), content)
 }
 
 func UpdateChannelMessage(channelID, sender int64, messageID int32, text string) (ChannelMessage, error) {
@@ -149,13 +448,17 @@ func UpdateChannelMessage(channelID, sender int64, messageID int32, text string)
 		return row, ErrNotCreator
 	}
 	var edited, pinned int
-	err = tx.QueryRow(`SELECT message_id, sender_user_id, date, message, edited, edited_at, pinned, reply_to_msg_id, reply_to_top_id
+	var contentJSON sql.NullString
+	err = tx.QueryRow(`SELECT message_id, sender_user_id, date, message, edited, edited_at, pinned, reply_to_msg_id, reply_to_top_id, COALESCE(content_json,'')
 		FROM apifull_channel_message WHERE channel_id=? AND message_id=? FOR UPDATE`, channelID, messageID).
-		Scan(&row.MessageID, &row.Sender, &row.Date, &row.Text, &edited, &row.EditedAt, &pinned, &row.ReplyToMsgID, &row.ReplyToTopID)
+		Scan(&row.MessageID, &row.Sender, &row.Date, &row.Text, &edited, &row.EditedAt, &pinned, &row.ReplyToMsgID, &row.ReplyToTopID, &contentJSON)
 	if err == sql.ErrNoRows {
 		return ChannelMessage{}, ErrMessageMissing
 	}
 	if err != nil {
+		return ChannelMessage{}, err
+	}
+	if err = decodeChannelMessageContent(contentJSON.String, &row.Content); err != nil {
 		return ChannelMessage{}, err
 	}
 	pts, err := advanceChannelMessagePTS(tx, channelID, 1)
@@ -167,7 +470,7 @@ func UpdateChannelMessage(channelID, sender int64, messageID int32, text string)
 		text, editedAt, channelID, messageID); err != nil {
 		return ChannelMessage{}, err
 	}
-	if err = appendChannelEventTx(tx, channelID, pts, 1, channelEventEdit, []int32{messageID}, row.Sender, row.Date, text, editedAt, pinned != 0); err != nil {
+	if err = appendChannelEventTx(tx, channelID, pts, 1, channelEventEdit, []int32{messageID}, row.Sender, row.Date, text, contentJSON.String, editedAt, pinned != 0); err != nil {
 		return ChannelMessage{}, err
 	}
 	if err = tx.Commit(); err != nil {
@@ -204,13 +507,17 @@ func SetChannelMessagePinned(channelID, sender int64, messageID int32, pinned bo
 		return row, ErrNotCreator
 	}
 	var edited, pinFlag int
-	err = tx.QueryRow(`SELECT message_id, sender_user_id, date, message, edited, edited_at, pinned, reply_to_msg_id, reply_to_top_id
+	var contentJSON sql.NullString
+	err = tx.QueryRow(`SELECT message_id, sender_user_id, date, message, edited, edited_at, pinned, reply_to_msg_id, reply_to_top_id, COALESCE(content_json,'')
 		FROM apifull_channel_message WHERE channel_id=? AND message_id=? FOR UPDATE`, channelID, messageID).
-		Scan(&row.MessageID, &row.Sender, &row.Date, &row.Text, &edited, &row.EditedAt, &pinFlag, &row.ReplyToMsgID, &row.ReplyToTopID)
+		Scan(&row.MessageID, &row.Sender, &row.Date, &row.Text, &edited, &row.EditedAt, &pinFlag, &row.ReplyToMsgID, &row.ReplyToTopID, &contentJSON)
 	if err == sql.ErrNoRows {
 		return ChannelMessage{}, ErrMessageMissing
 	}
 	if err != nil {
+		return ChannelMessage{}, err
+	}
+	if err = decodeChannelMessageContent(contentJSON.String, &row.Content); err != nil {
 		return ChannelMessage{}, err
 	}
 	flag := 0
@@ -225,7 +532,7 @@ func SetChannelMessagePinned(channelID, sender int64, messageID int32, pinned bo
 	if err != nil {
 		return ChannelMessage{}, err
 	}
-	if err = appendChannelEventTx(tx, channelID, pts, 1, channelEventPin, []int32{messageID}, row.Sender, row.Date, row.Text, row.EditedAt, pinned); err != nil {
+	if err = appendChannelEventTx(tx, channelID, pts, 1, channelEventPin, []int32{messageID}, row.Sender, row.Date, row.Text, contentJSON.String, row.EditedAt, pinned); err != nil {
 		return ChannelMessage{}, err
 	}
 	if err = tx.Commit(); err != nil {
@@ -281,7 +588,7 @@ func ClearChannelMessagePins(channelID, sender int64) ([]int32, int32, error) {
 		if _, err = tx.Exec(`UPDATE apifull_channel_message SET pinned=0 WHERE channel_id=? AND pinned=1`, channelID); err != nil {
 			return nil, 0, err
 		}
-		if err = appendChannelEventTx(tx, channelID, pts, int32(len(ids)), channelEventPin, ids, 0, 0, "", 0, false); err != nil {
+		if err = appendChannelEventTx(tx, channelID, pts, int32(len(ids)), channelEventPin, ids, 0, 0, "", "", 0, false); err != nil {
 			return nil, 0, err
 		}
 	}
@@ -323,7 +630,7 @@ func DeleteChannelMessages(channelID, sender int64, ids []int32) ([]int32, int32
 	if err != nil {
 		return nil, 0, err
 	}
-	if err = appendChannelEventTx(tx, channelID, pts, int32(len(deleted)), channelEventDelete, deleted, 0, 0, "", 0, false); err != nil {
+	if err = appendChannelEventTx(tx, channelID, pts, int32(len(deleted)), channelEventDelete, deleted, 0, 0, "", "", 0, false); err != nil {
 		return nil, 0, err
 	}
 	if err = tx.Commit(); err != nil {
@@ -359,7 +666,7 @@ func DeleteChannelHistory(channelID, sender int64, maxID int32) ([]int32, int32,
 	if err != nil {
 		return nil, 0, err
 	}
-	if err = appendChannelEventTx(tx, channelID, pts, int32(len(deleted)), channelEventDelete, deleted, 0, 0, "", 0, false); err != nil {
+	if err = appendChannelEventTx(tx, channelID, pts, int32(len(deleted)), channelEventDelete, deleted, 0, 0, "", "", 0, false); err != nil {
 		return nil, 0, err
 	}
 	if err = tx.Commit(); err != nil {
@@ -414,7 +721,7 @@ func DeleteChannelParticipantHistory(channelID, actorID, participantID int64) (i
 		return 0, 0, err
 	}
 	if len(deleted) > 0 {
-		if err = appendChannelEventTx(tx, channelID, pts, ptsCount, channelEventDelete, deleted, participantID, 0, "", 0, false); err != nil {
+		if err = appendChannelEventTx(tx, channelID, pts, ptsCount, channelEventDelete, deleted, participantID, 0, "", "", 0, false); err != nil {
 			return 0, 0, err
 		}
 	}
@@ -547,7 +854,7 @@ func advanceChannelMessagePTS(tx *sql.Tx, channelID int64, count int32) (int32, 
 	return pts, nil
 }
 
-func appendChannelEventTx(tx *sql.Tx, channelID int64, pts, ptsCount int32, eventType string, messageIDs []int32, sender, date int64, text string, editedAt int64, pinned bool) error {
+func appendChannelEventTx(tx *sql.Tx, channelID int64, pts, ptsCount int32, eventType string, messageIDs []int32, sender, date int64, text, contentJSON string, editedAt int64, pinned bool) error {
 	if pts <= 0 || ptsCount <= 0 || eventType == "" {
 		return nil
 	}
@@ -560,8 +867,8 @@ func appendChannelEventTx(tx *sql.Tx, channelID int64, pts, ptsCount int32, even
 		pin = 1
 	}
 	_, err = tx.Exec(`INSERT INTO apifull_channel_event
-		(channel_id, pts, pts_count, event_type, message_ids, sender_user_id, date, message, edited_at, pinned)
-		VALUES (?,?,?,?,?,?,?,?,?,?)`, channelID, pts, ptsCount, eventType, ids, sender, date, text, editedAt, pin)
+		(channel_id, pts, pts_count, event_type, message_ids, sender_user_id, date, message, content_json, edited_at, pinned)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?)`, channelID, pts, ptsCount, eventType, ids, sender, date, text, contentJSON, editedAt, pin)
 	return err
 }
 
@@ -650,7 +957,7 @@ func ListChannelMessages(userID, channelID int64, beforeID, limit int32) ([]Chan
 	if limit > 50 {
 		limit = 50
 	}
-	q := `SELECT message_id, sender_user_id, date, message, edited, edited_at, pinned, reply_to_msg_id, reply_to_top_id
+	q := `SELECT message_id, sender_user_id, date, message, edited, edited_at, pinned, reply_to_msg_id, reply_to_top_id, COALESCE(content_json,'')
 		FROM apifull_channel_message WHERE channel_id=? AND NOT EXISTS (
 			SELECT 1 FROM apifull_channel_message_hidden h
 			WHERE h.user_id=? AND h.channel_id=apifull_channel_message.channel_id
@@ -677,8 +984,8 @@ func ListChannelMessagesRange(userID, channelID int64, minID, maxID, limit int32
 	if limit <= 0 {
 		limit = 20
 	}
-	if limit > 50 {
-		limit = 50
+	if limit > 100 {
+		limit = 100
 	}
 	where := `channel_id=? AND NOT EXISTS (
 		SELECT 1 FROM apifull_channel_message_hidden h
@@ -698,7 +1005,7 @@ func ListChannelMessagesRange(userID, channelID int64, minID, maxID, limit int32
 		return nil, 0, err
 	}
 	queryArgs := append(append([]any(nil), args...), limit)
-	rows, err := db.Query(`SELECT message_id, sender_user_id, date, message, edited, edited_at, pinned, reply_to_msg_id, reply_to_top_id
+	rows, err := db.Query(`SELECT message_id, sender_user_id, date, message, edited, edited_at, pinned, reply_to_msg_id, reply_to_top_id, COALESCE(content_json,'')
 		FROM apifull_channel_message WHERE `+where+` ORDER BY message_id DESC LIMIT ?`, queryArgs...)
 	if err != nil {
 		return nil, 0, err
@@ -718,7 +1025,7 @@ func ListPinnedChannelMessages(userID, channelID int64, limit int32) ([]ChannelM
 	if limit > 50 {
 		limit = 50
 	}
-	rows, err := db.Query(`SELECT message_id, sender_user_id, date, message, edited, edited_at, pinned, reply_to_msg_id, reply_to_top_id
+	rows, err := db.Query(`SELECT message_id, sender_user_id, date, message, edited, edited_at, pinned, reply_to_msg_id, reply_to_top_id, COALESCE(content_json,'')
 		FROM apifull_channel_message WHERE channel_id=? AND pinned=1 AND NOT EXISTS (
 			SELECT 1 FROM apifull_channel_message_hidden h
 			WHERE h.user_id=? AND h.channel_id=apifull_channel_message.channel_id
@@ -746,7 +1053,7 @@ func ChannelMessagesByID(userID, channelID int64, ids []int32) ([]ChannelMessage
 		args = append(args, id)
 	}
 	args = append(args, userID)
-	rows, err := db.Query(`SELECT message_id, sender_user_id, date, message, edited, edited_at, pinned, reply_to_msg_id, reply_to_top_id
+	rows, err := db.Query(`SELECT message_id, sender_user_id, date, message, edited, edited_at, pinned, reply_to_msg_id, reply_to_top_id, COALESCE(content_json,'')
 		FROM apifull_channel_message WHERE channel_id=? AND message_id IN (`+strings.Join(holders, ",")+`) AND NOT EXISTS (
 			SELECT 1 FROM apifull_channel_message_hidden h
 			WHERE h.user_id=? AND h.channel_id=apifull_channel_message.channel_id
@@ -756,6 +1063,80 @@ func ChannelMessagesByID(userID, channelID int64, ids []int32) ([]ChannelMessage
 	}
 	defer rows.Close()
 	return scanChannelMessages(channelID, rows)
+}
+
+// ChannelMessageAuthor resolves the author using the channel-native message ID.
+// The legacy channels tables remain authoritative for channels created by the
+// core channel service; APIFull owns channels that exist only in its own store.
+func ChannelMessageAuthor(userID, channelID, accessHash int64, messageID int32) (int64, bool, error) {
+	if db == nil {
+		return 0, false, errors.New("domain mysql is not open")
+	}
+	if userID <= 0 || channelID <= 0 || accessHash == 0 || messageID <= 0 {
+		return 0, false, nil
+	}
+
+	var legacyAccessHash, creatorID int64
+	var legacyDeleted int
+	err := db.QueryRow(`SELECT access_hash, creator_user_id, deleted FROM channels WHERE id=?`, channelID).
+		Scan(&legacyAccessHash, &creatorID, &legacyDeleted)
+	if err != nil && err != sql.ErrNoRows {
+		return 0, false, err
+	}
+	if err == nil {
+		if legacyDeleted != 0 || legacyAccessHash != accessHash {
+			return 0, false, ErrChannelMissing
+		}
+		var member bool
+		if creatorID != userID {
+			if err = db.QueryRow(`SELECT EXISTS(SELECT 1 FROM channel_participants
+				WHERE channel_id=? AND user_id=? AND state=0 AND left_at=0)`, channelID, userID).Scan(&member); err != nil {
+				return 0, false, err
+			}
+			if !member {
+				return 0, false, ErrNotChannelMember
+			}
+		}
+		var fromPredicate sql.NullString
+		var authorID sql.NullInt64
+		err = db.QueryRow(`SELECT JSON_UNQUOTE(JSON_EXTRACT(message_data, '$.from_id.predicate_name')),
+			CAST(JSON_UNQUOTE(JSON_EXTRACT(message_data, '$.from_id.user_id')) AS SIGNED)
+			FROM channel_messages WHERE channel_id=? AND message_id=? AND deleted=0`, channelID, messageID).
+			Scan(&fromPredicate, &authorID)
+		if err == sql.ErrNoRows {
+			return 0, false, nil
+		}
+		if err != nil {
+			return 0, false, err
+		}
+		if fromPredicate.String != "peerUser" || !authorID.Valid || authorID.Int64 <= 0 {
+			return 0, true, nil
+		}
+		return authorID.Int64, true, nil
+	}
+
+	channel, ok, err := LoadChannel(channelID)
+	if err != nil {
+		return 0, false, err
+	}
+	if !ok || channel.AccessHash != accessHash {
+		return 0, false, ErrChannelMissing
+	}
+	member, err := ChannelIsMember(channelID, userID)
+	if err != nil {
+		return 0, false, err
+	}
+	if !member {
+		return 0, false, ErrNotChannelMember
+	}
+	rows, err := ChannelMessagesByID(userID, channelID, []int32{messageID})
+	if err != nil {
+		return 0, false, err
+	}
+	if len(rows) == 0 {
+		return 0, false, nil
+	}
+	return rows[0].Sender, true, nil
 }
 
 func likeContains(q string) string {
@@ -822,7 +1203,7 @@ func SearchChannelMessages(userID, channelID int64, q string, sender int64, befo
 		pageArgs = append(pageArgs, beforeID)
 	}
 	pageArgs = append(pageArgs, limit)
-	query := `SELECT message_id, sender_user_id, date, message, edited, edited_at, pinned, reply_to_msg_id, reply_to_top_id
+	query := `SELECT message_id, sender_user_id, date, message, edited, edited_at, pinned, reply_to_msg_id, reply_to_top_id, COALESCE(content_json,'')
 		FROM apifull_channel_message WHERE ` + clause + ` ORDER BY message_id DESC LIMIT ?`
 	if addOffset > 0 {
 		query += ` OFFSET ?`
@@ -1081,7 +1462,11 @@ func scanChannelMessages(channelID int64, rows *sql.Rows) ([]ChannelMessage, err
 	for rows.Next() {
 		var row ChannelMessage
 		var edited, pinned int
-		if err := rows.Scan(&row.MessageID, &row.Sender, &row.Date, &row.Text, &edited, &row.EditedAt, &pinned, &row.ReplyToMsgID, &row.ReplyToTopID); err != nil {
+		var contentJSON sql.NullString
+		if err := rows.Scan(&row.MessageID, &row.Sender, &row.Date, &row.Text, &edited, &row.EditedAt, &pinned, &row.ReplyToMsgID, &row.ReplyToTopID, &contentJSON); err != nil {
+			return nil, err
+		}
+		if err := decodeChannelMessageContent(contentJSON.String, &row.Content); err != nil {
 			return nil, err
 		}
 		row.ChannelID = channelID

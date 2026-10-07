@@ -117,6 +117,16 @@ async function ordinaryHistory(Api: any, actor: Actor, peer: any) {
   }));
 }
 
+async function waitForHistoryMessage(Api: any, actor: Actor, peer: any, text: string, attempts = 40) {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const value = await ordinaryHistory(Api, actor, peer);
+    const message = messageList(value).find((candidate: any) => candidate?.message === text);
+    if (message) return message;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  return undefined;
+}
+
 function scheduledID(updates: any) {
   const update = Array.isArray(updates?.updates)
     ? updates.updates.find((candidate: any) => candidate?.message?.id !== undefined)
@@ -203,12 +213,9 @@ async function run() {
     requireCondition(!messageList(afterSend).some((message: any) => message?.id === ready.id), 'sent message remains scheduled');
     console.log(`PASS scheduled delivery consumption: ${rpcName(sent)}`);
 
-    const bobHistory = await ordinaryHistory(Api, bobActor, alicePeer);
-    requireCondition(
-      messageList(bobHistory).some((message: any) => message?.message === sendText),
-      'recipient history did not contain the delivered scheduled message',
-    );
-    console.log(`PASS scheduled recipient delivery: ${rpcName(bobHistory)}`);
+    const delivered = await waitForHistoryMessage(Api, bobActor, alicePeer, sendText);
+    requireCondition(delivered, 'recipient history did not contain the delivered scheduled message');
+    console.log('PASS scheduled recipient delivery: messages.Messages');
 
     await expectRpcError('past schedule rejection', 'SCHEDULE_DATE_INVALID', () => aliceActor.client.invoke(
       new Api.messages.SendMessage({

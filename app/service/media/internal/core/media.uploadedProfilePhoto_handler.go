@@ -29,6 +29,9 @@ import (
 // MediaUploadedProfilePhoto
 // media.uploadedProfilePhoto owner_id:long photo_id:long = Photo;
 func (c *MediaCore) MediaUploadedProfilePhoto(in *media.TLMediaUploadedProfilePhoto) (*mtproto.Photo, error) {
+	if in == nil || in.GetOwnerId() <= 0 || in.GetPhotoId() <= 0 {
+		return nil, mtproto.ErrMediaInvalid
+	}
 	photo, err := c.svcCtx.Dao.DfsClient.DfsUploadedProfilePhoto(c.ctx, &dfs.TLDfsUploadedProfilePhoto{
 		Creator: in.OwnerId,
 		PhotoId: in.PhotoId,

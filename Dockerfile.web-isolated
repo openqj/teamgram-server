@@ -11,10 +11,13 @@ COPY teamgram-server/docker/web-isolated/mysql-init/zz-web-isolated-test-account
 
 FROM golang:1.23.0 AS builder
 ARG GOFLAGS=-p=2
+ENV GOPROXY=https://goproxy.cn,direct
 WORKDIR /app/teamgram-server
 COPY teamgram-server/ ./
 COPY proto/ /app/proto/
-RUN for attempt in 1 2 3; do \
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    for attempt in 1 2 3; do \
       bash -e ./build.sh && exit 0; \
       test "$attempt" -lt 3 || exit 1; \
       sleep 3; \

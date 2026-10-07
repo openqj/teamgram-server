@@ -100,6 +100,9 @@ func (c *MessagesCore) MessagesSearch(in *mtproto.TLMessagesSearch) (*mtproto.Me
 	}).To_Messages_Messages()
 
 	if in.SavedPeerId != nil {
+		if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.MessageClient == nil {
+			return nil, mtproto.ErrInternalServerError
+		}
 		found, err := c.searchSavedPeer(in, rValues, fromId, offsetId, limit)
 		if err != nil {
 			return nil, err
@@ -117,6 +120,14 @@ func (c *MessagesCore) MessagesSearch(in *mtproto.TLMessagesSearch) (*mtproto.Me
 	filterType := mtproto.FromMessagesFilter(in.Filter)
 	if filterType == mtproto.FilterEmpty && in.Filter.GetPredicateName() != mtproto.Predicate_inputMessagesFilterEmpty {
 		return nil, mtproto.ErrInputFilterInvalid
+	}
+	switch filterType {
+	case mtproto.FilterPhotos, mtproto.FilterVideo, mtproto.FilterPhotoVideo, mtproto.FilterDocument,
+		mtproto.FilterUrl, mtproto.FilterGif, mtproto.FilterVoice, mtproto.FilterMusic, mtproto.FilterChatPhotos,
+		mtproto.FilterPhoneCalls, mtproto.FilterRoundVoice, mtproto.FilterRoundVideo, mtproto.FilterPinned, mtproto.FilterEmpty:
+		if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.MessageClient == nil {
+			return nil, mtproto.ErrInternalServerError
+		}
 	}
 	switch filterType {
 	case mtproto.FilterPhotos:
@@ -382,6 +393,10 @@ func (c *MessagesCore) populateSearchResult(boxList *mtproto.MessageBoxList, res
 			if visitErr != nil {
 				return
 			}
+			if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.UserClient == nil {
+				visitErr = mtproto.ErrInternalServerError
+				return
+			}
 			mUsers, err := c.svcCtx.Dao.UserClient.UserGetMutableUsers(c.ctx, &userpb.TLUserGetMutableUsers{Id: userIdList})
 			if err != nil {
 				visitErr = err
@@ -395,6 +410,10 @@ func (c *MessagesCore) populateSearchResult(boxList *mtproto.MessageBoxList, res
 		},
 		func(chatIdList []int64) {
 			if visitErr != nil {
+				return
+			}
+			if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.ChatClient == nil || c.svcCtx.Dao.ChatClient.Client() == nil {
+				visitErr = mtproto.ErrInternalServerError
 				return
 			}
 			mChats, err := c.svcCtx.Dao.ChatClient.Client().ChatGetChatListByIdList(c.ctx, &chatpb.TLChatGetChatListByIdList{

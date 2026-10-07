@@ -30,8 +30,9 @@ type ServiceContext struct {
 	Config config.Config
 	*dao.Dao
 	*logic.AuthLogic
-	Challenges *code.ChallengeService
-	Plugin     plugin.AuthorizationPlugin
+	Challenges          *code.ChallengeService
+	MissingCodeReporter code.DeliveryProvider
+	Plugin              plugin.AuthorizationPlugin
 }
 
 func NewServiceContext(c config.Config, code2 code.VerifyCodeInterface, plugin plugin.AuthorizationPlugin) *ServiceContext {
@@ -39,6 +40,9 @@ func NewServiceContext(c config.Config, code2 code.VerifyCodeInterface, plugin p
 	injected := code2
 	if code2 == nil {
 		code2 = code.NewVerifyCode(c.Code)
+		// Keep the legacy verifier for signup checks, but let the challenge
+		// service select the configured HTTP SMS provider below.
+		injected = nil
 	}
 	challenges := code.NewChallengeService(
 		d.VerificationStore,
@@ -47,10 +51,11 @@ func NewServiceContext(c config.Config, code2 code.VerifyCodeInterface, plugin p
 		code.NewEmailProvider(c.Code),
 	)
 	return &ServiceContext{
-		Config:     c,
-		Dao:        d,
-		AuthLogic:  logic.NewAuthSignLogic(d, code2),
-		Challenges: challenges,
-		Plugin:     plugin,
+		Config:              c,
+		Dao:                 d,
+		AuthLogic:           logic.NewAuthSignLogic(d, code2),
+		Challenges:          challenges,
+		MissingCodeReporter: code.NewMissingCodeReportProvider(c.Code),
+		Plugin:              plugin,
 	}
 }

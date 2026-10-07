@@ -370,6 +370,16 @@ func (c *AuthorizationCore) authSendCode(authKeyId, sessionId int64, request *mt
 			codeData2.PhoneNumberRegistered = phoneRegistered
 
 			return nil
+		}, func(codeData2 *model.PhoneCodeTransaction) {
+			if c.svcCtx.Challenges == nil || codeData2 == nil {
+				return
+			}
+			for _, channel := range []verification.Channel{verification.ChannelSMS, verification.ChannelApp} {
+				_ = c.svcCtx.Challenges.Revoke(c.ctx, verification.VerifyRequest{
+					Channel: channel, Purpose: challengePurposeAuthLogin,
+					Scope: c.challengeScope(), ChallengeID: codeData2.PhoneCodeHash,
+				})
+			}
 		})
 
 	if err2 != nil {

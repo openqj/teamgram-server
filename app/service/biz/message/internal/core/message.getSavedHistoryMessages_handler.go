@@ -52,6 +52,7 @@ func (c *MessageCore) MessageGetSavedHistoryMessages(in *message.TLMessageGetSav
 		hash       = in.Hash
 		boxList    []*mtproto.MessageBox
 	)
+	peer = normalizeSavedHistoryPeer(peer, selfUserId)
 	if limit > 100 {
 		limit = 100
 	}
@@ -125,4 +126,11 @@ func (c *MessageCore) MessageGetSavedHistoryMessages(in *message.TLMessageGetSav
 		BoxList: boxList,
 		Count:   int32(count),
 	}).To_MessageBoxList(), nil
+}
+
+func normalizeSavedHistoryPeer(peer *mtproto.PeerUtil, selfUserId int64) *mtproto.PeerUtil {
+	if peer != nil && peer.PeerId == selfUserId && (peer.PeerType == mtproto.PEER_SELF || peer.PeerType == mtproto.PEER_USER) {
+		return mtproto.MakePeerUtil(mtproto.PEER_USER, selfUserId)
+	}
+	return peer
 }

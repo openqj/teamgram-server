@@ -1,16 +1,29 @@
 package core
 
 import (
+	"reflect"
 	"testing"
 
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/proto/mtproto/rpc/metadata"
 	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/persist"
-	"google.golang.org/grpc/status"
 )
 
 func sameRPCErrorCode(got, want error) bool {
-	return got != nil && want != nil && status.Code(got) == status.Code(want) && status.Convert(got).Message() == status.Convert(want).Message()
+	return got != nil && want != nil && got.Error() == want.Error()
+}
+
+func nilRPCResult(v any) bool {
+	if v == nil {
+		return true
+	}
+	rv := reflect.ValueOf(v)
+	switch rv.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Ptr, reflect.Slice:
+		return rv.IsNil()
+	default:
+		return false
+	}
 }
 
 func TestStoriesMethodsRequireAuthentication(t *testing.T) {
@@ -28,7 +41,7 @@ func TestStoriesMethodsRequireAuthentication(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			result, err := tc.call()
-			if result != nil || !sameRPCErrorCode(err, mtproto.ErrAuthKeyUnregistered) {
+			if !nilRPCResult(result) || !sameRPCErrorCode(err, mtproto.ErrAuthKeyUnregistered) {
 				t.Fatalf("result=%v err=%v, want nil result and AUTH_KEY_UNREGISTERED", result, err)
 			}
 		})
@@ -45,33 +58,34 @@ func TestStoriesMethodsFailClosedWithoutProvider(t *testing.T) {
 	cases := []struct {
 		name string
 		call func() (any, error)
+		want error
 	}{
-		{"can send count", func() (any, error) { return c.StoriesCanSendStory30EB63F0(nil) }},
-		{"send", func() (any, error) { return c.StoriesSendStory(nil) }},
-		{"edit", func() (any, error) { return c.StoriesEditStory(nil) }},
-		{"delete", func() (any, error) { return c.StoriesDeleteStories(nil) }},
-		{"get all", func() (any, error) { return c.StoriesGetAllStories(nil) }},
-		{"get by id", func() (any, error) { return c.StoriesGetStoriesByID(nil) }},
-		{"increment views", func() (any, error) { return c.StoriesIncrementStoryViews(nil) }},
-		{"export link", func() (any, error) { return c.StoriesExportStoryLink(nil) }},
-		{"send reaction", func() (any, error) { return c.StoriesSendReaction(nil) }},
-		{"peer stories", func() (any, error) { return c.StoriesGetPeerStories(nil) }},
-		{"peer max ids", func() (any, error) { return c.StoriesGetPeerMaxIDs78499170(nil) }},
-		{"toggle hidden", func() (any, error) { return c.StoriesTogglePeerStoriesHidden(nil) }},
-		{"search posts", func() (any, error) { return c.StoriesSearchPosts(nil) }},
-		{"create album", func() (any, error) { return c.StoriesCreateAlbum(nil) }},
-		{"get albums", func() (any, error) { return c.StoriesGetAlbums(nil) }},
-		{"start live", func() (any, error) { return c.StoriesStartLive(nil) }},
-		{"can send bool", func() (any, error) { return c.StoriesCanSendStoryC7DFDFDD(nil) }},
-		{"user max ids", func() (any, error) { return c.UsersGetStoriesMaxIDs(nil) }},
-		{"contact hidden", func() (any, error) { return c.ContactsToggleStoriesHidden(nil) }},
-		{"get user stories", func() (any, error) { return c.StoriesGetUserStories(nil) }},
+		{"can send count", func() (any, error) { return c.StoriesCanSendStory30EB63F0(nil) }, mtproto.ErrMethodNotImpl},
+		{"send", func() (any, error) { return c.StoriesSendStory(nil) }, mtproto.ErrMethodNotImpl},
+		{"edit", func() (any, error) { return c.StoriesEditStory(nil) }, mtproto.ErrMethodNotImpl},
+		{"delete", func() (any, error) { return c.StoriesDeleteStories(nil) }, mtproto.ErrMethodNotImpl},
+		{"get all", func() (any, error) { return c.StoriesGetAllStories(nil) }, mtproto.ErrMethodNotImpl},
+		{"get by id", func() (any, error) { return c.StoriesGetStoriesByID(nil) }, mtproto.ErrInputRequestInvalid},
+		{"increment views", func() (any, error) { return c.StoriesIncrementStoryViews(nil) }, mtproto.ErrStoryIdEmpty},
+		{"export link", func() (any, error) { return c.StoriesExportStoryLink(nil) }, mtproto.ErrMethodNotImpl},
+		{"send reaction", func() (any, error) { return c.StoriesSendReaction(nil) }, mtproto.ErrMethodNotImpl},
+		{"peer stories", func() (any, error) { return c.StoriesGetPeerStories(nil) }, mtproto.ErrMethodNotImpl},
+		{"peer max ids", func() (any, error) { return c.StoriesGetPeerMaxIDs78499170(nil) }, mtproto.ErrMethodNotImpl},
+		{"toggle hidden", func() (any, error) { return c.StoriesTogglePeerStoriesHidden(nil) }, mtproto.ErrInputRequestInvalid},
+		{"search posts", func() (any, error) { return c.StoriesSearchPosts(nil) }, mtproto.ErrMethodNotImpl},
+		{"create album", func() (any, error) { return c.StoriesCreateAlbum(nil) }, mtproto.ErrInputRequestInvalid},
+		{"get albums", func() (any, error) { return c.StoriesGetAlbums(nil) }, mtproto.ErrInputRequestInvalid},
+		{"start live", func() (any, error) { return c.StoriesStartLive(nil) }, mtproto.ErrMethodNotImpl},
+		{"can send bool", func() (any, error) { return c.StoriesCanSendStoryC7DFDFDD(nil) }, mtproto.ErrMethodNotImpl},
+		{"user max ids", func() (any, error) { return c.UsersGetStoriesMaxIDs(nil) }, mtproto.ErrMethodNotImpl},
+		{"contact hidden", func() (any, error) { return c.ContactsToggleStoriesHidden(nil) }, mtproto.ErrMethodNotImpl},
+		{"get user stories", func() (any, error) { return c.StoriesGetUserStories(nil) }, mtproto.ErrMethodNotImpl},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			result, err := tc.call()
-			if result != nil || !sameRPCErrorCode(err, mtproto.ErrMethodNotImpl) {
-				t.Fatalf("result=%v err=%v, want nil result and METHOD_NOT_IMPL", result, err)
+			if !nilRPCResult(result) || !sameRPCErrorCode(err, tc.want) {
+				t.Fatalf("result=%v err=%v, want nil result and %v", result, err, tc.want)
 			}
 		})
 	}

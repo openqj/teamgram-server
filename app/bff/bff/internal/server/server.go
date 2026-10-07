@@ -20,7 +20,11 @@ package server
 
 import (
 	"context"
+	"errors"
 	"flag"
+	"os"
+	"strconv"
+	"strings"
 
 	"github.com/teamgram/proto/mtproto"
 	account_helper "github.com/teamgram/teamgram-server/app/bff/account"
@@ -54,6 +58,7 @@ import (
 	users_helper "github.com/teamgram/teamgram-server/app/bff/users"
 	webbrowserhelper "github.com/teamgram/teamgram-server/app/bff/webbrowser"
 	dialogpb "github.com/teamgram/teamgram-server/app/service/biz/dialog/dialog"
+	codeconf "github.com/teamgram/teamgram-server/pkg/code/conf"
 
 	"github.com/zeromicro/go-zero/core/conf"
 	"github.com/zeromicro/go-zero/core/logx"
@@ -62,6 +67,125 @@ import (
 )
 
 var configFile = flag.String("f", "etc/bff.yaml", "the config file")
+
+func applyTurnEnvironment(c *config.Config) error {
+	for _, override := range []struct {
+		name   string
+		target *string
+	}{
+		{name: "TEAMGRAM_TURN_HOST", target: &c.TurnHost},
+		{name: "TEAMGRAM_TURN_USERNAME", target: &c.TurnUsername},
+		{name: "TEAMGRAM_TURN_PASSWORD", target: &c.TurnPassword},
+		{name: "TEAMGRAM_TURN_SHARED_SECRET", target: &c.TurnSharedSecret},
+	} {
+		if value, ok := os.LookupEnv(override.name); ok {
+			if override.name == "TEAMGRAM_TURN_HOST" {
+				value = strings.TrimSpace(value)
+			}
+			*override.target = value
+		}
+	}
+	if value, ok := os.LookupEnv("TEAMGRAM_TURN_PORT"); ok {
+		port, err := strconv.ParseInt(strings.TrimSpace(value), 10, 32)
+		if err != nil || port < 1 || port > 65535 {
+			return errors.New("TEAMGRAM_TURN_PORT must be an integer from 1 to 65535")
+		}
+		c.TurnPort = int32(port)
+	}
+	if value, ok := os.LookupEnv("TEAMGRAM_TURN_CREDENTIAL_TTL_SECONDS"); ok {
+		ttl, err := strconv.Atoi(strings.TrimSpace(value))
+		if err != nil || ttl < 0 || ttl > 86400 {
+			return errors.New("TEAMGRAM_TURN_CREDENTIAL_TTL_SECONDS must be an integer from 0 to 86400")
+		}
+		c.TurnCredentialTTLSeconds = ttl
+	}
+	return nil
+}
+
+func applyProviderEnvironment(c *config.Config) error {
+	if value, ok := os.LookupEnv("TEAMGRAM_PAYMENT_PROVIDER_ENDPOINT"); ok {
+		c.PaymentProviderEndpoint = strings.TrimSpace(value)
+	}
+	if value, ok := os.LookupEnv("TEAMGRAM_PAYMENT_PROVIDER_KEY"); ok {
+		c.PaymentProviderKey = value
+	}
+	if value, ok := os.LookupEnv("TEAMGRAM_PAYMENT_PROVIDER_SIGNING_KEY"); ok {
+		c.PaymentProviderSigningKey = value
+	}
+	if value, ok := os.LookupEnv("TEAMGRAM_PAYMENT_PROVIDER_TIMEOUT_SECONDS"); ok {
+		timeout, err := strconv.Atoi(strings.TrimSpace(value))
+		if err != nil || timeout < 0 || timeout > 300 {
+			return errors.New("TEAMGRAM_PAYMENT_PROVIDER_TIMEOUT_SECONDS must be an integer from 0 to 300")
+		}
+		c.PaymentProviderTimeoutSeconds = timeout
+	}
+
+	if c.Code == nil {
+		c.Code = &codeconf.SmsVerifyCodeConfig{}
+	}
+	for _, override := range []struct {
+		name   string
+		target *string
+	}{
+		{name: "TEAMGRAM_CODE_SMS_PROVIDER", target: &c.Code.SMSProvider},
+		{name: "TEAMGRAM_CODE_EMAIL_PROVIDER", target: &c.Code.EmailProvider},
+		{name: "TEAMGRAM_CODE_SEND_URL", target: &c.Code.SendCodeUrl},
+		{name: "TEAMGRAM_CODE_EMAIL_SEND_URL", target: &c.Code.EmailSendCodeUrl},
+		{name: "TEAMGRAM_CODE_REPORT_MISSING_URL", target: &c.Code.ReportMissingCodeUrl},
+		{name: "TEAMGRAM_CODE_VERIFY_URL", target: &c.Code.VerifyCodeUrl},
+		{name: "TEAMGRAM_CODE_KEY", target: &c.Code.Key},
+		{name: "TEAMGRAM_CODE_SECRET", target: &c.Code.Secret},
+		{name: "TEAMGRAM_CODE_CHALLENGE_SECRET", target: &c.Code.ChallengeSecret},
+		{name: "TEAMGRAM_CODE_REGION_ID", target: &c.Code.RegionId},
+	} {
+		if value, ok := os.LookupEnv(override.name); ok {
+			*override.target = value
+		}
+	}
+	if value, ok := os.LookupEnv("TEAMGRAM_CODE_PROVIDER_TIMEOUT_SECONDS"); ok {
+		timeout, err := strconv.Atoi(strings.TrimSpace(value))
+		if err != nil || timeout < 0 || timeout > 300 {
+			return errors.New("TEAMGRAM_CODE_PROVIDER_TIMEOUT_SECONDS must be an integer from 0 to 300")
+		}
+		c.Code.ProviderTimeoutSeconds = timeout
+	}
+	if value, ok := os.LookupEnv("TEAMGRAM_CODE_PROVIDER_RETRY_COUNT"); ok {
+		retries, err := strconv.Atoi(strings.TrimSpace(value))
+		if err != nil || retries < 0 || retries > 10 {
+			return errors.New("TEAMGRAM_CODE_PROVIDER_RETRY_COUNT must be an integer from 0 to 10")
+		}
+		c.Code.ProviderRetryCount = retries
+	}
+	if value, ok := os.LookupEnv("TEAMGRAM_CODE_CHALLENGE_TTL_SECONDS"); ok {
+		ttl, err := strconv.Atoi(strings.TrimSpace(value))
+		if err != nil || ttl < 0 || ttl > 86400 {
+			return errors.New("TEAMGRAM_CODE_CHALLENGE_TTL_SECONDS must be an integer from 0 to 86400")
+		}
+		c.Code.ChallengeTTLSeconds = ttl
+	}
+	if value, ok := os.LookupEnv("TEAMGRAM_CODE_RATE_LIMIT"); ok {
+		limit, err := strconv.Atoi(strings.TrimSpace(value))
+		if err != nil || limit < 0 || limit > 100000 {
+			return errors.New("TEAMGRAM_CODE_RATE_LIMIT must be an integer from 0 to 100000")
+		}
+		c.Code.RateLimit = limit
+	}
+	if value, ok := os.LookupEnv("TEAMGRAM_CODE_RATE_WINDOW_SECONDS"); ok {
+		window, err := strconv.Atoi(strings.TrimSpace(value))
+		if err != nil || window < 0 || window > 86400 {
+			return errors.New("TEAMGRAM_CODE_RATE_WINDOW_SECONDS must be an integer from 0 to 86400")
+		}
+		c.Code.RateWindowSeconds = window
+	}
+	if value, ok := os.LookupEnv("TEAMGRAM_CODE_MAX_ATTEMPTS"); ok {
+		attempts, err := strconv.Atoi(strings.TrimSpace(value))
+		if err != nil || attempts < 0 || attempts > 1000 {
+			return errors.New("TEAMGRAM_CODE_MAX_ATTEMPTS must be an integer from 0 to 1000")
+		}
+		c.Code.MaxAttempts = attempts
+	}
+	return nil
+}
 
 type Server struct {
 	grpcSrv *zrpc.RpcServer
@@ -92,8 +216,14 @@ func New() *Server {
 func (s *Server) Initialize() error {
 	var c config.Config
 	conf.MustLoad(*configFile, &c)
+	if err := applyTurnEnvironment(&c); err != nil {
+		return err
+	}
+	if err := applyProviderEnvironment(&c); err != nil {
+		return err
+	}
 
-	logx.Infov(c)
+	logx.Infof("bff configuration loaded for DC %d", c.DcId)
 	// ctx := svc.NewServiceContext(c)
 	// s.grpcSrv = grpc.New(ctx, c.RpcServerConf)
 
@@ -120,6 +250,7 @@ func (s *Server) Initialize() error {
 					RpcServerConf:     c.RpcServerConf,
 					DcId:              c.DcId,
 					KnownDcIds:        c.KnownDcIds,
+					TrustedApps:       c.QrCode.TrustedApps,
 					KV:                c.KV,
 					MysqlDSN:          c.MysqlDSN,
 					UserClient:        c.BizServiceClient,
@@ -197,6 +328,7 @@ func (s *Server) Initialize() error {
 			grpcServer,
 			files_helper.New(files_helper.Config{
 				RpcServerConf: c.RpcServerConf,
+				DcId:          c.DcId,
 				DfsClient:     c.DfsClient,
 				UserClient:    c.BizServiceClient,
 				MediaClient:   c.MediaClient,
@@ -272,6 +404,10 @@ func (s *Server) Initialize() error {
 			grpcServer,
 			messages_helper.New(messages_helper.Config{
 				RpcServerConf: c.RpcServerConf,
+				KV:            c.KV,
+				SearchPostsFlood: messages_helper.SearchPostsFloodConfig{
+					TotalDaily: c.SearchPostsFlood.TotalDaily,
+				},
 				UserClient:    c.BizServiceClient,
 				ChatClient:    c.BizServiceClient,
 				MsgClient:     c.MsgClient,
@@ -410,9 +546,14 @@ func (s *Server) Initialize() error {
 			MysqlDSN:                      c.MysqlDSN,
 			PaymentProviderEndpoint:       c.PaymentProviderEndpoint,
 			PaymentProviderKey:            c.PaymentProviderKey,
+			PaymentProviderSigningKey:     c.PaymentProviderSigningKey,
 			PaymentProviderTimeoutSeconds: c.PaymentProviderTimeoutSeconds,
 			TurnHost:                      c.TurnHost,
 			TurnPort:                      c.TurnPort,
+			TurnUsername:                  c.TurnUsername,
+			TurnPassword:                  c.TurnPassword,
+			TurnSharedSecret:              c.TurnSharedSecret,
+			TurnCredentialTTLSeconds:      c.TurnCredentialTTLSeconds,
 		})
 		mtproto.RegisterRPCAccentColorsServer(grpcServer, apiFull)
 		mtproto.RegisterRPCAffiliateProgramsServer(grpcServer, apiFull)

@@ -277,9 +277,12 @@ async function run() {
     );
     console.log(`PASS member read receipt: ${rpcName(channelRead)}`);
 
-    await expectRpcError('readMessageContents remains fail-closed', 'METHOD_NOT_IMPL', () => bob.client.invoke(
-      new Api.channels.ReadMessageContents({ channel: bobInputChannel, id: [message.id] }),
-    ));
+    const contentRead = await bob.client.invoke(new Api.channels.ReadMessageContents({
+      channel: bobInputChannel,
+      id: [message.id],
+    }));
+    requireCondition(contentRead === true || rpcName(contentRead).toLowerCase().includes('true'), 'channels.readMessageContents did not return true');
+    console.log(`PASS channel content read: ${rpcName(contentRead)}`);
 
 	await expectRpcError('non-member history rejection', 'USER_NOT_PARTICIPANT', () => history(Api, dave, davePeer));
 	await expectRpcError('non-member search rejection', 'USER_NOT_PARTICIPANT', () => search(Api, dave, davePeer, tag));

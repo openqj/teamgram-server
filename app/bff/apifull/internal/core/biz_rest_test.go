@@ -5,6 +5,7 @@ import (
 
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/proto/mtproto/rpc/metadata"
+	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/persist"
 )
 
 func TestBizRestAwayMessage(t *testing.T) {
@@ -38,5 +39,23 @@ func TestBusinessGreetingMySQL(t *testing.T) {
 	got := businessGreetingMessage(15)
 	if got == nil || got.GetPredicateName() != "hello-mysql" {
 		t.Fatalf("greeting: %+v", got)
+	}
+}
+
+func TestBusinessLocationClear(t *testing.T) {
+	c := &ApiFullCore{MD: &metadata.RpcMetadata{UserId: 16}}
+	if _, err := c.AccountUpdateBusinessLocation(&mtproto.TLAccountUpdateBusinessLocation{
+		Address: mtproto.MakeFlagsString("temporary"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if raw, err := persist.Default.Get(locationKey(16)); err != nil || raw == "" {
+		t.Fatalf("location write: raw=%q err=%v", raw, err)
+	}
+	if _, err := c.AccountUpdateBusinessLocation(&mtproto.TLAccountUpdateBusinessLocation{}); err != nil {
+		t.Fatal(err)
+	}
+	if raw, err := persist.Default.Get(locationKey(16)); err != nil || raw != "" {
+		t.Fatalf("location clear: raw=%q err=%v", raw, err)
 	}
 }

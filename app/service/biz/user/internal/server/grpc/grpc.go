@@ -23,6 +23,7 @@ import (
 func New(ctx *svc.ServiceContext, c zrpc.RpcServerConf) *zrpc.RpcServer {
 	s, err := zrpc.NewServer(c, func(grpcServer *grpc.Server) {
 		userpb.RegisterRPCUserServer(grpcServer, service.New(ctx))
+		userpb.RegisterRPCBotRegistryServer(grpcServer, service.New(ctx))
 	})
 	logx.Must(err)
 	return s

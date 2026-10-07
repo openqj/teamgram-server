@@ -151,3 +151,22 @@ func TestMessagesGetHistoryPropagatesChatHydrationError(t *testing.T) {
 		t.Fatalf("MessagesGetHistory() = (%v, %v), want nil result and propagated chat hydration error", got, err)
 	}
 }
+
+func TestMessagesGetHistoryFailsClosedWithoutChatProvider(t *testing.T) {
+	peer := mtproto.MakeTLInputPeerChat(&mtproto.InputPeer{ChatId: 77}).To_InputPeer()
+	for _, tc := range []struct {
+		name  string
+		chats *chatclient.ChatClientHelper
+	}{
+		{name: "missing helper"},
+		{name: "missing client", chats: &chatclient.ChatClientHelper{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			core := newGetHistoryTestCore(&getHistoryMessageClientStub{}, nil, tc.chats)
+			got, err := core.MessagesGetHistory(&mtproto.TLMessagesGetHistory{Peer: peer, Limit: 10})
+			if got != nil || err != mtproto.ErrInternalServerError {
+				t.Fatalf("MessagesGetHistory() = (%v, %v), want nil result and INTERNAL_SERVER_ERROR", got, err)
+			}
+		})
+	}
+}

@@ -1,0 +1,24 @@
+# syntax=docker/dockerfile:1.7
+FROM --platform=linux/arm64 golang:1.23.0 AS builder
+
+ARG GOFLAGS=-p=2
+ENV GOPROXY=https://goproxy.cn,direct \
+    GOOS=linux \
+    GOARCH=arm64 \
+    CGO_ENABLED=1
+
+WORKDIR /app/teamgram-server
+COPY teamgram-server/ ./
+COPY proto/ /app/proto/
+
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    bash -e ./build.sh
+
+FROM --platform=linux/arm64 teamgram-server-latest:20261007-r19-prod
+
+WORKDIR /app
+COPY --from=builder /app/teamgram-server/teamgramd/bin/ /app/bin/
+
+LABEL org.opencontainers.image.version="20261007-r20-prod" \
+      org.opencontainers.image.description="r19 runtime and configuration with channel event cleanup in rebuilt services"

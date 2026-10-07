@@ -148,6 +148,7 @@ func Full(caller int64, ch domain.Channel) (*mtproto.Messages_ChatFull, error) {
 		ParticipantsCount:   wrapperspb.Int32(participantsCount),
 		AdminsCount:         wrapperspb.Int32(adminsCount),
 		CanViewParticipants: !ch.ParticipantsHidden || caller == ch.Creator,
+		Antispam:            ch.Antispam,
 		HiddenPrehistory:    ch.HiddenPrehistory,
 		ParticipantsHidden:  ch.ParticipantsHidden,
 		ReadInboxMaxId:      readMax,

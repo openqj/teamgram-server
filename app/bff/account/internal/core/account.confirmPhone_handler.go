@@ -26,15 +26,22 @@ import (
 // AccountConfirmPhone
 // account.confirmPhone#5f2178c3 phone_code_hash:string phone_code:string = Bool;
 func (c *AccountCore) AccountConfirmPhone(in *mtproto.TLAccountConfirmPhone) (*mtproto.Bool, error) {
+	if c == nil || in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if c.MD == nil || c.MD.GetPermAuthKeyId() == 0 || c.MD.GetUserId() == 0 {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
 	phoneCodeHash := strings.TrimSpace(in.GetPhoneCodeHash())
 	phoneCode := strings.TrimSpace(in.GetPhoneCode())
 	if phoneCodeHash == "" {
-		c.Logger.Errorf("account.confirmPhone - empty phone_code_hash")
 		return nil, mtproto.ErrPhoneCodeHashEmpty
 	}
 	if phoneCode == "" {
-		c.Logger.Errorf("account.confirmPhone - empty phone_code")
 		return nil, mtproto.ErrPhoneCodeEmpty
+	}
+	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Challenges == nil {
+		return nil, mtproto.ErrInternalServerError
 	}
 
 	codeData, err := c.svcCtx.Dao.GetCachePhoneCode(c.ctx, c.MD.PermAuthKeyId, phoneCodeHash)

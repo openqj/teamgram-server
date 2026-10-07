@@ -37,6 +37,12 @@ func (c *ApiFullCore) AccountUpdateBusinessLocation(in *mtproto.TLAccountUpdateB
 		return nil, mtproto.ErrAuthKeyUnregistered
 	}
 	key := locationKey(c.MD.UserId)
+	if in == nil || (in.GetGeoPoint() == nil && in.GetAddress() == nil) {
+		if err := persist.Default.Set(key, ""); err != nil {
+			return nil, err
+		}
+		return mtproto.BoolTrue, nil
+	}
 	var lat, long float64
 	var address string
 	if in != nil {

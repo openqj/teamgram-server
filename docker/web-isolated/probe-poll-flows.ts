@@ -163,14 +163,14 @@ async function history(Api: any, actor: Actor, peer: any) {
   }));
 }
 
-async function waitForPoll(Api: any, actor: Actor, peer: any, caption: string, attempts = 10) {
+async function waitForPoll(Api: any, actor: Actor, peer: any, caption: string, attempts = 50) {
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     const value = await history(Api, actor, peer);
     const message = messageList(value).find(
       (candidate: any) => candidate?.message === caption && candidate?.media?.poll,
     );
     if (message) return message;
-    await new Promise((resolve) => setTimeout(resolve, 200));
+    await new Promise((resolve) => setTimeout(resolve, 300));
   }
   throw new Error('member history did not return the poll message');
 }

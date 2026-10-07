@@ -1,0 +1,6 @@
+services:
+  backend:
+    image: teamgram-server-latest:20261007-r19-prod
+    build: !reset null
+    volumes:
+      - /Users/mac/open/test/teamgram-server/docker/production/bff.production.yaml:/app/etc2/bff.yaml:ro

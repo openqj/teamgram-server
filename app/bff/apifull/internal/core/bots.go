@@ -19,11 +19,10 @@
 package core
 
 import (
-	"encoding/json"
-	"fmt"
+	"strings"
 
 	"github.com/teamgram/proto/mtproto"
-	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/persist"
+	userpb "github.com/teamgram/teamgram-server/app/service/biz/user/user"
 )
 
 // RPCBotsServer: Layer 229 methods previously returned ERR_ENTERPRISE_IS_BLOCKED.
@@ -33,19 +32,20 @@ func (c *ApiFullCore) BotsSetBotCommands(in *mtproto.TLBotsSetBotCommands) (*mtp
 	if err != nil {
 		return nil, err
 	}
-	var scope *mtproto.BotCommandScope
-	var lang string
-	var cmds []*mtproto.BotCommand
-	if in != nil {
-		scope = in.GetScope()
-		lang = in.GetLangCode()
-		cmds = in.GetCommands()
+	if in == nil {
+		return nil, mtproto.ErrInputConstructorInvalid
 	}
-	key := botCommandStoreKey(userId, scope, lang)
-	if err := putBotCommands(key, cmds); err != nil {
+	if err = validateBotCommandScope(in.GetScope(), in.GetLangCode()); err != nil {
 		return nil, err
 	}
-	return mtproto.BoolTrue, nil
+	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.UserClient == nil {
+		return nil, mtproto.ErrMethodNotImpl
+	}
+	return c.svcCtx.Dao.UserSetBotCommands(c.ctx, &userpb.TLUserSetBotCommands{
+		UserId:   userId,
+		BotId:    userId,
+		Commands: in.GetCommands(),
+	})
 }
 
 func (c *ApiFullCore) BotsResetBotCommands(in *mtproto.TLBotsResetBotCommands) (*mtproto.Bool, error) {
@@ -53,19 +53,19 @@ func (c *ApiFullCore) BotsResetBotCommands(in *mtproto.TLBotsResetBotCommands) (
 	if err != nil {
 		return nil, err
 	}
-	if err = putBotWrite(userId, "BotsResetBotCommands", in); err != nil {
+	if in == nil {
+		return nil, mtproto.ErrInputConstructorInvalid
+	}
+	if err = validateBotCommandScope(in.GetScope(), in.GetLangCode()); err != nil {
 		return nil, err
 	}
-	var scope *mtproto.BotCommandScope
-	var lang string
-	if in != nil {
-		scope = in.GetScope()
-		lang = in.GetLangCode()
+	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.UserClient == nil {
+		return nil, mtproto.ErrMethodNotImpl
 	}
-	if err = putBotCommands(botCommandStoreKey(userId, scope, lang), nil); err != nil {
-		return nil, err
-	}
-	return mtproto.BoolTrue, nil
+	return c.svcCtx.Dao.UserSetBotCommands(c.ctx, &userpb.TLUserSetBotCommands{
+		UserId: userId,
+		BotId:  userId,
+	})
 }
 
 func (c *ApiFullCore) BotsGetBotCommands(in *mtproto.TLBotsGetBotCommands) (*mtproto.Vector_BotCommand, error) {
@@ -73,18 +73,37 @@ func (c *ApiFullCore) BotsGetBotCommands(in *mtproto.TLBotsGetBotCommands) (*mtp
 	if err != nil {
 		return nil, err
 	}
-	var scope *mtproto.BotCommandScope
-	var lang string
-	if in != nil {
-		scope = in.GetScope()
-		lang = in.GetLangCode()
+	if in == nil {
+		return nil, mtproto.ErrInputConstructorInvalid
 	}
-	key := botCommandStoreKey(userId, scope, lang)
-	cmds, err := getBotCommands(key)
+	if err = validateBotCommandScope(in.GetScope(), in.GetLangCode()); err != nil {
+		return nil, err
+	}
+	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.UserClient == nil {
+		return nil, mtproto.ErrMethodNotImpl
+	}
+	info, err := c.svcCtx.Dao.UserGetBotInfo(c.ctx, &userpb.TLUserGetBotInfo{BotId: userId})
 	if err != nil {
 		return nil, err
 	}
-	return &mtproto.Vector_BotCommand{Datas: cmds}, nil
+	if info == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
+	commands := info.GetCommands()
+	if commands == nil {
+		commands = []*mtproto.BotCommand{}
+	}
+	return &mtproto.Vector_BotCommand{Datas: commands}, nil
+}
+
+func validateBotCommandScope(scope *mtproto.BotCommandScope, langCode string) error {
+	if scope == nil {
+		return mtproto.ErrInputConstructorInvalid
+	}
+	if scope.GetPredicateName() != mtproto.Predicate_botCommandScopeDefault || langCode != "" {
+		return mtproto.ErrMethodNotImpl
+	}
+	return nil
 }
 
 func (c *ApiFullCore) BotsSetBotInfo(in *mtproto.TLBotsSetBotInfo) (*mtproto.Bool, error) {
@@ -95,38 +114,210 @@ func (c *ApiFullCore) BotsSetBotInfo(in *mtproto.TLBotsSetBotInfo) (*mtproto.Boo
 }
 
 func (c *ApiFullCore) BotsGetBotInfoDCD914FD(in *mtproto.TLBotsGetBotInfoDCD914FD) (*mtproto.Bots_BotInfo, error) {
-	if _, err := c.requireUserId(); err != nil {
+	callerID, err := c.requireUserId()
+	if err != nil {
 		return nil, err
 	}
-	return nil, mtproto.ErrMethodNotImpl
+	if in == nil || in.GetBot() == nil {
+		return nil, mtproto.ErrInputConstructorInvalid
+	}
+	bot := in.GetBot()
+	var botID int64
+	switch bot.GetPredicateName() {
+	case mtproto.Predicate_inputUserSelf:
+		botID = callerID
+	case mtproto.Predicate_inputUser:
+		botID = bot.GetUserId()
+		if botID <= 0 || bot.GetAccessHash() == 0 {
+			return nil, mtproto.ErrUserIdInvalid
+		}
+	default:
+		return nil, mtproto.ErrInputConstructorInvalid
+	}
+	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.UserClient == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
+	profile, err := c.svcCtx.Dao.UserGetImmutableUser(c.ctx, &userpb.TLUserGetImmutableUser{Id: botID})
+	if err != nil {
+		return nil, err
+	}
+	if profile == nil || profile.GetUser() == nil || profile.GetUser().GetBot() == nil {
+		return nil, mtproto.ErrUserIdInvalid
+	}
+	if bot.GetPredicateName() == mtproto.Predicate_inputUser && profile.GetUser().GetAccessHash() != bot.GetAccessHash() {
+		return nil, mtproto.ErrUserIdInvalid
+	}
+	registryInfo, err := c.svcCtx.Dao.UserGetBotInfo(c.ctx, &userpb.TLUserGetBotInfo{BotId: botID})
+	if err != nil {
+		return nil, err
+	}
+	if registryInfo == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
+	name := strings.TrimSpace(profile.GetUser().GetFirstName() + " " + profile.GetUser().GetLastName())
+	about := ""
+	if profile.GetUser().GetAbout() != nil {
+		about = profile.GetUser().GetAbout().GetValue()
+	}
+	return mtproto.MakeTLBotsBotInfo(&mtproto.Bots_BotInfo{
+		Name:        name,
+		About:       about,
+		Description: registryInfo.GetDescription_STRING(),
+	}).To_Bots_BotInfo(), nil
 }
 
 func (c *ApiFullCore) BotsGetAdminedBots(in *mtproto.TLBotsGetAdminedBots) (*mtproto.Vector_User, error) {
-	if _, err := c.requireUserId(); err != nil {
+	userId, err := c.requireUserId()
+	if err != nil {
 		return nil, err
 	}
-	return nil, mtproto.ErrMethodNotImpl
+	if in == nil {
+		return nil, mtproto.ErrInputConstructorInvalid
+	}
+	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.UserClient == nil {
+		return nil, mtproto.ErrMethodNotImpl
+	}
+
+	admined, err := c.svcCtx.Dao.UserGetCreatedBots(c.ctx)
+	if err != nil {
+		return nil, err
+	}
+	if admined == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
+	users := &mtproto.Vector_User{Datas: make([]*mtproto.User, 0, len(admined.GetDatas()))}
+	for _, bot := range admined.GetDatas() {
+		if bot == nil || bot.GetUser() == nil || bot.GetUser().GetBot() == nil {
+			return nil, mtproto.ErrInternalServerError
+		}
+		users.Datas = append(users.Datas, bot.ToUser(userId))
+	}
+	return users, nil
 }
 
 func (c *ApiFullCore) BotsCheckUsername(in *mtproto.TLBotsCheckUsername) (*mtproto.Bool, error) {
 	if _, err := c.requireUserId(); err != nil {
 		return nil, err
 	}
-	return nil, mtproto.ErrMethodNotImpl
+	if in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	username := in.GetUsername()
+	if !userpb.CheckUsernameInvalid(username) || !strings.HasSuffix(strings.ToLower(username), "bot") {
+		return nil, mtproto.ErrUsernameInvalid
+	}
+	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.UserClient == nil {
+		return nil, mtproto.ErrMethodNotImpl
+	}
+	existed, err := c.svcCtx.Dao.UserCheckUsername(c.ctx, &userpb.TLUserCheckUsername{Username: username})
+	if err != nil {
+		return nil, err
+	}
+	if existed == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
+	switch existed.GetPredicateName() {
+	case userpb.Predicate_usernameNotExisted:
+		return mtproto.BoolTrue, nil
+	case userpb.Predicate_usernameExisted, userpb.Predicate_usernameExistedNotMe, userpb.Predicate_usernameExistedIsMe:
+		return mtproto.BoolFalse, nil
+	default:
+		return nil, mtproto.ErrInternalServerError
+	}
 }
 
 func (c *ApiFullCore) BotsCreateBot(in *mtproto.TLBotsCreateBot) (*mtproto.User, error) {
-	if _, err := c.requireUserId(); err != nil {
+	userId, err := c.requireUserId()
+	if err != nil {
 		return nil, err
 	}
-	return nil, mtproto.ErrMethodNotImpl
+	if in == nil {
+		return nil, mtproto.ErrInputConstructorInvalid
+	}
+	username := in.GetUsername()
+	if !userpb.CheckUsernameInvalid(username) || !strings.HasSuffix(strings.ToLower(username), "bot") {
+		return nil, mtproto.ErrUsernameInvalid
+	}
+	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.UserClient == nil {
+		return nil, mtproto.ErrMethodNotImpl
+	}
+	var (
+		created   *mtproto.ImmutableUser
+		createErr error
+	)
+	if in.GetViaDeeplink() {
+		manager := in.GetManagerId()
+		if manager == nil || manager.GetPredicateName() != mtproto.Predicate_inputUser || manager.GetUserId() <= 0 || manager.GetAccessHash() == 0 {
+			return nil, mtproto.ErrUserIdInvalid
+		}
+		managerProfile, profileErr := c.svcCtx.Dao.UserGetImmutableUser(c.ctx, &userpb.TLUserGetImmutableUser{Id: manager.GetUserId()})
+		if profileErr != nil {
+			return nil, profileErr
+		}
+		if managerProfile == nil || managerProfile.GetUser() == nil || managerProfile.GetUser().GetBot() == nil ||
+			managerProfile.GetUser().GetAccessHash() != manager.GetAccessHash() {
+			return nil, mtproto.ErrForbiddenUserBotInvalid
+		}
+		created, createErr = c.svcCtx.Dao.UserCreateManagedBot(c.ctx, &userpb.BotRegistryCreateBotRequest{
+			Name:              in.GetName(),
+			Username:          username,
+			ManagerBotId:      manager.GetUserId(),
+			ManagerAccessHash: manager.GetAccessHash(),
+		})
+	} else {
+		if manager := in.GetManagerId(); manager != nil && manager.GetPredicateName() != mtproto.Predicate_inputUserSelf {
+			return nil, mtproto.ErrMethodNotImpl
+		}
+		created, createErr = c.svcCtx.Dao.UserCreateBot(c.ctx, &userpb.TLUserCreateBot{
+			Name:     in.GetName(),
+			Username: username,
+		})
+	}
+	if createErr != nil {
+		return nil, createErr
+	}
+	if created == nil || created.GetUser() == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
+	return created.ToUser(userId), nil
 }
 
 func (c *ApiFullCore) BotsExportBotToken(in *mtproto.TLBotsExportBotToken) (*mtproto.Bots_ExportedBotToken, error) {
-	if _, err := c.requireUserId(); err != nil {
+	callerId, err := c.requireUserId()
+	if err != nil {
 		return nil, err
 	}
-	return nil, mtproto.ErrMethodNotImpl
+	if in == nil || in.GetBot() == nil {
+		return nil, mtproto.ErrInputConstructorInvalid
+	}
+	bot := in.GetBot()
+	var botId int64
+	switch bot.GetPredicateName() {
+	case mtproto.Predicate_inputUserSelf:
+		botId = callerId
+	case mtproto.Predicate_inputUser:
+		botId = bot.GetUserId()
+		if botId <= 0 || bot.GetAccessHash() == 0 {
+			return nil, mtproto.ErrUserIdInvalid
+		}
+	default:
+		return nil, mtproto.ErrInputConstructorInvalid
+	}
+	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.UserClient == nil {
+		return nil, mtproto.ErrMethodNotImpl
+	}
+	token, err := c.svcCtx.Dao.UserExportBotToken(c.ctx, &userpb.TLUserExportBotToken{
+		BotId:      botId,
+		AccessHash: bot.GetAccessHash(),
+		Revoke:     mtproto.FromBool(in.GetRevoke()),
+	})
+	if err != nil {
+		return nil, err
+	}
+	if token == nil || token.GetV() == "" {
+		return nil, mtproto.ErrInternalServerError
+	}
+	return mtproto.MakeTLBotsExportedBotToken(&mtproto.Bots_ExportedBotToken{Token: token.GetV()}).To_Bots_ExportedBotToken(), nil
 }
 
 func (c *ApiFullCore) BotsGetAccessSettings(in *mtproto.TLBotsGetAccessSettings) (*mtproto.Bots_AccessSettings, error) {
@@ -155,78 +346,4 @@ func (c *ApiFullCore) BotsGetBotInfo75EC12E6(in *mtproto.TLBotsGetBotInfo75EC12E
 		return nil, err
 	}
 	return nil, mtproto.ErrMethodNotImpl
-}
-
-type botCommandKey struct {
-	userId    int64
-	lang      string
-	scopeCtor int32
-	peerId    int64
-	scopeUser int64
-}
-
-func botCommandStoreKey(userId int64, scope *mtproto.BotCommandScope, lang string) string {
-	key := botCommandKey{userId: userId, lang: lang}
-	if scope != nil {
-		key.scopeCtor = int32(scope.GetConstructor())
-		if peer := scope.GetPeer(); peer != nil {
-			key.peerId = peer.GetUserId()
-			if key.peerId == 0 {
-				key.peerId = peer.GetChatId()
-			}
-			if key.peerId == 0 {
-				key.peerId = peer.GetChannelId()
-			}
-		}
-		if u := scope.GetUserId(); u != nil {
-			key.scopeUser = u.UserId
-		}
-	}
-	return fmt.Sprintf("botcmd:%d:%d:%d:%d:%s", key.userId, key.scopeCtor, key.peerId, key.scopeUser, key.lang)
-}
-
-func putBotCommands(key string, cmds []*mtproto.BotCommand) error {
-	raw, err := json.Marshal(cloneBotCommands(cmds))
-	if err != nil {
-		return err
-	}
-	return persist.Default.Set(key, string(raw))
-}
-
-func getBotCommands(key string) ([]*mtproto.BotCommand, error) {
-	raw, err := persist.Default.Get(key)
-	if err != nil {
-		return nil, err
-	}
-	if raw == "" {
-		return []*mtproto.BotCommand{}, nil
-	}
-	var cmds []*mtproto.BotCommand
-	if err := json.Unmarshal([]byte(raw), &cmds); err != nil {
-		return nil, err
-	}
-	if cmds == nil {
-		cmds = []*mtproto.BotCommand{}
-	}
-	return cmds, nil
-}
-
-func putBotWrite(userId int64, method string, in any) error {
-	raw, err := json.Marshal(in)
-	if err != nil {
-		return err
-	}
-	return persist.Default.Set(fmt.Sprintf("botw:%d:%s", userId, method), string(raw))
-}
-
-func cloneBotCommands(in []*mtproto.BotCommand) []*mtproto.BotCommand {
-	out := make([]*mtproto.BotCommand, 0, len(in))
-	for _, cmd := range in {
-		if cmd == nil {
-			continue
-		}
-		copied := *cmd
-		out = append(out, &copied)
-	}
-	return out
 }

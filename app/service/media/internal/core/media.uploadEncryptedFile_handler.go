@@ -18,7 +18,7 @@ import (
 // MediaUploadEncryptedFile
 // media.uploadEncryptedFile owner_id:long file:InputEncryptedFile = EncryptedFile;
 func (c *MediaCore) MediaUploadEncryptedFile(in *media.TLMediaUploadEncryptedFile) (*mtproto.EncryptedFile, error) {
-	if in == nil || in.GetFile() == nil {
+	if in == nil || in.GetOwnerId() <= 0 || in.GetFile() == nil || in.GetFile().GetId() <= 0 || in.GetFile().GetParts() <= 0 {
 		return nil, mtproto.ErrMediaInvalid
 	}
 

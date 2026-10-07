@@ -1,0 +1,6 @@
+services:
+  backend:
+    image: teamgram-server-latest:20261007-r23-prod
+    build: !reset null
+    environment:
+      TEAMGRAM_APIFULL_SCHEMA_READONLY: "true"

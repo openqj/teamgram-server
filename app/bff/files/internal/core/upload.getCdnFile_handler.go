@@ -18,14 +18,29 @@
 
 package core
 
-import (
-	"github.com/teamgram/proto/mtproto"
-)
+import "github.com/teamgram/proto/mtproto"
 
 // UploadGetCdnFile
 // upload.getCdnFile#2000bcc3 file_token:bytes offset:int limit:int = upload.CdnFile;
 func (c *FilesCore) UploadGetCdnFile(in *mtproto.TLUploadGetCdnFile) (*mtproto.Upload_CdnFile, error) {
-	_ = in
-	c.Logger.Errorf("upload.getCdnFile - error: %v", mtproto.ErrCdnMethodInvalid)
+	if in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if len(in.GetFileToken()) == 0 {
+		return nil, mtproto.ErrFileTokenInvalid
+	}
+	offset := in.GetOffset_INT64()
+	if offset == 0 {
+		offset = int64(in.GetOffset_INT32())
+	}
+	if offset < 0 {
+		return nil, mtproto.ErrOffsetInvalid
+	}
+	if in.GetLimit() <= 0 {
+		return nil, mtproto.ErrLimitInvalid
+	}
+	if c != nil && c.Logger != nil {
+		c.Logger.Errorf("upload.getCdnFile - error: %v", mtproto.ErrCdnMethodInvalid)
+	}
 	return nil, mtproto.ErrCdnMethodInvalid
 }

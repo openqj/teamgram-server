@@ -112,6 +112,19 @@ func loadChan(userId, id int64) (chanStored, bool, error) {
 }
 
 func (c *ApiFullCore) listUserChans(userId int64) ([]*mtproto.Chat, error) {
+	if domain.Ready() {
+		// The canonical table is the source of truth once configured. Query it
+		// directly so recommendations do not depend on a stale KV index.
+		stored, err := domain.ListByCreator(userId)
+		if err != nil {
+			return nil, err
+		}
+		chats := make([]*mtproto.Chat, 0, len(stored))
+		for _, channel := range stored {
+			chats = append(chats, channelview.Chat(channel, channel.Creator == userId))
+		}
+		return chats, nil
+	}
 	raw, err := persist.Default.Get(chanIndexKey(userId))
 	if err != nil || raw == "" {
 		return []*mtproto.Chat{}, err
@@ -401,8 +414,9 @@ func (c *ApiFullCore) ChannelsGetFullChannel(in *mtproto.TLChannelsGetFullChanne
 	return box, nil
 }
 
-// resolveChannel prefers the MySQL channel row. A kv-only record from an older
-// create is still a real channel: the caller is its creator.
+// resolveChannel reads the canonical MySQL channel row when configured. The
+// KV-only path is retained solely for deployments that have no canonical
+// store configured; it must not shadow a missing row in production.
 func (c *ApiFullCore) resolveChannel(userID, id int64) (domain.Channel, error) {
 	if id == 0 {
 		return domain.Channel{}, mtproto.ErrChannelInvalid
@@ -414,6 +428,9 @@ func (c *ApiFullCore) resolveChannel(userID, id int64) (domain.Channel, error) {
 	}
 	if ok {
 		return ch, nil
+	}
+	if domain.Ready() {
+		return domain.Channel{}, mtproto.ErrChannelInvalid
 	}
 	rec, found, err := loadChan(userID, id)
 	if err != nil {
@@ -485,6 +502,16 @@ func (c *ApiFullCore) inviteChannelUsers(userID int64, input *mtproto.InputChann
 	}
 	if len(users) == 0 {
 		return mtproto.ErrUsersTooFew
+	}
+	// Check the actor's channel permission before resolving invitee entities.
+	// An unauthorized member must receive CHAT_ADMIN_REQUIRED even when the
+	// optional User provider is unavailable.
+	canInvite, err := domain.ChannelCanInvite(ch, userID, time.Now().Unix())
+	if err != nil {
+		return c.mapChannelMemberError(err)
+	}
+	if !canInvite {
+		return mtproto.ErrChatAdminRequired
 	}
 	userIDs, err := c.resolveChannelInviteeIDs(userID, users)
 	if err != nil {
@@ -1488,10 +1515,39 @@ func (c *ApiFullCore) ChannelsToggleSlowMode(in *mtproto.TLChannelsToggleSlowMod
 
 func (c *ApiFullCore) ChannelsGetInactiveChannels(in *mtproto.TLChannelsGetInactiveChannels) (*mtproto.Messages_InactiveChats, error) {
 	_ = in
-	if _, err := c.requireUserId(); err != nil {
+	userID, err := c.requireUserId()
+	if err != nil {
 		return nil, err
 	}
-	return nil, mtproto.ErrMethodNotImpl
+	if !domain.Ready() {
+		return nil, mtproto.ErrMethodNotImpl
+	}
+	// Telegram exposes this method as a cleanup/discovery list.  Keep the
+	// cutoff explicit and deterministic: channels with no message activity in
+	// the last 30 days are returned, including channels that have never posted.
+	cutoff := time.Now().Add(-30 * 24 * time.Hour).Unix()
+	inactive, err := domain.ListInactiveChannels(userID, cutoff)
+	if err != nil {
+		return nil, mtproto.ErrInternalServerError
+	}
+	chats := make([]*mtproto.Chat, 0, len(inactive))
+	dates := make([]int32, 0, len(inactive))
+	for _, item := range inactive {
+		chats = append(chats, channelview.Chat(item.Channel, item.Channel.Creator == userID))
+		lastActive := item.LastActive
+		if lastActive > math.MaxInt32 {
+			lastActive = math.MaxInt32
+		}
+		if lastActive < math.MinInt32 {
+			lastActive = math.MinInt32
+		}
+		dates = append(dates, int32(lastActive))
+	}
+	return mtproto.MakeTLMessagesInactiveChats(&mtproto.Messages_InactiveChats{
+		Dates: dates,
+		Chats: chats,
+		Users: []*mtproto.User{},
+	}).To_Messages_InactiveChats(), nil
 }
 
 func (c *ApiFullCore) ChannelsDeleteParticipantHistory(in *mtproto.TLChannelsDeleteParticipantHistory) (*mtproto.Messages_AffectedHistory, error) {

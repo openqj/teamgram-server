@@ -26,6 +26,13 @@ import (
 	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/persist"
 )
 
+// emojiKeywordLanguages lists the language codes that APIFull can serve from
+// the keyword data exposed by MessagesGetEmojiKeywords. The catalogue is
+// intentionally limited to data backed by this service.
+var emojiKeywordLanguages = map[string]struct{}{
+	"en": {},
+}
+
 // RPCEmojiServer: Layer 229 methods previously returned ERR_ENTERPRISE_IS_BLOCKED.
 
 func loadCreatedEmojiKeywords(userID int64) ([]*mtproto.EmojiKeyword, int32, error) {
@@ -118,13 +125,32 @@ func (c *ApiFullCore) MessagesGetEmojiKeywordsDifference(in *mtproto.TLMessagesG
 }
 
 func (c *ApiFullCore) MessagesGetEmojiKeywordsLanguages(in *mtproto.TLMessagesGetEmojiKeywordsLanguages) (*mtproto.Vector_EmojiLanguage, error) {
-	_ = in
 	if _, err := c.requireUserId(); err != nil {
 		return nil, err
 	}
-	// The APIFull service has no authoritative emoji language catalog. Returning
-	// an empty vector would make clients cache a successful, incomplete catalog.
-	return nil, mtproto.ErrMethodNotImpl
+
+	// Telegram clients pass the languages they can use. Return the supported
+	// subset in request order so the result is deterministic and contains no
+	// duplicate entries.
+	var requested []string
+	if in != nil {
+		requested = in.GetLangCodes()
+	}
+	seen := make(map[string]struct{}, len(requested))
+	languages := make([]*mtproto.EmojiLanguage, 0, len(requested))
+	for _, lang := range requested {
+		if _, ok := emojiKeywordLanguages[lang]; !ok {
+			continue
+		}
+		if _, ok := seen[lang]; ok {
+			continue
+		}
+		seen[lang] = struct{}{}
+		languages = append(languages, mtproto.MakeTLEmojiLanguage(&mtproto.EmojiLanguage{
+			LangCode: lang,
+		}).To_EmojiLanguage())
+	}
+	return &mtproto.Vector_EmojiLanguage{Datas: languages}, nil
 }
 
 func (c *ApiFullCore) MessagesGetEmojiURL(in *mtproto.TLMessagesGetEmojiURL) (*mtproto.EmojiURL, error) {

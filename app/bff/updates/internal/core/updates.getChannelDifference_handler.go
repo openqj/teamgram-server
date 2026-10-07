@@ -20,6 +20,7 @@ package core
 
 import (
 	"github.com/teamgram/proto/mtproto"
+	"github.com/teamgram/teamgram-server/app/bff/apifull/channelview"
 	"github.com/teamgram/teamgram-server/app/service/authsession/authsession"
 	"github.com/teamgram/teamgram-server/app/service/biz/updates/updates"
 )
@@ -31,6 +32,9 @@ func (c *UpdatesCore) UpdatesGetChannelDifference(in *mtproto.TLUpdatesGetChanne
 	if channel == nil || channel.GetPredicateName() == mtproto.Predicate_inputChannelEmpty || channel.GetChannelId() == 0 {
 		c.Logger.Errorf("updates.getChannelDifference - error: channel invalid")
 		return nil, mtproto.ErrChannelInvalid
+	}
+	if _, err := channelview.ValidateInputChannel(c.MD.UserId, channel); err != nil {
+		return nil, err
 	}
 
 	keyId, err := c.svcCtx.Dao.AuthsessionClient.AuthsessionGetPermAuthKeyId(c.ctx, &authsession.TLAuthsessionGetPermAuthKeyId{

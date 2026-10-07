@@ -84,7 +84,9 @@ func SaveSecretDeviceKey(key SecretDeviceKey) error {
 	if db == nil {
 		return errors.New("domain mysql is not open")
 	}
-	if key.ChatID == 0 || key.UserID <= 0 || key.DeviceID <= 0 || key.Epoch <= 0 || len(key.PublicKey) == 0 || len(key.PublicKey) > 256 {
+	// Auth key ids are signed int64 values on the wire; zero is the only
+	// missing-device sentinel.
+	if key.ChatID == 0 || key.UserID <= 0 || key.DeviceID == 0 || key.Epoch <= 0 || len(key.PublicKey) == 0 || len(key.PublicKey) > 256 {
 		return ErrSecretKeyReplay
 	}
 	if key.CreatedAt == 0 {
@@ -229,7 +231,7 @@ func acceptSecretChatOnDevice(chatID int32, accessHash, userID, deviceID int64, 
 		return SecretChat{}, false, ErrSecretChatDeclined
 	case SecretChatActive:
 		if chat.KeyFingerprint == fingerprint && bytes.Equal(chat.GB, gb) {
-			if deviceID > 0 {
+			if deviceID != 0 {
 				if epoch <= 0 {
 					epoch = 1
 				}
@@ -239,7 +241,7 @@ func acceptSecretChatOnDevice(chatID int32, accessHash, userID, deviceID int64, 
 			}
 			return chat, false, tx.Commit()
 		}
-		if deviceID <= 0 || epoch <= 0 {
+		if deviceID == 0 || epoch <= 0 {
 			return SecretChat{}, false, ErrSecretChatAlreadyAccepted
 		}
 		inserted, saveErr := saveSecretDeviceKeyTx(tx, SecretDeviceKey{ChatID: chat.ID, UserID: userID, DeviceID: deviceID, Epoch: epoch, PublicKey: append([]byte(nil), gb...), Fingerprint: fingerprint})
@@ -276,7 +278,7 @@ func acceptSecretChatOnDevice(chatID int32, accessHash, userID, deviceID int64, 
 		chat.State, chat.GB, chat.KeyFingerprint, chat.AcceptedAt, chat.ID); err != nil {
 		return SecretChat{}, false, err
 	}
-	if deviceID > 0 {
+	if deviceID != 0 {
 		if epoch <= 0 {
 			epoch = 1
 		}

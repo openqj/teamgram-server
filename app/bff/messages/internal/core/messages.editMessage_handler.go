@@ -66,7 +66,7 @@ func (c *MessagesCore) MessagesEditMessage(in *mtproto.TLMessagesEditMessage) (*
 			c.Logger.Errorf("messages.editMessage - empty channel text (%d)", in.Id)
 			return nil, mtproto.ErrMessageEmpty
 		}
-		return channelview.Edit(c.MD.UserId, peer.PeerId, in.Id, text)
+		return channelview.EditForInputPeer(c.MD.UserId, in.GetPeer(), in.Id, text)
 	default:
 		c.Logger.Errorf("invalid peer: %v", in.Peer)
 		err = mtproto.ErrPeerIdInvalid

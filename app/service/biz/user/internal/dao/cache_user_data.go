@@ -26,7 +26,7 @@ import (
 )
 
 const (
-	cacheUserDataKeyPrefix = "user_data.2"
+	cacheUserDataKeyPrefix = "user_data.4"
 	cachePhoneUserPrefix   = "phone_user.1"
 )
 
@@ -93,6 +93,15 @@ func (m *CacheUserData) GetUserData() *mtproto.UserData {
 }
 
 func (d *Dao) GetCacheUserData(ctx context.Context, id int64) *CacheUserData {
+	cacheUserData, err := d.GetCacheUserDataWithError(ctx, id)
+	if err != nil {
+		logx.WithContext(ctx).Errorf("GetCacheUserData(%d) - error: %v", id, err)
+		return nil
+	}
+	return cacheUserData
+}
+
+func (d *Dao) GetCacheUserDataWithError(ctx context.Context, id int64) (*CacheUserData, error) {
 	var (
 		cacheUserData *CacheUserData
 	)
@@ -111,11 +120,10 @@ func (d *Dao) GetCacheUserData(ctx context.Context, id int64) *CacheUserData {
 			return nil
 		})
 	if err != nil {
-		logx.WithContext(ctx).Errorf("GetCacheUserData(%d) - error: %v", id, err)
-		return nil
+		return nil, err
 	}
 
-	return cacheUserData
+	return cacheUserData, nil
 }
 
 func makeEmojiStatus(documentId int64, until int32) *mtproto.EmojiStatus {
@@ -246,10 +254,11 @@ func (d *Dao) GetNoCacheUserData(ctx context.Context, id int64) (*CacheUserData,
 	}
 
 	if do.UserType == user.UserTypeBot {
+		var botErr error
 		if do.PhotoId != 0 {
 			mr.FinishVoid(
 				func() {
-					userData.Bot = d.getBotData(ctx, do.Id)
+					userData.Bot, userData.BotCanManageBots, userData.BotManagerId, botErr = d.getBotData(ctx, do.Id)
 				},
 				func() {
 					userData.ProfilePhoto, _ = d.MediaClient.MediaGetPhoto(ctx, &media.TLMediaGetPhoto{
@@ -257,7 +266,10 @@ func (d *Dao) GetNoCacheUserData(ctx context.Context, id int64) (*CacheUserData,
 					})
 				})
 		} else {
-			userData.Bot = d.getBotData(ctx, do.Id)
+			userData.Bot, userData.BotCanManageBots, userData.BotManagerId, botErr = d.getBotData(ctx, do.Id)
+		}
+		if botErr != nil {
+			return nil, botErr
 		}
 
 		return cacheData, nil

@@ -51,6 +51,31 @@ if state == ARGV[5] or state == ARGV[6] then return 0 end
 return -1
 `
 
+// acceptQRCodeAtDCScript is the multi-DC variant of acceptQRCodeScript. The
+// scanner DC is written in the same compare-and-set as the state transition,
+// so a follow-up export cannot observe a partially moved transaction.
+const acceptQRCodeAtDCScript = `
+if redis.call('HGET', KEYS[1], 'code_hash') ~= ARGV[1] then return -1 end
+local expire_at = tonumber(redis.call('HGET', KEYS[1], 'expire_at') or '0')
+if expire_at < tonumber(ARGV[2]) then return -2 end
+local state = redis.call('HGET', KEYS[1], 'state')
+local user_id = redis.call('HGET', KEYS[1], 'user_id') or '0'
+if state == ARGV[3] then
+  redis.call('HSET', KEYS[1], 'user_id', ARGV[4], 'state', ARGV[5], 'dc_id', ARGV[7])
+  return 1
+end
+if (state == ARGV[5] or state == ARGV[6]) and user_id == ARGV[4] then
+  -- Accepted rows created before multi-DC ownership was introduced have no
+  -- dc_id. Backfill that field during the idempotent retry, but never replace
+  -- an existing owner selected by the first claim.
+  local dc_id = redis.call('HGET', KEYS[1], 'dc_id') or '0'
+  if dc_id == '0' then redis.call('HSET', KEYS[1], 'dc_id', ARGV[7]) end
+  return 2
+end
+if state == ARGV[5] or state == ARGV[6] then return 0 end
+return -1
+`
+
 const commitQRCodeScript = `
 if redis.call('HGET', KEYS[1], 'code_hash') ~= ARGV[1] then return -1 end
 local state = redis.call('HGET', KEYS[1], 'state')
@@ -208,6 +233,25 @@ func (d *Dao) AcceptCacheQRLoginCode(ctx context.Context, keyId int64, codeHash 
 		strconv.FormatInt(userID, 10),
 		strconv.Itoa(model.QRCodeStateAccepted),
 		strconv.Itoa(model.QRCodeStateSuccess),
+	)
+}
+
+// AcceptCacheQRLoginCodeAtDC atomically claims a token and records the DC of
+// the authorized scanner. The exported account can then migrate its pending
+// login session to that DC on the follow-up export call.
+func (d *Dao) AcceptCacheQRLoginCodeAtDC(ctx context.Context, keyId int64, codeHash string, userID int64, now int64, dcID int32) (int64, error) {
+	if dcID <= 0 {
+		return 0, fmt.Errorf("invalid qr dc id %d", dcID)
+	}
+	return d.evalQRCodeResult(
+		ctx, acceptQRCodeAtDCScript, genQRLoginCodeKey(keyId),
+		codeHash,
+		strconv.FormatInt(now, 10),
+		strconv.Itoa(model.QRCodeStateNew),
+		strconv.FormatInt(userID, 10),
+		strconv.Itoa(model.QRCodeStateAccepted),
+		strconv.Itoa(model.QRCodeStateSuccess),
+		strconv.Itoa(int(dcID)),
 	)
 }
 

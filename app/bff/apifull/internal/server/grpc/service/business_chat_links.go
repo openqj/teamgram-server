@@ -27,55 +27,45 @@ import (
 
 func (s *Service) AccountCreateBusinessChatLink(ctx context.Context, request *mtproto.TLAccountCreateBusinessChatLink) (*mtproto.BusinessChatLink, error) {
 	c := core.New(ctx, s.svcCtx)
-	c.Logger.Debugf("AccountCreateBusinessChatLink - request: %s", request)
 	r, err := c.AccountCreateBusinessChatLink(request)
 	if err != nil {
 		return nil, err
 	}
-	c.Logger.Debugf("AccountCreateBusinessChatLink - reply: %s", r)
 	return r, nil
 }
 
 func (s *Service) AccountEditBusinessChatLink(ctx context.Context, request *mtproto.TLAccountEditBusinessChatLink) (*mtproto.BusinessChatLink, error) {
 	c := core.New(ctx, s.svcCtx)
-	c.Logger.Debugf("AccountEditBusinessChatLink - request: %s", request)
 	r, err := c.AccountEditBusinessChatLink(request)
 	if err != nil {
 		return nil, err
 	}
-	c.Logger.Debugf("AccountEditBusinessChatLink - reply: %s", r)
 	return r, nil
 }
 
 func (s *Service) AccountDeleteBusinessChatLink(ctx context.Context, request *mtproto.TLAccountDeleteBusinessChatLink) (*mtproto.Bool, error) {
 	c := core.New(ctx, s.svcCtx)
-	c.Logger.Debugf("AccountDeleteBusinessChatLink - request: %s", request)
 	r, err := c.AccountDeleteBusinessChatLink(request)
 	if err != nil {
 		return nil, err
 	}
-	c.Logger.Debugf("AccountDeleteBusinessChatLink - reply: %s", r)
 	return r, nil
 }
 
 func (s *Service) AccountGetBusinessChatLinks(ctx context.Context, request *mtproto.TLAccountGetBusinessChatLinks) (*mtproto.Account_BusinessChatLinks, error) {
 	c := core.New(ctx, s.svcCtx)
-	c.Logger.Debugf("AccountGetBusinessChatLinks - request: %s", request)
 	r, err := c.AccountGetBusinessChatLinks(request)
 	if err != nil {
 		return nil, err
 	}
-	c.Logger.Debugf("AccountGetBusinessChatLinks - reply: %s", r)
 	return r, nil
 }
 
 func (s *Service) AccountResolveBusinessChatLink(ctx context.Context, request *mtproto.TLAccountResolveBusinessChatLink) (*mtproto.Account_ResolvedBusinessChatLinks, error) {
 	c := core.New(ctx, s.svcCtx)
-	c.Logger.Debugf("AccountResolveBusinessChatLink - request: %s", request)
 	r, err := c.AccountResolveBusinessChatLink(request)
 	if err != nil {
 		return nil, err
 	}
-	c.Logger.Debugf("AccountResolveBusinessChatLink - reply: %s", r)
 	return r, nil
 }

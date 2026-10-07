@@ -163,3 +163,29 @@ func TestQuickReplyDeleteRemovesOnlyRequestedStoredMessages(t *testing.T) {
 		t.Fatalf("unknown quick reply delete = (%v, %v), want MESSAGE_ID_INVALID", got, err)
 	}
 }
+
+func TestQuickReplyCheckAndReorderPersist(t *testing.T) {
+	const userID int64 = 981203
+	if err := saveQuickReplies(userID, []quickReplyStored{
+		{ShortcutId: 1, Shortcut: "first"},
+		{ShortcutId: 2, Shortcut: "second"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = saveQuickReplies(userID, nil) })
+	c := &ApiFullCore{MD: &metadata.RpcMetadata{UserId: userID}}
+
+	if available, err := c.MessagesCheckQuickReplyShortcut(&mtproto.TLMessagesCheckQuickReplyShortcut{Shortcut: "first"}); err != nil || mtproto.FromBool(available) {
+		t.Fatalf("existing shortcut check = (%v, %v), want false", available, err)
+	}
+	if available, err := c.MessagesCheckQuickReplyShortcut(&mtproto.TLMessagesCheckQuickReplyShortcut{Shortcut: "new"}); err != nil || !mtproto.FromBool(available) {
+		t.Fatalf("new shortcut check = (%v, %v), want true", available, err)
+	}
+	if ok, err := c.MessagesReorderQuickReplies(&mtproto.TLMessagesReorderQuickReplies{Order: []int32{2, 2, 99}}); err != nil || !mtproto.FromBool(ok) {
+		t.Fatalf("reorder shortcuts = (%v, %v)", ok, err)
+	}
+	list, err := loadQuickReplies(userID)
+	if err != nil || len(list) != 2 || list[0].ShortcutId != 2 || list[1].ShortcutId != 1 {
+		t.Fatalf("reordered shortcuts = %+v (err=%v)", list, err)
+	}
+}

@@ -46,6 +46,14 @@ func saveAcctPasswordState(userID int64, st acctPasswordState) error {
 	return persist.Default.Set(acctPasswordKey(userID), string(b))
 }
 
+func compareAndSaveAcctPasswordState(userID int64, expected string, st acctPasswordState) (bool, error) {
+	b, err := json.Marshal(twofa.PasswordState(st))
+	if err != nil {
+		return false, err
+	}
+	return persist.CompareAndSwap(acctPasswordKey(userID), expected, string(b))
+}
+
 // recoveryEmail is the confirmed recovery address. A pending address is not set.
 func (st acctPasswordState) recoveryEmail() string {
 	if st.Email == "" || st.EmailPending {

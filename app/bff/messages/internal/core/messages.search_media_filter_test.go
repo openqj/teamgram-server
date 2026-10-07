@@ -13,6 +13,7 @@ import (
 	messagepb "github.com/teamgram/teamgram-server/app/service/biz/message/message"
 	userclient "github.com/teamgram/teamgram-server/app/service/biz/user/client"
 	userpb "github.com/teamgram/teamgram-server/app/service/biz/user/user"
+	"github.com/zeromicro/go-zero/core/logx"
 )
 
 type searchByMediaTypeClient struct {
@@ -88,5 +89,70 @@ func TestMessagesSearchMapsVoiceMediaFiltersToCanonicalMessageQuery(t *testing.T
 				t.Fatalf("query media/pagination = (%d, %d, %d), want (%d, %d, 50)", client.got.MediaType, client.got.Offset, client.got.Limit, tt.mediaType, math.MaxInt32)
 			}
 		})
+	}
+}
+
+func TestMessagesSearchFailsClosedWithoutMessageProvider(t *testing.T) {
+	core := &MessagesCore{
+		ctx:    context.Background(),
+		svcCtx: &svc.ServiceContext{Dao: &dao.Dao{}},
+		Logger: logx.WithContext(context.Background()),
+		MD:     &metadata.RpcMetadata{UserId: 41},
+	}
+	peer := mtproto.MakeTLInputPeerUser(&mtproto.InputPeer{UserId: 42, AccessHash: 99}).To_InputPeer()
+	filter := mtproto.MakeTLInputMessagesFilterEmpty(&mtproto.MessagesFilter{}).To_MessagesFilter()
+
+	got, err := core.MessagesSearch(&mtproto.TLMessagesSearch{
+		Peer:   peer,
+		Q:      "query",
+		Filter: filter,
+		Limit:  10,
+	})
+	if got != nil || err != mtproto.ErrInternalServerError {
+		t.Fatalf("MessagesSearch() = (%v, %v), want nil result and INTERNAL_SERVER_ERROR", got, err)
+	}
+}
+
+func TestMessagesSearchSavedPeerFailsClosedWithoutMessageProvider(t *testing.T) {
+	core := &MessagesCore{
+		ctx:    context.Background(),
+		svcCtx: &svc.ServiceContext{Dao: &dao.Dao{}},
+		MD:     &metadata.RpcMetadata{UserId: 41},
+	}
+	filter := mtproto.MakeTLInputMessagesFilterEmpty(&mtproto.MessagesFilter{}).To_MessagesFilter()
+	got, err := core.MessagesSearch(&mtproto.TLMessagesSearch{
+		Peer:        mtproto.MakeTLInputPeerSelf(nil).To_InputPeer(),
+		SavedPeerId: mtproto.MakeTLInputPeerSelf(nil).To_InputPeer(),
+		Q:           "query",
+		Filter:      filter,
+		Limit:       10,
+	})
+	if got != nil || err != mtproto.ErrInternalServerError {
+		t.Fatalf("MessagesSearch(saved) = (%v, %v), want nil result and INTERNAL_SERVER_ERROR", got, err)
+	}
+}
+
+func TestMessagesSearchFailsClosedWithoutUserHydrationProvider(t *testing.T) {
+	core := &MessagesCore{
+		ctx:    context.Background(),
+		svcCtx: &svc.ServiceContext{Dao: &dao.Dao{}},
+		MD:     &metadata.RpcMetadata{UserId: 41},
+	}
+	result := mtproto.MakeTLMessagesMessages(&mtproto.Messages_Messages{}).To_Messages_Messages()
+	message := mtproto.MakeTLMessage(&mtproto.Message{
+		Id:      7,
+		FromId:  mtproto.MakePeerUser(41),
+		PeerId:  mtproto.MakePeerUser(42),
+		Message: "search fixture",
+	}).To_Message()
+	box := mtproto.MakeTLMessageBox(&mtproto.MessageBox{
+		MessageId: 7,
+		PeerType:  mtproto.PEER_USER,
+		PeerId:    42,
+		Message:   message,
+	}).To_MessageBox()
+
+	if err := core.populateSearchResult(&mtproto.MessageBoxList{BoxList: []*mtproto.MessageBox{box}}, result); err != mtproto.ErrInternalServerError {
+		t.Fatalf("populateSearchResult() error = %v, want INTERNAL_SERVER_ERROR", err)
 	}
 }

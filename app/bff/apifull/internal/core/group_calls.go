@@ -494,7 +494,13 @@ func boolValue(value *mtproto.Bool) bool {
 
 func groupCallMessageUpdates(record domain.GroupCall, message domain.GroupCallMessage, text *mtproto.TextWithEntities, senderID int64) *mtproto.Updates {
 	update := mtproto.MakeTLUpdateGroupCallMessage(&mtproto.Update{
-		Call_INPUTGROUPCALL:      groupCallInput(record),
+		Call_INPUTGROUPCALL: groupCallInput(record),
+		Message_GROUPCALLMESSAGE: mtproto.MakeTLGroupCallMessage(&mtproto.GroupCallMessage{
+			Id:      int32(message.ID),
+			FromId:  mtproto.MakePeerUser(senderID),
+			Date:    int32(message.Date),
+			Message: text,
+		}).To_GroupCallMessage(),
 		FromId:                   mtproto.MakePeerUser(senderID),
 		RandomId:                 message.RandomID,
 		Message_TEXTWITHENTITIES: text,

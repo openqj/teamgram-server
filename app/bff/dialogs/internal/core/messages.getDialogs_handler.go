@@ -111,7 +111,7 @@ func (c *DialogsCore) MessagesGetDialogs(in *mtproto.TLMessagesGetDialogs) (*mtp
 		in.OffsetDate,
 		in.OffsetId,
 		offsetPeer,
-		in.Limit)
+		limit)
 
 	var (
 		loadErr   error

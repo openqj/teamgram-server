@@ -19,7 +19,10 @@
 package core
 
 import (
+	"errors"
+
 	"github.com/teamgram/proto/mtproto"
+	verification "github.com/teamgram/teamgram-server/pkg/code"
 )
 
 // AuthReportMissingCode
@@ -28,7 +31,7 @@ func (c *AuthorizationCore) AuthReportMissingCode(in *mtproto.TLAuthReportMissin
 	if in == nil {
 		return nil, mtproto.ErrInputRequestInvalid
 	}
-	if c == nil {
+	if c == nil || c.svcCtx == nil {
 		return nil, mtproto.ErrMethodNotImpl
 	}
 	_, phoneNumber, err := checkPhoneNumberInvalid(in.GetPhoneNumber())
@@ -41,9 +44,28 @@ func (c *AuthorizationCore) AuthReportMissingCode(in *mtproto.TLAuthReportMissin
 		return nil, mtproto.ErrPhoneCodeHashEmpty
 	}
 
-	_ = phoneNumber
-	// There is no delivery-provider incident/report sink. A local phone-code
-	// row is not evidence that the report was accepted by a provider.
-	c.Logger.Errorf("auth.reportMissingCode - report provider unavailable")
-	return nil, mtproto.ErrMethodNotImpl
+	reporter := c.svcCtx.MissingCodeReporter
+	if reporter == nil {
+		c.Logger.Errorf("auth.reportMissingCode - report provider unavailable")
+		return nil, mtproto.ErrMethodNotImpl
+	}
+	if err = reporter.Ready(); err != nil {
+		if errors.Is(err, verification.ErrProviderUnavailable) {
+			c.Logger.Errorf("auth.reportMissingCode - report provider unavailable")
+			return nil, mtproto.ErrMethodNotImpl
+		}
+		c.Logger.Errorf("auth.reportMissingCode - report provider invalid: %v", err)
+		return nil, mtproto.ErrInternalServerError
+	}
+	if err = reporter.Deliver(c.ctx, verification.Delivery{
+		Channel: verification.ChannelSMS, Destination: phoneNumber,
+		ChallengeID: in.GetPhoneCodeHash(), Purpose: "auth.reportMissingCode", MNC: in.GetMnc(),
+	}); err != nil {
+		if errors.Is(err, verification.ErrProviderUnavailable) {
+			return nil, mtproto.ErrMethodNotImpl
+		}
+		c.Logger.Errorf("auth.reportMissingCode - report provider failed: %v", err)
+		return nil, mtproto.ErrInternalServerError
+	}
+	return mtproto.BoolTrue, nil
 }

@@ -107,14 +107,21 @@ func phoneCallRequested(call domain.Call, protocol *mtproto.PhoneCallProtocol) *
 	}).To_Phone_PhoneCall()
 }
 
-func phoneCallConnectedRecord(call domain.Call, protocol *mtproto.PhoneCallProtocol, viewerID int64) *mtproto.Phone_PhoneCall {
+func phoneCallConnectedRecord(call domain.Call, protocol *mtproto.PhoneCallProtocol, viewerID int64) (*mtproto.Phone_PhoneCall, error) {
+	if !domain.RelayConfigured() {
+		return nil, mtproto.ErrMethodNotImpl
+	}
+	username, password, ok := domain.RelayCredentials(viewerID)
+	if !ok {
+		return nil, mtproto.ErrMethodNotImpl
+	}
 	conn := mtproto.MakeTLPhoneConnectionWebrtc(&mtproto.PhoneConnection{
 		Id:       1,
 		Ip:       domain.Relay.IP,
 		Ipv6:     "",
 		Port:     domain.Relay.Port,
-		Username: domain.Relay.Username,
-		Password: domain.Relay.Password,
+		Username: username,
+		Password: password,
 		Turn:     true,
 		Stun:     true,
 	}).To_PhoneConnection()
@@ -138,7 +145,7 @@ func phoneCallConnectedRecord(call domain.Call, protocol *mtproto.PhoneCallProto
 			P2PAllowed:     true,
 		}).To_PhoneCall(),
 		Users: []*mtproto.User{},
-	}).To_Phone_PhoneCall()
+	}).To_Phone_PhoneCall(), nil
 }
 
 func phoneCallAcceptedRecord(call domain.Call, protocol *mtproto.PhoneCallProtocol) *mtproto.Phone_PhoneCall {
@@ -297,8 +304,16 @@ func (c *ApiFullCore) MessagesDeletePhoneCallHistory(in *mtproto.TLMessagesDelet
 }
 
 func (c *ApiFullCore) PhoneGetCallConfig(in *mtproto.TLPhoneGetCallConfig) (*mtproto.DataJSON, error) {
-	if _, err := c.requireUserId(); err != nil {
+	uid, err := c.requireUserId()
+	if err != nil {
 		return nil, err
+	}
+	if !domain.RelayConfigured() {
+		return nil, mtproto.ErrMethodNotImpl
+	}
+	username, password, ok := domain.RelayCredentials(uid)
+	if !ok {
+		return nil, mtproto.ErrMethodNotImpl
 	}
 	_ = in
 	type turnConfig struct {
@@ -322,8 +337,8 @@ func (c *ApiFullCore) PhoneGetCallConfig(in *mtproto.TLPhoneGetCallConfig) (*mtp
 		Turn: turnConfig{
 			IP:       domain.Relay.IP,
 			Port:     domain.Relay.Port,
-			Username: domain.Relay.Username,
-			Password: domain.Relay.Password,
+			Username: username,
+			Password: password,
 			PeerTag:  domain.Relay.PeerTag,
 		},
 	}
@@ -416,6 +431,12 @@ func (c *ApiFullCore) PhoneConfirmCall(in *mtproto.TLPhoneConfirmCall) (*mtproto
 	if err != nil {
 		return nil, err
 	}
+	if !domain.RelayConfigured() {
+		return nil, mtproto.ErrMethodNotImpl
+	}
+	if _, _, ok := domain.RelayCredentials(uid); !ok {
+		return nil, mtproto.ErrMethodNotImpl
+	}
 	record, err := domain.TransitionCall(id, domain.CallTransition{
 		ActorID: uid, AccessHash: accessHash, FromStates: []string{"accepted"}, ToState: "confirmed",
 		GA: append([]byte(nil), in.GetGA()...), Protocol: protocolRaw, KeyFingerprint: in.GetKeyFingerprint(),
@@ -424,10 +445,18 @@ func (c *ApiFullCore) PhoneConfirmCall(in *mtproto.TLPhoneConfirmCall) (*mtproto
 	if err != nil {
 		return nil, mapCallError(err)
 	}
-	if err = c.pushCallUpdate(record.ParticipantID, phoneCallConnectedRecord(record, protocol, record.ParticipantID).GetPhoneCall()); err != nil {
+	participantCall, err := phoneCallConnectedRecord(record, protocol, record.ParticipantID)
+	if err != nil {
 		return nil, err
 	}
-	return phoneCallConnectedRecord(record, protocol, record.AdminID), nil
+	adminCall, err := phoneCallConnectedRecord(record, protocol, record.AdminID)
+	if err != nil {
+		return nil, err
+	}
+	if err = c.pushCallUpdate(record.ParticipantID, participantCall.GetPhoneCall()); err != nil {
+		return nil, err
+	}
+	return adminCall, nil
 }
 
 func (c *ApiFullCore) PhoneReceivedCall(in *mtproto.TLPhoneReceivedCall) (*mtproto.Bool, error) {

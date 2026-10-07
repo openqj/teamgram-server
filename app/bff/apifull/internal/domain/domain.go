@@ -2,10 +2,15 @@ package domain
 
 import (
 	"bytes"
+	"crypto/hmac"
+	"crypto/sha1"
 	"crypto/sha256"
 	"database/sql"
+	"encoding/base64"
 	"errors"
 	"math"
+	"net"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -17,23 +22,17 @@ import (
 // DefaultDSN is the local teamgram database used by biz.yaml.
 const DefaultDSN = "root:root@tcp(127.0.0.1:3306)/teamgram?charset=utf8mb4&parseTime=true"
 
-// Relay is the TURN endpoint returned inside phoneCall connections.
-// 3478 is the standard TURN port. Credentials are the server default, not a secret store.
-// SetRelay replaces the address from process config; the default is loopback.
-var Relay = RelayConfig{
-	IP:       "127.0.0.1",
-	Port:     3478,
-	Username: "teamgram",
-	Password: "teamgram",
-	PeerTag:  []byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16},
-}
+// Relay is the configured TURN endpoint returned inside phoneCall connections.
+var Relay RelayConfig
 
 type RelayConfig struct {
-	IP       string
-	Port     int32
-	Username string
-	Password string
-	PeerTag  []byte
+	IP                   string
+	Port                 int32
+	Username             string
+	Password             string
+	SharedSecret         string
+	CredentialTTLSeconds int
+	PeerTag              []byte
 }
 
 // SetRelay points call connections at a reachable TURN listener.
@@ -48,11 +47,66 @@ func SetRelay(ip string, port int32) {
 	}
 }
 
+func SetRelayCredentials(username, password string) {
+	Relay.Username = username
+	Relay.Password = password
+}
+
+func SetRelaySharedSecret(secret string, ttlSeconds int) {
+	Relay.SharedSecret = strings.TrimSpace(secret)
+	if ttlSeconds <= 0 {
+		ttlSeconds = 3600
+	}
+	Relay.CredentialTTLSeconds = ttlSeconds
+}
+
+func RelayCredentials(userID int64) (username, password string, ok bool) {
+	if userID <= 0 {
+		return "", "", false
+	}
+	if Relay.SharedSecret != "" {
+		if Relay.CredentialTTLSeconds > 86400 {
+			return "", "", false
+		}
+		username = strconv.FormatInt(time.Now().Unix()+int64(Relay.CredentialTTLSeconds), 10) + ":" + strconv.FormatInt(userID, 10)
+		mac := hmac.New(sha1.New, []byte(Relay.SharedSecret))
+		_, _ = mac.Write([]byte(username))
+		return username, base64.StdEncoding.EncodeToString(mac.Sum(nil)), true
+	}
+	if strings.TrimSpace(Relay.Username) == "" || strings.TrimSpace(Relay.Password) == "" {
+		return "", "", false
+	}
+	return Relay.Username, Relay.Password, true
+}
+
+func RelayConfigured() bool {
+	host := strings.TrimSpace(Relay.IP)
+	credentialsConfigured := strings.TrimSpace(Relay.Username) != "" && strings.TrimSpace(Relay.Password) != ""
+	if Relay.SharedSecret != "" {
+		credentialsConfigured = Relay.CredentialTTLSeconds > 0 && Relay.CredentialTTLSeconds <= 86400
+	}
+	if host == "" || Relay.Port <= 0 || Relay.Port > 65535 || !credentialsConfigured ||
+		strings.EqualFold(host, "localhost") {
+		return false
+	}
+	if ip := net.ParseIP(strings.Trim(host, "[]")); ip != nil && ip.IsLoopback() {
+		return false
+	}
+	return true
+}
+
 var db *sql.DB
 
 // Open connects to MySQL, creates the apifull tables, and switches persist.Default.
 func Open(dsn string) error {
-	if err := persist.OpenMySQL(dsn); err != nil {
+	readOnlySchema := schemaReadOnly()
+	var openPersist func(string) error
+	if readOnlySchema {
+		openPersist = persist.OpenMySQLReadOnly
+	} else {
+		openPersist = persist.OpenMySQL
+	}
+	if err := openPersist(dsn); err != nil {
 		return err
 	}
 	conn, err := sql.Open("mysql", dsn)
@@ -61,12 +115,24 @@ func Open(dsn string) error {
 	}
 	conn.SetMaxOpenConns(8)
 	conn.SetMaxIdleConns(8)
-	if err = migrate(conn); err != nil {
+	if err = conn.Ping(); err != nil {
+		_ = conn.Close()
+		return err
+	}
+	if !readOnlySchema {
+		err = migrate(conn)
+	}
+	if err != nil {
 		_ = conn.Close()
 		return err
 	}
 	db = conn
 	return nil
+}
+
+func schemaReadOnly() bool {
+	value := strings.TrimSpace(os.Getenv("TEAMGRAM_APIFULL_SCHEMA_READONLY"))
+	return value == "1" || strings.EqualFold(value, "true") || strings.EqualFold(value, "yes")
 }
 
 func migrate(conn *sql.DB) error {
@@ -82,6 +148,7 @@ func migrate(conn *sql.DB) error {
 			megagroup TINYINT NOT NULL DEFAULT 0,
 			signatures_enabled TINYINT NOT NULL DEFAULT 0,
 			signature_profiles_enabled TINYINT NOT NULL DEFAULT 0,
+			antispam TINYINT NOT NULL DEFAULT 0,
 			hidden_prehistory TINYINT NOT NULL DEFAULT 0,
 			participants_hidden TINYINT NOT NULL DEFAULT 0,
 			slowmode_seconds INT NOT NULL DEFAULT 0,
@@ -345,8 +412,8 @@ func migrate(conn *sql.DB) error {
 			KEY idx_apifull_group_call_message_sender (call_id, sender_user_id, id)
 		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 		`CREATE TABLE IF NOT EXISTS apifull_channel_message (
-			channel_id BIGINT NOT NULL,
-			message_id INT NOT NULL,
+				channel_id BIGINT NOT NULL,
+				message_id INT NOT NULL,
 			sender_user_id BIGINT NOT NULL,
 			date INT NOT NULL,
 			message TEXT NOT NULL,
@@ -354,8 +421,20 @@ func migrate(conn *sql.DB) error {
 			edited_at INT NOT NULL DEFAULT 0,
 			reply_to_msg_id INT NOT NULL DEFAULT 0,
 			reply_to_top_id INT NOT NULL DEFAULT 0,
-			PRIMARY KEY (channel_id, message_id)
-		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+			content_json MEDIUMTEXT NULL,
+				PRIMARY KEY (channel_id, message_id)
+			) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+		`CREATE TABLE IF NOT EXISTS apifull_channel_message_request (
+				channel_id BIGINT NOT NULL,
+				sender_user_id BIGINT NOT NULL,
+				random_id BIGINT NOT NULL,
+				message_id INT NOT NULL,
+				pts INT NOT NULL,
+				request_hash BINARY(32) NOT NULL,
+				created_at INT NOT NULL,
+				PRIMARY KEY (channel_id, sender_user_id, random_id),
+				KEY idx_apifull_channel_message_request_message (channel_id, message_id)
+			) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 		`CREATE TABLE IF NOT EXISTS apifull_channel_message_hidden (
 			user_id BIGINT NOT NULL,
 			channel_id BIGINT NOT NULL,
@@ -377,6 +456,7 @@ func migrate(conn *sql.DB) error {
 			sender_user_id BIGINT NOT NULL DEFAULT 0,
 			date INT NOT NULL DEFAULT 0,
 			message TEXT NOT NULL,
+			content_json MEDIUMTEXT NULL,
 			edited_at INT NOT NULL DEFAULT 0,
 			pinned TINYINT NOT NULL DEFAULT 0,
 			PRIMARY KEY (channel_id, pts),
@@ -470,6 +550,7 @@ func migrate(conn *sql.DB) error {
 		`ALTER TABLE apifull_channel_member ADD COLUMN banned_at INT NOT NULL DEFAULT 0`,
 		`ALTER TABLE apifull_channel ADD COLUMN signatures_enabled TINYINT NOT NULL DEFAULT 0`,
 		`ALTER TABLE apifull_channel ADD COLUMN signature_profiles_enabled TINYINT NOT NULL DEFAULT 0`,
+		`ALTER TABLE apifull_channel ADD COLUMN antispam TINYINT NOT NULL DEFAULT 0`,
 		`ALTER TABLE apifull_channel ADD COLUMN hidden_prehistory TINYINT NOT NULL DEFAULT 0`,
 		`ALTER TABLE apifull_channel ADD COLUMN participants_hidden TINYINT NOT NULL DEFAULT 0`,
 		`ALTER TABLE apifull_channel ADD COLUMN slowmode_seconds INT NOT NULL DEFAULT 0`,
@@ -487,6 +568,8 @@ func migrate(conn *sql.DB) error {
 		`ALTER TABLE apifull_channel ADD COLUMN discussion_group_id BIGINT NULL`,
 		`ALTER TABLE apifull_channel_message ADD COLUMN reply_to_msg_id INT NOT NULL DEFAULT 0`,
 		`ALTER TABLE apifull_channel_message ADD COLUMN reply_to_top_id INT NOT NULL DEFAULT 0`,
+		`ALTER TABLE apifull_channel_message ADD COLUMN content_json MEDIUMTEXT NULL`,
+		`ALTER TABLE apifull_channel_event ADD COLUMN content_json MEDIUMTEXT NULL`,
 		`ALTER TABLE apifull_group_call ADD COLUMN title VARCHAR(255) NOT NULL DEFAULT ''`,
 		`ALTER TABLE apifull_group_call ADD COLUMN rtmp_stream TINYINT NOT NULL DEFAULT 0`,
 		`ALTER TABLE apifull_group_call ADD COLUMN schedule_date INT NULL`,
@@ -560,6 +643,7 @@ type Channel struct {
 	Megagroup                bool
 	Signatures               bool
 	SignatureProfiles        bool
+	Antispam                 bool
 	HiddenPrehistory         bool
 	ParticipantsHidden       bool
 	SlowmodeSeconds          int32
@@ -578,9 +662,18 @@ type Channel struct {
 	CreatedAt                int64
 }
 
+// InactiveChannel is a canonical channel together with the last activity
+// timestamp used by channels.getInactiveChannels.  A channel with no message
+// activity uses its creation time as the last activity.
+type InactiveChannel struct {
+	Channel    Channel
+	LastActive int64
+}
+
 type ChannelSettings struct {
 	Signatures         *bool
 	SignatureProfiles  *bool
+	Antispam           *bool
 	HiddenPrehistory   *bool
 	ParticipantsHidden *bool
 	SlowmodeSeconds    *int32
@@ -594,16 +687,16 @@ func SaveChannel(ch Channel) error {
 		ch.CreatedAt = time.Now().Unix()
 	}
 	_, err := db.Exec(`INSERT INTO apifull_channel
-		(id, access_hash, migrated_from_chat_id, creator_user_id, title, about, broadcast, megagroup, signatures_enabled, signature_profiles_enabled,
+		(id, access_hash, migrated_from_chat_id, creator_user_id, title, about, broadcast, megagroup, signatures_enabled, signature_profiles_enabled, antispam,
 		hidden_prehistory, participants_hidden, slowmode_seconds, location_lat, location_long, location_address, username, created_at)
-		VALUES (?,?,NULL,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+		VALUES (?,?,NULL,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 		ON DUPLICATE KEY UPDATE title=VALUES(title), about=VALUES(about), username=VALUES(username),
 			broadcast=VALUES(broadcast), megagroup=VALUES(megagroup), signatures_enabled=VALUES(signatures_enabled),
-			signature_profiles_enabled=VALUES(signature_profiles_enabled), hidden_prehistory=VALUES(hidden_prehistory),
+			signature_profiles_enabled=VALUES(signature_profiles_enabled), antispam=VALUES(antispam), hidden_prehistory=VALUES(hidden_prehistory),
 			participants_hidden=VALUES(participants_hidden), slowmode_seconds=VALUES(slowmode_seconds),
 			location_lat=VALUES(location_lat), location_long=VALUES(location_long), location_address=VALUES(location_address)`,
 		ch.ID, ch.AccessHash, ch.Creator, ch.Title, ch.About, boolInt(ch.Broadcast), boolInt(ch.Megagroup),
-		boolInt(ch.Signatures), boolInt(ch.SignatureProfiles), boolInt(ch.HiddenPrehistory), boolInt(ch.ParticipantsHidden),
+		boolInt(ch.Signatures), boolInt(ch.SignatureProfiles), boolInt(ch.Antispam), boolInt(ch.HiddenPrehistory), boolInt(ch.ParticipantsHidden),
 		ch.SlowmodeSeconds, ch.LocationLat, ch.LocationLong, ch.LocationAddress, ch.Username, ch.CreatedAt)
 	return err
 }
@@ -613,17 +706,17 @@ func LoadChannel(id int64) (Channel, bool, error) {
 	if db == nil {
 		return ch, false, errors.New("domain mysql is not open")
 	}
-	var broadcast, megagroup, signatures, signatureProfiles, hiddenPrehistory, participantsHidden int
+	var broadcast, megagroup, signatures, signatureProfiles, antispam, hiddenPrehistory, participantsHidden int
 	var color, profileColor sql.NullInt32
 	var backgroundEmojiID, profileBackgroundEmojiID sql.NullInt64
 	var locationLat, locationLong sql.NullFloat64
 	err := db.QueryRow(`SELECT id, access_hash, COALESCE(migrated_from_chat_id, 0), creator_user_id, title, about, broadcast, megagroup, signatures_enabled,
-		signature_profiles_enabled, hidden_prehistory, participants_hidden, slowmode_seconds, color, background_emoji_id,
+		signature_profiles_enabled, antispam, hidden_prehistory, participants_hidden, slowmode_seconds, color, background_emoji_id,
 		profile_color, profile_background_emoji_id, photo_id, photo_dc_id, photo_has_video,
 		location_lat, location_long, location_address, username, COALESCE(discussion_group_id, 0), created_at
 		FROM apifull_channel WHERE id=?`, id).Scan(
 		&ch.ID, &ch.AccessHash, &ch.MigratedFromChatID, &ch.Creator, &ch.Title, &ch.About, &broadcast, &megagroup, &signatures, &signatureProfiles,
-		&hiddenPrehistory, &participantsHidden, &ch.SlowmodeSeconds, &color, &backgroundEmojiID, &profileColor,
+		&antispam, &hiddenPrehistory, &participantsHidden, &ch.SlowmodeSeconds, &color, &backgroundEmojiID, &profileColor,
 		&profileBackgroundEmojiID, &ch.PhotoID, &ch.PhotoDCID, &ch.PhotoHasVideo,
 		&locationLat, &locationLong, &ch.LocationAddress, &ch.Username, &ch.DiscussionGroupID, &ch.CreatedAt)
 	if err == sql.ErrNoRows {
@@ -636,6 +729,7 @@ func LoadChannel(id int64) (Channel, bool, error) {
 	ch.Megagroup = megagroup != 0
 	ch.Signatures = signatures != 0
 	ch.SignatureProfiles = signatureProfiles != 0
+	ch.Antispam = antispam != 0
 	ch.HiddenPrehistory = hiddenPrehistory != 0
 	ch.ParticipantsHidden = participantsHidden != 0
 	if color.Valid {
@@ -657,6 +751,47 @@ func LoadChannel(id int64) (Channel, bool, error) {
 		ch.LocationLong = &locationLong.Float64
 	}
 	return ch, true, nil
+}
+
+// ListInactiveChannels returns channels owned by creatorID whose last
+// persisted message (or creation time when they have no messages) is at or
+// before cutoff.  The method intentionally uses the canonical channel and
+// message tables instead of caller-local KV state.
+func ListInactiveChannels(creatorID, cutoff int64) ([]InactiveChannel, error) {
+	if db == nil {
+		return nil, errors.New("domain mysql is not open")
+	}
+	rows, err := db.Query(`
+		SELECT c.id, COALESCE(MAX(m.date), c.created_at) AS last_active
+		FROM apifull_channel c
+		LEFT JOIN apifull_channel_message m ON m.channel_id=c.id
+		WHERE c.creator_user_id=?
+		GROUP BY c.id, c.created_at
+		HAVING COALESCE(MAX(m.date), c.created_at) <= ?
+		ORDER BY last_active ASC, c.id ASC`, creatorID, cutoff)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]InactiveChannel, 0)
+	for rows.Next() {
+		var id, lastActive int64
+		if err = rows.Scan(&id, &lastActive); err != nil {
+			return nil, err
+		}
+		channel, ok, loadErr := LoadChannel(id)
+		if loadErr != nil {
+			return nil, loadErr
+		}
+		if !ok {
+			continue
+		}
+		out = append(out, InactiveChannel{Channel: channel, LastActive: lastActive})
+	}
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 // UpdateChannelPhoto stores the canonical photo reference after the media/DFS
@@ -732,6 +867,10 @@ func UpdateChannelSettings(userID, channelID int64, settings ChannelSettings) er
 	if settings.SignatureProfiles != nil {
 		sets = append(sets, "signature_profiles_enabled=?")
 		args = append(args, boolInt(*settings.SignatureProfiles))
+	}
+	if settings.Antispam != nil {
+		sets = append(sets, "antispam=?")
+		args = append(args, boolInt(*settings.Antispam))
 	}
 	if settings.HiddenPrehistory != nil {
 		sets = append(sets, "hidden_prehistory=?")
@@ -853,6 +992,7 @@ func DeleteChannel(userID, channelID int64) error {
 	}
 	for _, stmt := range []string{
 		`UPDATE apifull_channel SET discussion_group_id=NULL WHERE discussion_group_id=?`,
+		`DELETE FROM apifull_channel_event WHERE channel_id=?`,
 		`DELETE FROM apifull_channel_message_hidden WHERE channel_id=?`,
 		`DELETE FROM apifull_channel_message_content_read WHERE channel_id=?`,
 		`DELETE FROM apifull_channel_message WHERE channel_id=?`,

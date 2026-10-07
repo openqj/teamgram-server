@@ -29,6 +29,9 @@ func (c *MessagesCore) loadSavedBoxes(saved *mtproto.InputPeer, offsetID, limit 
 	if offsetID == 0 {
 		offsetID = math.MaxInt32
 	}
+	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.MessageClient == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
 	boxes, err := c.svcCtx.Dao.MessageClient.MessageGetSavedHistoryMessages(c.ctx, &message.TLMessageGetSavedHistoryMessages{
 		UserId:   c.MD.UserId,
 		PeerType: peer.PeerType,

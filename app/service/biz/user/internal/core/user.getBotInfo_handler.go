@@ -10,8 +10,9 @@
 package core
 
 import (
+	"sort"
+
 	"github.com/teamgram/proto/mtproto"
-	"github.com/teamgram/teamgram-server/app/service/biz/user/internal/dal/dataobject"
 	"github.com/teamgram/teamgram-server/app/service/biz/user/user"
 	"github.com/teamgram/teamgram-server/app/service/media/media"
 )
@@ -44,15 +45,20 @@ func (c *UserCore) UserGetBotInfo(in *user.TLUserGetBotInfo) (*mtproto.BotInfo, 
 	// TODO: HasPreviewMedias
 
 	// Commands
-	_, _ = c.svcCtx.Dao.BotCommandsDAO.SelectListWithCB(
-		c.ctx,
-		in.BotId,
-		func(sz, i int, v *dataobject.BotCommandsDO) {
-			botInfo.Commands = append(botInfo.Commands, mtproto.MakeTLBotCommand(&mtproto.BotCommand{
-				Command:     v.Command,
-				Description: v.Description,
-			}).To_BotCommand())
-		})
+	commands, err := c.svcCtx.Dao.BotCommandsDAO.SelectList(c.ctx, in.BotId)
+	if err != nil {
+		c.Logger.Errorf("user.getBotInfo - load bot(%d) commands error: %v", in.BotId, err)
+		return nil, err
+	}
+	sort.Slice(commands, func(i, j int) bool {
+		return commands[i].Id < commands[j].Id
+	})
+	for i := range commands {
+		botInfo.Commands = append(botInfo.Commands, mtproto.MakeTLBotCommand(&mtproto.BotCommand{
+			Command:     commands[i].Command,
+			Description: commands[i].Description,
+		}).To_BotCommand())
+	}
 
 	// MenuButton
 	if botsDO.HasMenuButton {

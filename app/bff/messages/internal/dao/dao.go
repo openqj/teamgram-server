@@ -30,6 +30,7 @@ import (
 	user_client "github.com/teamgram/teamgram-server/app/service/biz/user/client"
 	idgen_client "github.com/teamgram/teamgram-server/app/service/idgen/client"
 	media_client "github.com/teamgram/teamgram-server/app/service/media/client"
+	"github.com/zeromicro/go-zero/core/stores/kv"
 )
 
 type Dao struct {
@@ -41,9 +42,14 @@ type Dao struct {
 	idgen_client.IDGenClient2
 	dialog_client.DialogClient
 	sync_client.SyncClient
+	KV kv.Store
 }
 
 func New(c config.Config) *Dao {
+	var floodKV kv.Store
+	if len(c.KV) > 0 {
+		floodKV = kv.NewStore(c.KV)
+	}
 	return &Dao{
 		MsgClient:     msg_client.NewMsgClient(rpcx.GetCachedRpcClient(c.MsgClient)),
 		UserClient:    user_client.NewUserClient(rpcx.GetCachedRpcClient(c.UserClient)),
@@ -53,5 +59,6 @@ func New(c config.Config) *Dao {
 		IDGenClient2:  idgen_client.NewIDGenClient2(rpcx.GetCachedRpcClient(c.IdgenClient)),
 		MessageClient: message_client.NewMessageClient(rpcx.GetCachedRpcClient(c.MessageClient)),
 		SyncClient:    sync_client.NewSyncMqClient(kafka.MustKafkaProducer(c.SyncClient)),
+		KV:            floodKV,
 	}
 }

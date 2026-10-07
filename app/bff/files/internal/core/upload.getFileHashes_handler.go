@@ -30,6 +30,12 @@ const fileHashPartSize = 128 * 1024
 // UploadGetFileHashes
 // upload.getFileHashes#9156982a location:InputFileLocation offset:long = Vector<FileHash>;
 func (c *FilesCore) UploadGetFileHashes(in *mtproto.TLUploadGetFileHashes) (*mtproto.Vector_FileHash, error) {
+	if c == nil || c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.DfsClient == nil {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
+	if in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
 	location := in.GetLocation()
 	if location == nil {
 		c.Logger.Errorf("upload.getFileHashes - empty location")
@@ -44,6 +50,21 @@ func (c *FilesCore) UploadGetFileHashes(in *mtproto.TLUploadGetFileHashes) (*mtp
 		return nil, mtproto.ErrOffsetInvalid
 	}
 
+	return c.fileHashesForLocation(location, offset)
+}
+
+// fileHashesForLocation hashes 128 KiB DFS ranges. It is shared by the
+// regular file-hash method and the signed CDN hand-off path.
+func (c *FilesCore) fileHashesForLocation(location *mtproto.InputFileLocation, offset int64) (*mtproto.Vector_FileHash, error) {
+	if location == nil {
+		return nil, mtproto.ErrLocationInvalid
+	}
+	if offset < 0 {
+		return nil, mtproto.ErrOffsetInvalid
+	}
+	if c == nil || c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.DfsClient == nil {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
 	// Same DFS download as upload.getFile. There is no hash RPC; hash 128KB parts.
 	out := &mtproto.Vector_FileHash{Datas: []*mtproto.FileHash{}}
 	for n := 0; n < 64; n++ {

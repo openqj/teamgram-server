@@ -26,6 +26,15 @@ import (
 // AccountUpdatePersonalChannel
 // account.updatePersonalChannel#d94305e0 channel:InputChannel = Bool;
 func (c *UserChannelProfilesCore) AccountUpdatePersonalChannel(in *mtproto.TLAccountUpdatePersonalChannel) (*mtproto.Bool, error) {
+	if c == nil || c.MD == nil || c.MD.UserId <= 0 {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
+	if in == nil || in.GetChannel() == nil || in.GetChannel().GetChannelId() <= 0 {
+		return nil, mtproto.ErrChannelInvalid
+	}
+	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.UserClient == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
 	rV, err := c.svcCtx.Dao.UserClient.UserUpdatePersonalChannel(c.ctx, &user.TLUserUpdatePersonalChannel{
 		UserId:    c.MD.UserId,
 		ChannelId: in.GetChannel().GetChannelId(),

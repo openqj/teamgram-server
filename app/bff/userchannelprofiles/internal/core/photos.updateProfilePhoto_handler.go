@@ -34,6 +34,11 @@ func (c *UserChannelProfilesCore) PhotosUpdateProfilePhoto(in *mtproto.TLPhotosU
 	if in == nil || in.GetId() == nil || in.GetId().GetId() <= 0 {
 		return nil, mtproto.ErrPhotoIdInvalid
 	}
+	if c.svcCtx == nil || c.svcCtx.Dao == nil ||
+		c.svcCtx.Dao.UserClient == nil || c.svcCtx.Dao.MediaClient == nil ||
+		c.svcCtx.Dao.SyncClient == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
 	var (
 		photo *mtproto.Photo
 	)
@@ -47,25 +52,19 @@ func (c *UserChannelProfilesCore) PhotosUpdateProfilePhoto(in *mtproto.TLPhotosU
 		c.Logger.Errorf("photos.updateProfilePhoto - error: %v", err)
 		return nil, err
 	}
-	if updatedPhotoId == nil {
+	if updatedPhotoId == nil || updatedPhotoId.GetV() <= 0 {
 		return nil, mtproto.ErrInternalServerError
 	}
 
-	if updatedPhotoId.V != 0 {
-		photo, err = c.svcCtx.Dao.MediaClient.MediaGetPhoto(c.ctx, &mediapb.TLMediaGetPhoto{
-			PhotoId: updatedPhotoId.V,
-		})
-		if err != nil {
-			c.Logger.Errorf("photos.updateProfilePhoto - error: %v", err)
-			return nil, err
-		}
-		if photo == nil {
-			return nil, mtproto.ErrInternalServerError
-		}
+	photo, err = c.svcCtx.Dao.MediaClient.MediaGetPhoto(c.ctx, &mediapb.TLMediaGetPhoto{
+		PhotoId: updatedPhotoId.GetV(),
+	})
+	if err != nil {
+		c.Logger.Errorf("photos.updateProfilePhoto - error: %v", err)
+		return nil, err
 	}
-
 	if photo == nil {
-		photo = mtproto.MakeTLPhotoEmpty(nil).To_Photo()
+		return nil, mtproto.ErrInternalServerError
 	}
 
 	me, err := c.svcCtx.Dao.UserClient.UserGetImmutableUser(
@@ -83,16 +82,20 @@ func (c *UserChannelProfilesCore) PhotosUpdateProfilePhoto(in *mtproto.TLPhotosU
 		return nil, mtproto.ErrInternalServerError
 	}
 
-	if _, err = c.svcCtx.Dao.SyncClient.SyncPushUpdates(c.ctx, &sync.TLSyncPushUpdates{
+	syncReply, err := c.svcCtx.Dao.SyncClient.SyncPushUpdates(c.ctx, &sync.TLSyncPushUpdates{
 		UserId: c.MD.UserId,
 		Updates: mtproto.MakeUpdatesByUpdatesUsers(
 			[]*mtproto.User{me.ToSelfUser()},
 			mtproto.MakeTLUpdateUser(&mtproto.Update{
 				UserId: c.MD.UserId,
 			}).To_Update()),
-	}); err != nil {
+	})
+	if err != nil {
 		c.Logger.Errorf("photos.updateProfilePhoto - sync error: %v", err)
 		return nil, err
+	}
+	if syncReply == nil {
+		return nil, mtproto.ErrInternalServerError
 	}
 
 	return mtproto.MakeTLPhotosPhoto(&mtproto.Photos_Photo{

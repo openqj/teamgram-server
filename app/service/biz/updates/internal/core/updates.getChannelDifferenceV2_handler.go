@@ -35,27 +35,29 @@ type persistedChannelMember struct {
 }
 
 type persistedChannelMessage struct {
-	ChannelID int64  `db:"channel_id"`
-	MessageID int32  `db:"message_id"`
-	Sender    int64  `db:"sender_user_id"`
-	Date      int64  `db:"date"`
-	Text      string `db:"message"`
-	Edited    bool   `db:"edited"`
-	EditedAt  int64  `db:"edited_at"`
-	Pinned    bool   `db:"pinned"`
+	ChannelID   int64          `db:"channel_id"`
+	MessageID   int32          `db:"message_id"`
+	Sender      int64          `db:"sender_user_id"`
+	Date        int64          `db:"date"`
+	Text        string         `db:"message"`
+	ContentJSON sql.NullString `db:"content_json"`
+	Edited      bool           `db:"edited"`
+	EditedAt    int64          `db:"edited_at"`
+	Pinned      bool           `db:"pinned"`
 }
 
 type persistedChannelEvent struct {
-	ChannelID  int64  `db:"channel_id"`
-	Pts        int32  `db:"pts"`
-	PtsCount   int32  `db:"pts_count"`
-	EventType  string `db:"event_type"`
-	MessageIDs string `db:"message_ids"`
-	Sender     int64  `db:"sender_user_id"`
-	Date       int64  `db:"date"`
-	Text       string `db:"message"`
-	EditedAt   int64  `db:"edited_at"`
-	Pinned     bool   `db:"pinned"`
+	ChannelID   int64          `db:"channel_id"`
+	Pts         int32          `db:"pts"`
+	PtsCount    int32          `db:"pts_count"`
+	EventType   string         `db:"event_type"`
+	MessageIDs  string         `db:"message_ids"`
+	Sender      int64          `db:"sender_user_id"`
+	Date        int64          `db:"date"`
+	Text        string         `db:"message"`
+	ContentJSON sql.NullString `db:"content_json"`
+	EditedAt    int64          `db:"edited_at"`
+	Pinned      bool           `db:"pinned"`
 }
 
 type channelDifferenceItem struct {
@@ -99,7 +101,7 @@ func (c *UpdatesCore) UpdatesGetChannelDifferenceV2(in *updates.TLUpdatesGetChan
 	}
 
 	rows := make([]persistedChannelMessage, 0, in.GetLimit()+1)
-	err = c.svcCtx.Dao.DB.QueryRowsPartial(c.ctx, &rows, `SELECT channel_id, message_id, sender_user_id, date, message, edited, edited_at, pinned
+	err = c.svcCtx.Dao.DB.QueryRowsPartial(c.ctx, &rows, `SELECT channel_id, message_id, sender_user_id, date, message, COALESCE(content_json,''), edited, edited_at, pinned
 		FROM apifull_channel_message WHERE channel_id=? AND message_id>? AND NOT EXISTS (
 			SELECT 1 FROM apifull_channel_message_hidden h
 			WHERE h.user_id=? AND h.channel_id=apifull_channel_message.channel_id
@@ -111,7 +113,7 @@ func (c *UpdatesCore) UpdatesGetChannelDifferenceV2(in *updates.TLUpdatesGetChan
 
 	events := make([]persistedChannelEvent, 0, in.GetLimit()+1)
 	if err = c.svcCtx.Dao.DB.QueryRowsPartial(c.ctx, &events, `SELECT channel_id, pts, pts_count, event_type, message_ids,
-		sender_user_id, date, message, edited_at, pinned
+		sender_user_id, date, message, COALESCE(content_json,''), edited_at, pinned
 		FROM apifull_channel_event WHERE channel_id=? AND pts>? ORDER BY pts ASC LIMIT ?`,
 		in.GetChannelId(), in.GetPts(), in.GetLimit()+1); err != nil && !missingChannelEventTable(err) {
 		return nil, err
@@ -149,16 +151,24 @@ func (c *UpdatesCore) UpdatesGetChannelDifferenceV2(in *updates.TLUpdatesGetChan
 		case "new":
 			for _, id := range visibleIDs {
 				seenMessages[id] = struct{}{}
-				row := persistedChannelMessage{ChannelID: event.ChannelID, MessageID: id, Sender: event.Sender, Date: event.Date, Text: event.Text, Pinned: event.Pinned, EditedAt: event.EditedAt, Edited: event.EditedAt != 0}
-				items = append(items, channelDifferenceItem{pts: event.Pts, message: persistedChannelMessageToMTProto(row)})
+				row := persistedChannelMessage{ChannelID: event.ChannelID, MessageID: id, Sender: event.Sender, Date: event.Date, Text: event.Text, ContentJSON: event.ContentJSON, Pinned: event.Pinned, EditedAt: event.EditedAt, Edited: event.EditedAt != 0}
+				message, messageErr := persistedChannelMessageToMTProto(row)
+				if messageErr != nil {
+					return nil, messageErr
+				}
+				items = append(items, channelDifferenceItem{pts: event.Pts, message: message})
 			}
 		case "edit":
 			if len(visibleIDs) == 0 {
 				continue
 			}
-			row := persistedChannelMessage{ChannelID: event.ChannelID, MessageID: visibleIDs[0], Sender: event.Sender, Date: event.Date, Text: event.Text, Pinned: event.Pinned, Edited: true, EditedAt: event.EditedAt}
+			row := persistedChannelMessage{ChannelID: event.ChannelID, MessageID: visibleIDs[0], Sender: event.Sender, Date: event.Date, Text: event.Text, ContentJSON: event.ContentJSON, Pinned: event.Pinned, Edited: true, EditedAt: event.EditedAt}
+			message, messageErr := persistedChannelMessageToMTProto(row)
+			if messageErr != nil {
+				return nil, messageErr
+			}
 			items = append(items, channelDifferenceItem{pts: event.Pts, update: mtproto.MakeTLUpdateEditChannelMessage(&mtproto.Update{
-				Message_MESSAGE: persistedChannelMessageToMTProto(row),
+				Message_MESSAGE: message,
 				Pts_INT32:       event.Pts,
 				PtsCount:        maxPtsCount(event.PtsCount),
 			}).To_Update()})
@@ -183,7 +193,11 @@ func (c *UpdatesCore) UpdatesGetChannelDifferenceV2(in *updates.TLUpdatesGetChan
 		if _, ok := seenMessages[row.MessageID]; ok {
 			continue
 		}
-		items = append(items, channelDifferenceItem{pts: row.MessageID, message: persistedChannelMessageToMTProto(row)})
+		message, messageErr := persistedChannelMessageToMTProto(row)
+		if messageErr != nil {
+			return nil, messageErr
+		}
+		items = append(items, channelDifferenceItem{pts: row.MessageID, message: message})
 	}
 	sort.SliceStable(items, func(i, j int) bool { return items[i].pts < items[j].pts })
 
@@ -272,21 +286,38 @@ func ensureChannelMember(ctx context.Context, db *sqlx.DB, channelID, userID, cr
 	return nil
 }
 
-func persistedChannelMessageToMTProto(row persistedChannelMessage) *mtproto.Message {
+func persistedChannelMessageToMTProto(row persistedChannelMessage) (*mtproto.Message, error) {
+	var content struct {
+		Media       *mtproto.MessageMedia    `json:"media,omitempty"`
+		Entities    []*mtproto.MessageEntity `json:"entities,omitempty"`
+		ReplyMarkup *mtproto.ReplyMarkup     `json:"reply_markup,omitempty"`
+		GroupedID   int64                    `json:"grouped_id,omitempty"`
+	}
+	if row.ContentJSON.Valid && row.ContentJSON.String != "" {
+		if err := json.Unmarshal([]byte(row.ContentJSON.String), &content); err != nil {
+			return nil, err
+		}
+	}
 	message := &mtproto.Message{
-		Out:     true,
-		Id:      row.MessageID,
-		FromId:  mtproto.MakePeerUser(row.Sender),
-		PeerId:  mtproto.MakePeerChannel(row.ChannelID),
-		Date:    int32(row.Date),
-		Message: row.Text,
-		Pinned:  row.Pinned,
-		Views:   wrapperspb.Int32(0),
+		Out:         true,
+		Id:          row.MessageID,
+		FromId:      mtproto.MakePeerUser(row.Sender),
+		PeerId:      mtproto.MakePeerChannel(row.ChannelID),
+		Date:        int32(row.Date),
+		Message:     row.Text,
+		Media:       content.Media,
+		Entities:    content.Entities,
+		ReplyMarkup: content.ReplyMarkup,
+		Pinned:      row.Pinned,
+		Views:       wrapperspb.Int32(0),
 		// The current TL schema shares this flag with forwards, so encode both fields.
 		Forwards: wrapperspb.Int32(0),
+	}
+	if content.GroupedID > 0 {
+		message.GroupedId = wrapperspb.Int64(content.GroupedID)
 	}
 	if row.Edited && row.EditedAt != 0 {
 		message.EditDate = wrapperspb.Int32(int32(row.EditedAt))
 	}
-	return mtproto.MakeTLMessage(message).To_Message()
+	return mtproto.MakeTLMessage(message).To_Message(), nil
 }

@@ -44,7 +44,10 @@ func TestPersistedChannelMessageToMTProto(t *testing.T) {
 		Pinned:    true,
 	}
 
-	got := persistedChannelMessageToMTProto(message)
+	got, err := persistedChannelMessageToMTProto(message)
+	if err != nil {
+		t.Fatalf("persistedChannelMessageToMTProto() error = %v", err)
+	}
 	if got.GetId() != message.MessageID || got.GetDate() != int32(message.Date) || got.GetMessage() != message.Text {
 		t.Fatalf("message fields = id %d date %d text %q", got.GetId(), got.GetDate(), got.GetMessage())
 	}

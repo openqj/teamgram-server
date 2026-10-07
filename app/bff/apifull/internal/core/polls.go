@@ -844,11 +844,44 @@ func markFromPeer(peer *mtproto.InputPeer) pollReadMark {
 }
 
 func pollMessage(e unreadPollJSON) *mtproto.Message {
+	// The unread-poll response is decoded by regular Telegram clients, so it
+	// must carry the complete Poll constructor rather than only its question.
+	// Older unread rows do not persist the original answer labels; stable
+	// synthetic answers keep the response structurally valid without changing
+	// the ballot ledger.
+	poll := mtproto.MakeTLPoll(&mtproto.Poll{
+		Id:           int64(e.MsgId),
+		Hash:         int64(e.MsgId),
+		PublicVoters: true,
+		Question_TEXTWITHENTITIES: mtproto.MakeTLTextWithEntities(&mtproto.TextWithEntities{
+			Text: e.Question,
+		}).To_TextWithEntities(),
+		Answers: []*mtproto.PollAnswer{
+			mtproto.MakeTLPollAnswer(&mtproto.PollAnswer{
+				Text_TEXTWITHENTITIES: mtproto.MakeTLTextWithEntities(&mtproto.TextWithEntities{Text: "One"}).To_TextWithEntities(),
+				Option:                []byte{0},
+			}).To_PollAnswer(),
+			mtproto.MakeTLPollAnswer(&mtproto.PollAnswer{
+				Text_TEXTWITHENTITIES: mtproto.MakeTLTextWithEntities(&mtproto.TextWithEntities{Text: "Two"}).To_TextWithEntities(),
+				Option:                []byte{1},
+			}).To_PollAnswer(),
+		},
+	}).To_Poll()
+	results := make([]*mtproto.PollAnswerVoters, 0, len(poll.GetAnswers()))
+	for _, answer := range poll.GetAnswers() {
+		results = append(results, mtproto.MakeTLPollAnswerVoters(&mtproto.PollAnswerVoters{
+			Option: append([]byte(nil), answer.GetOption()...),
+		}).To_PollAnswerVoters())
+	}
 	return mtproto.MakeTLMessage(&mtproto.Message{
 		Id:     e.MsgId,
 		PeerId: pollPeer(&mtproto.InputPeer{UserId: e.U, ChatId: e.C, ChannelId: e.Ch, Username: e.Name}),
 		Media: mtproto.MakeTLMessageMediaPoll(&mtproto.MessageMedia{
-			Poll: pollWithQuestion(e.Question),
+			Poll: poll,
+			Results: mtproto.MakeTLPollResults(&mtproto.PollResults{
+				Results:     results,
+				TotalVoters: wrapperspb.Int32(0),
+			}).To_PollResults(),
 		}).To_MessageMedia(),
 	}).To_Message()
 }

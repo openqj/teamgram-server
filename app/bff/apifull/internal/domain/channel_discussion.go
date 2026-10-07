@@ -193,7 +193,7 @@ func ChannelMessageReplies(userID, channelID int64, rootID, offsetID, offsetDate
 	queryArgs := append([]any{}, args...)
 	queryArgs = append(queryArgs, limit)
 	query := `SELECT message_id, sender_user_id, date, message, edited, edited_at, pinned,
-		reply_to_msg_id, reply_to_top_id FROM apifull_channel_message WHERE ` + where +
+		reply_to_msg_id, reply_to_top_id, COALESCE(content_json,'') FROM apifull_channel_message WHERE ` + where +
 		` ORDER BY message_id DESC LIMIT ?`
 	if addOffset > 0 {
 		query += ` OFFSET ?`

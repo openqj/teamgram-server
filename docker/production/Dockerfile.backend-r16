@@ -1,0 +1,6 @@
+FROM teamgram-server-latest:20261006-r15-prod
+
+COPY --chmod=0755 biz-r26 /app/bin/biz
+
+LABEL org.opencontainers.image.version="20261006-r16-prod" \
+      org.opencontainers.image.description="r15 runtime with verified saved-history canonical peer handling"

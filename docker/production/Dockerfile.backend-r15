@@ -1,0 +1,7 @@
+FROM teamgram-server-latest:20261006-r14-prod
+
+COPY --chmod=0755 bff-r25 /app/bin/bff
+COPY --chmod=0755 sync-r25 /app/bin/sync
+
+LABEL org.opencontainers.image.version="20261006-r15-prod" \
+      org.opencontainers.image.description="r14 runtime with verified r25 BFF and Sync binaries"

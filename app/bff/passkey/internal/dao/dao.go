@@ -20,6 +20,8 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"os"
+	"strings"
 	"time"
 
 	_ "github.com/go-sql-driver/mysql"
@@ -86,10 +88,18 @@ func New(c config.Config) *Dao {
 		_ = d.DB.Close()
 		return d
 	}
-	if d.DBErr = migrate(d.DB); d.DBErr != nil {
+	if !schemaReadOnly() {
+		d.DBErr = migrate(d.DB)
+	}
+	if d.DBErr != nil {
 		_ = d.DB.Close()
 	}
 	return d
+}
+
+func schemaReadOnly() bool {
+	value := strings.TrimSpace(os.Getenv("TEAMGRAM_APIFULL_SCHEMA_READONLY"))
+	return value == "1" || strings.EqualFold(value, "true") || strings.EqualFold(value, "yes")
 }
 
 func (d *Dao) available() error {

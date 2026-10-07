@@ -21,6 +21,7 @@ package config
 import (
 	kafka "github.com/teamgram/marmota/pkg/mq"
 	passkeyhelper "github.com/teamgram/teamgram-server/app/bff/passkey"
+	qrcodehelper "github.com/teamgram/teamgram-server/app/bff/qrcode"
 	"github.com/teamgram/teamgram-server/pkg/code/conf"
 	"github.com/zeromicro/go-zero/core/stores/kv"
 	"github.com/zeromicro/go-zero/zrpc"
@@ -43,10 +44,21 @@ type Config struct {
 	MysqlDSN                      string                       `json:",optional"`
 	PaymentProviderEndpoint       string                       `json:",optional"`
 	PaymentProviderKey            string                       `json:",optional"`
+	PaymentProviderSigningKey     string                       `json:",optional"`
 	PaymentProviderTimeoutSeconds int                          `json:",optional"`
 	TurnHost                      string                       `json:",optional"`
 	TurnPort                      int32                        `json:",optional"`
+	TurnUsername                  string                       `json:",optional"`
+	TurnPassword                  string                       `json:",optional"`
+	TurnSharedSecret              string                       `json:",optional"`
+	TurnCredentialTTLSeconds      int                          `json:",optional"`
 	Passkey                       passkeyhelper.ProviderConfig `json:",optional"`
+	QrCode                        qrcodehelper.ProviderConfig  `json:",optional"`
+	SearchPostsFlood              SearchPostsFloodConfig       `json:",optional"`
 	SignInServiceNotification     []conf.MessageEntityConfig   `json:",optional"`
 	SignInMessage                 []conf.MessageEntityConfig   `json:",optional"`
+}
+
+type SearchPostsFloodConfig struct {
+	TotalDaily int `json:",optional"`
 }

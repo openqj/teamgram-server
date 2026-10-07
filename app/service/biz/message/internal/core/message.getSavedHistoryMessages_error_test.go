@@ -67,3 +67,19 @@ func TestMessageGetSavedHistoryMessagesRejectsChannelStorageGap(t *testing.T) {
 		t.Fatalf("channel saved history = (%v, %v), want (nil, ERR_ENTERPRISE_IS_BLOCKED)", got, err)
 	}
 }
+
+func TestNormalizeSavedHistoryPeerUsesCanonicalSelfKey(t *testing.T) {
+	const selfID int64 = 136907713
+
+	for _, peerType := range []int32{mtproto.PEER_SELF, mtproto.PEER_USER} {
+		got := normalizeSavedHistoryPeer(mtproto.MakePeerUtil(peerType, selfID), selfID)
+		if got == nil || got.PeerType != mtproto.PEER_USER || got.PeerId != selfID {
+			t.Fatalf("peer type %d normalized to %+v, want PEER_USER/%d", peerType, got, selfID)
+		}
+	}
+
+	other := normalizeSavedHistoryPeer(mtproto.MakePeerUtil(mtproto.PEER_USER, 42), selfID)
+	if other == nil || other.PeerType != mtproto.PEER_USER || other.PeerId != 42 {
+		t.Fatalf("other user peer normalized to %+v, want PEER_USER/42", other)
+	}
+}

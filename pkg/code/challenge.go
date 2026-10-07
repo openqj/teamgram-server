@@ -2,6 +2,7 @@ package code
 
 import (
 	"context"
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -16,10 +17,11 @@ import (
 )
 
 var (
-	ErrChallengeNotFound = errors.New("verification challenge not found")
-	ErrChallengeExpired  = errors.New("verification challenge expired")
-	ErrChallengeInvalid  = errors.New("verification code invalid")
-	ErrRateLimited       = errors.New("verification-code rate limit exceeded")
+	ErrChallengeNotFound       = errors.New("verification challenge not found")
+	ErrChallengeExpired        = errors.New("verification challenge expired")
+	ErrChallengeInvalid        = errors.New("verification code invalid")
+	ErrChallengeKeyUnavailable = errors.New("verification challenge key unavailable")
+	ErrRateLimited             = errors.New("verification-code rate limit exceeded")
 )
 
 type Challenge struct {
@@ -43,11 +45,12 @@ type ChallengeStore interface {
 }
 
 type ChallengeSettings struct {
-	TTL         time.Duration
-	RateLimit   int
-	RateWindow  time.Duration
-	MaxAttempts int
-	Secret      string
+	TTL           time.Duration
+	RateLimit     int
+	RateWindow    time.Duration
+	MaxAttempts   int
+	Secret        string
+	RequireSecret bool
 }
 
 func normalizeChallengeSettings(settings ChallengeSettings) ChallengeSettings {
@@ -68,10 +71,11 @@ func normalizeChallengeSettings(settings ChallengeSettings) ChallengeSettings {
 
 func ChallengeSettingsFromConfig(c *conf.SmsVerifyCodeConfig) ChallengeSettings {
 	settings := ChallengeSettings{
-		TTL:         3 * time.Minute,
-		RateLimit:   3,
-		RateWindow:  10 * time.Minute,
-		MaxAttempts: 5,
+		TTL:           3 * time.Minute,
+		RateLimit:     3,
+		RateWindow:    10 * time.Minute,
+		MaxAttempts:   5,
+		RequireSecret: true,
 	}
 	if c == nil {
 		return settings
@@ -88,7 +92,7 @@ func ChallengeSettingsFromConfig(c *conf.SmsVerifyCodeConfig) ChallengeSettings 
 	if c.MaxAttempts > 0 {
 		settings.MaxAttempts = c.MaxAttempts
 	}
-	settings.Secret = c.Secret
+	settings.Secret = c.ChallengeSecret
 	return settings
 }
 
@@ -157,6 +161,9 @@ func (s *ChallengeService) Issue(ctx context.Context, req IssueRequest) (*Issued
 			return nil, err
 		}
 	}
+	if s.settings.RequireSecret && len(s.settings.Secret) < 32 {
+		return nil, ErrChallengeKeyUnavailable
+	}
 	allowed, retryAfter, err := s.store.Allow(ctx, rateKey(req.Channel, req.Subject), s.settings.RateLimit, s.settings.RateWindow)
 	if err != nil {
 		return nil, err
@@ -182,6 +189,13 @@ func (s *ChallengeService) Issue(ctx context.Context, req IssueRequest) (*Issued
 			return nil, err
 		}
 	}
+	deliveryID := ""
+	if provider != nil {
+		deliveryID, err = randomHex(16)
+		if err != nil {
+			return nil, err
+		}
+	}
 	ttl := req.TTL
 	if ttl <= 0 {
 		ttl = s.settings.TTL
@@ -199,11 +213,13 @@ func (s *ChallengeService) Issue(ctx context.Context, req IssueRequest) (*Issued
 	}
 	if provider != nil {
 		err = provider.Deliver(ctx, Delivery{
-			Channel: req.Channel, Destination: req.Subject, Code: req.Code,
+			Channel: req.Channel, DeliveryID: deliveryID, Destination: req.Subject, Code: req.Code,
 			ChallengeID: req.ChallengeID, Purpose: req.Purpose,
 		})
 		if err != nil {
-			_ = s.store.Delete(ctx, key)
+			cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+			_ = s.store.Delete(cleanupCtx, key)
+			cancel()
 			return nil, err
 		}
 	}
@@ -222,7 +238,9 @@ func (s *ChallengeService) Revoke(ctx context.Context, req VerifyRequest) error 
 	if s == nil || s.store == nil || req.Purpose == "" || req.Scope == "" || req.ChallengeID == "" {
 		return nil
 	}
-	return s.store.Delete(ctx, challengeKey(req.Channel, req.Purpose, req.Scope, req.ChallengeID))
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+	defer cancel()
+	return s.store.Delete(cleanupCtx, challengeKey(req.Channel, req.Purpose, req.Scope, req.ChallengeID))
 }
 
 func (s *ChallengeService) verify(ctx context.Context, req VerifyRequest, consume bool) (*Challenge, error) {
@@ -232,10 +250,11 @@ func (s *ChallengeService) verify(ctx context.Context, req VerifyRequest, consum
 	if req.Purpose == "" || req.Scope == "" || req.ChallengeID == "" || req.Code == "" {
 		return nil, ErrChallengeInvalid
 	}
+	if s.settings.RequireSecret && len(s.settings.Secret) < 32 {
+		return nil, ErrChallengeKeyUnavailable
+	}
 	key := challengeKey(req.Channel, req.Purpose, req.Scope, req.ChallengeID)
-	// The store compares the digest atomically and deletes only a successful consume.
-	// It receives both supported digests so records remain verifiable if the configured
-	// secret is rotated from empty to a value during their short TTL.
+	// The store compares the HMAC atomically and deletes only a successful consume.
 	digest := digestCode(s.settings.Secret, req.ChallengeID, req.Code)
 	record, err := s.store.Verify(ctx, key, req.ChallengeID, digest, s.now().Unix(), s.settings.MaxAttempts, consume)
 	if err != nil {
@@ -272,8 +291,9 @@ func rateKey(channel Channel, subject string) string {
 }
 
 func digestCode(secret, salt, value string) string {
-	sum := sha256.Sum256([]byte(secret + "\x00" + salt + "\x00" + value))
-	return hex.EncodeToString(sum[:])
+	mac := hmac.New(sha256.New, []byte(secret))
+	_, _ = mac.Write([]byte(salt + "\x00" + value))
+	return hex.EncodeToString(mac.Sum(nil))
 }
 
 func randomHex(size int) (string, error) {
@@ -307,7 +327,7 @@ func PurposeID(parts ...string) string {
 }
 
 func ProviderError(err error) bool {
-	return errors.Is(err, ErrProviderUnavailable) || errors.Is(err, ErrDeliveryFailed)
+	return errors.Is(err, ErrProviderUnavailable) || errors.Is(err, ErrDeliveryFailed) || errors.Is(err, ErrChallengeKeyUnavailable)
 }
 
 func RateLimitSeconds(err error, issued *IssuedChallenge) int {

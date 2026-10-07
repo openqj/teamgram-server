@@ -20,9 +20,12 @@ package core
 
 import (
 	"encoding/json"
+	"errors"
 	"strconv"
 
 	"github.com/teamgram/proto/mtproto"
+	"github.com/teamgram/teamgram-server/app/bff/apifull/channelview"
+	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/domain"
 	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/persist"
 )
 
@@ -38,14 +41,38 @@ func persistSetJSON(userID int64, method string, v any) error {
 // RPCAntiSpamServer: Layer 229 methods previously returned ERR_ENTERPRISE_IS_BLOCKED.
 
 func (c *ApiFullCore) ChannelsToggleAntiSpam(in *mtproto.TLChannelsToggleAntiSpam) (*mtproto.Updates, error) {
+	if in == nil || in.GetChannel() == nil || in.GetEnabled() == nil {
+		if _, err := c.requireUserId(); err != nil {
+			return nil, err
+		}
+		return nil, mtproto.ErrChannelInvalid
+	}
 	uid, err := c.requireUserId()
 	if err != nil {
 		return nil, err
 	}
-	if err := persistSetJSON(uid, "channels.toggleAntiSpam", in); err != nil {
+	enabled := mtproto.FromBool(in.GetEnabled())
+	if _, err = c.resolveMemberChannel(uid, in.GetChannel(), in.GetChannel().GetChannelId()); err != nil {
 		return nil, err
 	}
-	return emptyUpdates(), nil
+	if err = domain.UpdateChannelSettings(uid, in.GetChannel().GetChannelId(), domain.ChannelSettings{Antispam: &enabled}); err != nil {
+		switch {
+		case errors.Is(err, domain.ErrChannelMissing):
+			return nil, mtproto.ErrChannelInvalid
+		case errors.Is(err, domain.ErrNotCreator):
+			return nil, mtproto.ErrChatAdminRequired
+		default:
+			return nil, err
+		}
+	}
+	channel, ok, err := domain.LoadChannel(in.GetChannel().GetChannelId())
+	if err != nil || !ok {
+		if err != nil {
+			return nil, err
+		}
+		return nil, mtproto.ErrChannelInvalid
+	}
+	return mtproto.MakeUpdatesByUpdatesChats([]*mtproto.Chat{channelview.Chat(channel, channel.Creator == uid)}), nil
 }
 
 func (c *ApiFullCore) ChannelsReportAntiSpamFalsePositive(in *mtproto.TLChannelsReportAntiSpamFalsePositive) (*mtproto.Bool, error) {
@@ -53,8 +80,28 @@ func (c *ApiFullCore) ChannelsReportAntiSpamFalsePositive(in *mtproto.TLChannels
 	if err != nil {
 		return nil, err
 	}
-	if err := persistSetJSON(uid, "channels.reportAntiSpamFalsePositive", in); err != nil {
+	if in == nil || in.GetChannel() == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if in.GetMsgId() <= 0 {
+		return nil, mtproto.ErrMessageIdInvalid
+	}
+	channel, err := c.resolveMemberChannel(uid, in.GetChannel(), in.GetChannel().GetChannelId())
+	if err != nil {
 		return nil, err
 	}
-	return mtproto.BoolTrue, nil
+	if err = c.requireChannelMember(uid, channel.ID); err != nil {
+		return nil, err
+	}
+	messages, err := domain.ChannelMessagesByID(uid, channel.ID, []int32{in.GetMsgId()})
+	if err != nil {
+		return nil, err
+	}
+	if len(messages) != 1 {
+		return nil, mtproto.ErrMessageIdInvalid
+	}
+	if err = c.recordReport(uid, "channels.reportAntiSpamFalsePositive", reportTarget{typ: "channel", id: channel.ID}, in); err != nil {
+		return nil, err
+	}
+	return reportAccepted(), nil
 }

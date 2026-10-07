@@ -59,14 +59,10 @@ func (c *ContactsCore) ContactsGetContactIDs(in *mtproto.TLContactsGetContactIDs
 
 	// contacts.getContacts reports a saved count of zero, so the matching
 	// contacts hash is based on the sorted contact IDs alone.
-	const hashMod = uint64(0x80000000)
-	hash := uint64(0)
-	for _, id := range ids {
-		hash = (hash*20261 + hashMod + uint64(id)) % hashMod
-	}
+	hash := calculateContactsHash(ids)
 
 	result := &mtproto.Vector_Int{Datas: []int32{}}
-	if in.GetHash() == int64(hash) {
+	if in.GetHash() == hash {
 		return result, nil
 	}
 	result.Datas = make([]int32, 0, len(ids))

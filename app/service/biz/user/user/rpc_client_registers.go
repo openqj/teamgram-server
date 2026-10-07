@@ -89,6 +89,8 @@ var rpcContextRegisters = map[string]RPCContextTuple{
 	"TLUserGetUserDataByToken":            RPCContextTuple{"/mtproto.RPCUser/user_getUserDataByToken", func() interface{} { return new(mtproto.UserData) }},
 	"TLUserSearch":                        RPCContextTuple{"/mtproto.RPCUser/user_search", func() interface{} { return new(UsersFound) }},
 	"TLUserUpdateBotData":                 RPCContextTuple{"/mtproto.RPCUser/user_updateBotData", func() interface{} { return new(mtproto.Bool) }},
+	"TLUserCreateBot":                     RPCContextTuple{"/mtproto.RPCUser/user_createBot", func() interface{} { return new(mtproto.ImmutableUser) }},
+	"TLUserExportBotToken":                RPCContextTuple{"/mtproto.RPCUser/user_exportBotToken", func() interface{} { return new(mtproto.String) }},
 	"TLUserGetImmutableUserV2":            RPCContextTuple{"/mtproto.RPCUser/user_getImmutableUserV2", func() interface{} { return new(mtproto.ImmutableUser) }},
 	"TLUserGetMutableUsersV2":             RPCContextTuple{"/mtproto.RPCUser/user_getMutableUsersV2", func() interface{} { return new(mtproto.MutableUsers) }},
 	"TLUserCreateNewTestUser":             RPCContextTuple{"/mtproto.RPCUser/user_createNewTestUser", func() interface{} { return new(mtproto.ImmutableUser) }},

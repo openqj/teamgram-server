@@ -48,7 +48,7 @@ func (c *MessagesCore) MessagesSendMessage(in *mtproto.TLMessagesSendMessage) (*
 		return nil, err
 	}
 	replyToMsgID, replyToTopID := storedReplyIDs(in.GetReplyTo(), in.GetReplyToMsgId())
-	if up, handled, err := c.deliverStored(in.GetPeer(), peer, in.GetScheduleDate().GetValue(), in.Message, replyToMsgID, replyToTopID); handled {
+	if up, handled, err := c.deliverStored(in.GetPeer(), peer, in.GetScheduleDate().GetValue(), in.Message, replyToMsgID, replyToTopID, in.GetRandomId()); handled {
 		if err != nil {
 			c.Logger.Errorf("messages.sendMessage stored: %v", err)
 		}

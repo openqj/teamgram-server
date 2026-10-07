@@ -33,13 +33,24 @@ func (c *UserChannelProfilesCore) PhotosGetUserPhotos(in *mtproto.TLPhotosGetUse
 	if in == nil || in.GetUserId() == nil {
 		return nil, mtproto.ErrInputRequestInvalid
 	}
+	if in.GetOffset() < 0 {
+		return nil, mtproto.ErrOffsetInvalid
+	}
 	userId := mtproto.FromInputUser(c.MD.UserId, in.UserId)
 	switch userId.PeerType {
-	case mtproto.PEER_SELF, mtproto.PEER_USER:
+	case mtproto.PEER_SELF:
+	case mtproto.PEER_USER:
+		if in.GetUserId().GetUserId() <= 0 || in.GetUserId().GetAccessHash() == 0 {
+			return nil, mtproto.ErrUserIdInvalid
+		}
 	default:
 		err := mtproto.ErrUserIdInvalid
 		c.Logger.Errorf("photos.getUserPhotos - error: %v", err)
 		return nil, err
+	}
+	if c.svcCtx == nil || c.svcCtx.Dao == nil ||
+		c.svcCtx.Dao.UserClient == nil || c.svcCtx.Dao.MediaClient == nil {
+		return nil, mtproto.ErrInternalServerError
 	}
 
 	cachePhotos, err := c.svcCtx.Dao.UserClient.UserGetProfilePhotos(c.ctx, &userpb.TLUserGetProfilePhotos{
@@ -53,12 +64,43 @@ func (c *UserChannelProfilesCore) PhotosGetUserPhotos(in *mtproto.TLPhotosGetUse
 		return nil, mtproto.ErrInternalServerError
 	}
 
+	// The user service returns the profile-photo ids in newest-first order. Apply
+	// the Layer 229 window locally because the service contract predates the
+	// photos.getUserPhotos pagination fields.
+	ids := cachePhotos.GetDatas()
+	filtered := make([]int64, 0, len(ids))
+	for _, id := range ids {
+		if id <= 0 {
+			continue
+		}
+		if in.GetMaxId() > 0 && id > in.GetMaxId() {
+			continue
+		}
+		filtered = append(filtered, id)
+	}
+	offset := int(in.GetOffset())
+	if offset >= len(filtered) {
+		filtered = nil
+	} else if offset > 0 {
+		filtered = filtered[offset:]
+	}
+	limit := int(in.GetLimit())
+	if limit <= 0 {
+		limit = 100
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	if len(filtered) > limit {
+		filtered = filtered[:limit]
+	}
+
 	photos := mtproto.MakeTLPhotosPhotos(&mtproto.Photos_Photos{
-		Photos: make([]*mtproto.Photo, 0, len(cachePhotos.GetDatas())),
+		Photos: make([]*mtproto.Photo, 0, len(filtered)),
 		Users:  []*mtproto.User{},
 	}).To_Photos_Photos()
 
-	for _, id := range cachePhotos.GetDatas() {
+	for _, id := range filtered {
 		photo, err := c.svcCtx.Dao.MediaClient.MediaGetPhoto(c.ctx,
 			&mediapb.TLMediaGetPhoto{
 				PhotoId: id,

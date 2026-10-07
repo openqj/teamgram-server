@@ -29,6 +29,10 @@ func New(svcCtx *svc.ServiceContext, conf kafka.KafkaConsumerConf) *kafka.Consum
 		func(ctx context.Context, method, key string, value []byte) {
 			logx.WithContext(ctx).Debugf("method: %s, key: %s, value: %s", key, value)
 
+			if handlePushVariant(ctx, svcCtx, method, value) {
+				return
+			}
+
 			switch protoreflect.FullName(method) {
 			case proto.MessageName((*sync.TLSyncUpdatesMe)(nil)):
 				c := core.New(ctx, svcCtx)
@@ -91,4 +95,37 @@ func New(svcCtx *svc.ServiceContext, conf kafka.KafkaConsumerConf) *kafka.Consum
 			}
 		})
 	return s
+}
+
+// handlePushVariant handles sync messages that are produced by the Kafka clients
+// and are not part of the legacy switch below.
+func handlePushVariant(ctx context.Context, svcCtx *svc.ServiceContext, method string, value []byte) bool {
+	switch protoreflect.FullName(method) {
+	case proto.MessageName((*sync.TLSyncPushUpdatesIfNot)(nil)):
+		c := core.New(ctx, svcCtx)
+
+		r := new(sync.TLSyncPushUpdatesIfNot)
+		if err := json.Unmarshal(value, r); err != nil {
+			c.Logger.Error(err.Error())
+			return true
+		}
+		c.Logger.Debugf("sync.pushUpdatesIfNot - request: %s", r)
+
+		c.SyncPushUpdatesIfNot(r)
+		return true
+	case proto.MessageName((*sync.TLSyncPushBotUpdates)(nil)):
+		c := core.New(ctx, svcCtx)
+
+		r := new(sync.TLSyncPushBotUpdates)
+		if err := json.Unmarshal(value, r); err != nil {
+			c.Logger.Error(err.Error())
+			return true
+		}
+		c.Logger.Debugf("sync.pushBotUpdates - request: %s", r)
+
+		c.SyncPushBotUpdates(r)
+		return true
+	default:
+		return false
+	}
 }

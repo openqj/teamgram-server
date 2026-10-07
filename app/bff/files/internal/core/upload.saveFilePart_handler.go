@@ -26,6 +26,27 @@ import (
 // UploadSaveFilePart
 // upload.saveFilePart#b304a621 file_id:long file_part:int bytes:bytes = Bool;
 func (c *FilesCore) UploadSaveFilePart(in *mtproto.TLUploadSaveFilePart) (*mtproto.Bool, error) {
+	if c == nil || c.MD == nil || c.MD.PermAuthKeyId == 0 || c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.DfsClient == nil {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
+	if in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if in.GetFileId() <= 0 {
+		return nil, mtproto.ErrFileIdInvalid
+	}
+	if in.GetFilePart() < 0 {
+		return nil, mtproto.ErrFilePartInvalid
+	}
+	if in.GetFilePart() > 2999 {
+		return nil, mtproto.ErrFilePartInvalid
+	}
+	if len(in.GetBytes()) == 0 {
+		return nil, mtproto.ErrFilePartEmpty
+	}
+	if len(in.GetBytes()) > 512*1024 {
+		return nil, mtproto.ErrFilePartTooBig
+	}
 	_, err := c.svcCtx.Dao.DfsClient.DfsWriteFilePartData(c.ctx, &dfs.TLDfsWriteFilePartData{
 		Creator:        c.MD.PermAuthKeyId,
 		FileId:         in.FileId,

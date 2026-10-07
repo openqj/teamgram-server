@@ -46,7 +46,7 @@ func (c *MessagesCore) MessagesDeleteHistory(in *mtproto.TLMessagesDeleteHistory
 		return nil, err
 	}
 
-	if in.GetMinDate() != nil || in.GetMaxDate() != nil {
+	if hasNonZeroDateFilter(in) {
 		return c.deleteHistoryByDate(peer, in)
 	}
 
@@ -92,6 +92,14 @@ func (c *MessagesCore) MessagesDeleteHistory(in *mtproto.TLMessagesDeleteHistory
 	}
 
 	return affectedHistory, nil
+}
+
+// GramJS may encode optional min/max date fields as empty wrappers when the
+// caller sends zero. Zero has the protocol's "not set" meaning and must use
+// the normal peer-aware history deletion path.
+func hasNonZeroDateFilter(in *mtproto.TLMessagesDeleteHistory) bool {
+	return (in.GetMinDate() != nil && in.GetMinDate().GetValue() != 0) ||
+		(in.GetMaxDate() != nil && in.GetMaxDate().GetValue() != 0)
 }
 
 func (c *MessagesCore) deleteHistoryByDate(peer *mtproto.PeerUtil, in *mtproto.TLMessagesDeleteHistory) (*mtproto.Messages_AffectedHistory, error) {

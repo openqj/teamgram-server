@@ -19,6 +19,8 @@
 package core
 
 import (
+	"sort"
+
 	"github.com/teamgram/proto/mtproto"
 	userpb "github.com/teamgram/teamgram-server/app/service/biz/user/user"
 )
@@ -79,6 +81,13 @@ func (c *ContactsCore) ContactsGetContacts(in *mtproto.TLContactsGetContacts) (*
 			return nil, mtproto.ErrContactIdInvalid
 		}
 		idList = append(idList, contact.GetContactUserId())
+	}
+	if in.GetHash() != 0 {
+		hashIDs := append([]int64(nil), idList...)
+		sort.Slice(hashIDs, func(i, j int) bool { return hashIDs[i] < hashIDs[j] })
+		if in.GetHash() == calculateContactsHash(hashIDs) {
+			return mtproto.MakeTLContactsContactsNotModified(&mtproto.Contacts_Contacts{}).To_Contacts_Contacts(), nil
+		}
 	}
 
 	if len(idList) == 0 {

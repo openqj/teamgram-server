@@ -134,7 +134,9 @@ func (c *ApiFullCore) secretDeviceID() (int64, error) {
 		return 0, mtproto.ErrAuthKeyUnregistered
 	}
 	for _, id := range []int64{c.MD.GetPermAuthKeyId(), c.MD.GetAuthId(), c.MD.GetSessionId()} {
-		if id > 0 {
+		// Auth key ids are signed int64 values on the wire and production keys
+		// commonly have the high bit set. Only zero means that the field is absent.
+		if id != 0 {
 			return id, nil
 		}
 	}
@@ -422,7 +424,9 @@ func (c *ApiFullCore) uploadSecretFile(input *mtproto.InputEncryptedFile) (*mtpr
 			return nil, mtproto.ErrFileIdInvalid
 		}
 	case mtproto.Predicate_inputEncryptedFile:
-		return nil, mtproto.ErrMethodNotImpl
+		if input.GetAccessHash() == 0 {
+			return nil, mtproto.ErrFileIdInvalid
+		}
 	default:
 		return nil, mtproto.ErrFileIdInvalid
 	}

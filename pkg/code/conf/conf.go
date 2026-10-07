@@ -24,9 +24,11 @@ type SmsVerifyCodeConfig struct {
 	EmailProvider          string `json:",optional"`
 	SendCodeUrl            string
 	EmailSendCodeUrl       string `json:",optional"`
+	ReportMissingCodeUrl   string `json:",optional"`
 	VerifyCodeUrl          string
 	Key                    string
 	Secret                 string
+	ChallengeSecret        string `json:",optional"`
 	RegionId               string
 	ProviderTimeoutSeconds int `json:",optional"`
 	ProviderRetryCount     int `json:",optional"`

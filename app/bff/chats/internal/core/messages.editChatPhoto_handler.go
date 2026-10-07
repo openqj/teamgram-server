@@ -30,6 +30,15 @@ import (
 // MessagesEditChatPhoto
 // messages.editChatPhoto#35ddd674 chat_id:long photo:InputChatPhoto = Updates;
 func (c *ChatsCore) MessagesEditChatPhoto(in *mtproto.TLMessagesEditChatPhoto) (*mtproto.Updates, error) {
+	if c == nil || c.MD == nil || c.MD.UserId <= 0 {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
+	if in == nil || in.GetChatId() <= 0 || in.GetPhoto() == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.ChatClient == nil || c.svcCtx.Dao.ChatClient.Client() == nil || c.svcCtx.Dao.MediaClient == nil || c.svcCtx.Dao.MsgClient == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
 	var (
 		action *mtproto.MessageAction
 		err    error
@@ -55,12 +64,18 @@ func (c *ChatsCore) MessagesEditChatPhoto(in *mtproto.TLMessagesEditChatPhoto) (
 			c.Logger.Errorf("messages.editChatPhoto - error: %v", err)
 			return nil, err
 		}
+		if photo == nil || photo.GetId() <= 0 {
+			return nil, mtproto.ErrInternalServerError
+		}
 
 		action = mtproto.MakeMessageActionChatEditPhoto(photo)
 	case mtproto.Predicate_inputChatPhoto:
 		// inputChatPhoto#8953ad37 id:InputPhoto = InputChatPhoto;
 
 		id := in.GetPhoto().GetId()
+		if id == nil {
+			return nil, mtproto.ErrInputRequestInvalid
+		}
 		if id.GetPredicateName() == mtproto.Predicate_inputPhotoEmpty {
 			action = mtproto.MakeTLMessageActionChatDeletePhoto(nil).To_MessageAction()
 		} else {
@@ -70,6 +85,9 @@ func (c *ChatsCore) MessagesEditChatPhoto(in *mtproto.TLMessagesEditChatPhoto) (
 			if err != nil {
 				c.Logger.Errorf("messages.editChatPhoto - error: %v", err)
 				return nil, err
+			}
+			if photo == nil || photo.GetId() <= 0 {
+				return nil, mtproto.ErrInternalServerError
 			}
 
 			action = mtproto.MakeMessageActionChatEditPhoto(photo)
@@ -88,6 +106,9 @@ func (c *ChatsCore) MessagesEditChatPhoto(in *mtproto.TLMessagesEditChatPhoto) (
 	if err != nil {
 		c.Logger.Errorf("messages.editChatPhoto - error: %v", err)
 		return nil, err
+	}
+	if chat == nil {
+		return nil, mtproto.ErrInternalServerError
 	}
 
 	replyUpdates, err := c.svcCtx.MsgClient.MsgSendMessageV2(

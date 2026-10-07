@@ -33,6 +33,12 @@ func deviceLockedKey(userID int64) string {
 // AccountUpdateDeviceLocked
 // account.updateDeviceLocked#38df3532 period:int = Bool;
 func (c *NotificationCore) AccountUpdateDeviceLocked(in *mtproto.TLAccountUpdateDeviceLocked) (*mtproto.Bool, error) {
+	if c == nil || c.MD == nil || c.MD.UserId <= 0 {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
+	if in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
 	if err := persist.Default.Set(deviceLockedKey(c.MD.UserId), strconv.FormatInt(int64(in.GetPeriod()), 10)); err != nil {
 		c.Logger.Errorf("account.updateDeviceLocked - error: %v", err)
 		return nil, err

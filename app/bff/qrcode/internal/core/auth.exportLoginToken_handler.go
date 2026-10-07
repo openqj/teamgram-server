@@ -26,6 +26,7 @@ import (
 
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/proto/mtproto/crypto"
+	qrcodeconfig "github.com/teamgram/teamgram-server/app/bff/qrcode/internal/config"
 	"github.com/teamgram/teamgram-server/app/bff/qrcode/internal/model"
 	"github.com/teamgram/teamgram-server/app/service/authsession/authsession"
 	userpb "github.com/teamgram/teamgram-server/app/service/biz/user/user"
@@ -55,8 +56,15 @@ func (c *QrCodeCore) AuthExportLoginToken(in *mtproto.TLAuthExportLoginToken) (*
 	if c.svcCtx.Dao.AuthsessionClient == nil || c.svcCtx.Dao.UserClient == nil {
 		return nil, mtproto.ErrMethodNotImpl
 	}
+	if !qrProviderConfigured(c.svcCtx.Config) {
+		return nil, mtproto.ErrMethodNotImpl
+	}
+	if err := validateQRTrustedApp(c.svcCtx.Config.TrustedApps, in.GetApiId(), apiHash); err != nil {
+		return nil, err
+	}
 	dcID := c.svcCtx.Config.DcId
-	if actualDCID, ok := dccontext.DCID(c.ctx); ok {
+	actualDCID, hasActualDCID := dccontext.DCID(c.ctx)
+	if hasActualDCID {
 		dcID = actualDCID
 	}
 	if c.svcCtx.Config.DcId > 0 && !c.svcCtx.Config.SupportsDc(dcID) {
@@ -77,7 +85,22 @@ func (c *QrCodeCore) AuthExportLoginToken(in *mtproto.TLAuthExportLoginToken) (*
 		return nil, err
 	}
 	if qrCode != nil && c.svcCtx.Config.DcId > 0 && (qrCode.DcId <= 0 || qrCode.DcId != dcID) {
-		return nil, mtproto.ErrDcIdInvalid
+		// An expired New generation can be replaced by the requesting DC. An
+		// Accepted/Success generation remains owned by the accepting DC and
+		// must be followed through the protocol migration response.
+		if qrCode.State != model.QRCodeStateNew || qrCode.ExpireAt >= now {
+			migrationDCID, migrationErr := qrLoginTokenMigrationTarget(c.svcCtx.Config, dcID, qrCode.DcId)
+			if migrationErr != nil {
+				return nil, migrationErr
+			}
+			if migrationDCID > 0 {
+				return mtproto.MakeTLAuthLoginTokenMigrateTo(&mtproto.Auth_LoginToken{
+					DcId:  migrationDCID,
+					Token: qrCode.Token(),
+				}).To_Auth_LoginToken(), nil
+			}
+		}
+		// Continue below so the expired New generation is rotated locally.
 	}
 	newQRCode := func() *model.QRCodeTransaction {
 		return &model.QRCodeTransaction{
@@ -230,6 +253,36 @@ func canonicalQRAppHash(apiID int32, apiHash string) (string, error) {
 		return "", err
 	}
 	return strings.ToLower(apiHash), nil
+}
+
+// validateQRTrustedApp enforces the deployment-owned application allowlist.
+// An empty registry is unavailable, and malformed or unregistered entries are
+// never accepted.
+func validateQRTrustedApp(apps []qrcodeconfig.TrustedApp, apiID int32, apiHash string) error {
+	if len(apps) == 0 {
+		return mtproto.ErrApiIdInvalid
+	}
+	for _, app := range apps {
+		if app.ApiId == apiID && strings.EqualFold(strings.TrimSpace(app.ApiHash), apiHash) {
+			return nil
+		}
+	}
+	return mtproto.ErrApiIdInvalid
+}
+
+// qrProviderConfigured keeps QR login disabled until the deployment supplies
+// a local DC identity and at least one valid trusted application credential.
+// A format-valid api_hash is not an application registry.
+func qrProviderConfigured(cfg qrcodeconfig.Config) bool {
+	if cfg.DcId <= 0 || len(cfg.TrustedApps) == 0 {
+		return false
+	}
+	for _, app := range cfg.TrustedApps {
+		if validateQRAppCredentials(app.ApiId, strings.TrimSpace(app.ApiHash)) != nil {
+			return false
+		}
+	}
+	return true
 }
 
 func normalizeQRExceptIDs(ids []int64) ([]int64, error) {

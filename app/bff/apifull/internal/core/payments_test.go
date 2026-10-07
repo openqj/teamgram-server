@@ -2,6 +2,9 @@ package core
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,7 +18,31 @@ import (
 	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/config"
 	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/persist"
 	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/svc"
+	"google.golang.org/protobuf/types/known/wrapperspb"
 )
+
+const paymentProviderTestSigningKey = "provider-signing-test-key"
+
+func premiumSelfSubscriptionInvoiceForTest(slug string) *mtproto.InputInvoice {
+	purpose := mtproto.MakeTLInputStorePaymentPremiumSubscription(&mtproto.InputStorePaymentPurpose{}).To_InputStorePaymentPurpose()
+	return mtproto.MakeTLInputInvoiceSlug(&mtproto.InputInvoice{Slug: slug, Purpose: purpose}).To_InputInvoice()
+}
+
+func writeSignedPaymentProviderResponse(t *testing.T, w http.ResponseWriter, response any) {
+	t.Helper()
+	body, err := json.Marshal(response)
+	if err != nil {
+		t.Errorf("marshal payment provider response: %v", err)
+		http.Error(w, "invalid fixture", http.StatusInternalServerError)
+		return
+	}
+	mac := hmac.New(sha256.New, []byte(paymentProviderTestSigningKey))
+	_, _ = mac.Write(body)
+	w.Header().Set("X-Teamgram-Payment-Signature", hex.EncodeToString(mac.Sum(nil)))
+	if _, err = w.Write(body); err != nil {
+		t.Errorf("write payment provider response: %v", err)
+	}
+}
 
 func TestPaymentsUnauthed(t *testing.T) {
 	handlers := []func(*ApiFullCore) error{
@@ -221,28 +248,183 @@ func TestPaymentsGetPaymentFormUsesVerifiedProviderForm(t *testing.T) {
 			t.Errorf("provider method = %s, want POST", r.Method)
 		}
 		var request struct {
-			Operation string `json:"operation"`
-			UserID    int64  `json:"user_id"`
+			Operation         string `json:"operation"`
+			UserID            int64  `json:"user_id"`
+			BeneficiaryUserID int64  `json:"beneficiary_user_id"`
+			RequiredProduct   string `json:"required_product"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 			t.Errorf("decode provider request: %v", err)
 		}
-		if request.Operation != "get_form" || request.UserID != userID {
+		if request.Operation != "get_form" || request.UserID != userID || request.BeneficiaryUserID != userID || request.RequiredProduct != paymentProductPremiumSubscription {
 			t.Errorf("provider request = %+v, want get_form for user %d", request, userID)
 		}
-		_ = json.NewEncoder(w).Encode(paymentFormProviderResponse{Verified: true, Form: form})
+		writeSignedPaymentProviderResponse(t, w, paymentFormProviderResponse{
+			Verified:          true,
+			UserID:            userID,
+			BeneficiaryUserID: userID,
+			ProductType:       paymentProductPremiumSubscription,
+			PremiumMonths:     3,
+			Form:              mtproto.MakeTLPaymentsPaymentForm(form).To_Payments_PaymentForm(),
+		})
 	}))
 	defer server.Close()
 
 	c := &ApiFullCore{
 		ctx:    context.Background(),
-		svcCtx: &svc.ServiceContext{Config: config.Config{PaymentProviderEndpoint: server.URL}},
+		svcCtx: &svc.ServiceContext{Config: config.Config{PaymentProviderEndpoint: server.URL, PaymentProviderSigningKey: paymentProviderTestSigningKey}},
 		MD:     &metadata.RpcMetadata{UserId: userID},
 	}
 	got, err := c.PaymentsGetPaymentForm(&mtproto.TLPaymentsGetPaymentForm{
-		Invoice: &mtproto.InputInvoice{Slug: "invoice-slug"},
+		Invoice: premiumSelfSubscriptionInvoiceForTest("invoice-slug"),
 	})
 	if err != nil || got == nil || got.GetFormId() != form.GetFormId() || got.GetInvoice() == nil {
 		t.Fatalf("PaymentsGetPaymentForm() = (%#v, %v), want verified provider form", got, err)
+	}
+	if err = got.Encode(mtproto.NewEncodeBuf(4096), 229); err != nil {
+		t.Fatalf("verified payment form did not encode: %v", err)
+	}
+}
+
+func TestPaymentsValidateRequestedInfoUsesVerifiedProvider(t *testing.T) {
+	const userID int64 = 902005
+	previous := persist.Default
+	spy := &paymentPersistenceSpy{values: map[string]string{}}
+	persist.Use(spy)
+	defer persist.Use(previous)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Errorf("provider method = %s, want POST", r.Method)
+		}
+		var request struct {
+			Operation         string `json:"operation"`
+			UserID            int64  `json:"user_id"`
+			BeneficiaryUserID int64  `json:"beneficiary_user_id"`
+			RequiredProduct   string `json:"required_product"`
+			Save              bool   `json:"save"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Errorf("decode provider request: %v", err)
+		}
+		if request.Operation != "validate_requested_info" || request.UserID != userID || request.BeneficiaryUserID != userID || request.RequiredProduct != paymentProductPremiumSubscription || !request.Save {
+			t.Errorf("provider request = %+v, want validation for user %d", request, userID)
+		}
+		writeSignedPaymentProviderResponse(t, w, paymentValidationProviderResponse{
+			Verified:          true,
+			UserID:            userID,
+			BeneficiaryUserID: userID,
+			ProductType:       paymentProductPremiumSubscription,
+			ID:                "validated-1",
+			ShippingOptions: []*mtproto.ShippingOption{{
+				Id:    "standard",
+				Title: "Standard",
+				Prices: []*mtproto.LabeledPrice{{
+					Label:  "Shipping",
+					Amount: 99,
+				}},
+			}},
+		})
+	}))
+	defer server.Close()
+
+	c := &ApiFullCore{
+		ctx:    context.Background(),
+		svcCtx: &svc.ServiceContext{Config: config.Config{PaymentProviderEndpoint: server.URL, PaymentProviderSigningKey: paymentProviderTestSigningKey}},
+		MD:     &metadata.RpcMetadata{UserId: userID},
+	}
+	got, err := c.PaymentsValidateRequestedInfo(&mtproto.TLPaymentsValidateRequestedInfo{
+		Invoice: premiumSelfSubscriptionInvoiceForTest("invoice-slug"),
+		Info: &mtproto.PaymentRequestedInfo{
+			Name: wrapperspb.String("Alice"),
+		},
+		Save: true,
+	})
+	if err != nil || got == nil || got.GetId().GetValue() != "validated-1" || len(got.GetShippingOptions()) != 1 || got.GetShippingOptions()[0].GetId() != "standard" {
+		t.Fatalf("PaymentsValidateRequestedInfo() = (%#v, %v), want verified provider result", got, err)
+	}
+	if err = got.Encode(mtproto.NewEncodeBuf(4096), 229); err != nil {
+		t.Fatalf("verified requested-info result did not encode: %v", err)
+	}
+	if spy.values[payInfoKey(userID)] != `{"name":"Alice"}` {
+		t.Fatalf("saved info = %q, want provider-verified info", spy.values[payInfoKey(userID)])
+	}
+}
+
+func TestPaymentsValidateRequestedInfoRejectsMalformedProviderResult(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		writeSignedPaymentProviderResponse(t, w, paymentValidationProviderResponse{
+			Verified:          true,
+			UserID:            902006,
+			BeneficiaryUserID: 902006,
+			ProductType:       paymentProductPremiumSubscription,
+			ShippingOptions: []*mtproto.ShippingOption{{
+				Title: "missing option id",
+			}},
+		})
+	}))
+	defer server.Close()
+	c := &ApiFullCore{
+		ctx:    context.Background(),
+		svcCtx: &svc.ServiceContext{Config: config.Config{PaymentProviderEndpoint: server.URL, PaymentProviderSigningKey: paymentProviderTestSigningKey}},
+		MD:     &metadata.RpcMetadata{UserId: 902006},
+	}
+	got, err := c.PaymentsValidateRequestedInfo(&mtproto.TLPaymentsValidateRequestedInfo{
+		Invoice: premiumSelfSubscriptionInvoiceForTest("invoice-slug"),
+	})
+	if got != nil || !errors.Is(err, mtproto.ErrPaymentProviderInvalid) {
+		t.Fatalf("PaymentsValidateRequestedInfo() = (%#v, %v), want provider-invalid refusal", got, err)
+	}
+}
+
+func TestPaymentsValidateRequestedInfoAllowsOptionalProviderFields(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		writeSignedPaymentProviderResponse(t, w, paymentValidationProviderResponse{
+			Verified:          true,
+			UserID:            902007,
+			BeneficiaryUserID: 902007,
+			ProductType:       paymentProductPremiumSubscription,
+		})
+	}))
+	defer server.Close()
+	c := &ApiFullCore{
+		ctx:    context.Background(),
+		svcCtx: &svc.ServiceContext{Config: config.Config{PaymentProviderEndpoint: server.URL, PaymentProviderSigningKey: paymentProviderTestSigningKey}},
+		MD:     &metadata.RpcMetadata{UserId: 902007},
+	}
+	got, err := c.PaymentsValidateRequestedInfo(&mtproto.TLPaymentsValidateRequestedInfo{
+		Invoice: premiumSelfSubscriptionInvoiceForTest("invoice-slug"),
+	})
+	if err != nil || got == nil || got.GetId() != nil || got.GetShippingOptions() != nil {
+		t.Fatalf("PaymentsValidateRequestedInfo() = (%#v, %v), want verified result with optional fields absent", got, err)
+	}
+}
+
+func TestPaymentFormMatchesInvoicePurpose(t *testing.T) {
+	request := &mtproto.InputInvoice{Purpose: &mtproto.InputStorePaymentPurpose{Currency: "USD", Amount: 499}}
+	form := &mtproto.Payments_PaymentForm{Invoice: &mtproto.Invoice{
+		Currency: "USD",
+		Prices:   []*mtproto.LabeledPrice{{Amount: 499}},
+	}}
+	if !paymentFormMatchesInvoice(request, form) {
+		t.Fatal("matching provider form was rejected")
+	}
+	form.Invoice.Currency = "EUR"
+	if paymentFormMatchesInvoice(request, form) {
+		t.Fatal("provider currency mismatch was accepted")
+	}
+	form.Invoice.Currency = "USD"
+	form.Invoice.Prices[0].Amount = 500
+	if paymentFormMatchesInvoice(request, form) {
+		t.Fatal("provider amount mismatch was accepted")
+	}
+	if !paymentFormMatchesInvoice(&mtproto.InputInvoice{Slug: "provider-owned"}, form) {
+		t.Fatal("slug invoice should defer amount validation to provider")
+	}
+	if paymentFormMatchesInvoice(&mtproto.InputInvoice{Purpose: &mtproto.InputStorePaymentPurpose{Currency: "USD", Amount: -1}}, form) {
+		t.Fatal("negative store-payment amount was accepted")
+	}
+	form.Invoice.Prices[0].Amount = -1
+	if paymentFormMatchesInvoice(&mtproto.InputInvoice{Purpose: &mtproto.InputStorePaymentPurpose{Currency: "USD"}}, form) {
+		t.Fatal("negative provider price was accepted for provider-quoted purpose")
 	}
 }

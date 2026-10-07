@@ -39,6 +39,9 @@ func NewServiceContext(c config.Config, code2 code.VerifyCodeInterface, plugin p
 	injected := code2
 	if code2 == nil {
 		code2 = code.NewVerifyCode(c.Code)
+		// Keep the legacy verifier for signup checks, but let the challenge
+		// service select the configured HTTP SMS provider below.
+		injected = nil
 	}
 	challenges := code.NewChallengeService(
 		d.VerificationStore,

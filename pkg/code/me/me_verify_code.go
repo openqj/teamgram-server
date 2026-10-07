@@ -23,6 +23,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -65,7 +66,7 @@ func (m *meVerifyCode) SendSmsVerifyCode(ctx context.Context, phoneNumber, code,
 	}
 
 	endpoint, err := url.Parse(strings.TrimSpace(m.code.SendCodeUrl))
-	if err != nil || endpoint.Scheme == "" || endpoint.Host == "" {
+	if err != nil || endpoint.Host == "" || endpoint.User != nil || !secureEndpoint(endpoint) || !loopbackEndpoint(endpoint) {
 		return "", fmt.Errorf("%w: invalid endpoint", ErrDeliveryFailed)
 	}
 	query := endpoint.Query()
@@ -98,6 +99,31 @@ func (m *meVerifyCode) SendSmsVerifyCode(ctx context.Context, phoneNumber, code,
 		return "", fmt.Errorf("%w: provider returned an empty response", ErrDeliveryFailed)
 	}
 	return result, nil
+}
+
+func secureEndpoint(endpoint *url.URL) bool {
+	if endpoint == nil {
+		return false
+	}
+	if strings.EqualFold(endpoint.Scheme, "https") {
+		return true
+	}
+	if !strings.EqualFold(endpoint.Scheme, "http") {
+		return false
+	}
+	return strings.EqualFold(endpoint.Scheme, "http") && loopbackEndpoint(endpoint)
+}
+
+func loopbackEndpoint(endpoint *url.URL) bool {
+	if endpoint == nil {
+		return false
+	}
+	host := strings.TrimSuffix(strings.ToLower(endpoint.Hostname()), ".")
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 func (m *meVerifyCode) VerifySmsCode(ctx context.Context, codeHash, code, extraData string) error {

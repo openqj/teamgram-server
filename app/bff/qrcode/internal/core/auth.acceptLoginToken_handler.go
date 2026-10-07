@@ -28,6 +28,7 @@ import (
 	"github.com/teamgram/teamgram-server/app/messenger/sync/sync"
 	"github.com/teamgram/teamgram-server/app/service/authsession/authsession"
 	userpb "github.com/teamgram/teamgram-server/app/service/biz/user/user"
+	"github.com/teamgram/teamgram-server/pkg/rpc/dccontext"
 
 	"google.golang.org/protobuf/types/known/wrapperspb"
 )
@@ -116,7 +117,19 @@ func (c *QrCodeCore) AuthAcceptLoginToken(in *mtproto.TLAuthAcceptLoginToken) (*
 		return nil, mtproto.ErrUserIdInvalid
 	}
 
-	acceptResult, err := c.svcCtx.Dao.AcceptCacheQRLoginCode(c.ctx, keyId, qrCode.CodeHash, userID, now)
+	acceptDCID := c.svcCtx.Config.DcId
+	if actualDCID, ok := dccontext.DCID(c.ctx); ok {
+		acceptDCID = actualDCID
+	}
+	if c.svcCtx.Config.DcId > 0 && !c.svcCtx.Config.SupportsDc(acceptDCID) {
+		return nil, mtproto.ErrDcIdInvalid
+	}
+	var acceptResult int64
+	if acceptDCID > 0 {
+		acceptResult, err = c.svcCtx.Dao.AcceptCacheQRLoginCodeAtDC(c.ctx, keyId, qrCode.CodeHash, userID, now, acceptDCID)
+	} else {
+		acceptResult, err = c.svcCtx.Dao.AcceptCacheQRLoginCode(c.ctx, keyId, qrCode.CodeHash, userID, now)
+	}
 	if err != nil {
 		c.Logger.Errorf("auth.acceptLoginToken - claim error: %v", err)
 		return nil, err

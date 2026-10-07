@@ -39,7 +39,12 @@ type Config struct {
 	MysqlDSN                      string                    `json:",optional"`
 	PaymentProviderEndpoint       string                    `json:",optional"`
 	PaymentProviderKey            string                    `json:",optional"`
+	PaymentProviderSigningKey     string                    `json:",optional"`
 	PaymentProviderTimeoutSeconds int                       `json:",optional"`
 	TurnHost                      string                    `json:",optional"`
 	TurnPort                      int32                     `json:",optional"`
+	TurnUsername                  string                    `json:",optional"`
+	TurnPassword                  string                    `json:",optional"`
+	TurnSharedSecret              string                    `json:",optional"`
+	TurnCredentialTTLSeconds      int                       `json:",optional"`
 }

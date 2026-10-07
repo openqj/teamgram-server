@@ -20,6 +20,7 @@ package dao
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"math/rand"
@@ -27,6 +28,7 @@ import (
 	"time"
 
 	"github.com/teamgram/marmota/pkg/container2"
+	"github.com/teamgram/marmota/pkg/stores/sqlc"
 	"github.com/teamgram/marmota/pkg/stores/sqlx"
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/service/biz/user/internal/dal/dataobject"
@@ -37,19 +39,21 @@ import (
 	"github.com/zeromicro/go-zero/core/mr"
 )
 
-func (d *Dao) getBotData(ctx context.Context, botId int64) *mtproto.BotData {
+func (d *Dao) getBotData(ctx context.Context, botId int64) (*mtproto.BotData, bool, int64, error) {
 	var (
 		botData *mtproto.BotData
 	)
 
-	botDO, _ := d.BotsDAO.Select(ctx, botId)
+	botDO, err := d.BotsDAO.Select(ctx, botId)
+	if err != nil {
+		return nil, false, 0, err
+	}
 	if botDO != nil {
 		// userData.Bot
 		botData = mtproto.MakeTLBotData(&mtproto.BotData{
 			Id:                   botDO.BotId,
 			BotType:              botDO.BotType,
 			Creator:              botDO.CreatorUserId,
-			Token:                botDO.Token,
 			Description:          botDO.Description,
 			BotChatHistory:       botDO.BotChatHistory,
 			BotNochats:           botDO.BotNochats,
@@ -63,9 +67,10 @@ func (d *Dao) getBotData(ctx context.Context, botId int64) *mtproto.BotData {
 			BotHasMainApp:        botDO.BotHasMainApp,
 			BotActiveUsers:       mtproto.MakeFlagsInt32(botDO.BotActiveUsers),
 		}).To_BotData()
+		return botData, botDO.BotCanManageBots, botDO.ManagerBotId, nil
 	}
 
-	return botData
+	return nil, false, 0, nil
 }
 
 func (d *Dao) CreateNewUserV2(
@@ -386,7 +391,13 @@ func (d *Dao) DeleteProfilePhotos(ctx context.Context, userId int64, photoIds []
 }
 
 func (d *Dao) GetImmutableUser(ctx context.Context, id int64, privacy bool, contacts ...int64) (*mtproto.ImmutableUser, error) {
-	cacheUserData := d.GetCacheUserData(ctx, id)
+	cacheUserData, err := d.GetCacheUserDataWithError(ctx, id)
+	if errors.Is(err, sqlc.ErrNotFound) {
+		return nil, mtproto.ErrUserIdInvalid
+	}
+	if err != nil {
+		return nil, err
+	}
 
 	// userDO, _ := c.svcCtx.Dao.UsersDAO.SelectById(c.ctx, in.Id)
 	if cacheUserData == nil {
@@ -1179,55 +1190,42 @@ func (d *Dao) UpdateUserPremium(ctx context.Context, id int64, premium bool, mon
 	_, _, err := d.CachedConn.Exec(
 		ctx,
 		func(ctx context.Context, conn *sqlx.DB) (int64, int64, error) {
-			var (
-				rowsAffected int64
-				err          error
-			)
-
 			if !premium {
-				rowsAffected, err = d.UsersDAO.UpdateUser(ctx, map[string]interface{}{
+				rowsAffected, err := d.UsersDAO.UpdateUser(ctx, map[string]interface{}{
 					"premium":             false,
 					"premium_expire_date": 0,
 				}, id)
-			} else {
-				userDO, _ := d.UsersDAO.SelectById(ctx, id)
-				if userDO == nil {
-					return 0, 0, mtproto.ErrUserIdInvalid
-				}
-
-				date := time.Now()
-
-				if !userDO.Premium {
-					rowsAffected, err = d.UsersDAO.UpdateUser(ctx, map[string]interface{}{
-						"premium":             true,
-						"premium_expire_date": date.AddDate(0, int(months), 0).Unix(),
-					}, id)
-				} else {
-					if months == 0 {
-						rowsAffected, err = d.UsersDAO.UpdateUser(ctx, map[string]interface{}{
-							"premium":             true,
-							"premium_expire_date": 0,
-						}, id)
-					} else {
-						if userDO.PremiumExpireDate > date.Unix() {
-							remaining := userDO.PremiumExpireDate - date.Unix()
-							rowsAffected, err = d.UsersDAO.UpdateUser(ctx, map[string]interface{}{
-								"premium":             true,
-								"premium_expire_date": date.AddDate(0, int(months), 0).Unix() + remaining,
-							}, id)
-						} else {
-							rowsAffected, err = d.UsersDAO.UpdateUser(ctx, map[string]interface{}{
-								"premium":             true,
-								"premium_expire_date": date.AddDate(0, int(months), 0).Unix(),
-							}, id)
-						}
-					}
-				}
-				rowsAffected, err = d.UsersDAO.UpdateUser(ctx, map[string]interface{}{
-					"premium":             premium,
-					"premium_expire_date": time.Now().Unix() + int64(months)*30*24*60*60,
-				}, id)
+				return 0, rowsAffected, err
 			}
+
+			if months < 0 {
+				return 0, 0, mtproto.ErrInputRequestInvalid
+			}
+			userDO, err := d.UsersDAO.SelectById(ctx, id)
+			if errors.Is(err, sqlc.ErrNotFound) {
+				return 0, 0, mtproto.ErrUserIdInvalid
+			}
+			if err != nil {
+				return 0, 0, err
+			}
+			if userDO == nil {
+				return 0, 0, mtproto.ErrUserIdInvalid
+			}
+
+			var expireDate int64
+			if months == 0 || (userDO.Premium && userDO.PremiumExpireDate == 0) {
+				expireDate = 0
+			} else {
+				base := time.Now()
+				if userDO.Premium && userDO.PremiumExpireDate > base.Unix() {
+					base = time.Unix(userDO.PremiumExpireDate, 0)
+				}
+				expireDate = base.AddDate(0, int(months), 0).Unix()
+			}
+			rowsAffected, err := d.UsersDAO.UpdateUser(ctx, map[string]interface{}{
+				"premium":             true,
+				"premium_expire_date": expireDate,
+			}, id)
 			if err != nil {
 				return 0, 0, err
 			}
@@ -1236,9 +1234,73 @@ func (d *Dao) UpdateUserPremium(ctx context.Context, id int64, premium bool, mon
 		},
 		genCacheUserDataCacheKey(id))
 	if err != nil {
-		logx.WithContext(ctx).Errorf("updateUserUsername - error: %v", err)
+		logx.WithContext(ctx).Errorf("updateUserPremium - error: %v", err)
 		return false
 	}
 
 	return true
+}
+
+var errPremiumPaymentConflict = errors.New("premium payment transaction conflicts with an existing grant")
+
+func (d *Dao) GrantUserPremium(ctx context.Context, id int64, months int32, provider, transactionID string) (bool, error) {
+	if id <= 0 || months < 1 || months > 36 || provider == "" || len(provider) > 32 || transactionID == "" || len(transactionID) > 191 {
+		return false, mtproto.ErrInputRequestInvalid
+	}
+	transactionKey := sha256.Sum256([]byte(provider + "\x00" + transactionID))
+
+	_, _, err := d.CachedConn.Exec(ctx, func(ctx context.Context, conn *sqlx.DB) (int64, int64, error) {
+		txResult := sqlx.TxWrapper(ctx, conn, func(tx *sqlx.Tx, result *sqlx.StoreResult) {
+			var userDO dataobject.UsersDO
+			if result.Err = tx.QueryRow(&userDO, `SELECT premium, premium_expire_date FROM users WHERE id=? FOR UPDATE`, id); result.Err != nil {
+				if errors.Is(result.Err, sqlc.ErrNotFound) {
+					result.Err = mtproto.ErrUserIdInvalid
+				}
+				return
+			}
+
+			insert, insertErr := tx.Exec(`INSERT IGNORE INTO user_premium_payment_grant
+				(transaction_key, provider, transaction_id, user_id, months, created_at) VALUES (?,?,?,?,?,?)`, transactionKey[:], provider, transactionID, id, months, time.Now().Unix())
+			if insertErr != nil {
+				result.Err = insertErr
+				return
+			}
+			inserted, insertErr := insert.RowsAffected()
+			if insertErr != nil {
+				result.Err = insertErr
+				return
+			}
+			if inserted == 0 {
+				var existing struct {
+					Provider      string `db:"provider"`
+					TransactionID string `db:"transaction_id"`
+					UserID        int64  `db:"user_id"`
+					Months        int32  `db:"months"`
+				}
+				result.Err = tx.QueryRow(&existing, `SELECT provider, transaction_id, user_id, months FROM user_premium_payment_grant WHERE transaction_key=? FOR UPDATE`, transactionKey[:])
+				if result.Err == nil && (existing.Provider != provider || existing.TransactionID != transactionID || existing.UserID != id || existing.Months != months) {
+					result.Err = errPremiumPaymentConflict
+				}
+				return
+			}
+
+			if userDO.Premium && userDO.PremiumExpireDate == 0 {
+				return
+			}
+			base := time.Now()
+			if userDO.Premium && userDO.PremiumExpireDate > base.Unix() {
+				base = time.Unix(userDO.PremiumExpireDate, 0)
+			}
+			_, result.Err = tx.Exec(`UPDATE users SET premium=1, premium_expire_date=? WHERE id=?`, base.AddDate(0, int(months), 0).Unix(), id)
+		})
+		if txResult.Err != nil {
+			return 0, 0, txResult.Err
+		}
+		return 0, 0, nil
+	}, genCacheUserDataCacheKey(id))
+	if err != nil {
+		logx.WithContext(ctx).Errorf("grantUserPremium - error: %v", err)
+		return false, err
+	}
+	return true, nil
 }

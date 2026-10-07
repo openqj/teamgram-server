@@ -27,6 +27,7 @@ import (
 	"strings"
 	"time"
 
+	mysql "github.com/go-sql-driver/mysql"
 	"github.com/teamgram/marmota/pkg/stores/sqlc"
 	"github.com/teamgram/marmota/pkg/stores/sqlx"
 	"github.com/teamgram/proto/mtproto"
@@ -257,48 +258,63 @@ func (d *Dao) BindAuthKeyUser(ctx context.Context, authKeyId int64, userId int64
 		DateActive:  now,
 	}
 
-	txResult := sqlx.TxWrapper(ctx, d.DB, func(tx *sqlx.Tx, result *sqlx.StoreResult) {
-		var lockedAuthKeyID int64
-		if err := tx.QueryRow(&lockedAuthKeyID,
-			"SELECT auth_key_id FROM auth_key_infos WHERE auth_key_id = ? AND deleted = 0 FOR UPDATE",
-			authKeyId); err != nil {
-			result.Err = err
-			return
-		}
+	for attempt := 0; attempt < 3; attempt++ {
+		txResult := sqlx.TxWrapper(ctx, d.DB, func(tx *sqlx.Tx, result *sqlx.StoreResult) {
+			var lockedAuthKeyID int64
+			if err := tx.QueryRow(&lockedAuthKeyID,
+				"SELECT auth_key_id FROM auth_key_infos WHERE auth_key_id = ? AND deleted = 0 FOR UPDATE",
+				authKeyId); err != nil {
+				result.Err = err
+				return
+			}
 
-		existing := new(dataobject.AuthUsersDO)
-		err := tx.QueryRowPartial(existing,
-			"SELECT id, auth_key_id, user_id, hash, date_created, date_active FROM auth_users WHERE auth_key_id = ? AND deleted = 0 LIMIT 1 FOR UPDATE",
-			authKeyId)
-		switch {
-		case err == nil:
-			if existing.UserId != userId {
+			existing := new(dataobject.AuthUsersDO)
+			err := tx.QueryRowPartial(existing,
+				"SELECT id, auth_key_id, user_id, hash, date_created, date_active FROM auth_users WHERE auth_key_id = ? AND deleted = 0 LIMIT 1 FOR UPDATE",
+				authKeyId)
+			switch {
+			case err == nil:
+				if existing.UserId != userId {
+					result.Err = ErrAuthKeyOwnedByAnotherUser
+					return
+				}
+				authUsersDO.Hash = existing.Hash
+				authUsersDO.DateCreated = existing.DateCreated
+				return
+			case !errors.Is(err, sql.ErrNoRows):
+				result.Err = err
+				return
+			}
+
+			_, _, err = d.AuthUsersDAO.InsertOrUpdatesTx(tx, authUsersDO)
+			if sqlx.IsDuplicate(err) {
 				result.Err = ErrAuthKeyOwnedByAnotherUser
 				return
 			}
-			authUsersDO.Hash = existing.Hash
-			authUsersDO.DateCreated = existing.DateCreated
-			return
-		case !errors.Is(err, sql.ErrNoRows):
 			result.Err = err
-			return
+		})
+		if txResult.Err == nil {
+			break
 		}
-
-		_, _, err = d.AuthUsersDAO.InsertOrUpdatesTx(tx, authUsersDO)
-		if sqlx.IsDuplicate(err) {
-			result.Err = ErrAuthKeyOwnedByAnotherUser
-			return
+		if !isRetryableBindError(txResult.Err) || attempt == 2 {
+			return 0, txResult.Err
 		}
-		result.Err = err
-	})
-	if txResult.Err != nil {
-		return 0, txResult.Err
+		select {
+		case <-ctx.Done():
+			return 0, ctx.Err()
+		case <-time.After(time.Duration(attempt+1) * 25 * time.Millisecond):
+		}
 	}
 	if err := d.CachedConn.DelCache(ctx, genAuthDataCacheKey(authKeyId)); err != nil {
 		return 0, err
 	}
 
 	return authUsersDO.Hash, nil
+}
+
+func isRetryableBindError(err error) bool {
+	var mysqlErr *mysql.MySQLError
+	return errors.As(err, &mysqlErr) && (mysqlErr.Number == 1213 || mysqlErr.Number == 1205)
 }
 
 func (d *Dao) UnbindAuthUser(ctx context.Context, authKeyId int64, userId int64) error {

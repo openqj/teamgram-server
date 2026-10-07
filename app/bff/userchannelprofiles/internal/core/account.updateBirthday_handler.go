@@ -26,6 +26,16 @@ import (
 // AccountUpdateBirthday
 // account.updateBirthday#cc6e0c11 flags:# birthday:flags.0?Birthday = Bool;
 func (c *UserChannelProfilesCore) AccountUpdateBirthday(in *mtproto.TLAccountUpdateBirthday) (*mtproto.Bool, error) {
+	if c.MD == nil || c.MD.UserId <= 0 {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
+	if in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.UserClient == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
+
 	rV, err := c.svcCtx.Dao.UserClient.UserUpdateBirthday(c.ctx, &user.TLUserUpdateBirthday{
 		UserId:   c.MD.UserId,
 		Birthday: in.GetBirthday(),
@@ -33,6 +43,9 @@ func (c *UserChannelProfilesCore) AccountUpdateBirthday(in *mtproto.TLAccountUpd
 	if err != nil {
 		c.Logger.Errorf("account.updateBirthday - error: %v", err)
 		return nil, err
+	}
+	if rV == nil {
+		return nil, mtproto.ErrInternalServerError
 	}
 
 	return rV, nil

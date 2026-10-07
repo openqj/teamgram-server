@@ -18,7 +18,7 @@ import (
 // MediaUploadWallPaperFile
 // media.uploadWallPaperFile owner_id:long file:InputFile mime_type:string admin:Bool = Document;
 func (c *MediaCore) MediaUploadWallPaperFile(in *media.TLMediaUploadWallPaperFile) (*mtproto.Document, error) {
-	if in == nil || in.GetFile() == nil {
+	if in == nil || in.GetOwnerId() <= 0 || in.GetFile() == nil || in.GetFile().GetId_INT64() <= 0 || in.GetFile().GetParts() <= 0 {
 		return nil, mtproto.ErrWallpaperFileInvalid
 	}
 

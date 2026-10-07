@@ -51,7 +51,7 @@ func TestContactsGetContactsHydratesContactAndUserEntities(t *testing.T) {
 		contacts: &userpb.Vector_ContactData{Datas: []*mtproto.ContactData{{ContactUserId: 9, MutualContact: true}}},
 		users:    &userpb.Vector_ImmutableUser{Datas: []*mtproto.ImmutableUser{getContactsImmutableUser(42), getContactsImmutableUser(9)}},
 	}
-	got, err := newGetContactsTestCore(client).ContactsGetContacts(&mtproto.TLContactsGetContacts{})
+	got, err := newGetContactsTestCore(client).ContactsGetContacts(&mtproto.TLContactsGetContacts{Hash: 1})
 	if err != nil || got == nil || len(got.GetContacts()) != 1 || len(got.GetUsers()) != 1 {
 		t.Fatalf("ContactsGetContacts() = (%+v, %v), want one contact and one hydrated user", got, err)
 	}
@@ -60,6 +60,22 @@ func TestContactsGetContactsHydratesContactAndUserEntities(t *testing.T) {
 	}
 	if client.usersRequest == nil || len(client.usersRequest.GetId()) != 2 || client.usersRequest.GetId()[0] != 42 || client.usersRequest.GetId()[1] != 9 {
 		t.Fatalf("mutable-user request = %v, want [42 9]", client.usersRequest.GetId())
+	}
+}
+
+func TestContactsGetContactsReturnsNotModifiedForSortedMatchingHash(t *testing.T) {
+	client := &getContactsUserClientStub{contacts: &userpb.Vector_ContactData{Datas: []*mtproto.ContactData{
+		{ContactUserId: 9},
+		{ContactUserId: 2},
+	}}}
+	got, err := newGetContactsTestCore(client).ContactsGetContacts(&mtproto.TLContactsGetContacts{
+		Hash: calculateContactsHash([]int64{2, 9}),
+	})
+	if err != nil || got == nil || got.To_ContactsContactsNotModified() == nil {
+		t.Fatalf("matching hash result = (%+v, %v), want contacts.contactsNotModified", got, err)
+	}
+	if client.usersRequest != nil {
+		t.Fatalf("matching hash performed mutable-user lookup: %+v", client.usersRequest)
 	}
 }
 

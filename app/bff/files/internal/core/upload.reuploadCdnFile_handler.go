@@ -25,7 +25,17 @@ import (
 // UploadReuploadCdnFile
 // upload.reuploadCdnFile#9b2754a8 file_token:bytes request_token:bytes = Vector<FileHash>;
 func (c *FilesCore) UploadReuploadCdnFile(in *mtproto.TLUploadReuploadCdnFile) (*mtproto.Vector_FileHash, error) {
-	_ = in
-	c.Logger.Errorf("upload.reuploadCdnFile - error: %v", mtproto.ErrCdnMethodInvalid)
+	if in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if len(in.GetFileToken()) == 0 {
+		return nil, mtproto.ErrFileTokenInvalid
+	}
+	if len(in.GetRequestToken()) == 0 {
+		return nil, mtproto.ErrTokenInvalid
+	}
+	if c != nil && c.Logger != nil {
+		c.Logger.Errorf("upload.reuploadCdnFile - error: %v", mtproto.ErrCdnMethodInvalid)
+	}
 	return nil, mtproto.ErrCdnMethodInvalid
 }

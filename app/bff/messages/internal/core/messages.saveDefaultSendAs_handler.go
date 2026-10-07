@@ -28,6 +28,12 @@ import (
 // MessagesSaveDefaultSendAs
 // messages.saveDefaultSendAs#ccfddf96 peer:InputPeer send_as:InputPeer = Bool;
 func (c *MessagesCore) MessagesSaveDefaultSendAs(in *mtproto.TLMessagesSaveDefaultSendAs) (*mtproto.Bool, error) {
+	if c == nil || c.MD == nil || c.MD.UserId <= 0 {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
+	if in == nil {
+		return nil, mtproto.ErrPeerIdInvalid
+	}
 	if in.GetPeer() == nil || in.GetSendAs() == nil {
 		c.Logger.Errorf("messages.saveDefaultSendAs - error: %v", mtproto.ErrPeerIdInvalid)
 		return nil, mtproto.ErrPeerIdInvalid

@@ -48,6 +48,11 @@ func (c *UserChannelProfilesCore) PhotosDeletePhotos(in *mtproto.TLPhotosDeleteP
 	if len(deleteIdList) == 0 {
 		return &mtproto.Vector_Long{Datas: deleteIdList}, nil
 	}
+	if c.svcCtx == nil || c.svcCtx.Dao == nil ||
+		c.svcCtx.Dao.UserClient == nil || c.svcCtx.Dao.MediaClient == nil ||
+		c.svcCtx.Dao.SyncClient == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
 
 	// TODO: ALBUM_PHOTOS_TOO_MANY
 	mainId, err := c.svcCtx.Dao.UserClient.UserDeleteProfilePhotos(c.ctx, &userpb.TLUserDeleteProfilePhotos{
@@ -94,16 +99,20 @@ func (c *UserChannelProfilesCore) PhotosDeletePhotos(in *mtproto.TLPhotosDeleteP
 		return nil, mtproto.ErrInternalServerError
 	}
 
-	if _, err = c.svcCtx.Dao.SyncClient.SyncPushUpdates(c.ctx, &sync.TLSyncPushUpdates{
+	syncReply, err := c.svcCtx.Dao.SyncClient.SyncPushUpdates(c.ctx, &sync.TLSyncPushUpdates{
 		UserId: c.MD.UserId,
 		Updates: mtproto.MakeUpdatesByUpdatesUsers(
 			[]*mtproto.User{me.ToSelfUser()},
 			mtproto.MakeTLUpdateUser(&mtproto.Update{
 				UserId: c.MD.UserId,
 			}).To_Update()),
-	}); err != nil {
+	})
+	if err != nil {
 		c.Logger.Errorf("photos.deletePhotos - sync error: %v", err)
 		return nil, err
+	}
+	if syncReply == nil {
+		return nil, mtproto.ErrInternalServerError
 	}
 
 	return &mtproto.Vector_Long{

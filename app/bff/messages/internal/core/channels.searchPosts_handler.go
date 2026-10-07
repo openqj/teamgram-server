@@ -19,9 +19,30 @@
 package core
 
 import (
+	"strings"
+
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/bff/apifull/channelview"
 )
+
+func searchPostsQuery(in *mtproto.TLChannelsSearchPosts) string {
+	if in == nil {
+		return ""
+	}
+	query := strings.TrimSpace(in.GetQuery().GetValue())
+	if query != "" {
+		return query
+	}
+	query = strings.TrimSpace(in.GetHashtag_STRING())
+	if query == "" && in.GetHashtag_FLAGSTRING() != nil {
+		query = strings.TrimSpace(in.GetHashtag_FLAGSTRING().GetValue())
+	}
+	query = strings.TrimPrefix(query, "#")
+	if query == "" {
+		return ""
+	}
+	return "#" + query
+}
 
 // ChannelsSearchPosts
 // channels.searchPosts#f2c4f24d flags:# hashtag:flags.0?string query:flags.1?string offset_rate:int offset_peer:InputPeer offset_id:int limit:int allow_paid_stars:flags.2?long = messages.Messages;
@@ -35,22 +56,22 @@ func (c *MessagesCore) ChannelsSearchPosts(in *mtproto.TLChannelsSearchPosts) (*
 	if c.MD.IsBot {
 		return nil, mtproto.ErrBotMethodInvalid
 	}
-	if in.GetAllowPaidStars() != nil {
+	if stars := in.GetAllowPaidStars(); stars != nil && stars.GetValue() > 0 {
 		return nil, mtproto.ErrMethodNotImpl
 	}
-	if in.GetOffsetRate() != 0 {
-		return nil, mtproto.ErrMethodNotImpl
+	if in.GetOffsetRate() < 0 {
+		return nil, mtproto.ErrOffsetInvalid
 	}
 	if in.GetLimit() < 0 || in.GetLimit() > 100 {
 		return nil, mtproto.ErrLimitInvalid
 	}
-
-	query := in.GetQuery().GetValue()
-	if query == "" {
-		query = in.GetHashtag_STRING()
+	if in.GetOffsetId() < 0 {
+		return nil, mtproto.ErrOffsetInvalid
 	}
-	if query == "" && in.GetHashtag_FLAGSTRING() != nil {
-		query = in.GetHashtag_FLAGSTRING().GetValue()
+
+	query := searchPostsQuery(in)
+	if query == "" {
+		return nil, mtproto.ErrSearchQueryEmpty
 	}
 	limit := in.GetLimit()
 	if limit == 0 {
@@ -63,7 +84,7 @@ func (c *MessagesCore) ChannelsSearchPosts(in *mtproto.TLChannelsSearchPosts) (*
 		query,
 		0,
 		in.GetOffsetId(),
-		0,
+		in.GetOffsetRate(),
 		0,
 		0,
 		0,

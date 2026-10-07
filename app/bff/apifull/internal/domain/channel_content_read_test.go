@@ -21,6 +21,7 @@ func TestMarkChannelMessageContentsReadIsDurableAndIdempotent(t *testing.T) {
 	}
 	t.Cleanup(func() {
 		for _, query := range []string{
+			`DELETE FROM apifull_channel_event WHERE channel_id=?`,
 			`DELETE FROM apifull_channel_message_content_read WHERE channel_id=?`,
 			`DELETE FROM apifull_channel_message WHERE channel_id=?`,
 			`DELETE FROM apifull_channel_message_seq WHERE channel_id=?`,
@@ -108,6 +109,7 @@ func TestChannelMessageContentReadReceiptsFollowMessageDeletion(t *testing.T) {
 	}
 	t.Cleanup(func() {
 		for _, query := range []string{
+			`DELETE FROM apifull_channel_event WHERE channel_id=?`,
 			`DELETE FROM apifull_channel_message_content_read WHERE channel_id=?`,
 			`DELETE FROM apifull_channel_message_hidden WHERE channel_id=?`,
 			`DELETE FROM apifull_channel_message WHERE channel_id=?`,
@@ -180,5 +182,12 @@ func TestChannelMessageContentReadReceiptsFollowMessageDeletion(t *testing.T) {
 	}
 	if count := countReceipts(memberID); count != 0 {
 		t.Fatalf("channel delete left %d receipts, want 0", count)
+	}
+	var events int
+	if err = db.QueryRow(`SELECT COUNT(*) FROM apifull_channel_event WHERE channel_id=?`, channelID).Scan(&events); err != nil {
+		t.Fatal(err)
+	}
+	if events != 0 {
+		t.Fatalf("channel delete left %d replay events, want 0", events)
 	}
 }

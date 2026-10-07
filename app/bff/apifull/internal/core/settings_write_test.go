@@ -19,6 +19,7 @@
 package core
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/teamgram/proto/mtproto"
@@ -27,7 +28,7 @@ import (
 
 func TestSettingsWriteNilError(t *testing.T) {
 	c := &ApiFullCore{MD: &metadata.RpcMetadata{UserId: 1}}
-	if _, err := c.ChannelsReportAntiSpamFalsePositive(&mtproto.TLChannelsReportAntiSpamFalsePositive{}); err != nil {
-		t.Fatal(err)
+	if _, err := c.ChannelsReportAntiSpamFalsePositive(&mtproto.TLChannelsReportAntiSpamFalsePositive{}); !errors.Is(err, mtproto.ErrInputRequestInvalid) {
+		t.Fatalf("invalid report: %v", err)
 	}
 }

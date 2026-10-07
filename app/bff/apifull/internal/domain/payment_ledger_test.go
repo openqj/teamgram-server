@@ -91,4 +91,19 @@ func TestPaymentLedgerStateTransitionsAreDurableAndIdempotent(t *testing.T) {
 	if _, _, err = SettlePaymentRequest(userID, rejectKey, rejectFingerprint, "tx-reject", "USD", "", 1, userID, 8, []byte("receipt-reject"), true); !errors.Is(err, ErrPaymentRequestState) {
 		t.Fatalf("settle rejected request error = %v, want ErrPaymentRequestState", err)
 	}
+
+	// Slug invoices do not carry a local quote. The provider's verified terms
+	// must still settle and replay idempotently.
+	slugKey := requestKey + ":slug"
+	slugFingerprint := "slug-fingerprint"
+	if _, err = BeginPaymentRequest(userID, slugKey, "test", slugFingerprint, "", 0, userID, 9); err != nil {
+		t.Fatalf("begin provider-quoted request: %v", err)
+	}
+	quoted, quotedReceipt, err := SettlePaymentRequest(userID, slugKey, slugFingerprint, "tx-slug", "USD", "Provider quote", 799, userID, 9, []byte("receipt-slug"), true)
+	if err != nil || quoted.State != PaymentStateSettled || quotedReceipt.Currency != "USD" || quotedReceipt.Amount != 799 {
+		t.Fatalf("provider-quoted settle = request=%+v receipt=%+v err=%v", quoted, quotedReceipt, err)
+	}
+	if _, _, err = SettlePaymentRequest(userID, slugKey, slugFingerprint, "tx-slug", "USD", "Provider quote", 799, userID, 9, []byte("receipt-slug"), true); err != nil {
+		t.Fatalf("provider-quoted settlement replay: %v", err)
+	}
 }

@@ -52,6 +52,9 @@ func (c *MessagesCore) MessagesGetOutboxReadDate(in *mtproto.TLMessagesGetOutbox
 	if in.GetMsgId() <= 0 {
 		return nil, mtproto.ErrMessageIdInvalid
 	}
+	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.UserClient == nil || c.svcCtx.Dao.MessageClient == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
 
 	peer := mtproto.FromInputPeer2(c.MD.UserId, in.GetPeer())
 	if !peer.IsUser() || peer.PeerId <= 0 {

@@ -114,6 +114,49 @@ func TestPhotosGetUserPhotosFailsClosedOnMediaFailures(t *testing.T) {
 	}
 }
 
+func TestPhotosGetUserPhotosAppliesWindow(t *testing.T) {
+	users := &profilePhotosUserClient{response: &userpb.Vector_Long{Datas: []int64{31, 30, 29, 28}}}
+	media := &profilePhotosMediaClient{photos: map[int64]*mtproto.Photo{
+		29: mtproto.MakeTLPhotoEmpty(&mtproto.Photo{Id: 29}).To_Photo(),
+		28: mtproto.MakeTLPhotoEmpty(&mtproto.Photo{Id: 28}).To_Photo(),
+	}}
+	core := newProfilePhotosCore(users, media)
+
+	got, err := core.PhotosGetUserPhotos(&mtproto.TLPhotosGetUserPhotos{
+		UserId: mtproto.MakeTLInputUserSelf(nil).To_InputUser(),
+		Offset: 1,
+		MaxId:  30,
+		Limit:  2,
+	})
+	if err != nil {
+		t.Fatalf("PhotosGetUserPhotos() error = %v", err)
+	}
+	if !reflect.DeepEqual(media.ids, []int64{29, 28}) || len(got.GetPhotos()) != 2 {
+		t.Fatalf("window result = %v, media ids = %v", got, media.ids)
+	}
+}
+
+func TestPhotosGetUserPhotosRejectsNegativeOffset(t *testing.T) {
+	core := newProfilePhotosCore(&profilePhotosUserClient{response: &userpb.Vector_Long{}}, &profilePhotosMediaClient{})
+	got, err := core.PhotosGetUserPhotos(&mtproto.TLPhotosGetUserPhotos{
+		UserId: mtproto.MakeTLInputUserSelf(nil).To_InputUser(),
+		Offset: -1,
+	})
+	if got != nil || !errors.Is(err, mtproto.ErrOffsetInvalid) {
+		t.Fatalf("negative offset = (%v, %v), want OFFSET_INVALID", got, err)
+	}
+}
+
+func TestPhotosGetUserPhotosRejectsUserWithoutAccessHash(t *testing.T) {
+	core := newProfilePhotosCore(&profilePhotosUserClient{response: &userpb.Vector_Long{}}, &profilePhotosMediaClient{})
+	got, err := core.PhotosGetUserPhotos(&mtproto.TLPhotosGetUserPhotos{
+		UserId: mtproto.MakeTLInputUser(&mtproto.InputUser{UserId: 43}).To_InputUser(),
+	})
+	if got != nil || !errors.Is(err, mtproto.ErrUserIdInvalid) {
+		t.Fatalf("missing access hash = (%v, %v), want USER_ID_INVALID", got, err)
+	}
+}
+
 func profilePhotosSelfRequest() *mtproto.TLPhotosGetUserPhotos {
 	return &mtproto.TLPhotosGetUserPhotos{UserId: mtproto.MakeTLInputUserSelf(nil).To_InputUser()}
 }

@@ -63,8 +63,12 @@ func (s *testQRCodeKV) EvalCtx(_ context.Context, script, key string, args ...an
 			fields[fmt.Sprint(args[i])] = fmt.Sprint(args[i+1])
 		}
 		return int64(1), nil
-	case acceptQRCodeScript:
-		if len(args) != 6 {
+	case acceptQRCodeScript, acceptQRCodeAtDCScript:
+		wantArgs := 6
+		if script == acceptQRCodeAtDCScript {
+			wantArgs = 7
+		}
+		if len(args) != wantArgs {
 			return nil, fmt.Errorf("unexpected accept eval arguments: %d", len(args))
 		}
 		if fields["code_hash"] != fmt.Sprint(args[0]) {
@@ -84,9 +88,15 @@ func (s *testQRCodeKV) EvalCtx(_ context.Context, script, key string, args ...an
 		if fields["state"] == fmt.Sprint(args[2]) {
 			fields["user_id"] = fmt.Sprint(args[3])
 			fields["state"] = fmt.Sprint(args[4])
+			if script == acceptQRCodeAtDCScript {
+				fields["dc_id"] = fmt.Sprint(args[6])
+			}
 			return int64(1), nil
 		}
 		if (fields["state"] == fmt.Sprint(args[4]) || fields["state"] == fmt.Sprint(args[5])) && fields["user_id"] == fmt.Sprint(args[3]) {
+			if script == acceptQRCodeAtDCScript && fields["dc_id"] == "0" {
+				fields["dc_id"] = fmt.Sprint(args[6])
+			}
 			return int64(2), nil
 		}
 		if fields["state"] == fmt.Sprint(args[4]) || fields["state"] == fmt.Sprint(args[5]) {
@@ -190,6 +200,69 @@ func TestQRCodeClaimCanResumeAndCommitOnlyForSameUser(t *testing.T) {
 	}
 	if result, err := d.CommitCacheQRLoginCode(context.Background(), 150, "recoverable", 9); err != nil || result != 2 {
 		t.Fatalf("idempotent commit = %d, %v; want 2, nil", result, err)
+	}
+}
+
+func TestQRCodeAcceptAtDCMovesOwnershipAtomically(t *testing.T) {
+	store := newTestQRCodeKV()
+	d := &Dao{kv: store}
+	qrCode := &model.QRCodeTransaction{
+		PermAuthKeyId: 175,
+		DcId:          2,
+		AuthKeyId:     176,
+		CodeHash:      "migrate",
+		ExpireAt:      1000,
+		State:         model.QRCodeStateNew,
+	}
+	if result, err := d.CreateCacheQRLoginCode(context.Background(), qrCode.PermAuthKeyId, qrCode, 60); err != nil || result != 1 {
+		t.Fatalf("create transaction = %d, %v; want 1, nil", result, err)
+	}
+	if result, err := d.AcceptCacheQRLoginCodeAtDC(context.Background(), qrCode.PermAuthKeyId, qrCode.CodeHash, 42, 999, 1); err != nil || result != 1 {
+		t.Fatalf("cross-DC accept = %d, %v; want 1, nil", result, err)
+	}
+	loaded, err := d.GetCacheQRLoginCode(context.Background(), qrCode.PermAuthKeyId)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.DcId != 1 || loaded.UserId != 42 || loaded.State != model.QRCodeStateAccepted {
+		t.Fatalf("accepted QR = %+v, want dc=1 user=42 state=Accepted", loaded)
+	}
+	if result, err := d.AcceptCacheQRLoginCodeAtDC(context.Background(), qrCode.PermAuthKeyId, qrCode.CodeHash, 42, 999, 2); err != nil || result != 2 {
+		t.Fatalf("same-user resume = %d, %v; want 2, nil", result, err)
+	}
+	loaded, err = d.GetCacheQRLoginCode(context.Background(), qrCode.PermAuthKeyId)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.DcId != 1 {
+		t.Fatalf("same-user resume rewrote owner DC to %d, want 1", loaded.DcId)
+	}
+}
+
+func TestQRCodeAcceptAtDCBackfillsLegacyOwnershipOnRetry(t *testing.T) {
+	store := newTestQRCodeKV()
+	d := &Dao{kv: store}
+	qrCode := &model.QRCodeTransaction{
+		PermAuthKeyId: 220,
+		DcId:          0,
+		AuthKeyId:     221,
+		CodeHash:      "legacy",
+		ExpireAt:      1000,
+		UserId:        42,
+		State:         model.QRCodeStateAccepted,
+	}
+	if result, err := d.CreateCacheQRLoginCode(context.Background(), qrCode.PermAuthKeyId, qrCode, 60); err != nil || result != 1 {
+		t.Fatalf("create legacy QR = (%d, %v)", result, err)
+	}
+	if result, err := d.AcceptCacheQRLoginCodeAtDC(context.Background(), qrCode.PermAuthKeyId, qrCode.CodeHash, qrCode.UserId, 999, 1); err != nil || result != 2 {
+		t.Fatalf("retry legacy QR = (%d, %v), want (2, nil)", result, err)
+	}
+	loaded, err := d.GetCacheQRLoginCode(context.Background(), qrCode.PermAuthKeyId)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.DcId != 1 || loaded.UserId != qrCode.UserId || loaded.State != model.QRCodeStateAccepted {
+		t.Fatalf("legacy QR after retry = %+v, want dc=1 user=42 state=Accepted", loaded)
 	}
 }
 

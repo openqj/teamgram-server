@@ -19,9 +19,11 @@
 package core
 
 import (
+	"encoding/json"
 	"time"
 
 	"github.com/teamgram/proto/mtproto"
+	"github.com/teamgram/teamgram-server/app/bff/apifull/persist"
 )
 
 const passwordResetWait = 7 * 24 * 60 * 60
@@ -52,26 +54,37 @@ func (c *AuthorizationCore) AccountResetPassword(in *mtproto.TLAccountResetPassw
 		return nil, mtproto.ErrAuthKeyUnregistered
 	}
 	userID := c.MD.GetUserId()
-	st, err := loadAcctPasswordState(userID)
-	if err != nil {
-		c.Logger.Errorf("account.resetPassword - error: %v", err)
-		return nil, err
-	}
-	if !st.HasPassword {
-		return mtproto.MakeTLAccountResetPasswordOk(nil).To_Account_ResetPasswordResult(), nil
-	}
-	if ensurePasswordResetWait(&st, time.Now().Unix()) {
-		if err = saveAcctPasswordState(userID, st); err != nil {
-			c.Logger.Errorf("account.resetPassword - save wait state: %v", err)
+	for attempt := 0; attempt < 4; attempt++ {
+		raw, err := persist.Default.Get(acctPasswordKey(userID))
+		if err != nil {
+			c.Logger.Errorf("account.resetPassword - error: %v", err)
 			return nil, err
 		}
-	}
-	if st.ResetDeclined {
-		return mtproto.MakeTLAccountResetPasswordFailedWait(&mtproto.Account_ResetPasswordResult{
-			RetryDate: int32(st.ResetRetryDate),
+		var st acctPasswordState
+		if raw != "" {
+			if err = json.Unmarshal([]byte(raw), &st); err != nil {
+				return nil, err
+			}
+		}
+		if !st.HasPassword {
+			return mtproto.MakeTLAccountResetPasswordOk(nil).To_Account_ResetPasswordResult(), nil
+		}
+		if ensurePasswordResetWait(&st, time.Now().Unix()) {
+			if swapped, saveErr := compareAndSaveAcctPasswordState(userID, raw, st); saveErr != nil {
+				c.Logger.Errorf("account.resetPassword - save wait state: %v", saveErr)
+				return nil, saveErr
+			} else if !swapped {
+				continue
+			}
+		}
+		if st.ResetDeclined {
+			return mtproto.MakeTLAccountResetPasswordFailedWait(&mtproto.Account_ResetPasswordResult{
+				RetryDate: int32(st.ResetRetryDate),
+			}).To_Account_ResetPasswordResult(), nil
+		}
+		return mtproto.MakeTLAccountResetPasswordRequestedWait(&mtproto.Account_ResetPasswordResult{
+			UntilDate: int32(st.ResetUntilDate),
 		}).To_Account_ResetPasswordResult(), nil
 	}
-	return mtproto.MakeTLAccountResetPasswordRequestedWait(&mtproto.Account_ResetPasswordResult{
-		UntilDate: int32(st.ResetUntilDate),
-	}).To_Account_ResetPasswordResult(), nil
+	return nil, mtproto.ErrInternalServerError
 }

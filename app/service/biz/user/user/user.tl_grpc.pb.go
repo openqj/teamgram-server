@@ -92,6 +92,8 @@ const (
 	RPCUser_UserGetUserDataByToken_FullMethodName            = "/user.RPCUser/user_getUserDataByToken"
 	RPCUser_UserSearch_FullMethodName                        = "/user.RPCUser/user_search"
 	RPCUser_UserUpdateBotData_FullMethodName                 = "/user.RPCUser/user_updateBotData"
+	RPCUser_UserCreateBot_FullMethodName                     = "/user.RPCUser/user_createBot"
+	RPCUser_UserExportBotToken_FullMethodName                = "/user.RPCUser/user_exportBotToken"
 	RPCUser_UserGetImmutableUserV2_FullMethodName            = "/user.RPCUser/user_getImmutableUserV2"
 	RPCUser_UserGetMutableUsersV2_FullMethodName             = "/user.RPCUser/user_getMutableUsersV2"
 	RPCUser_UserCreateNewTestUser_FullMethodName             = "/user.RPCUser/user_createNewTestUser"
@@ -196,6 +198,8 @@ type RPCUserClient interface {
 	UserGetUserDataByToken(ctx context.Context, in *TLUserGetUserDataByToken, opts ...grpc.CallOption) (*mtproto.UserData, error)
 	UserSearch(ctx context.Context, in *TLUserSearch, opts ...grpc.CallOption) (*UsersFound, error)
 	UserUpdateBotData(ctx context.Context, in *TLUserUpdateBotData, opts ...grpc.CallOption) (*mtproto.Bool, error)
+	UserCreateBot(ctx context.Context, in *TLUserCreateBot, opts ...grpc.CallOption) (*mtproto.ImmutableUser, error)
+	UserExportBotToken(ctx context.Context, in *TLUserExportBotToken, opts ...grpc.CallOption) (*mtproto.String, error)
 	UserGetImmutableUserV2(ctx context.Context, in *TLUserGetImmutableUserV2, opts ...grpc.CallOption) (*mtproto.ImmutableUser, error)
 	UserGetMutableUsersV2(ctx context.Context, in *TLUserGetMutableUsersV2, opts ...grpc.CallOption) (*mtproto.MutableUsers, error)
 	UserCreateNewTestUser(ctx context.Context, in *TLUserCreateNewTestUser, opts ...grpc.CallOption) (*mtproto.ImmutableUser, error)
@@ -871,6 +875,26 @@ func (c *rPCUserClient) UserUpdateBotData(ctx context.Context, in *TLUserUpdateB
 	return out, nil
 }
 
+func (c *rPCUserClient) UserCreateBot(ctx context.Context, in *TLUserCreateBot, opts ...grpc.CallOption) (*mtproto.ImmutableUser, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(mtproto.ImmutableUser)
+	err := c.cc.Invoke(ctx, RPCUser_UserCreateBot_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *rPCUserClient) UserExportBotToken(ctx context.Context, in *TLUserExportBotToken, opts ...grpc.CallOption) (*mtproto.String, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(mtproto.String)
+	err := c.cc.Invoke(ctx, RPCUser_UserExportBotToken_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *rPCUserClient) UserGetImmutableUserV2(ctx context.Context, in *TLUserGetImmutableUserV2, opts ...grpc.CallOption) (*mtproto.ImmutableUser, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(mtproto.ImmutableUser)
@@ -1288,6 +1312,8 @@ type RPCUserServer interface {
 	UserGetUserDataByToken(context.Context, *TLUserGetUserDataByToken) (*mtproto.UserData, error)
 	UserSearch(context.Context, *TLUserSearch) (*UsersFound, error)
 	UserUpdateBotData(context.Context, *TLUserUpdateBotData) (*mtproto.Bool, error)
+	UserCreateBot(context.Context, *TLUserCreateBot) (*mtproto.ImmutableUser, error)
+	UserExportBotToken(context.Context, *TLUserExportBotToken) (*mtproto.String, error)
 	UserGetImmutableUserV2(context.Context, *TLUserGetImmutableUserV2) (*mtproto.ImmutableUser, error)
 	UserGetMutableUsersV2(context.Context, *TLUserGetMutableUsersV2) (*mtproto.MutableUsers, error)
 	UserCreateNewTestUser(context.Context, *TLUserCreateNewTestUser) (*mtproto.ImmutableUser, error)
@@ -1520,6 +1546,12 @@ func (UnimplementedRPCUserServer) UserSearch(context.Context, *TLUserSearch) (*U
 }
 func (UnimplementedRPCUserServer) UserUpdateBotData(context.Context, *TLUserUpdateBotData) (*mtproto.Bool, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method UserUpdateBotData not implemented")
+}
+func (UnimplementedRPCUserServer) UserCreateBot(context.Context, *TLUserCreateBot) (*mtproto.ImmutableUser, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method UserCreateBot not implemented")
+}
+func (UnimplementedRPCUserServer) UserExportBotToken(context.Context, *TLUserExportBotToken) (*mtproto.String, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method UserExportBotToken not implemented")
 }
 func (UnimplementedRPCUserServer) UserGetImmutableUserV2(context.Context, *TLUserGetImmutableUserV2) (*mtproto.ImmutableUser, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method UserGetImmutableUserV2 not implemented")
@@ -2780,6 +2812,42 @@ func _RPCUser_UserUpdateBotData_Handler(srv interface{}, ctx context.Context, de
 	return interceptor(ctx, in, info, handler)
 }
 
+func _RPCUser_UserCreateBot_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(TLUserCreateBot)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RPCUserServer).UserCreateBot(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RPCUser_UserCreateBot_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RPCUserServer).UserCreateBot(ctx, req.(*TLUserCreateBot))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _RPCUser_UserExportBotToken_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(TLUserExportBotToken)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RPCUserServer).UserExportBotToken(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RPCUser_UserExportBotToken_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RPCUserServer).UserExportBotToken(ctx, req.(*TLUserExportBotToken))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _RPCUser_UserGetImmutableUserV2_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(TLUserGetImmutableUserV2)
 	if err := dec(in); err != nil {
@@ -3668,6 +3736,14 @@ var RPCUser_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "user_updateBotData",
 			Handler:    _RPCUser_UserUpdateBotData_Handler,
+		},
+		{
+			MethodName: "user_createBot",
+			Handler:    _RPCUser_UserCreateBot_Handler,
+		},
+		{
+			MethodName: "user_exportBotToken",
+			Handler:    _RPCUser_UserExportBotToken_Handler,
 		},
 		{
 			MethodName: "user_getImmutableUserV2",

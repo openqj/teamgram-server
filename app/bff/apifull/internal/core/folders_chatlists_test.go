@@ -185,13 +185,14 @@ func TestChatlistInviteMutationsRejectMissingSlug(t *testing.T) {
 	}
 }
 
-func TestSuggestedDialogFiltersUnavailable(t *testing.T) {
+func TestSuggestedDialogFilters(t *testing.T) {
 	_ = isolatedAuditDSN(t)
 	if result, err := (&ApiFullCore{}).MessagesGetSuggestedDialogFilters(nil); result != nil || !errors.Is(err, mtproto.ErrAuthKeyUnregistered) {
 		t.Fatalf("unauthenticated suggested filters: result=%+v err=%v", result, err)
 	}
 	c := &ApiFullCore{MD: &metadata.RpcMetadata{UserId: time.Now().UnixNano()}}
-	if result, err := c.MessagesGetSuggestedDialogFilters(nil); result != nil || !errors.Is(err, mtproto.ErrMethodNotImpl) {
-		t.Fatalf("suggested filters without a suggestion source: result=%+v err=%v", result, err)
+	result, err := c.MessagesGetSuggestedDialogFilters(nil)
+	if err != nil || result == nil || len(result.GetDatas()) != 3 {
+		t.Fatalf("suggested filters: result=%+v err=%v", result, err)
 	}
 }

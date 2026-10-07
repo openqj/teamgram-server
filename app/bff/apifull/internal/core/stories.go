@@ -787,12 +787,12 @@ func (c *ApiFullCore) StoriesSearchPosts(in *mtproto.TLStoriesSearchPosts) (*mtp
 }
 
 func (c *ApiFullCore) StoriesCreateAlbum(in *mtproto.TLStoriesCreateAlbum) (*mtproto.StoryAlbum, error) {
-	if in == nil || strings.TrimSpace(in.GetTitle()) == "" {
-		return nil, mtproto.ErrInputRequestInvalid
-	}
 	uid, err := c.requireUserId()
 	if err != nil {
 		return nil, err
+	}
+	if in == nil || strings.TrimSpace(in.GetTitle()) == "" {
+		return nil, mtproto.ErrInputRequestInvalid
 	}
 	if in.GetPeer() != nil && !storyPeerOwned(uid, in.GetPeer()) {
 		return nil, mtproto.ErrMethodNotImpl

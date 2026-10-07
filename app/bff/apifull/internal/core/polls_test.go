@@ -391,3 +391,39 @@ func TestPollUpdateEncodingIncludesPeerMessageIDPair(t *testing.T) {
 		t.Fatalf("zero-vote answer must omit optional voters field: %+v", update.GetResults().GetResults()[1])
 	}
 }
+
+func TestPollMessageEncodingIncludesCompletePoll(t *testing.T) {
+	message := pollMessage(unreadPollJSON{MsgId: 23, Question: "Which option?"})
+	poll := message.GetMedia().GetPoll()
+	if poll == nil || poll.GetId() == 0 || poll.GetHash() == 0 {
+		t.Fatalf("poll = %+v, want non-zero id and hash", poll)
+	}
+	results := message.GetMedia().GetResults()
+	if results == nil || results.GetTotalVoters().GetValue() != 0 || len(results.GetResults()) != 2 {
+		t.Fatalf("poll results = %+v, want two zero-vote answers", results)
+	}
+	if len(poll.GetAnswers()) != 2 {
+		t.Fatalf("poll answers = %d, want 2", len(poll.GetAnswers()))
+	}
+
+	buf := mtproto.NewEncodeBuf(1024)
+	if err := message.Encode(buf, 229); err != nil {
+		t.Fatal(err)
+	}
+	decoded := mtproto.NewDecodeBuf(buf.GetBuf())
+	object := decoded.Object()
+	if err := decoded.GetError(); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.GetOffset() != decoded.GetSize() {
+		t.Fatalf("decoded message left %d bytes", decoded.GetSize()-decoded.GetOffset())
+	}
+	decodedMessage, ok := object.(*mtproto.TLMessage)
+	if !ok {
+		t.Fatalf("decoded object = %#v, want *mtproto.TLMessage", object)
+	}
+	decodedPoll := decodedMessage.GetMedia().GetPoll()
+	if decodedPoll == nil || decodedPoll.GetId() != poll.GetId() || decodedPoll.GetHash() != poll.GetHash() {
+		t.Fatalf("decoded poll = %+v, want id=%d hash=%d", decodedPoll, poll.GetId(), poll.GetHash())
+	}
+}

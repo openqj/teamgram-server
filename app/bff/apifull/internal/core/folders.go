@@ -155,7 +155,34 @@ func (c *ApiFullCore) MessagesGetSuggestedDialogFilters(_ *mtproto.TLMessagesGet
 	if _, err := c.requireUserId(); err != nil {
 		return nil, err
 	}
-	return nil, mtproto.ErrMethodNotImpl
+	empty := []*mtproto.InputPeer{}
+	text := func(value string) *mtproto.TextWithEntities {
+		return mtproto.MakeTLTextWithEntities(&mtproto.TextWithEntities{Text: value, Entities: []*mtproto.MessageEntity{}}).To_TextWithEntities()
+	}
+	filter := func(id int32, title, emoticon string, contacts, groups, broadcasts, bots bool) *mtproto.DialogFilterSuggested {
+		return mtproto.MakeTLDialogFilterSuggested(&mtproto.DialogFilterSuggested{
+			Filter: mtproto.MakeTLDialogFilter(&mtproto.DialogFilter{
+				Contacts:               contacts,
+				Groups:                 groups,
+				Broadcasts:             broadcasts,
+				Bots:                   bots,
+				ExcludeMuted:           true,
+				ExcludeArchived:        true,
+				Id:                     id,
+				Title_TEXTWITHENTITIES: text(title),
+				Emoticon:               mtproto.MakeFlagsString(emoticon),
+				PinnedPeers:            empty,
+				IncludePeers:           empty,
+				ExcludePeers:           empty,
+			}).To_DialogFilter(),
+			Description: title,
+		}).To_DialogFilterSuggested()
+	}
+	return &mtproto.Vector_DialogFilterSuggested{Datas: []*mtproto.DialogFilterSuggested{
+		filter(2, "Contacts", "👥", true, false, false, false),
+		filter(3, "Groups", "👨‍👩‍👧‍👦", false, true, false, false),
+		filter(4, "Channels", "📣", false, false, true, false),
+	}}, nil
 }
 
 func (c *ApiFullCore) MessagesUpdateDialogFilter(in *mtproto.TLMessagesUpdateDialogFilter) (*mtproto.Bool, error) {
@@ -727,11 +754,11 @@ func (c *ApiFullCore) chatlistEntities(userId int64, peers []*mtproto.InputPeer)
 			if err != nil {
 				return nil, nil, err
 			}
-			if ok {
-				chat = channelview.Chat(stored, stored.Creator == userId)
+			if !ok {
+				return nil, nil, mtproto.ErrChannelInvalid
 			}
-		}
-		if chat == nil {
+			chat = channelview.Chat(stored, stored.Creator == userId)
+		} else {
 			stored, ok, err := loadChan(userId, id)
 			if err != nil {
 				return nil, nil, err

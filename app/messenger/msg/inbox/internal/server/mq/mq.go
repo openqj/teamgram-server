@@ -52,7 +52,9 @@ func New(svcCtx *svc.ServiceContext, conf kafka.KafkaConsumerConf) *kafka.Consum
 				}
 				c.Logger.Debugf("inbox.editUserMessageToInbox - request: %s", r)
 
-				_, _ = c.InboxEditUserMessageToInbox(r)
+				if _, err := c.InboxEditUserMessageToInbox(r); err != nil {
+					c.Logger.Errorf("inbox.editUserMessageToInbox - handler error: %v", err)
+				}
 			case proto.MessageName((*inbox.TLInboxEditChatMessageToInbox)(nil)):
 				c := core.New(ctx, svcCtx)
 
@@ -63,7 +65,9 @@ func New(svcCtx *svc.ServiceContext, conf kafka.KafkaConsumerConf) *kafka.Consum
 				}
 				c.Logger.Debugf("inbox.editChatMessageToInbox - request: %s", r)
 
-				c.InboxEditChatMessageToInbox(r)
+				if _, err := c.InboxEditChatMessageToInbox(r); err != nil {
+					c.Logger.Errorf("inbox.editChatMessageToInbox - handler error: %v", err)
+				}
 			case proto.MessageName((*inbox.TLInboxDeleteMessagesToInbox)(nil)):
 				c := core.New(ctx, svcCtx)
 
@@ -74,7 +78,9 @@ func New(svcCtx *svc.ServiceContext, conf kafka.KafkaConsumerConf) *kafka.Consum
 				}
 				c.Logger.Debugf("inbox.deleteMessagesToInbox - request: %s", r)
 
-				c.InboxDeleteMessagesToInbox(r)
+				if _, err := c.InboxDeleteMessagesToInbox(r); err != nil {
+					c.Logger.Errorf("inbox.deleteMessagesToInbox - handler error: %v", err)
+				}
 			case proto.MessageName((*inbox.TLInboxDeleteUserHistoryToInbox)(nil)):
 				c := core.New(ctx, svcCtx)
 
@@ -85,7 +91,9 @@ func New(svcCtx *svc.ServiceContext, conf kafka.KafkaConsumerConf) *kafka.Consum
 				}
 				c.Logger.Debugf("inbox.deleteUserHistoryToInbox - request: %s", r)
 
-				c.InboxDeleteUserHistoryToInbox(r)
+				if _, err := c.InboxDeleteUserHistoryToInbox(r); err != nil {
+					c.Logger.Errorf("inbox.deleteUserHistoryToInbox - handler error: %v", err)
+				}
 			case proto.MessageName((*inbox.TLInboxDeleteChatHistoryToInbox)(nil)):
 				c := core.New(ctx, svcCtx)
 
@@ -96,7 +104,9 @@ func New(svcCtx *svc.ServiceContext, conf kafka.KafkaConsumerConf) *kafka.Consum
 				}
 				c.Logger.Debugf("inbox.deleteChatHistoryToInbox - request: %s", r)
 
-				c.InboxDeleteChatHistoryToInbox(r)
+				if _, err := c.InboxDeleteChatHistoryToInbox(r); err != nil {
+					c.Logger.Errorf("inbox.deleteChatHistoryToInbox - handler error: %v", err)
+				}
 			case proto.MessageName((*inbox.TLInboxReadUserMediaUnreadToInbox)(nil)):
 				c := core.New(ctx, svcCtx)
 
@@ -107,7 +117,9 @@ func New(svcCtx *svc.ServiceContext, conf kafka.KafkaConsumerConf) *kafka.Consum
 				}
 				c.Logger.Debugf("inbox.readUserMediaUnreadToInbox - request: %s", r)
 
-				c.InboxReadUserMediaUnreadToInbox(r)
+				if _, err := c.InboxReadUserMediaUnreadToInbox(r); err != nil {
+					c.Logger.Errorf("inbox.readUserMediaUnreadToInbox - handler error: %v", err)
+				}
 			case proto.MessageName((*inbox.TLInboxReadChatMediaUnreadToInbox)(nil)):
 				c := core.New(ctx, svcCtx)
 
@@ -118,7 +130,9 @@ func New(svcCtx *svc.ServiceContext, conf kafka.KafkaConsumerConf) *kafka.Consum
 				}
 				c.Logger.Debugf("inbox.readChatMediaUnreadToInbox - request: %s", r)
 
-				c.InboxReadChatMediaUnreadToInbox(r)
+				if _, err := c.InboxReadChatMediaUnreadToInbox(r); err != nil {
+					c.Logger.Errorf("inbox.readChatMediaUnreadToInbox - handler error: %v", err)
+				}
 			case proto.MessageName((*inbox.TLInboxUpdateHistoryReaded)(nil)):
 				c := core.New(ctx, svcCtx)
 
@@ -129,7 +143,9 @@ func New(svcCtx *svc.ServiceContext, conf kafka.KafkaConsumerConf) *kafka.Consum
 				}
 				c.Logger.Debugf("inbox.updateHistoryReaded - request: %s", r)
 
-				c.InboxUpdateHistoryReaded(r)
+				if _, err := c.InboxUpdateHistoryReaded(r); err != nil {
+					c.Logger.Errorf("inbox.updateHistoryReaded - handler error: %v", err)
+				}
 			case proto.MessageName((*inbox.TLInboxUpdatePinnedMessage)(nil)):
 				c := core.New(ctx, svcCtx)
 
@@ -140,7 +156,9 @@ func New(svcCtx *svc.ServiceContext, conf kafka.KafkaConsumerConf) *kafka.Consum
 				}
 				c.Logger.Debugf("inbox.updatePinnedMessage - request: %s", r)
 
-				c.InboxUpdatePinnedMessage(r)
+				if _, err := c.InboxUpdatePinnedMessage(r); err != nil {
+					c.Logger.Errorf("inbox.updatePinnedMessage - handler error: %v", err)
+				}
 			case proto.MessageName((*inbox.TLInboxUnpinAllMessages)(nil)):
 				c := core.New(ctx, svcCtx)
 
@@ -151,7 +169,9 @@ func New(svcCtx *svc.ServiceContext, conf kafka.KafkaConsumerConf) *kafka.Consum
 				}
 				c.Logger.Debugf("inbox.unpinAllMessages - request: %s", r)
 
-				c.InboxUnpinAllMessages(r)
+				if _, err := c.InboxUnpinAllMessages(r); err != nil {
+					c.Logger.Errorf("inbox.unpinAllMessages - handler error: %v", err)
+				}
 			case proto.MessageName((*inbox.TLInboxSendUserMessageToInboxV2)(nil)):
 				c := core.New(ctx, svcCtx)
 
@@ -162,7 +182,9 @@ func New(svcCtx *svc.ServiceContext, conf kafka.KafkaConsumerConf) *kafka.Consum
 				}
 				c.Logger.Debugf("inbox.sendUserMessageToInboxV2 - request: %s", r)
 
-				c.InboxSendUserMessageToInboxV2(r)
+				if _, err := c.InboxSendUserMessageToInboxV2(r); err != nil {
+					c.Logger.Errorf("inbox.sendUserMessageToInboxV2 - handler error: %v", err)
+				}
 			case proto.MessageName((*inbox.TLInboxEditMessageToInboxV2)(nil)):
 				c := core.New(ctx, svcCtx)
 
@@ -173,7 +195,9 @@ func New(svcCtx *svc.ServiceContext, conf kafka.KafkaConsumerConf) *kafka.Consum
 				}
 				c.Logger.Debugf("inbox.editMessageToInboxV2 - request: %s", r)
 
-				c.InboxEditMessageToInboxV2(r)
+				if _, err := c.InboxEditMessageToInboxV2(r); err != nil {
+					c.Logger.Errorf("inbox.editMessageToInboxV2 - handler error: %v", err)
+				}
 			case proto.MessageName((*inbox.TLInboxReadInboxHistory)(nil)):
 				c := core.New(ctx, svcCtx)
 
@@ -184,7 +208,9 @@ func New(svcCtx *svc.ServiceContext, conf kafka.KafkaConsumerConf) *kafka.Consum
 				}
 				c.Logger.Debugf("inbox.readInboxHistory - request: %s", r)
 
-				c.InboxReadInboxHistory(r)
+				if _, err := c.InboxReadInboxHistory(r); err != nil {
+					c.Logger.Errorf("inbox.readInboxHistory - handler error: %v", err)
+				}
 			case proto.MessageName((*inbox.TLInboxReadOutboxHistory)(nil)):
 				c := core.New(ctx, svcCtx)
 
@@ -195,7 +221,9 @@ func New(svcCtx *svc.ServiceContext, conf kafka.KafkaConsumerConf) *kafka.Consum
 				}
 				c.Logger.Debugf("inbox.readOutboxHistory - request: %s", r)
 
-				c.InboxReadOutboxHistory(r)
+				if _, err := c.InboxReadOutboxHistory(r); err != nil {
+					c.Logger.Errorf("inbox.readOutboxHistory - handler error: %v", err)
+				}
 			case proto.MessageName((*inbox.TLInboxReadMediaUnreadToInboxV2)(nil)):
 				c := core.New(ctx, svcCtx)
 
@@ -206,7 +234,9 @@ func New(svcCtx *svc.ServiceContext, conf kafka.KafkaConsumerConf) *kafka.Consum
 				}
 				c.Logger.Debugf("inbox.readMediaUnreadToInboxV2 - request: %s", r)
 
-				c.InboxReadMediaUnreadToInboxV2(r)
+				if _, err := c.InboxReadMediaUnreadToInboxV2(r); err != nil {
+					c.Logger.Errorf("inbox.readMediaUnreadToInboxV2 - handler error: %v", err)
+				}
 			case proto.MessageName((*inbox.TLInboxUpdatePinnedMessageV2)(nil)):
 				c := core.New(ctx, svcCtx)
 
@@ -217,7 +247,9 @@ func New(svcCtx *svc.ServiceContext, conf kafka.KafkaConsumerConf) *kafka.Consum
 				}
 				c.Logger.Debugf("inbox.updatePinnedMessageV2 - request: %s", r)
 
-				c.InboxUpdatePinnedMessageV2(r)
+				if _, err := c.InboxUpdatePinnedMessageV2(r); err != nil {
+					c.Logger.Errorf("inbox.updatePinnedMessageV2 - handler error: %v", err)
+				}
 			default:
 				err := fmt.Errorf("invalid key: %s", key)
 				logx.Error(err.Error())

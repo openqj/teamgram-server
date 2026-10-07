@@ -37,7 +37,7 @@ func CheckFileParts(fileParts int32) (err error) {
 // CheckFilePart
 // FILE_PART_INVALID: The file part number is invalid. The value is not between 0 and 2,999.
 func CheckFilePart(filePart int32) (err error) {
-	if filePart < 0 || filePart > 2900 {
+	if filePart < 0 || filePart > 2999 {
 		err = mtproto.ErrFilePartInvalid
 	}
 	return
@@ -46,6 +46,9 @@ func CheckFilePart(filePart int32) (err error) {
 // CheckFilePartSize
 // FILE_PART_SIZE_INVALID - 512KB cannot be evenly divided by part_size
 func CheckFilePartSize(partSize int32) (err error) {
+	if partSize <= 0 {
+		return mtproto.ErrFilePartLengthInvalid
+	}
 	// part_size % 1024 = 0 (divisible by 1KB)
 	// 524288 % part_size = 0 (512KB must be evenly divisible by part_size)
 	if partSize%1024 != 0 {

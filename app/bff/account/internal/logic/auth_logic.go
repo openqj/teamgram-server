@@ -33,13 +33,31 @@ import (
 type AuthLogic struct {
 	*dao.Dao
 	code.VerifyCodeInterface
+	phoneCodes phoneCodePersistence
+}
+
+type phoneCodePersistence interface {
+	CreatePhoneCode(context.Context, int64, int64, string, bool, int, int, int) (*model.PhoneCodeTransaction, error)
+	GetPhoneCode(context.Context, int64, string, string) (*model.PhoneCodeTransaction, error)
+	UpdatePhoneCodeData(context.Context, int64, string, string, *model.PhoneCodeTransaction) error
+	DeleteCachePhoneCode(context.Context, int64, string) error
 }
 
 func NewAuthSignLogic(dao *dao.Dao, code2 code.VerifyCodeInterface) *AuthLogic {
 	return &AuthLogic{
-		Dao:                 dao,
+		Dao: dao, phoneCodes: dao,
 		VerifyCodeInterface: code2,
 	}
+}
+
+func (m *AuthLogic) phoneCodeStore() phoneCodePersistence {
+	if m != nil && m.phoneCodes != nil {
+		return m.phoneCodes
+	}
+	if m == nil {
+		return nil
+	}
+	return m.Dao
 }
 
 func (m *AuthLogic) DoAuthSendCode(
@@ -49,10 +67,15 @@ func (m *AuthLogic) DoAuthSendCode(
 	phoneNumber string,
 	allowFlashCall,
 	currentNumber bool,
-	cb func(codeData *model.PhoneCodeTransaction) error) (codeData *model.PhoneCodeTransaction, err error) {
+	cb func(codeData *model.PhoneCodeTransaction) error,
+	onPersistFailure ...func(codeData *model.PhoneCodeTransaction)) (codeData *model.PhoneCodeTransaction, err error) {
+	store := m.phoneCodeStore()
+	if store == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
 
 	sentCodeType, nextCodeType := model.MakeCodeType(false, allowFlashCall, currentNumber)
-	if codeData, err = m.Dao.CreatePhoneCode(ctx,
+	if codeData, err = store.CreatePhoneCode(ctx,
 		authKeyId,
 		sessionId,
 		phoneNumber,
@@ -69,7 +92,14 @@ func (m *AuthLogic) DoAuthSendCode(
 		}
 	}
 
-	if err = m.Dao.UpdatePhoneCodeData(ctx, authKeyId, phoneNumber, codeData.PhoneCodeHash, codeData); err != nil {
+	if err = store.UpdatePhoneCodeData(ctx, authKeyId, phoneNumber, codeData.PhoneCodeHash, codeData); err != nil {
+		// The callback may already have issued a shared SMS challenge. Remove
+		// the phone-code row before reporting failure so no challenge remains
+		// consumable without a durable transaction.
+		_ = store.DeleteCachePhoneCode(ctx, authKeyId, phoneNumber)
+		if len(onPersistFailure) > 0 && onPersistFailure[0] != nil {
+			onPersistFailure[0](codeData)
+		}
 		return nil, err
 	}
 
@@ -103,8 +133,13 @@ func (m *AuthLogic) DoAuthSendCode(
 func (m *AuthLogic) DoAuthReSendCode(ctx context.Context,
 	authKeyId int64,
 	phoneNumber, phoneCodeHash string,
-	cb func(codeData *model.PhoneCodeTransaction) error) (codeData *model.PhoneCodeTransaction, err error) {
-	if codeData, err = m.Dao.GetPhoneCode(ctx, authKeyId, phoneNumber, phoneCodeHash); err != nil {
+	cb func(codeData *model.PhoneCodeTransaction) error,
+	onPersistFailure ...func(codeData *model.PhoneCodeTransaction)) (codeData *model.PhoneCodeTransaction, err error) {
+	store := m.phoneCodeStore()
+	if store == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
+	if codeData, err = store.GetPhoneCode(ctx, authKeyId, phoneNumber, phoneCodeHash); err != nil {
 		return
 	}
 
@@ -144,7 +179,13 @@ func (m *AuthLogic) DoAuthReSendCode(ctx context.Context,
 		}
 	}
 
-	if err = m.Dao.UpdatePhoneCodeData(ctx, authKeyId, phoneNumber, codeData.PhoneCodeHash, codeData); err != nil {
+	if err = store.UpdatePhoneCodeData(ctx, authKeyId, phoneNumber, codeData.PhoneCodeHash, codeData); err != nil {
+		// Do not leave a newly delivered challenge behind when the replacement
+		// phone-code row could not be persisted.
+		_ = store.DeleteCachePhoneCode(ctx, authKeyId, phoneNumber)
+		if len(onPersistFailure) > 0 && onPersistFailure[0] != nil {
+			onPersistFailure[0](codeData)
+		}
 		return nil, err
 	}
 

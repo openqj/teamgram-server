@@ -85,6 +85,33 @@ func ChatsByID(userID int64, ids []int64) []*mtproto.Chat {
 	return out
 }
 
+func ChatForUpdates(userID, channelID int64) (*mtproto.Chat, error) {
+	ch, ok, err := domain.LoadChannel(channelID)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, domain.ErrChannelMissing
+	}
+	return Chat(ch, ch.Creator == userID), nil
+}
+
+func UpdateRecipientIDs(channelID int64) ([]int64, error) {
+	members, err := domain.ListChannelMembers(channelID)
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]int64, 0, len(members))
+	now := time.Now().Unix()
+	for _, member := range members {
+		if member.BannedRights != nil && member.BannedRights.Active(now) && member.BannedRights.Kicks(now) {
+			continue
+		}
+		ids = append(ids, member.UserID)
+	}
+	return ids, nil
+}
+
 // SendAsChannels returns persisted channels from which the caller can post.
 // Ownership and administrator rights are read from the same channel/member
 // tables used by channel RPCs; caller-local preferences are not treated as

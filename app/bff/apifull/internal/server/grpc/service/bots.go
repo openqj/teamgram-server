@@ -120,7 +120,6 @@ func (s *Service) BotsExportBotToken(ctx context.Context, request *mtproto.TLBot
 	if err != nil {
 		return nil, err
 	}
-	c.Logger.Debugf("BotsExportBotToken - reply: %s", r)
 	return r, nil
 }
 

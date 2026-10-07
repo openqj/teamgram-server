@@ -82,14 +82,21 @@ func New(c config.Config) *Dao {
 		domain.SetRelay(c.TurnHost, c.TurnPort)
 		logx.Infof("apifull turn relay %s:%d", c.TurnHost, c.TurnPort)
 	}
+	domain.SetRelayCredentials(c.TurnUsername, c.TurnPassword)
+	domain.SetRelaySharedSecret(c.TurnSharedSecret, c.TurnCredentialTTLSeconds)
+	// MySQL is the authoritative domain store, while Redis backs the small
+	// process-shared KV records used by drafts, GIFs and other APIFull state.
+	// Configure both when both are present so a MySQL deployment does not
+	// silently fall back to the in-process memory store on BFF restart.
+	if len(c.KV) > 0 {
+		persist.Use(kv.NewStore(c.KV))
+	}
 	if dsn := c.MysqlDSN; dsn != "" {
 		if err := domain.Open(dsn); err != nil {
 			logx.Errorf("apifull mysql open failed: %v", err)
 		} else {
 			logx.Info("apifull mysql open")
 		}
-	} else if len(c.KV) > 0 {
-		persist.Use(kv.NewStore(c.KV))
 	}
 	messageClient := message_client.NewMessageClient(rpcx.GetCachedRpcClient(c.MessageClient))
 	return &Dao{

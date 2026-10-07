@@ -109,6 +109,7 @@ CALL apifull_ensure_column('apifull_channel', 'photo_dc_id', 'INT NOT NULL DEFAU
 CALL apifull_ensure_column('apifull_channel', 'photo_has_video', 'TINYINT NOT NULL DEFAULT 0');
 CALL apifull_ensure_column('apifull_channel', 'username', CONCAT('VARCHAR(64) NOT NULL DEFAULT ', CHAR(39), CHAR(39)));
 CALL apifull_ensure_column('apifull_channel', 'discussion_group_id', 'BIGINT NULL');
+CALL apifull_ensure_column('apifull_channel', 'antispam', 'TINYINT NOT NULL DEFAULT 0');
 CALL apifull_ensure_index('apifull_channel', 'uniq_apifull_channel_migrated_chat', 'migrated_from_chat_id');
 
 DROP PROCEDURE IF EXISTS apifull_ensure_index;
@@ -123,6 +124,7 @@ CREATE TABLE IF NOT EXISTS apifull_channel_message (
   edited_at INT NOT NULL DEFAULT 0,
   reply_to_msg_id INT NOT NULL DEFAULT 0,
   reply_to_top_id INT NOT NULL DEFAULT 0,
+  content_json MEDIUMTEXT NULL,
   pinned TINYINT NOT NULL DEFAULT 0,
   PRIMARY KEY (channel_id, message_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
@@ -151,6 +153,7 @@ CREATE TABLE IF NOT EXISTS apifull_channel_read_state (
 CALL apifull_ensure_column('apifull_channel_message', 'pinned', 'TINYINT NOT NULL DEFAULT 0');
 CALL apifull_ensure_column('apifull_channel_message', 'reply_to_msg_id', 'INT NOT NULL DEFAULT 0');
 CALL apifull_ensure_column('apifull_channel_message', 'reply_to_top_id', 'INT NOT NULL DEFAULT 0');
+CALL apifull_ensure_column('apifull_channel_message', 'content_json', 'MEDIUMTEXT NULL');
 
 CREATE TABLE IF NOT EXISTS apifull_call (
   id BIGINT NOT NULL PRIMARY KEY,

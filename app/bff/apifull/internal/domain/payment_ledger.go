@@ -1,10 +1,12 @@
 package domain
 
 import (
+	"context"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
 	"errors"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -22,6 +24,7 @@ var (
 	ErrPaymentRequestState        = errors.New("invalid payment request state")
 	ErrPaymentUnverified          = errors.New("payment has not been verified by its provider")
 	ErrPaymentTransactionConflict = errors.New("payment transaction belongs to another request")
+	ErrPaymentRequestBusy         = errors.New("payment request is already being processed")
 )
 
 // PaymentRequest is the durable state machine for one client payment attempt.
@@ -56,6 +59,49 @@ type PaymentReceipt struct {
 	Title         string
 	Receipt       []byte
 	CreatedAt     int64
+}
+
+// LockPaymentRequest serializes provider calls for one idempotency key across
+// APIFull instances. MySQL releases the named lock when its connection closes.
+func LockPaymentRequest(ctx context.Context, userID int64, requestKey string, wait time.Duration) (func(), error) {
+	if db == nil {
+		return nil, errors.New("domain mysql is not open")
+	}
+	if userID <= 0 || strings.TrimSpace(requestKey) == "" {
+		return nil, ErrInvalidPaymentRequest
+	}
+	if wait <= 0 {
+		wait = 5 * time.Second
+	}
+	seconds := int(wait / time.Second)
+	if wait%time.Second != 0 {
+		seconds++
+	}
+	if seconds < 1 {
+		seconds = 1
+	}
+	keyHash := sha256.Sum256([]byte(strconv.FormatInt(userID, 10) + "\x00" + requestKey))
+	lockName := "apifull_payment:" + hex.EncodeToString(keyHash[:24])
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var acquired sql.NullInt64
+	if err = conn.QueryRowContext(ctx, `SELECT GET_LOCK(?, ?)`, lockName, seconds).Scan(&acquired); err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
+	if !acquired.Valid || acquired.Int64 != 1 {
+		_ = conn.Close()
+		return nil, ErrPaymentRequestBusy
+	}
+	return func() {
+		releaseCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		var released sql.NullInt64
+		_ = conn.QueryRowContext(releaseCtx, `SELECT RELEASE_LOCK(?)`, lockName).Scan(&released)
+		_ = conn.Close()
+	}, nil
 }
 
 func BeginPaymentRequest(userID int64, requestKey, provider, fingerprint, currency string, amount, peerID int64, msgID int32) (PaymentRequest, error) {
@@ -177,7 +223,13 @@ func SettlePaymentRequest(userID int64, requestKey, fingerprint, transactionID, 
 	if err != nil {
 		return PaymentRequest{}, PaymentReceipt{}, err
 	}
-	if request.Fingerprint != fingerprint || request.Currency != currency || request.Amount != amount || request.PeerID != peerID || request.MsgID != msgID {
+	// A slug invoice may not carry a local quote. In that case the provider's
+	// verified currency and amount become authoritative for the receipt while
+	// the request keeps its empty quote for idempotent retries. Purpose-based
+	// invoices retain exact currency/amount matching.
+	if request.Fingerprint != fingerprint ||
+		((request.Currency != "" || request.Amount != 0) && (request.Currency != currency || request.Amount != amount)) ||
+		request.PeerID != peerID || request.MsgID != msgID {
 		return PaymentRequest{}, PaymentReceipt{}, ErrPaymentRequestConflict
 	}
 	if request.State == PaymentStateSettled {
@@ -247,6 +299,21 @@ func LoadPaymentRequest(userID int64, requestKey string) (PaymentRequest, bool, 
 		return PaymentRequest{}, false, err
 	}
 	return request, true, nil
+}
+
+func LoadPaymentReceiptByRequest(userID int64, requestKey string) (PaymentReceipt, bool, error) {
+	request, found, err := LoadPaymentRequest(userID, requestKey)
+	if err != nil || !found {
+		return PaymentReceipt{}, false, err
+	}
+	receipt, err := loadPaymentReceiptTx(db, request.ID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return PaymentReceipt{}, false, nil
+	}
+	if err != nil {
+		return PaymentReceipt{}, false, err
+	}
+	return receipt, true, nil
 }
 
 func LoadPaymentReceiptByMessage(userID, peerID int64, msgID int32) (PaymentReceipt, bool, error) {

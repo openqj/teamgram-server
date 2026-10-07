@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 
 	"github.com/teamgram/proto/mtproto"
@@ -23,6 +24,19 @@ func (s *memoryPasswordStateStore) Get(key string) (string, error) {
 func (s *memoryPasswordStateStore) Set(key, value string) error {
 	s.values[key] = value
 	return nil
+}
+
+type failingPasswordStateStore struct {
+	values map[string]string
+	err    error
+}
+
+func (s *failingPasswordStateStore) Get(key string) (string, error) {
+	return s.values[key], nil
+}
+
+func (s *failingPasswordStateStore) Set(string, string) error {
+	return s.err
 }
 
 func TestAccountUpdatePasswordSettingsClearsResetWait(t *testing.T) {
@@ -72,5 +86,51 @@ func TestAccountUpdatePasswordSettingsClearsResetWait(t *testing.T) {
 	}
 	if saved.ResetDeclined || saved.ResetRequestedAt != 0 || saved.ResetUntilDate != 0 || saved.ResetRetryDate != 0 {
 		t.Fatalf("reset wait survived password change: %+v", saved)
+	}
+}
+
+func TestAccountDeclinePasswordResetPersistsState(t *testing.T) {
+	const userID = int64(712349)
+	store := &memoryPasswordStateStore{values: make(map[string]string)}
+	oldStore := persist.Default
+	persist.Default = store
+	t.Cleanup(func() { persist.Default = oldStore })
+
+	ctx := context.Background()
+	c := &ApiFullCore{
+		ctx:    ctx,
+		Logger: logx.WithContext(ctx),
+		MD:     &metadata.RpcMetadata{UserId: userID},
+	}
+	if result, err := c.AccountDeclinePasswordReset(&mtproto.TLAccountDeclinePasswordReset{}); err != nil || result != mtproto.BoolTrue {
+		t.Fatalf("decline password reset = (%v, %v), want BoolTrue", result, err)
+	}
+
+	var saved twofa.PasswordState
+	if err := json.Unmarshal([]byte(store.values[twofa.PasswordKey(userID)]), &saved); err != nil {
+		t.Fatal(err)
+	}
+	if !saved.ResetDeclined {
+		t.Fatalf("declined state was not persisted: %+v", saved)
+	}
+}
+
+func TestAccountDeclinePasswordResetPropagatesStoreError(t *testing.T) {
+	const userID = int64(712350)
+	wantErr := errors.New("password state store unavailable")
+	store := &failingPasswordStateStore{values: make(map[string]string), err: wantErr}
+	oldStore := persist.Default
+	persist.Default = store
+	t.Cleanup(func() { persist.Default = oldStore })
+
+	ctx := context.Background()
+	c := &ApiFullCore{
+		ctx:    ctx,
+		Logger: logx.WithContext(ctx),
+		MD:     &metadata.RpcMetadata{UserId: userID},
+	}
+	result, err := c.AccountDeclinePasswordReset(&mtproto.TLAccountDeclinePasswordReset{})
+	if result != nil || !errors.Is(err, wantErr) {
+		t.Fatalf("decline password reset = (%v, %v), want nil and %v", result, err, wantErr)
 	}
 }

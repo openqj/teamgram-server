@@ -86,6 +86,10 @@ type UserClient interface {
 	UserGetUserDataByToken(ctx context.Context, in *user.TLUserGetUserDataByToken) (*mtproto.UserData, error)
 	UserSearch(ctx context.Context, in *user.TLUserSearch) (*user.UsersFound, error)
 	UserUpdateBotData(ctx context.Context, in *user.TLUserUpdateBotData) (*mtproto.Bool, error)
+	UserCreateBot(ctx context.Context, in *user.TLUserCreateBot) (*mtproto.ImmutableUser, error)
+	UserCreateManagedBot(ctx context.Context, in *user.BotRegistryCreateBotRequest) (*mtproto.ImmutableUser, error)
+	UserExportBotToken(ctx context.Context, in *user.TLUserExportBotToken) (*mtproto.String, error)
+	UserGetCreatedBots(ctx context.Context) (*user.Vector_ImmutableUser, error)
 	UserGetImmutableUserV2(ctx context.Context, in *user.TLUserGetImmutableUserV2) (*mtproto.ImmutableUser, error)
 	UserGetMutableUsersV2(ctx context.Context, in *user.TLUserGetMutableUsersV2) (*mtproto.MutableUsers, error)
 	UserCreateNewTestUser(ctx context.Context, in *user.TLUserCreateNewTestUser) (*mtproto.ImmutableUser, error)
@@ -824,6 +828,48 @@ func (m *defaultUserClient) UserUpdateBotData(ctx context.Context, in *user.TLUs
 	}
 	client := user.NewRPCUserClient(m.cli.Conn())
 	return client.UserUpdateBotData(ctx, in)
+}
+
+// UserCreateBot
+// user.createBot name:string username:string = ImmutableUser;
+func (m *defaultUserClient) UserCreateBot(ctx context.Context, in *user.TLUserCreateBot) (*mtproto.ImmutableUser, error) {
+	md := metadata.RpcMetadataFromIncoming(ctx)
+	if md != nil {
+		ctx, _ = metadata.RpcMetadataToOutgoing(ctx, md)
+	}
+	client := user.NewRPCUserClient(m.cli.Conn())
+	return client.UserCreateBot(ctx, in)
+}
+
+func (m *defaultUserClient) UserCreateManagedBot(ctx context.Context, in *user.BotRegistryCreateBotRequest) (*mtproto.ImmutableUser, error) {
+	md := metadata.RpcMetadataFromIncoming(ctx)
+	if md != nil {
+		ctx, _ = metadata.RpcMetadataToOutgoing(ctx, md)
+	}
+	client := user.NewRPCBotRegistryClient(m.cli.Conn())
+	return client.CreateBot(ctx, in)
+}
+
+// UserExportBotToken
+// user.exportBotToken bot_id:long revoke:Bool = String;
+func (m *defaultUserClient) UserExportBotToken(ctx context.Context, in *user.TLUserExportBotToken) (*mtproto.String, error) {
+	md := metadata.RpcMetadataFromIncoming(ctx)
+	if md != nil {
+		ctx, _ = metadata.RpcMetadataToOutgoing(ctx, md)
+	}
+	client := user.NewRPCUserClient(m.cli.Conn())
+	return client.UserExportBotToken(ctx, in)
+}
+
+// UserGetCreatedBots
+// user.getCreatedBots user_id:long = Vector<ImmutableUser>;
+func (m *defaultUserClient) UserGetCreatedBots(ctx context.Context) (*user.Vector_ImmutableUser, error) {
+	md := metadata.RpcMetadataFromIncoming(ctx)
+	if md != nil {
+		ctx, _ = metadata.RpcMetadataToOutgoing(ctx, md)
+	}
+	client := user.NewRPCBotRegistryClient(m.cli.Conn())
+	return client.GetCreatedBots(ctx, &user.BotRegistryGetCreatedBotsRequest{})
 }
 
 // UserGetImmutableUserV2

@@ -33,16 +33,18 @@ type SavedMessageDialogsCore struct {
 	ctx    context.Context
 	svcCtx *svc.ServiceContext
 	logx.Logger
-	MD               *metadata.RpcMetadata
-	channelChatsByID func(userID int64, ids []int64) []*mtproto.Chat
+	MD                   *metadata.RpcMetadata
+	channelChatsByID     func(userID int64, ids []int64) []*mtproto.Chat
+	channelMessageAuthor func(userID int64, channel *mtproto.InputChannel, id int32) (int64, error)
 }
 
 func New(ctx context.Context, svcCtx *svc.ServiceContext) *SavedMessageDialogsCore {
 	return &SavedMessageDialogsCore{
-		ctx:              ctx,
-		svcCtx:           svcCtx,
-		Logger:           logx.WithContext(ctx),
-		MD:               metadata.RpcMetadataFromIncoming(ctx),
-		channelChatsByID: channelview.ChatsByID,
+		ctx:                  ctx,
+		svcCtx:               svcCtx,
+		Logger:               logx.WithContext(ctx),
+		MD:                   metadata.RpcMetadataFromIncoming(ctx),
+		channelChatsByID:     channelview.ChatsByID,
+		channelMessageAuthor: channelview.ChannelMessageAuthor,
 	}
 }

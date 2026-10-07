@@ -19,9 +19,13 @@
 package core
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"time"
 
 	"github.com/teamgram/proto/mtproto"
+	"github.com/teamgram/teamgram-server/app/bff/apifull/channelview"
 	msgpb "github.com/teamgram/teamgram-server/app/messenger/msg/msg/msg"
 
 	"github.com/zeromicro/go-zero/core/contextx"
@@ -92,12 +96,18 @@ func (c *MessagesCore) MessagesSendMultiMedia(in *mtproto.TLMessagesSendMultiMed
 	if in.GetScheduleDate().GetValue() != 0 && (in.GetReplyToMsgId() != nil || in.GetReplyTo() != nil) {
 		return nil, mtproto.ErrMethodNotImpl
 	}
+	if in.GetScheduleDate().GetValue() != 0 {
+		return nil, mtproto.ErrMethodNotImpl
+	}
 	replyToPeer, err := c.resolveMessageReplyPeer(peer, in.GetReplyTo(), in.GetReplyToMsgId())
 	if err != nil {
 		return nil, err
 	}
 	replyToMsgID, replyToTopID := storedReplyIDs(in.GetReplyTo(), in.GetReplyToMsgId())
-	if up, handled, err := c.deliverStored(in.GetPeer(), peer, in.GetScheduleDate().GetValue(), joinCaptions(in), replyToMsgID, replyToTopID); handled {
+	if peer.IsChannel() {
+		return c.sendChannelMediaAlbum(in, replyToMsgID, replyToTopID)
+	}
+	if up, handled, err := c.deliverStored(in.GetPeer(), peer, in.GetScheduleDate().GetValue(), joinCaptions(in), replyToMsgID, replyToTopID, 0); handled {
 		if err != nil {
 			c.Logger.Errorf("messages.sendMultiMedia stored: %v", err)
 		}
@@ -293,4 +303,90 @@ func (c *MessagesCore) MessagesSendMultiMedia(in *mtproto.TLMessagesSendMultiMed
 	}
 
 	return rUpdate, nil
+}
+
+func (c *MessagesCore) sendChannelMediaAlbum(in *mtproto.TLMessagesSendMultiMedia, replyToMsgID, replyToTopID int32) (*mtproto.Updates, error) {
+	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.MediaClient == nil || !c.svcCtx.Dao.IDGenClient2.Available() {
+		return nil, mtproto.ErrMethodNotImpl
+	}
+	if err := channelview.ValidateChannelMessageWrite(c.MD.UserId, in.GetPeer()); err != nil {
+		return nil, err
+	}
+	groupedID := c.svcCtx.Dao.IDGenClient2.NextId(c.ctx)
+	if groupedID <= 0 {
+		return nil, mtproto.ErrInternalServerError
+	}
+	items := in.GetMultiMedia()
+	albumRandomIDs := make([]int64, len(items))
+	seenRandomIDs := make(map[int64]struct{}, len(items))
+	for i, item := range items {
+		if item == nil || item.GetMedia() == nil || item.GetRandomId() == 0 {
+			return nil, mtproto.ErrInputRequestInvalid
+		}
+		if _, ok := seenRandomIDs[item.GetRandomId()]; ok {
+			return nil, mtproto.ErrRandomIdDuplicate
+		}
+		seenRandomIDs[item.GetRandomId()] = struct{}{}
+		albumRandomIDs[i] = item.GetRandomId()
+	}
+
+	channelItems := make([]channelview.ChannelMediaAlbumItem, len(items))
+	for i, item := range items {
+		media, err := c.makeMediaByInputMedia(item.GetMedia())
+		if err != nil {
+			return nil, err
+		}
+		fingerprintData, marshalErr := json.Marshal(struct {
+			Index          int
+			AlbumRandomIDs []int64
+			RandomID       int64
+			Media          *mtproto.InputMedia
+			Message        string
+			Entities       []*mtproto.MessageEntity
+			ReplyToMsgID   int32
+			ReplyToTopID   int32
+			Silent         bool
+			Noforwards     bool
+			InvertMedia    bool
+			Effect         *int64
+		}{
+			Index:          i,
+			AlbumRandomIDs: albumRandomIDs,
+			RandomID:       item.GetRandomId(),
+			Media:          item.GetMedia(),
+			Message:        item.GetMessage(),
+			Entities:       item.GetEntities(),
+			ReplyToMsgID:   replyToMsgID,
+			ReplyToTopID:   replyToTopID,
+			Silent:         in.GetSilent(),
+			Noforwards:     in.GetNoforwards(),
+			InvertMedia:    in.GetInvertMedia(),
+			Effect: func() *int64 {
+				if in.GetEffect() == nil {
+					return nil
+				}
+				value := in.GetEffect().GetValue()
+				return &value
+			}(),
+		})
+		if marshalErr != nil {
+			return nil, mtproto.ErrInternalServerError
+		}
+		hash := sha256.Sum256(fingerprintData)
+		channelItems[i] = channelview.ChannelMediaAlbumItem{
+			Text:               item.GetMessage(),
+			RandomID:           item.GetRandomId(),
+			Media:              media,
+			Entities:           item.GetEntities(),
+			RequestFingerprint: hex.EncodeToString(hash[:]),
+		}
+	}
+	updates, err := channelview.PostMediaAlbumForInputPeerWithReplyAndRandomID(c.MD.UserId, in.GetPeer(), 0, replyToMsgID, replyToTopID, groupedID, channelItems)
+	if err != nil {
+		return nil, err
+	}
+	if err = c.pushChannelUpdates(in.GetPeer().GetChannelId(), updates); err != nil {
+		return updates, err
+	}
+	return updates, nil
 }

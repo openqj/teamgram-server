@@ -25,7 +25,21 @@ import (
 // UploadGetCdnFileHashes
 // upload.getCdnFileHashes#4da54231 file_token:bytes offset:int = Vector<FileHash>;
 func (c *FilesCore) UploadGetCdnFileHashes(in *mtproto.TLUploadGetCdnFileHashes) (*mtproto.Vector_FileHash, error) {
-	_ = in
-	c.Logger.Errorf("upload.getCdnFileHashes - error: %v", mtproto.ErrCdnMethodInvalid)
+	if in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if len(in.GetFileToken()) == 0 {
+		return nil, mtproto.ErrFileTokenInvalid
+	}
+	offset := in.GetOffset_INT64()
+	if offset == 0 {
+		offset = int64(in.GetOffset_INT32())
+	}
+	if offset < 0 {
+		return nil, mtproto.ErrOffsetInvalid
+	}
+	if c != nil && c.Logger != nil {
+		c.Logger.Errorf("upload.getCdnFileHashes - error: %v", mtproto.ErrCdnMethodInvalid)
+	}
 	return nil, mtproto.ErrCdnMethodInvalid
 }

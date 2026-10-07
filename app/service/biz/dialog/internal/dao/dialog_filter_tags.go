@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"os"
+	"strings"
 	"sync"
 )
 
@@ -27,11 +29,33 @@ func (d *Dao) dialogFilterTagsReady(ctx context.Context) error {
 	if tagsReady {
 		return nil
 	}
+	if schemaReadOnly() {
+		var row struct {
+			TableName string `db:"table_name"`
+		}
+		if err := d.Mysql.DB.QueryRow(ctx, &row, `
+			SELECT table_name
+			FROM information_schema.tables
+			WHERE table_schema = DATABASE() AND table_name = 'dialog_filter_tags'
+		`); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return errors.New("dialog_filter_tags table is missing from the provisioned schema")
+			}
+			return err
+		}
+		tagsReady = true
+		return nil
+	}
 	if _, err := d.Mysql.DB.Exec(ctx, dialogFilterTagsDDL); err != nil {
 		return err
 	}
 	tagsReady = true
 	return nil
+}
+
+func schemaReadOnly() bool {
+	value := strings.TrimSpace(os.Getenv("TEAMGRAM_APIFULL_SCHEMA_READONLY"))
+	return value == "1" || strings.EqualFold(value, "true") || strings.EqualFold(value, "yes")
 }
 
 type dialogFilterTagsRow struct {

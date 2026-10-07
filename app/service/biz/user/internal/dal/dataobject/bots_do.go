@@ -15,6 +15,8 @@ type BotsDO struct {
 	BotId                 int64  `db:"bot_id" json:"bot_id"`
 	BotType               int32  `db:"bot_type" json:"bot_type"`
 	CreatorUserId         int64  `db:"creator_user_id" json:"creator_user_id"`
+	ManagerBotId          int64  `db:"manager_bot_id" json:"manager_bot_id"`
+	BotCanManageBots      bool   `db:"bot_can_manage_bots" json:"bot_can_manage_bots"`
 	Token                 string `db:"token" json:"token"`
 	Description           string `db:"description" json:"description"`
 	BotChatHistory        bool   `db:"bot_chat_history" json:"bot_chat_history"`

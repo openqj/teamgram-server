@@ -7,12 +7,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
 
 	"github.com/teamgram/teamgram-server/pkg/code/conf"
+	"github.com/teamgram/teamgram-server/pkg/code/me"
 )
 
 var (
@@ -30,10 +32,12 @@ const (
 
 type Delivery struct {
 	Channel     Channel `json:"channel"`
+	DeliveryID  string  `json:"delivery_id,omitempty"`
 	Destination string  `json:"destination"`
 	Code        string  `json:"code"`
 	ChallengeID string  `json:"challenge_id"`
 	Purpose     string  `json:"purpose"`
+	MNC         string  `json:"mnc,omitempty"`
 }
 
 type DeliveryProvider interface {
@@ -83,10 +87,35 @@ func (p *httpProvider) Ready() error {
 		return ErrProviderUnavailable
 	}
 	parsed, err := url.Parse(strings.TrimSpace(p.endpoint))
-	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+	if err != nil || parsed.Host == "" || parsed.User != nil || !secureProviderURL(parsed) {
 		return fmt.Errorf("%w: invalid HTTP endpoint", ErrProviderUnavailable)
 	}
 	return nil
+}
+
+func secureProviderURL(parsed *url.URL) bool {
+	if parsed == nil {
+		return false
+	}
+	if strings.EqualFold(parsed.Scheme, "https") {
+		return true
+	}
+	if !strings.EqualFold(parsed.Scheme, "http") {
+		return false
+	}
+	return strings.EqualFold(parsed.Scheme, "http") && loopbackProviderURL(parsed)
+}
+
+func loopbackProviderURL(parsed *url.URL) bool {
+	if parsed == nil {
+		return false
+	}
+	host := strings.TrimSuffix(strings.ToLower(parsed.Hostname()), ".")
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 func (p *httpProvider) Deliver(ctx context.Context, delivery Delivery) error {
@@ -107,6 +136,9 @@ func (p *httpProvider) Deliver(ctx context.Context, delivery Delivery) error {
 			return fmt.Errorf("%w: create request: %v", ErrDeliveryFailed, requestErr)
 		}
 		req.Header.Set("Content-Type", "application/json")
+		if delivery.DeliveryID != "" {
+			req.Header.Set("Idempotency-Key", delivery.DeliveryID)
+		}
 		if p.key != "" {
 			req.Header.Set("Authorization", "Bearer "+p.key)
 		}
@@ -169,10 +201,50 @@ func NewSMSProvider(c *conf.SmsVerifyCodeConfig, injected VerifyCodeInterface) D
 	if name == "" {
 		name = strings.ToLower(strings.TrimSpace(c.Name))
 	}
-	if name == "http" || name == "me" {
+	if name == "http" {
 		return newHTTPProvider(c.SendCodeUrl, c)
 	}
+	if name == "me" {
+		// Keep the historical ME provider wire contract (GET with phone/code
+		// query parameters). The generic HTTP provider is explicitly selected
+		// with SMSProvider or Name="http" and sends a JSON Delivery payload.
+		return newMEProvider(c)
+	}
 	return unavailableProvider{}
+}
+
+type meDeliveryProvider struct {
+	client   VerifyCodeInterface
+	endpoint string
+}
+
+func newMEProvider(c *conf.SmsVerifyCodeConfig) DeliveryProvider {
+	if c == nil {
+		return unavailableProvider{}
+	}
+	return &meDeliveryProvider{client: me.New(c), endpoint: strings.TrimSpace(c.SendCodeUrl)}
+}
+
+func (p *meDeliveryProvider) Ready() error {
+	if p == nil || p.client == nil || p.endpoint == "" {
+		return ErrProviderUnavailable
+	}
+	parsed, err := url.Parse(p.endpoint)
+	if err != nil || parsed.Host == "" || parsed.User != nil || !secureProviderURL(parsed) || !loopbackProviderURL(parsed) {
+		return fmt.Errorf("%w: invalid HTTP endpoint", ErrProviderUnavailable)
+	}
+	return nil
+}
+
+func (p *meDeliveryProvider) Deliver(ctx context.Context, delivery Delivery) error {
+	if err := p.Ready(); err != nil {
+		return err
+	}
+	_, err := p.client.SendSmsVerifyCode(ctx, delivery.Destination, delivery.Code, delivery.ChallengeID)
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrDeliveryFailed, err)
+	}
+	return nil
 }
 
 func NewEmailProvider(c *conf.SmsVerifyCodeConfig) DeliveryProvider {
@@ -187,4 +259,14 @@ func NewEmailProvider(c *conf.SmsVerifyCodeConfig) DeliveryProvider {
 		return newHTTPProvider(c.EmailSendCodeUrl, c)
 	}
 	return unavailableProvider{}
+}
+
+// NewMissingCodeReportProvider builds the provider used by auth.reportMissingCode.
+// It is deliberately configured separately from SMS delivery: reporting a
+// missing code is an incident signal, not a second attempt to send the code.
+func NewMissingCodeReportProvider(c *conf.SmsVerifyCodeConfig) DeliveryProvider {
+	if c == nil || strings.TrimSpace(c.ReportMissingCodeUrl) == "" {
+		return unavailableProvider{}
+	}
+	return newHTTPProvider(c.ReportMissingCodeUrl, c)
 }

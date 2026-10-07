@@ -19,9 +19,13 @@
 package core
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"time"
 
 	"github.com/teamgram/proto/mtproto"
+	"github.com/teamgram/teamgram-server/app/bff/apifull/channelview"
 	msgpb "github.com/teamgram/teamgram-server/app/messenger/msg/msg/msg"
 
 	"github.com/zeromicro/go-zero/core/contextx"
@@ -31,6 +35,12 @@ import (
 // MessagesSendMedia
 // messages.sendMedia#e25ff8e0 flags:# silent:flags.5?true background:flags.6?true clear_draft:flags.7?true noforwards:flags.14?true peer:InputPeer reply_to_msg_id:flags.0?int media:InputMedia message:string random_id:long reply_markup:flags.2?ReplyMarkup entities:flags.3?Vector<MessageEntity> schedule_date:flags.10?int send_as:flags.13?InputPeer = Updates;
 func (c *MessagesCore) MessagesSendMedia(in *mtproto.TLMessagesSendMedia) (*mtproto.Updates, error) {
+	if in == nil || in.GetPeer() == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if c == nil || c.MD == nil || c.MD.UserId <= 0 {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
 	var (
 		peer       *mtproto.PeerUtil
 		linkChatId int64
@@ -65,12 +75,60 @@ func (c *MessagesCore) MessagesSendMedia(in *mtproto.TLMessagesSendMedia) (*mtpr
 	if in.GetScheduleDate().GetValue() != 0 && (in.GetReplyToMsgId() != nil || in.GetReplyTo() != nil) {
 		return nil, mtproto.ErrMethodNotImpl
 	}
+	if in.GetScheduleDate().GetValue() != 0 {
+		return nil, mtproto.ErrMethodNotImpl
+	}
 	replyToPeer, err := c.resolveMessageReplyPeer(peer, in.GetReplyTo(), in.GetReplyToMsgId())
 	if err != nil {
 		return nil, err
 	}
 	replyToMsgID, replyToTopID := storedReplyIDs(in.GetReplyTo(), in.GetReplyToMsgId())
-	if up, handled, err := c.deliverStored(in.GetPeer(), peer, in.GetScheduleDate().GetValue(), in.GetMessage(), replyToMsgID, replyToTopID); handled {
+	if peer.IsChannel() {
+		if in.GetMedia() == nil {
+			return nil, mtproto.ErrMediaInvalid
+		}
+		if err = channelview.ValidateChannelMessageWrite(c.MD.UserId, in.GetPeer()); err != nil {
+			return nil, err
+		}
+		if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.MediaClient == nil {
+			return nil, mtproto.ErrMethodNotImpl
+		}
+		media, mediaErr := c.makeMediaByInputMedia(in.GetMedia())
+		if mediaErr != nil {
+			return nil, mediaErr
+		}
+		requestData, marshalErr := json.Marshal(struct {
+			Media       *mtproto.InputMedia
+			Message     string
+			Entities    []*mtproto.MessageEntity
+			ReplyMarkup *mtproto.ReplyMarkup
+		}{in.GetMedia(), in.GetMessage(), in.GetEntities(), in.GetReplyMarkup()})
+		if marshalErr != nil {
+			return nil, mtproto.ErrInternalServerError
+		}
+		requestHash := sha256.Sum256(requestData)
+		updates, postErr := channelview.PostMediaForInputPeerWithReplyAndRandomID(
+			c.MD.UserId,
+			in.GetPeer(),
+			in.GetMessage(),
+			0,
+			replyToMsgID,
+			replyToTopID,
+			in.GetRandomId(),
+			media,
+			in.GetEntities(),
+			in.GetReplyMarkup(),
+			hex.EncodeToString(requestHash[:]),
+		)
+		if postErr != nil {
+			return nil, postErr
+		}
+		if postErr = c.pushChannelUpdates(in.GetPeer().GetChannelId(), updates); postErr != nil {
+			return updates, postErr
+		}
+		return updates, nil
+	}
+	if up, handled, err := c.deliverStored(in.GetPeer(), peer, in.GetScheduleDate().GetValue(), in.GetMessage(), replyToMsgID, replyToTopID, in.GetRandomId()); handled {
 		if err != nil {
 			c.Logger.Errorf("messages.sendMedia stored: %v", err)
 		}

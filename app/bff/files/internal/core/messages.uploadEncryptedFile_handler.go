@@ -26,6 +26,10 @@ import (
 // MessagesUploadEncryptedFile
 // messages.uploadEncryptedFile#5057c497 peer:InputEncryptedChat file:InputEncryptedFile = EncryptedFile;
 func (c *FilesCore) MessagesUploadEncryptedFile(in *mtproto.TLMessagesUploadEncryptedFile) (*mtproto.EncryptedFile, error) {
+	if in == nil || in.GetPeer() == nil || in.GetPeer().GetChatId() <= 0 || in.GetPeer().GetAccessHash() == 0 {
+		c.Logger.Errorf("messages.uploadEncryptedFile - invalid encrypted chat")
+		return nil, mtproto.ErrEncryptionIdInvalid
+	}
 	file := in.GetFile()
 	if file == nil || file.GetPredicateName() == mtproto.Predicate_inputEncryptedFileEmpty || file.GetId() == 0 {
 		c.Logger.Errorf("messages.uploadEncryptedFile - empty file")
@@ -38,6 +42,10 @@ func (c *FilesCore) MessagesUploadEncryptedFile(in *mtproto.TLMessagesUploadEncr
 			return nil, mtproto.ErrFilePartsInvalid
 		}
 	case mtproto.Predicate_inputEncryptedFile:
+		if file.GetAccessHash() == 0 {
+			c.Logger.Errorf("messages.uploadEncryptedFile - missing access hash")
+			return nil, mtproto.ErrFileIdInvalid
+		}
 	default:
 		c.Logger.Errorf("messages.uploadEncryptedFile - invalid file: %s", file.GetPredicateName())
 		return nil, mtproto.ErrFileIdInvalid

@@ -24,19 +24,26 @@ import (
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/bff/authorization/model"
 	userpb "github.com/teamgram/teamgram-server/app/service/biz/user/user"
+	verification "github.com/teamgram/teamgram-server/pkg/code"
 )
 
 // AccountSendConfirmPhoneCode
 // account.sendConfirmPhoneCode#1b3faa88 hash:string settings:CodeSettings = auth.SentCode;
 func (c *AccountCore) AccountSendConfirmPhoneCode(in *mtproto.TLAccountSendConfirmPhoneCode) (*mtproto.Auth_SentCode, error) {
-	purposeHash := strings.TrimSpace(in.GetHash())
-	if purposeHash == "" {
-		c.Logger.Errorf("account.sendConfirmPhoneCode - empty hash")
+	if c == nil || in == nil || in.GetSettings() == nil {
 		return nil, mtproto.ErrInputRequestInvalid
 	}
-	if c.MD.GetUserId() == 0 {
+	purposeHash := strings.TrimSpace(in.GetHash())
+	if purposeHash == "" {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if c.MD == nil || c.MD.GetPermAuthKeyId() == 0 || c.MD.GetUserId() == 0 {
 		return nil, mtproto.ErrAuthKeyUnregistered
 	}
+	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.AuthLogic == nil || c.svcCtx.Challenges == nil || c.svcCtx.Dao.UserClient == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
+
 	user, err := c.svcCtx.Dao.UserGetImmutableUser(c.ctx, &userpb.TLUserGetImmutableUser{Id: c.MD.GetUserId()})
 	if err != nil {
 		return nil, err
@@ -64,6 +71,14 @@ func (c *AccountCore) AccountSendConfirmPhoneCode(in *mtproto.TLAccountSendConfi
 		func(codeData2 *model.PhoneCodeTransaction) error {
 			codeData2.PhoneCodeExtraData = purposeHash
 			return c.issueSMSChallenge(codeData2, challengePurposeConfirmPhone)
+		}, func(codeData2 *model.PhoneCodeTransaction) {
+			if c.svcCtx.Challenges == nil || codeData2 == nil {
+				return
+			}
+			_ = c.svcCtx.Challenges.Revoke(c.ctx, verification.VerifyRequest{
+				Channel: verification.ChannelSMS, Purpose: challengePurposeConfirmPhone,
+				Scope: c.challengeScope(), ChallengeID: codeData2.PhoneCodeHash,
+			})
 		})
 	if err != nil {
 		c.Logger.Errorf("account.sendConfirmPhoneCode - error: %v", err)
@@ -74,6 +89,12 @@ func (c *AccountCore) AccountSendConfirmPhoneCode(in *mtproto.TLAccountSendConfi
 	if codeData.PhoneCodeHash != "" && codeData.PhoneCodeHash != phoneNumber {
 		if err = c.svcCtx.Dao.PutCachePhoneCode(c.ctx, c.MD.PermAuthKeyId, codeData.PhoneCodeHash, codeData); err != nil {
 			c.Logger.Errorf("account.sendConfirmPhoneCode - index challenge metadata: %v", err)
+			_ = c.svcCtx.Dao.DeleteCachePhoneCode(c.ctx, c.MD.PermAuthKeyId, codeData.PhoneNumber)
+			_ = c.svcCtx.Dao.DeleteCachePhoneCode(c.ctx, c.MD.PermAuthKeyId, codeData.PhoneCodeHash)
+			_ = c.svcCtx.Challenges.Revoke(c.ctx, verification.VerifyRequest{
+				Channel: verification.ChannelSMS, Purpose: challengePurposeConfirmPhone,
+				Scope: c.challengeScope(), ChallengeID: codeData.PhoneCodeHash,
+			})
 			return nil, mtproto.ErrInternalServerError
 		}
 	}

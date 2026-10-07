@@ -813,6 +813,8 @@ message TL_user_updatePremium {
   int64 user_id = 3;
   mtproto.Bool premium = 4;
   google.protobuf.Int32Value months = 5;
+  string provider = 6;
+  string transaction_id = 7;
 }
 
 //--------------------------------------------------------------------------------------------
@@ -998,6 +1000,21 @@ message Vector_UsernameData {
 }
 
 //--------------------------------------------------------------------------------------------
+message TL_user_createBot {
+  TLConstructor constructor = 1;
+  string name = 3;
+  string username = 4;
+}
+
+//--------------------------------------------------------------------------------------------
+message TL_user_exportBotToken {
+  TLConstructor constructor = 1;
+  int64 bot_id = 3;
+  int64 access_hash = 4;
+  bool revoke = 5;
+}
+
+//--------------------------------------------------------------------------------------------
 // rpc
 
 service RPCUser {
@@ -1097,6 +1114,8 @@ service RPCUser {
       returns (mtproto.UserData) {}
   rpc user_search(TL_user_search) returns (UsersFound) {}
   rpc user_updateBotData(TL_user_updateBotData) returns (mtproto.Bool) {}
+  rpc user_createBot(TL_user_createBot) returns (mtproto.ImmutableUser) {}
+  rpc user_exportBotToken(TL_user_exportBotToken) returns (mtproto.String) {}
   rpc user_getImmutableUserV2(TL_user_getImmutableUserV2)
       returns (mtproto.ImmutableUser) {}
   rpc user_getMutableUsersV2(TL_user_getMutableUsersV2)

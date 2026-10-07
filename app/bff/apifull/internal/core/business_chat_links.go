@@ -19,6 +19,8 @@
 package core
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 
@@ -105,6 +107,14 @@ func chatLinkSlugKey(slug string) string {
 	return "blink:slug:" + slug
 }
 
+func newBusinessChatLinkSlug() (string, error) {
+	token := make([]byte, 24)
+	if _, err := rand.Read(token); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(token), nil
+}
+
 func indexChatLink(userId int64, row chatLinkJSON) error {
 	b, err := json.Marshal(chatLinkSlugJSON{
 		UserId:   userId,
@@ -129,15 +139,23 @@ func (c *ApiFullCore) AccountCreateBusinessChatLink(in *mtproto.TLAccountCreateB
 	if c.MD == nil || c.MD.UserId == 0 {
 		return nil, mtproto.ErrAuthKeyUnregistered
 	}
+	if in == nil || in.GetLink() == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
 	list, err := loadChatLinks(c.MD.UserId)
 	if err != nil {
 		return nil, err
 	}
-	var link *mtproto.InputBusinessChatLink
-	if in != nil {
-		link = in.GetLink()
+	slug, err := newBusinessChatLinkSlug()
+	if err != nil {
+		return nil, err
 	}
-	row := chatLinkFromInput(fmt.Sprintf("%d-%d", c.MD.UserId, len(list)+1), link)
+	if indexed, err := persist.Default.Get(chatLinkSlugKey(slug)); err != nil {
+		return nil, err
+	} else if indexed != "" {
+		return nil, mtproto.ErrInternalServerError
+	}
+	row := chatLinkFromInput(slug, in.GetLink())
 	list = append(list, row)
 	if err := saveChatLinks(c.MD.UserId, list); err != nil {
 		return nil, err
@@ -162,6 +180,9 @@ func (c *ApiFullCore) AccountEditBusinessChatLink(in *mtproto.TLAccountEditBusin
 		slug = in.GetSlug()
 		link = in.GetLink()
 	}
+	if slug == "" || link == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
 	row := chatLinkFromInput(slug, link)
 	found := false
 	for i := range list {
@@ -172,7 +193,7 @@ func (c *ApiFullCore) AccountEditBusinessChatLink(in *mtproto.TLAccountEditBusin
 		}
 	}
 	if !found {
-		list = append(list, row)
+		return nil, mtproto.ErrInputRequestInvalid
 	}
 	if err := saveChatLinks(c.MD.UserId, list); err != nil {
 		return nil, err
@@ -194,6 +215,9 @@ func (c *ApiFullCore) AccountDeleteBusinessChatLink(in *mtproto.TLAccountDeleteB
 	slug := ""
 	if in != nil {
 		slug = in.GetSlug()
+	}
+	if slug == "" {
+		return nil, mtproto.ErrInputRequestInvalid
 	}
 	next := list[:0]
 	removed := false
@@ -243,17 +267,18 @@ func (c *ApiFullCore) AccountResolveBusinessChatLink(in *mtproto.TLAccountResolv
 	if in != nil {
 		slug = in.GetSlug()
 	}
+	if slug == "" {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
 	raw, err := persist.Default.Get(chatLinkSlugKey(slug))
 	if err != nil {
 		return nil, err
 	}
-	empty := mtproto.MakeTLAccountResolvedBusinessChatLinks(&mtproto.Account_ResolvedBusinessChatLinks{
-		Entities: []*mtproto.MessageEntity{},
-		Chats:    []*mtproto.Chat{},
-		Users:    []*mtproto.User{},
-	}).To_Account_ResolvedBusinessChatLinks()
 	if raw == "" {
-		return empty, nil
+		// account.resolvedBusinessChatLinks encodes peer as a required field in
+		// Layer 229. Returning an empty object would leave Peer nil and crash the
+		// session encoder; an unknown or deleted slug is a client input error.
+		return nil, mtproto.ErrInputRequestInvalid
 	}
 	var row chatLinkSlugJSON
 	if err := json.Unmarshal([]byte(raw), &row); err != nil {

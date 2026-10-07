@@ -19,17 +19,27 @@
 package core
 
 import (
+	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/service/biz/user/user"
 )
 
 // UserCheckUsername
 // user.checkUsername username:string = UsernameExist;
 func (c *UserCore) UserCheckUsername(in *user.TLUserCheckUsername) (*user.UsernameExist, error) {
+	if in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if !user.CheckUsernameInvalid(in.GetUsername()) {
+		return nil, mtproto.ErrUsernameInvalid
+	}
 	var (
 		checked = usernameNotExisted
 	)
 
-	usernameDO, _ := c.svcCtx.Dao.UsernameDAO.SelectByUsername(c.ctx, in.Username)
+	usernameDO, err := c.svcCtx.Dao.UsernameDAO.SelectByUsername(c.ctx, in.GetUsername())
+	if err != nil {
+		return nil, err
+	}
 	if usernameDO != nil {
 		checked = usernameExisted
 	}

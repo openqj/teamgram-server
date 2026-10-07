@@ -22,6 +22,7 @@ import (
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/bff/authorization/model"
 	userpb "github.com/teamgram/teamgram-server/app/service/biz/user/user"
+	verification "github.com/teamgram/teamgram-server/pkg/code"
 	"github.com/teamgram/teamgram-server/pkg/phonenumber"
 
 	"google.golang.org/grpc/codes"
@@ -152,6 +153,14 @@ func (c *AccountCore) AccountSendChangePhoneCode(in *mtproto.TLAccountSendChange
 		settings.GetCurrentNumber(),
 		func(codeData2 *model.PhoneCodeTransaction) error {
 			return c.issueSMSChallenge(codeData2, challengePurposeChangePhone)
+		}, func(codeData2 *model.PhoneCodeTransaction) {
+			if c.svcCtx.Challenges == nil || codeData2 == nil {
+				return
+			}
+			_ = c.svcCtx.Challenges.Revoke(c.ctx, verification.VerifyRequest{
+				Channel: verification.ChannelSMS, Purpose: challengePurposeChangePhone,
+				Scope: c.challengeScope(), ChallengeID: codeData2.PhoneCodeHash,
+			})
 		})
 
 	if err2 != nil {

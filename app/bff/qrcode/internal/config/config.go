@@ -26,13 +26,29 @@ import (
 
 type Config struct {
 	zrpc.RpcServerConf
-	DcId              int32   `json:",optional"`
-	KnownDcIds        []int32 `json:",optional"`
+	DcId              int32        `json:",optional"`
+	KnownDcIds        []int32      `json:",optional"`
+	TrustedApps       []TrustedApp `json:",optional"`
 	KV                kv.KvConf
 	MysqlDSN          string `json:",optional"`
 	UserClient        zrpc.RpcClientConf
 	AuthSessionClient zrpc.RpcClientConf
 	SyncClient        *kafka.KafkaProducerConf
+}
+
+// ProviderConfig is the BFF-owned portion of QR application policy. It is
+// kept separate from the transport configuration so the main BFF can expose
+// only the allowlist it needs.
+type ProviderConfig struct {
+	TrustedApps []TrustedApp
+}
+
+// TrustedApp identifies a client application allowed to create QR login
+// tokens. Keep the hash in deployment configuration rather than accepting
+// arbitrary format-valid credentials.
+type TrustedApp struct {
+	ApiId   int32
+	ApiHash string
 }
 
 // SupportsDc reports whether this instance is configured to serve a DC. With

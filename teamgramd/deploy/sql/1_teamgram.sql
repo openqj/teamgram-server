@@ -137,6 +137,8 @@ CREATE TABLE `bots` (
   `bot_id` bigint(20) NOT NULL,
   `bot_type` int(11) NOT NULL DEFAULT '0',
   `creator_user_id` bigint(20) NOT NULL DEFAULT '0',
+  `manager_bot_id` bigint(20) NOT NULL DEFAULT '0',
+  `bot_can_manage_bots` tinyint(1) NOT NULL DEFAULT '0',
   `token` varchar(128) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '',
   `description` varchar(10240) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '',
   `bot_chat_history` tinyint(1) NOT NULL DEFAULT '0',
@@ -593,6 +595,17 @@ CREATE TABLE `users` (
   `updated_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE IF NOT EXISTS `user_premium_payment_grant` (
+  `transaction_key` binary(32) NOT NULL,
+  `provider` varchar(32) COLLATE utf8mb4_bin NOT NULL,
+  `transaction_id` varchar(191) COLLATE utf8mb4_bin NOT NULL,
+  `user_id` bigint(20) NOT NULL,
+  `months` int(11) NOT NULL,
+  `created_at` bigint(20) NOT NULL,
+  PRIMARY KEY (`transaction_key`),
+  KEY `idx_user_premium_payment_grant_user` (`user_id`, `created_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 -- --------------------------------------------------------
 
 --
@@ -839,6 +852,8 @@ ALTER TABLE `auth_users`
 ALTER TABLE `bots`
   ADD PRIMARY KEY (`id`),
   ADD UNIQUE KEY `bot_id` (`bot_id`),
+  ADD KEY `idx_bots_creator_bot_id` (`creator_user_id`,`bot_id`),
+  ADD KEY `idx_bots_manager_bot_id` (`manager_bot_id`,`bot_id`),
   ADD UNIQUE KEY `token` (`token`);
 
 --

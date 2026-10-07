@@ -75,6 +75,9 @@ func (c *UserCore) UserGetFullUser(in *user.TLUserGetFullUser) (*mtproto.Users_U
 		full.SavedMusic = peerUser.GetUser().GetSavedMusic()
 	}
 	if peerUser.IsBot() {
+		if managerBotId := peerUser.BotManagerId(); managerBotId > 0 {
+			full.BotManagerId = mtproto.MakeFlagsInt64(managerBotId)
+		}
 		full.BotInfo, err = c.UserGetBotInfo(&user.TLUserGetBotInfo{BotId: in.GetId()})
 		if err != nil {
 			return nil, err

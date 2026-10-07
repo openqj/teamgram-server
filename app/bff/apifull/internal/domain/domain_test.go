@@ -5,6 +5,7 @@ import (
 	"math"
 	"os"
 	"testing"
+	"time"
 )
 
 func TestValidateStarsDeltaRejectsUnsafeAmounts(t *testing.T) {
@@ -68,5 +69,46 @@ func TestStarsAndChannelRoundTrip(t *testing.T) {
 	got, ok, err := LoadChannel(424242)
 	if err != nil || !ok || got.Title != "prod" || !got.Broadcast {
 		t.Fatalf("channel %+v ok %v err %v", got, ok, err)
+	}
+}
+
+func TestListInactiveChannelsUsesCanonicalMessageActivity(t *testing.T) {
+	dsn := os.Getenv("APIFULL_MYSQL_DSN")
+	if dsn == "" {
+		t.Fatal("APIFULL_MYSQL_DSN must point to an isolated test database")
+	}
+	if err := Open(dsn); err != nil {
+		t.Fatal(err)
+	}
+	const owner int64 = 424243
+	cutoff := time.Now().Add(-30 * 24 * time.Hour).Unix()
+	oldID := time.Now().UnixNano()
+	newID := oldID + 1
+	if err := SaveChannel(Channel{ID: oldID, AccessHash: oldID, Creator: owner, Title: "inactive", CreatedAt: cutoff - 1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveChannel(Channel{ID: newID, AccessHash: newID, Creator: owner, Title: "active", CreatedAt: cutoff + 1}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = db.Exec(`DELETE FROM apifull_channel_message WHERE channel_id IN (?, ?)`, oldID, newID)
+		_, _ = db.Exec(`DELETE FROM apifull_channel WHERE id IN (?, ?)`, oldID, newID)
+	})
+	inactive, err := ListInactiveChannels(owner, cutoff)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(inactive) != 1 || inactive[0].Channel.ID != oldID || inactive[0].LastActive != cutoff-1 {
+		t.Fatalf("inactive channels = %+v, want only %d", inactive, oldID)
+	}
+	if _, err = db.Exec(`INSERT INTO apifull_channel_message (channel_id, message_id, sender_user_id, date, message) VALUES (?, 1, ?, ?, 'recent')`, oldID, owner, cutoff+1); err != nil {
+		t.Fatal(err)
+	}
+	inactive, err = ListInactiveChannels(owner, cutoff)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(inactive) != 0 {
+		t.Fatalf("recent message did not make channel active: %+v", inactive)
 	}
 }

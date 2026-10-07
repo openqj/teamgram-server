@@ -26,6 +26,23 @@ import (
 // UserUpdatePremium
 // user.updatePremium flags:# user_id:long premium:Bool months:flags.1?int = Bool;
 func (c *UserCore) UserUpdatePremium(in *user.TLUserUpdatePremium) (*mtproto.Bool, error) {
+	if in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	provider := in.GetProvider()
+	transactionID := in.GetTransactionId()
+	if provider != "" || transactionID != "" {
+		months := in.GetMonths().GetValue()
+		if !mtproto.FromBool(in.Premium) || provider == "" || transactionID == "" || months < 1 || months > 36 {
+			return nil, mtproto.ErrInputRequestInvalid
+		}
+		ok, err := c.svcCtx.Dao.GrantUserPremium(c.ctx, in.GetUserId(), months, provider, transactionID)
+		if err != nil {
+			return nil, err
+		}
+		return mtproto.ToBool(ok), nil
+	}
+
 	rB := c.svcCtx.Dao.UpdateUserPremium(
 		c.ctx,
 		in.GetUserId(),

@@ -22,7 +22,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
-	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -37,19 +36,19 @@ import (
 	"github.com/teamgram/teamgram-server/app/bff/passkey/internal/config"
 	"github.com/teamgram/teamgram-server/app/bff/passkey/internal/dao"
 	userpb "github.com/teamgram/teamgram-server/app/service/biz/user/user"
+	"golang.org/x/net/publicsuffix"
 )
 
 type passkeyUser struct {
 	id          int64
+	dcID        int32
 	name        string
 	displayName string
 	credentials []webauthn.Credential
 }
 
 func (u *passkeyUser) WebAuthnID() []byte {
-	var id [8]byte
-	binary.BigEndian.PutUint64(id[:], uint64(u.id))
-	return id[:]
+	return []byte(fmt.Sprintf("%d:%d", u.dcID, u.id))
 }
 
 func (u *passkeyUser) WebAuthnName() string        { return u.name }
@@ -84,7 +83,7 @@ func (c *PasskeyCore) webAuthn() (*webauthn.WebAuthn, error) {
 // party is configured. Database availability alone must not make an
 // unconfigured WebAuthn endpoint look usable.
 func (c *PasskeyCore) requireProvider() error {
-	if c == nil || c.svcCtx == nil || !passkeyProviderConfigured(c.svcCtx.Config.Provider) {
+	if c == nil || c.svcCtx == nil || c.svcCtx.Config.DcId <= 0 || !passkeyProviderConfigured(c.svcCtx.Config.Provider) {
 		return mtproto.ErrMethodNotImpl
 	}
 	return nil
@@ -109,7 +108,7 @@ func (c *PasskeyCore) loadUser(ctx context.Context, userID int64) (*passkeyUser,
 	if err != nil {
 		return nil, err
 	}
-	result := &passkeyUser{id: userID, name: name, displayName: name}
+	result := &passkeyUser{id: userID, dcID: c.svcCtx.Config.DcId, name: name, displayName: name}
 	for _, record := range credentials {
 		credential, err := decodeCredential(record)
 		if err != nil {
@@ -145,8 +144,10 @@ func credentialResponsePayload(in *mtproto.InputPasskeyCredential, registration 
 	response := in.GetResponse()
 	id := in.GetId()
 	rawID := in.GetRawId()
-	if rawID == "" {
-		rawID = id
+	idBytes, idErr := base64.RawURLEncoding.DecodeString(id)
+	rawIDBytes, rawIDErr := base64.RawURLEncoding.DecodeString(rawID)
+	if idErr != nil || rawIDErr != nil || len(idBytes) == 0 || !bytes.Equal(idBytes, rawIDBytes) {
+		return nil, mtproto.ErrAuthTokenInvalid
 	}
 	clientData := response.GetClientData().GetData()
 	if clientData == "" {
@@ -181,6 +182,10 @@ func credentialResponsePayload(in *mtproto.InputPasskeyCredential, registration 
 		payload["response"] = loginResponse
 	}
 	return json.Marshal(payload)
+}
+
+func passkeyDataJSON(data string) *mtproto.DataJSON {
+	return mtproto.MakeTLDataJSON(&mtproto.DataJSON{Data: data}).To_DataJSON()
 }
 
 func sessionChallengeRegistration(parsed *protocol.ParsedCredentialCreationData) string {
@@ -221,19 +226,33 @@ func mapPasskeyVerificationError(err error) error {
 }
 
 func userHandleID(handle []byte) (int64, bool) {
-	if len(handle) == 8 {
-		id := int64(binary.BigEndian.Uint64(handle))
-		return id, id > 0
+	_, userID, ok := parsePasskeyUserHandle(handle)
+	return userID, ok
+}
+
+func userHandleDcID(handle []byte) (int32, bool) {
+	dcID, _, ok := parsePasskeyUserHandle(handle)
+	return dcID, ok
+}
+
+// parsePasskeyUserHandle intentionally accepts only the current, DC-bound
+// representation. Legacy raw integer handles cannot prove which DC owns the
+// credential and are therefore rejected when compatibility/migration is not
+// configured.
+func parsePasskeyUserHandle(handle []byte) (int32, int64, bool) {
+	parts := strings.Split(string(handle), ":")
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return 0, 0, false
 	}
-	if id, err := strconv.ParseInt(string(handle), 10, 64); err == nil && id > 0 {
-		return id, true
+	dcID, dcErr := strconv.ParseInt(parts[0], 10, 32)
+	userID, userErr := strconv.ParseInt(parts[1], 10, 64)
+	if dcErr != nil || userErr != nil || dcID <= 0 || userID <= 0 {
+		return 0, 0, false
 	}
-	decoded, err := base64.RawURLEncoding.DecodeString(string(handle))
-	if err == nil && len(decoded) == 8 {
-		id := int64(binary.BigEndian.Uint64(decoded))
-		return id, id > 0
+	if strconv.FormatInt(dcID, 10) != parts[0] || strconv.FormatInt(userID, 10) != parts[1] {
+		return 0, 0, false
 	}
-	return 0, false
+	return int32(dcID), userID, true
 }
 
 func sameCredentialID(a, b []byte) bool { return len(a) > 0 && bytes.Equal(a, b) }
@@ -247,7 +266,10 @@ func passkeyRequireUser(c *PasskeyCore) (int64, error) {
 
 func passkeyProviderConfigured(provider config.ProviderConfig) bool {
 	rpID := strings.TrimSpace(strings.ToLower(provider.RelyingPartyId))
-	if rpID == "" || provider.RelyingPartyDisplayName == "" || net.ParseIP(rpID) != nil || rpID == "localhost" || len(provider.Origins) == 0 {
+	if rpID == "" || strings.TrimSpace(provider.RelyingPartyDisplayName) == "" || net.ParseIP(rpID) != nil || rpID == "localhost" || len(provider.Origins) == 0 {
+		return false
+	}
+	if suffix, icann := publicsuffix.PublicSuffix(rpID); icann && suffix == rpID {
 		return false
 	}
 	for _, rawOrigin := range provider.Origins {

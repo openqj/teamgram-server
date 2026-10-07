@@ -18,6 +18,10 @@ import (
 // MediaUploadedDocumentMedia
 // media.uploadedDocumentMedia owner_id:long media:InputMedia = MessageMedia;
 func (c *MediaCore) MediaUploadedDocumentMedia(in *media.TLMediaUploadedDocumentMedia) (*mtproto.MessageMedia, error) {
+	if in == nil || in.GetOwnerId() <= 0 || in.GetMedia() == nil || in.GetMedia().GetFile() == nil ||
+		in.GetMedia().GetFile().GetId_INT64() <= 0 || in.GetMedia().GetFile().GetParts() <= 0 || in.GetMedia().GetMimeType() == "" {
+		return nil, mtproto.ErrMediaInvalid
+	}
 	var (
 		media   = in.GetMedia()
 		ownerId = in.GetOwnerId()

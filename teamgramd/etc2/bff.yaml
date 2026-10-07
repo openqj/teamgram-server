@@ -31,12 +31,35 @@ KV:
   - Host: redis:6379
 MysqlDSN: teamgram:teamgram@tcp(mysql:3306)/teamgram?charset=utf8mb4&parseTime=true
 
+SearchPostsFlood:
+  TotalDaily: 10
+
+# The isolated stack has an explicit HTTPS RP so passkey ceremonies can be
+# exercised end to end. Keep this block out of the production config: the
+# trusted app hash is fixture-only and must be replaced by deployment secrets.
+Passkey:
+  RelyingPartyId: passkey.teamgram.local
+  RelyingPartyDisplayName: Teamgram Isolated
+  Origins:
+    - https://passkey.teamgram.local
+  TrustedApps:
+    - ApiId: 1
+      ApiHash: 0123456789abcdef0123456789abcdef
+
+# QR login uses the same fixture application registry in the isolated stack.
+# Production must replace this with deployment-managed app credentials.
+QrCode:
+  TrustedApps:
+    - ApiId: 1
+      ApiHash: 0123456789abcdef0123456789abcdef
+
 Code:
   Name: "none"
   SendCodeUrl: ""
   VerifyCodeUrl: ""
   Key: ""
   Secret: ""
+  ChallengeSecret: ""
   RegionId: ""
 
 BizServiceClient:

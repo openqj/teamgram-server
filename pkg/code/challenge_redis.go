@@ -96,7 +96,7 @@ end
 if value.id ~= ARGV[1] then
   return {-2, ''}
 end
--- Go performs the constant-time SHA-256 comparison after this atomic read.
+-- Go performs the constant-time HMAC comparison after this atomic read.
 -- The script tracks failures and removes exhausted challenges before returning.
 if ARGV[3] ~= value.code_digest then
   value.attempts = (tonumber(value.attempts) or 0) + 1

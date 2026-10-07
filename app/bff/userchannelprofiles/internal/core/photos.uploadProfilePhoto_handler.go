@@ -34,6 +34,14 @@ func (c *UserChannelProfilesCore) PhotosUploadProfilePhoto(in *mtproto.TLPhotosU
 	if in == nil || (inputFileEmpty(in.GetFile()) && inputFileEmpty(in.GetVideo())) {
 		return nil, mtproto.ErrPhotoInvalid
 	}
+	if c.MD.PermAuthKeyId <= 0 {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
+	if c.svcCtx == nil || c.svcCtx.Dao == nil ||
+		c.svcCtx.Dao.MediaClient == nil || c.svcCtx.Dao.UserClient == nil ||
+		c.svcCtx.Dao.SyncClient == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
 	photo, err := c.svcCtx.Dao.MediaClient.MediaUploadProfilePhotoFile(c.ctx, &mediapb.TLMediaUploadProfilePhotoFile{
 		OwnerId:          c.MD.PermAuthKeyId,
 		File:             in.GetFile(),
@@ -77,16 +85,20 @@ func (c *UserChannelProfilesCore) PhotosUploadProfilePhoto(in *mtproto.TLPhotosU
 		return nil, mtproto.ErrInternalServerError
 	}
 
-	if _, err = c.svcCtx.Dao.SyncClient.SyncPushUpdates(c.ctx, &sync.TLSyncPushUpdates{
+	syncReply, err := c.svcCtx.Dao.SyncClient.SyncPushUpdates(c.ctx, &sync.TLSyncPushUpdates{
 		UserId: c.MD.UserId,
 		Updates: mtproto.MakeUpdatesByUpdatesUsers(
 			[]*mtproto.User{me.ToSelfUser()},
 			mtproto.MakeTLUpdateUser(&mtproto.Update{
 				UserId: c.MD.UserId,
 			}).To_Update()),
-	}); err != nil {
+	})
+	if err != nil {
 		c.Logger.Errorf("photos.uploadProfilePhoto - sync error: %v", err)
 		return nil, err
+	}
+	if syncReply == nil {
+		return nil, mtproto.ErrInternalServerError
 	}
 
 	return mtproto.MakeTLPhotosPhoto(&mtproto.Photos_Photo{

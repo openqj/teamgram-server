@@ -1,0 +1,19 @@
+FROM golang:1.23.0 AS builder
+ARG GOFLAGS=-p=2
+ENV GOPROXY=https://goproxy.cn,direct
+WORKDIR /app/teamgram-server
+COPY teamgram-server/ ./
+COPY proto/ /app/proto/
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    for attempt in 1 2 3; do \
+      bash -e ./build.sh && exit 0; \
+      test "$attempt" -lt 3 || exit 1; \
+      sleep 3; \
+    done
+
+# Keep the already-proven production entrypoint and runtime dependencies from r4.
+FROM teamgram-server-latest:20261004-r4
+WORKDIR /app
+COPY --from=builder /app/teamgram-server/teamgramd/ /app/
+RUN chmod +x /app/docker/entrypoint.sh

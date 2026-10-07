@@ -29,7 +29,11 @@ func (s *Service) SessionQueryAuthKey(ctx context.Context, request *session.TLSe
 		return nil, err
 	}
 
-	c.Logger.Debugf("session.queryAuthKey - reply: %s", r)
+	if r == nil {
+		c.Logger.Debugf("session.queryAuthKey - reply: nil")
+	} else {
+		c.Logger.Debugf("session.queryAuthKey - reply: auth_key_id=%d perm_auth_key_id=%d temp_auth_key_id=%d type=%d", r.GetAuthKeyId(), r.GetPermAuthKeyId(), r.GetTempAuthKeyId(), r.GetAuthKeyType())
+	}
 	return r, err
 }
 
@@ -37,7 +41,12 @@ func (s *Service) SessionQueryAuthKey(ctx context.Context, request *session.TLSe
 // session.setAuthKey auth_key:AuthKeyInfo future_salt:FutureSalt expires_in:int = Bool;
 func (s *Service) SessionSetAuthKey(ctx context.Context, request *session.TLSessionSetAuthKey) (*mtproto.Bool, error) {
 	c := core.New(ctx, s.svcCtx)
-	c.Logger.Debugf("session.setAuthKey - metadata: %s, request: %s", c.MD, request)
+	if request == nil || request.GetAuthKey() == nil {
+		c.Logger.Debugf("session.setAuthKey - metadata: %s, request: nil auth key", c.MD)
+	} else {
+		key := request.GetAuthKey()
+		c.Logger.Debugf("session.setAuthKey - metadata: %s, auth_key_id=%d perm_auth_key_id=%d temp_auth_key_id=%d type=%d expires_in=%d", c.MD, key.GetAuthKeyId(), key.GetPermAuthKeyId(), key.GetTempAuthKeyId(), key.GetAuthKeyType(), request.GetExpiresIn())
+	}
 
 	r, err := c.SessionSetAuthKey(request)
 	if err != nil {

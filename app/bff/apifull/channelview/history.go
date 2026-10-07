@@ -3,6 +3,7 @@ package channelview
 import (
 	"errors"
 	"sync"
+	"time"
 
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/domain"
@@ -25,6 +26,10 @@ func mapDomain(err error) error {
 		return mtproto.ErrMessageIdInvalid
 	case errors.Is(err, domain.ErrInvalidMessageID):
 		return mtproto.ErrMessageIdInvalid
+	case errors.Is(err, domain.ErrRandomIDConflict):
+		return mtproto.ErrRandomIdDuplicate
+	case errors.Is(err, domain.ErrRandomIDMissing):
+		return mtproto.ErrInputRequestInvalid
 	default:
 		return err
 	}
@@ -32,16 +37,22 @@ func mapDomain(err error) error {
 
 func messageOf(row domain.ChannelMessage, views int32) *mtproto.Message {
 	msg := &mtproto.Message{
-		Out:     true,
-		Id:      row.MessageID,
-		FromId:  mtproto.MakePeerUser(row.Sender),
-		PeerId:  mtproto.MakePeerChannel(row.ChannelID),
-		Date:    int32(row.Date),
-		Message: row.Text,
-		Pinned:  row.Pinned,
-		Views:   wrapperspb.Int32(views),
+		Out:         true,
+		Id:          row.MessageID,
+		FromId:      mtproto.MakePeerUser(row.Sender),
+		PeerId:      mtproto.MakePeerChannel(row.ChannelID),
+		Date:        int32(row.Date),
+		Message:     row.Text,
+		Media:       row.Content.Media,
+		Entities:    row.Content.Entities,
+		ReplyMarkup: row.Content.ReplyMarkup,
+		Pinned:      row.Pinned,
+		Views:       wrapperspb.Int32(views),
 		// The current TL schema shares this flag with forwards, so encode both fields.
 		Forwards: wrapperspb.Int32(0),
+	}
+	if row.Content.GroupedID > 0 {
+		msg.GroupedId = wrapperspb.Int64(row.Content.GroupedID)
 	}
 	if row.Edited && row.EditedAt != 0 {
 		msg.EditDate = wrapperspb.Int32(int32(row.EditedAt))
@@ -202,6 +213,25 @@ func ValidateInputPeer(userID int64, peer *mtproto.InputPeer) (int64, error) {
 	return ch.ID, nil
 }
 
+func ValidateChannelMessageWrite(userID int64, peer *mtproto.InputPeer) error {
+	channelID, err := ValidateInputPeer(userID, peer)
+	if err != nil {
+		return err
+	}
+	return mapDomain(domain.ValidateChannelMessageWrite(channelID, userID))
+}
+
+func ValidateInputChannel(userID int64, channel *mtproto.InputChannel) (int64, error) {
+	if channel == nil || channel.GetPredicateName() == mtproto.Predicate_inputChannelEmpty || channel.GetChannelId() <= 0 || channel.GetAccessHash() == 0 {
+		return 0, mtproto.ErrChannelInvalid
+	}
+	peer := mtproto.MakeTLInputPeerChannel(&mtproto.InputPeer{
+		ChannelId:  channel.GetChannelId(),
+		AccessHash: channel.GetAccessHash(),
+	}).To_InputPeer()
+	return ValidateInputPeer(userID, peer)
+}
+
 // HistoryForInputPeer verifies the supplied channel access hash and membership
 // before exposing APIFull's local channel messages.
 func HistoryForInputPeer(userID int64, peer *mtproto.InputPeer, offsetID, limit int32) (*mtproto.Messages_Messages, error) {
@@ -220,6 +250,10 @@ func PostForInputPeer(userID int64, peer *mtproto.InputPeer, text string, when i
 }
 
 func PostForInputPeerWithReply(userID int64, peer *mtproto.InputPeer, text string, when int64, replyToMsgID, replyToTopID int32) (*mtproto.Updates, error) {
+	return PostForInputPeerWithReplyAndRandomID(userID, peer, text, when, replyToMsgID, replyToTopID, 0)
+}
+
+func PostForInputPeerWithReplyAndRandomID(userID int64, peer *mtproto.InputPeer, text string, when int64, replyToMsgID, replyToTopID int32, randomID int64) (*mtproto.Updates, error) {
 	channelID, err := ValidateInputPeer(userID, peer)
 	if err != nil {
 		return nil, err
@@ -237,7 +271,114 @@ func PostForInputPeerWithReply(userID int64, peer *mtproto.InputPeer, text strin
 			targetID = linkedID
 		}
 	}
-	return PostWithReply(userID, targetID, text, when, replyToMsgID, replyToTopID)
+	row, err := domain.InsertChannelMessageWithReplyAndRandomID(targetID, userID, when, text, replyToMsgID, replyToTopID, randomID)
+	if err != nil {
+		return nil, mapDomain(err)
+	}
+	return updatesNew([]domain.ChannelMessage{row}), nil
+}
+
+func PostMediaForInputPeerWithReplyAndRandomID(userID int64, peer *mtproto.InputPeer, text string, when int64, replyToMsgID, replyToTopID int32, randomID int64, media *mtproto.MessageMedia, entities []*mtproto.MessageEntity, replyMarkup *mtproto.ReplyMarkup, requestFingerprint string) (*mtproto.Updates, error) {
+	if when != 0 {
+		return nil, mtproto.ErrMethodNotImpl
+	}
+	channelID, err := ValidateInputPeer(userID, peer)
+	if err != nil {
+		return nil, err
+	}
+	targetID := channelID
+	if replyToMsgID > 0 || replyToTopID > 0 {
+		linkedID, linkErr := domain.DiscussionGroupID(channelID)
+		if linkErr != nil {
+			return nil, mapDomain(linkErr)
+		}
+		if linkedID > 0 {
+			targetID = linkedID
+		}
+	}
+	row, err := domain.InsertChannelMessageWithContentAndRandomID(targetID, userID, time.Now().Unix(), text, replyToMsgID, replyToTopID, randomID, domain.ChannelMessageContent{
+		Media:       media,
+		Entities:    entities,
+		ReplyMarkup: replyMarkup,
+	}, requestFingerprint)
+	if err != nil {
+		return nil, mapDomain(err)
+	}
+	return updatesNew([]domain.ChannelMessage{row}), nil
+}
+
+// ChannelMediaAlbumItem is the canonical, already-resolved representation of
+// one InputSingleMedia item. The caller supplies a fingerprint derived from
+// the original request so retries cannot silently change an item.
+type ChannelMediaAlbumItem struct {
+	Text               string
+	RandomID           int64
+	Media              *mtproto.MessageMedia
+	Entities           []*mtproto.MessageEntity
+	RequestFingerprint string
+}
+
+// PostMediaAlbumForInputPeerWithReplyAndRandomID validates the channel peer
+// and persists every album item atomically. Each row carries the same grouped
+// ID and complete random-id list in content_json for history and difference
+// hydration.
+func PostMediaAlbumForInputPeerWithReplyAndRandomID(userID int64, peer *mtproto.InputPeer, when int64, replyToMsgID, replyToTopID int32, groupedID int64, items []ChannelMediaAlbumItem) (*mtproto.Updates, error) {
+	if when != 0 || groupedID <= 0 || len(items) == 0 {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	channelID, err := ValidateInputPeer(userID, peer)
+	if err != nil {
+		return nil, err
+	}
+	targetID := channelID
+	if replyToMsgID > 0 || replyToTopID > 0 {
+		linkedID, linkErr := domain.DiscussionGroupID(channelID)
+		if linkErr != nil {
+			return nil, mapDomain(linkErr)
+		}
+		if linkedID > 0 {
+			targetID = linkedID
+		}
+	}
+	albumRandomIDs := make([]int64, len(items))
+	inputs := make([]domain.ChannelMessageInput, len(items))
+	for i, item := range items {
+		if item.RandomID == 0 || item.Media == nil {
+			return nil, mtproto.ErrInputRequestInvalid
+		}
+		albumRandomIDs[i] = item.RandomID
+		inputs[i] = domain.ChannelMessageInput{
+			Text:               item.Text,
+			ReplyToMsgID:       replyToMsgID,
+			ReplyToTopID:       replyToTopID,
+			RandomID:           item.RandomID,
+			RequestFingerprint: item.RequestFingerprint,
+			Content: domain.ChannelMessageContent{
+				Media:          item.Media,
+				Entities:       item.Entities,
+				GroupedID:      groupedID,
+				AlbumRandomIDs: append([]int64(nil), albumRandomIDs...),
+			},
+		}
+	}
+	// Fill the list after collecting all IDs so every item has identical
+	// album metadata even when the input slice is reused by the caller.
+	for i := range inputs {
+		inputs[i].Content.AlbumRandomIDs = append([]int64(nil), albumRandomIDs...)
+	}
+	rows, err := domain.InsertChannelMessagesBatch(targetID, userID, time.Now().Unix(), inputs)
+	if err != nil {
+		return nil, mapDomain(err)
+	}
+	return updatesNew(rows), nil
+}
+
+func EditForInputPeer(userID int64, peer *mtproto.InputPeer, id int32, text string) (*mtproto.Updates, error) {
+	channelID, err := ValidateInputPeer(userID, peer)
+	if err != nil {
+		return nil, err
+	}
+	return Edit(userID, channelID, id, text)
 }
 
 func PersonalHistory(viewerID, ownerID, channelID int64, minID, maxID, limit int32) (*mtproto.Messages_Messages, error) {
@@ -377,6 +518,38 @@ func MessagesBox(userID, channelID int64, ids []int32) (*mtproto.Messages_Messag
 	return messageBox(ch, userID, ordered)
 }
 
+// ChannelMessageAuthor resolves the user author for a native channel message
+// ID. It validates the InputChannel before reading the channel-owned message
+// table so callers cannot reinterpret a user message-box ID as a channel ID.
+// A missing message or an anonymous post is represented by author ID zero.
+func ChannelMessageAuthor(userID int64, input *mtproto.InputChannel, id int32) (int64, error) {
+	if !domain.Ready() {
+		return 0, errors.New("domain mysql is not open")
+	}
+	if input == nil || (input.GetPredicateName() != mtproto.Predicate_inputChannel &&
+		input.GetPredicateName() != mtproto.Predicate_inputChannelFromMessage) || input.GetChannelId() <= 0 {
+		return 0, mtproto.ErrChannelInvalid
+	}
+	if id <= 0 {
+		return 0, nil
+	}
+	authorID, found, err := domain.ChannelMessageAuthor(userID, input.GetChannelId(), input.GetAccessHash(), id)
+	if err != nil {
+		switch {
+		case errors.Is(err, domain.ErrNotChannelMember):
+			return 0, mtproto.ErrUserNotParticipant
+		case errors.Is(err, domain.ErrChannelMissing):
+			return 0, mtproto.ErrChannelInvalid
+		default:
+			return 0, err
+		}
+	}
+	if !found {
+		return 0, nil
+	}
+	return authorID, nil
+}
+
 // MessageViewsForInputPeer verifies channel access and returns persisted view
 // counts for each requested, visible message in request order. When increment
 // is true, it first advances the caller's persisted read cursor to the highest
@@ -466,6 +639,12 @@ func Search(userID, channelID int64, q string, sender int64, beforeID, addOffset
 	}
 	if total > int32(len(rows)) {
 		box.Count = total
+		// This local provider treats offset_rate as a row offset. It is not a
+		// global post-ranking cursor.
+		if addOffset >= 0 {
+			next := addOffset + int32(len(rows))
+			box.NextRate = wrapperspb.Int32(next)
+		}
 		box.PredicateName = mtproto.Predicate_messages_messagesSlice
 	}
 	return box, nil

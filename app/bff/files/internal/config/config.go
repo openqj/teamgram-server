@@ -24,6 +24,7 @@ import (
 
 type Config struct {
 	zrpc.RpcServerConf
+	DcId        int32 `json:",optional"`
 	DfsClient   zrpc.RpcClientConf
 	UserClient  zrpc.RpcClientConf
 	MediaClient zrpc.RpcClientConf

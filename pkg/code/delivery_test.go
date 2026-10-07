@@ -53,6 +53,124 @@ func TestHTTPEmailProviderDeliversConfiguredRequest(t *testing.T) {
 	}
 }
 
+func TestHTTPSMSProviderUsesConfiguredHTTPWhenNoInjectedVerifier(t *testing.T) {
+	var received Delivery
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Errorf("method = %s, want POST", r.Method)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&received); err != nil {
+			t.Errorf("decode delivery: %v", err)
+		}
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer server.Close()
+
+	provider := NewSMSProvider(&conf.SmsVerifyCodeConfig{
+		Name: "http", SendCodeUrl: server.URL,
+	}, nil)
+	if err := provider.Deliver(context.Background(), Delivery{
+		Channel: ChannelSMS, Destination: "+14155552671", Code: "12345", ChallengeID: "challenge",
+	}); err != nil {
+		t.Fatalf("provider delivery: %v", err)
+	}
+	if received.Channel != ChannelSMS || received.Destination != "+14155552671" || received.Code != "12345" || received.ChallengeID != "challenge" {
+		t.Fatalf("delivery = %+v", received)
+	}
+}
+
+func TestHTTPSMSProviderSelectorOverridesLegacyName(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Errorf("method = %s, want POST", r.Method)
+		}
+		var delivery Delivery
+		if err := json.NewDecoder(r.Body).Decode(&delivery); err != nil {
+			t.Errorf("decode delivery: %v", err)
+		}
+		if delivery.Code != "12345" {
+			t.Errorf("delivery code = %q", delivery.Code)
+		}
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer server.Close()
+
+	provider := NewSMSProvider(&conf.SmsVerifyCodeConfig{
+		Name: "me", SMSProvider: "http", SendCodeUrl: server.URL,
+	}, nil)
+	if err := provider.Deliver(context.Background(), Delivery{
+		Channel: ChannelSMS, Destination: "+14155552671", Code: "12345",
+	}); err != nil {
+		t.Fatalf("provider delivery: %v", err)
+	}
+}
+
+func TestLegacyMESSMSProviderPreservesQueryContract(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Errorf("method = %s, want GET", r.Method)
+		}
+		if got := r.URL.Query().Get("phone"); got != "+1 415&555" {
+			t.Errorf("phone query = %q", got)
+		}
+		if got := r.URL.Query().Get("code"); got != "12 3?" {
+			t.Errorf("code query = %q", got)
+		}
+		_, _ = io.WriteString(w, "accepted")
+	}))
+	defer server.Close()
+
+	provider := NewSMSProvider(&conf.SmsVerifyCodeConfig{Name: "me", SendCodeUrl: server.URL}, nil)
+	if err := provider.Ready(); err != nil {
+		t.Fatalf("provider ready: %v", err)
+	}
+	if err := provider.Deliver(context.Background(), Delivery{
+		Channel: ChannelSMS, Destination: "+1 415&555", Code: "12 3?", ChallengeID: "challenge",
+	}); err != nil {
+		t.Fatalf("provider delivery: %v", err)
+	}
+}
+
+func TestLegacyMESSMSProviderRequiresValidEndpoint(t *testing.T) {
+	for _, endpoint := range []string{"", "ftp://sms.example.test/send"} {
+		provider := NewSMSProvider(&conf.SmsVerifyCodeConfig{Name: "me", SendCodeUrl: endpoint}, nil)
+		if !errors.Is(provider.Ready(), ErrProviderUnavailable) {
+			t.Fatalf("endpoint %q ready = %v, want unavailable", endpoint, provider.Ready())
+		}
+	}
+}
+
+func TestHTTPMissingCodeReportProviderDeliversReport(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var delivery Delivery
+		if err := json.NewDecoder(r.Body).Decode(&delivery); err != nil {
+			t.Errorf("decode report: %v", err)
+		}
+		if delivery.Channel != ChannelSMS || delivery.Destination != "+14155552671" || delivery.ChallengeID != "challenge" || delivery.Purpose != "auth.reportMissingCode" || delivery.MNC != "310" || delivery.Code != "" {
+			t.Errorf("report = %+v", delivery)
+		}
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer server.Close()
+
+	provider := NewMissingCodeReportProvider(&conf.SmsVerifyCodeConfig{ReportMissingCodeUrl: server.URL})
+	if err := provider.Ready(); err != nil {
+		t.Fatalf("provider ready: %v", err)
+	}
+	if err := provider.Deliver(context.Background(), Delivery{
+		Channel: ChannelSMS, Destination: "+14155552671", ChallengeID: "challenge", Purpose: "auth.reportMissingCode", MNC: "310",
+	}); err != nil {
+		t.Fatalf("provider report: %v", err)
+	}
+}
+
+func TestMissingCodeReportProviderRequiresExplicitEndpoint(t *testing.T) {
+	provider := NewMissingCodeReportProvider(&conf.SmsVerifyCodeConfig{SendCodeUrl: "http://sms.example.test/send"})
+	if !errors.Is(provider.Ready(), ErrProviderUnavailable) {
+		t.Fatalf("provider ready = %v, want unavailable", provider.Ready())
+	}
+}
+
 func TestHTTPProviderFailsClosedForMissingInvalidAndProviderErrors(t *testing.T) {
 	for _, tc := range []struct {
 		name   string

@@ -28,9 +28,11 @@ import (
 func (c *UserCore) UserGetUserDataByToken(in *user.TLUserGetUserDataByToken) (*mtproto.UserData, error) {
 	// TODO: performance optimization
 	botId, err := c.svcCtx.Dao.BotsDAO.SelectByToken(c.ctx, in.Token)
-	if err != nil || botId == 0 {
-		err = mtproto.ErrTokenInvalid
+	if err != nil {
 		return nil, err
+	}
+	if botId == 0 {
+		return nil, mtproto.ErrTokenInvalid
 	}
 
 	return c.UserGetUserDataById(&user.TLUserGetUserDataById{

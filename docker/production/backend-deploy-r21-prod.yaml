@@ -1,0 +1,4 @@
+services:
+  backend:
+    image: teamgram-server-latest:20261007-r21-prod
+    build: !reset null

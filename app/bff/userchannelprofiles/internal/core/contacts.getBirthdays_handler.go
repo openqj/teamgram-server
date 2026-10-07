@@ -26,6 +26,15 @@ import (
 // ContactsGetBirthdays
 // contacts.getBirthdays#daeda864 = contacts.ContactBirthdays;
 func (c *UserChannelProfilesCore) ContactsGetBirthdays(in *mtproto.TLContactsGetBirthdays) (*mtproto.Contacts_ContactBirthdays, error) {
+	if c == nil || c.MD == nil || c.MD.UserId <= 0 {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
+	if in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.UserClient == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
 	cBirthdays, err := c.svcCtx.Dao.UserClient.UserGetBirthdays(c.ctx, &user.TLUserGetBirthdays{
 		UserId: c.MD.UserId,
 	})
@@ -33,6 +42,9 @@ func (c *UserChannelProfilesCore) ContactsGetBirthdays(in *mtproto.TLContactsGet
 	if err != nil {
 		c.Logger.Errorf("contacts.getBirthdays - error: %v", err)
 		return nil, err
+	}
+	if cBirthdays == nil {
+		return nil, mtproto.ErrInternalServerError
 	}
 
 	var (
@@ -56,10 +68,13 @@ func (c *UserChannelProfilesCore) ContactsGetBirthdays(in *mtproto.TLContactsGet
 	})
 	if err != nil {
 		c.Logger.Errorf("contacts.getBirthdays - error: %v", err)
-	} else {
-		rV.Contacts = cBirthdays.GetDatas()
-		rV.Users = cUsers.GetUserListByIdList(c.MD.UserId, idList...)
+		return nil, err
 	}
+	if cUsers == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
+	rV.Contacts = cBirthdays.GetDatas()
+	rV.Users = cUsers.GetUserListByIdList(c.MD.UserId, idList...)
 
 	return rV, nil
 }

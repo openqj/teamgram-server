@@ -29,7 +29,10 @@ import (
 // PhotosUploadContactProfilePhoto
 // photos.uploadContactProfilePhoto#e14c4a71 flags:# suggest:flags.3?true save:flags.4?true user_id:InputUser file:flags.0?InputFile video:flags.1?InputFile video_start_ts:flags.2?double video_emoji_markup:flags.5?VideoSize = photos.Photo;
 func (c *UserChannelProfilesCore) PhotosUploadContactProfilePhoto(in *mtproto.TLPhotosUploadContactProfilePhoto) (*mtproto.Photos_Photo, error) {
-	if inputFileEmpty(in.GetFile()) {
+	if c == nil || c.MD == nil || c.MD.UserId <= 0 {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
+	if in == nil || inputFileEmpty(in.GetFile()) {
 		c.Logger.Errorf("photos.uploadContactProfilePhoto - error: empty file")
 		return nil, mtproto.ErrPhotoInvalid
 	}
@@ -37,6 +40,12 @@ func (c *UserChannelProfilesCore) PhotosUploadContactProfilePhoto(in *mtproto.TL
 	if err != nil {
 		c.Logger.Errorf("photos.uploadContactProfilePhoto - error: %v", err)
 		return nil, err
+	}
+	if c.MD.PermAuthKeyId <= 0 {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
+	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.MediaClient == nil {
+		return nil, mtproto.ErrInternalServerError
 	}
 
 	photo, err := c.svcCtx.Dao.MediaClient.MediaUploadProfilePhotoFile(c.ctx, &mediapb.TLMediaUploadProfilePhotoFile{
@@ -49,6 +58,9 @@ func (c *UserChannelProfilesCore) PhotosUploadContactProfilePhoto(in *mtproto.TL
 	if err != nil {
 		c.Logger.Errorf("photos.uploadContactProfilePhoto - error: %v", err)
 		return nil, err
+	}
+	if photo == nil || photo.GetId() <= 0 {
+		return nil, mtproto.ErrInternalServerError
 	}
 
 	// Contact photo only. Do not call UserUpdateProfilePhoto (that sets the caller's own photo).

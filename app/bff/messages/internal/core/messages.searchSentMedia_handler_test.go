@@ -10,16 +10,33 @@ import (
 	"github.com/teamgram/teamgram-server/app/bff/messages/internal/svc"
 	messageclient "github.com/teamgram/teamgram-server/app/service/biz/message/client"
 	messagepb "github.com/teamgram/teamgram-server/app/service/biz/message/message"
+	userclient "github.com/teamgram/teamgram-server/app/service/biz/user/client"
+	userpb "github.com/teamgram/teamgram-server/app/service/biz/user/user"
 )
 
 type searchSentMediaClient struct {
 	messageclient.MessageClient
 	request *messagepb.TLMessageSearchByMediaType
+	result  *mtproto.MessageBoxList
 }
 
 func (c *searchSentMediaClient) MessageSearchByMediaType(_ context.Context, in *messagepb.TLMessageSearchByMediaType) (*mtproto.MessageBoxList, error) {
 	c.request = in
+	if c.result != nil {
+		return c.result, nil
+	}
 	return mtproto.MakeTLMessageBoxList(&mtproto.MessageBoxList{}).To_MessageBoxList(), nil
+}
+
+type searchSentMediaResultUserClient struct {
+	userclient.UserClient
+}
+
+func (*searchSentMediaResultUserClient) UserGetMutableUsers(context.Context, *userpb.TLUserGetMutableUsers) (*userpb.Vector_ImmutableUser, error) {
+	return &userpb.Vector_ImmutableUser{Datas: []*mtproto.ImmutableUser{
+		mtproto.MakeTLImmutableUser(&mtproto.ImmutableUser{User: &mtproto.UserData{Id: 41}}).To_ImmutableUser(),
+		mtproto.MakeTLImmutableUser(&mtproto.ImmutableUser{User: &mtproto.UserData{Id: 42}}).To_ImmutableUser(),
+	}}, nil
 }
 
 func searchSentMediaRequest() *mtproto.TLMessagesSearchSentMedia {
@@ -90,6 +107,41 @@ func TestMessagesSearchSentMediaUsesGlobalSentMediaQuery(t *testing.T) {
 	}
 	if client.request == nil || client.request.GetUserId() != 41 || client.request.GetPeerType() != mtproto.PEER_UNKNOWN || client.request.GetPeerId() != 0 || client.request.GetMediaType() != mtproto.MEDIA_PHOTOVIDEO {
 		t.Fatalf("global sent-media request = %+v", client.request)
+	}
+}
+
+func TestMessagesSearchSentMediaReturnsTypedMessagesAndHydratedUsers(t *testing.T) {
+	client := &searchSentMediaClient{result: mtproto.MakeTLMessageBoxList(&mtproto.MessageBoxList{BoxList: []*mtproto.MessageBox{
+		mtproto.MakeTLMessageBox(&mtproto.MessageBox{
+			MessageId: 7,
+			PeerType:  mtproto.PEER_USER,
+			PeerId:    42,
+			Message: mtproto.MakeTLMessage(&mtproto.Message{
+				Id:     7,
+				FromId: mtproto.MakePeerUser(41),
+				PeerId: mtproto.MakePeerUser(42),
+				Media:  mtproto.MakeTLMessageMediaPhoto(&mtproto.MessageMedia{}).To_MessageMedia(),
+			}).To_Message(),
+		}).To_MessageBox(),
+	}}).To_MessageBoxList()}
+	core := &MessagesCore{
+		ctx: context.Background(),
+		svcCtx: &svc.ServiceContext{Dao: &dao.Dao{
+			MessageClient: client,
+			UserClient:    &searchSentMediaResultUserClient{},
+		}},
+		MD: &metadata.RpcMetadata{UserId: 41},
+	}
+
+	got, err := core.MessagesSearchSentMedia(searchSentMediaRequest())
+	if err != nil {
+		t.Fatalf("MessagesSearchSentMedia() error = %v", err)
+	}
+	if got == nil || len(got.GetMessages()) != 1 || got.GetMessages()[0].GetId() != 7 {
+		t.Fatalf("MessagesSearchSentMedia() = %+v, want one typed message id=7", got)
+	}
+	if len(got.GetUsers()) != 2 {
+		t.Fatalf("MessagesSearchSentMedia() users = %d, want 2 hydrated users", len(got.GetUsers()))
 	}
 }
 

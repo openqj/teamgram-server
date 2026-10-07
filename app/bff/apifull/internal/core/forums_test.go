@@ -457,6 +457,20 @@ func TestForumChannelAuthorization(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("topic admin write: %v", err)
 	}
+	if _, err := coreFor(admin).MessagesUpdatePinnedForumTopic(&mtproto.TLMessagesUpdatePinnedForumTopic{
+		Peer: peer, TopicId: topicID, Pinned: mtproto.BoolTrue,
+	}); err != nil {
+		t.Fatalf("topic pin write: %v", err)
+	}
+	if _, err := coreFor(admin).MessagesReorderPinnedForumTopics(&mtproto.TLMessagesReorderPinnedForumTopics{
+		Peer: peer, Order: []int32{topicID},
+	}); err != nil {
+		t.Fatalf("topic reorder write: %v", err)
+	}
+	readback, err := coreFor(admin).MessagesGetForumTopics(&mtproto.TLMessagesGetForumTopics{Peer: peer})
+	if err != nil || len(readback.GetTopics()) != 1 || !readback.GetTopics()[0].GetPinned() || readback.GetTopics()[0].GetTitle() != "admin topic" {
+		t.Fatalf("topic write readback: %+v %v", readback, err)
+	}
 	if _, err := coreFor(admin).ChannelsToggleForum(&mtproto.TLChannelsToggleForum{
 		Channel: channel, Enabled: mtproto.BoolTrue, Tabs: mtproto.BoolTrue,
 	}); err != nil {

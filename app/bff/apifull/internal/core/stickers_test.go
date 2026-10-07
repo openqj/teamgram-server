@@ -24,7 +24,7 @@ func TestStickerMethodsRequireAuthentication(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			result, err := tc.call()
-			if result != nil || !sameRPCErrorCode(err, mtproto.ErrAuthKeyUnregistered) {
+			if !nilRPCResult(result) || !sameRPCErrorCode(err, mtproto.ErrAuthKeyUnregistered) {
 				t.Fatalf("result=%v err=%v, want nil result and AUTH_KEY_UNREGISTERED", result, err)
 			}
 		})
@@ -79,7 +79,7 @@ func TestStickerMethodsFailClosedWithoutProvider(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			result, err := tc.call()
-			if result != nil || !sameRPCErrorCode(err, mtproto.ErrMethodNotImpl) {
+			if !nilRPCResult(result) || !sameRPCErrorCode(err, mtproto.ErrMethodNotImpl) {
 				t.Fatalf("result=%v err=%v, want nil result and METHOD_NOT_IMPL", result, err)
 			}
 		})

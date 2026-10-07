@@ -68,7 +68,7 @@ func (c *PasskeyCore) AuthInitPasskeyLogin(in *mtproto.TLAuthInitPasskeyLogin) (
 		return nil, passkeyStorageError(err)
 	}
 	return mtproto.MakeTLAuthPasskeyLoginOptions(&mtproto.Auth_PasskeyLoginOptions{
-		Options: &mtproto.DataJSON{Data: string(options)},
+		Options: passkeyDataJSON(string(options)),
 	}).To_Auth_PasskeyLoginOptions(), nil
 }
 

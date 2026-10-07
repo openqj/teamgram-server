@@ -34,6 +34,19 @@ import (
 // AccountChangePhone
 // account.changePhone#70c32edb phone_number:string phone_code_hash:string phone_code:string = User;
 func (c *AccountCore) AccountChangePhone(in *mtproto.TLAccountChangePhone) (*mtproto.User, error) {
+	if c == nil || in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if c.MD == nil || c.MD.GetPermAuthKeyId() == 0 || c.MD.GetUserId() == 0 {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
+	if in.GetPhoneCode() == "" || in.GetPhoneCodeHash() == "" {
+		return nil, mtproto.ErrPhoneCodeEmpty
+	}
+	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.AuthLogic == nil || c.svcCtx.Dao.UserClient == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
+
 	// ## Possible errors
 	// Code	Type	Description
 	// 400	PHONE_CODE_EMPTY	phone_code is missing.
@@ -45,12 +58,6 @@ func (c *AccountCore) AccountChangePhone(in *mtproto.TLAccountChangePhone) (*mtp
 		phoneCode     = in.GetPhoneCode()
 		phoneCodeHash = in.GetPhoneCodeHash()
 	)
-
-	if phoneCode == "" || phoneCodeHash == "" {
-		err := mtproto.ErrPhoneCodeEmpty
-		c.Logger.Errorf("auth.sendCode - error: %v", err)
-		return nil, err
-	}
 
 	// 3. check number
 

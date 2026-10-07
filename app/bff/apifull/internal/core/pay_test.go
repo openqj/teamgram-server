@@ -65,7 +65,8 @@ func TestPaymentReceiptReadbackUsesSettledLedger(t *testing.T) {
 	if _, err = domain.BeginPaymentRequest(uid, requestKey, "test-provider", fingerprint, "USD", 499, uid, msgID); err != nil {
 		t.Fatalf("begin payment: %v", err)
 	}
-	if _, _, err = domain.SettlePaymentRequest(uid, requestKey, fingerprint, "tx-receipt", "USD", "Test invoice", 499, uid, msgID, []byte("receipt"), true); err != nil {
+	transactionID := fmt.Sprintf("tx-receipt-%d", uid)
+	if _, _, err = domain.SettlePaymentRequest(uid, requestKey, fingerprint, transactionID, "USD", "Test invoice", 499, uid, msgID, []byte("receipt"), true); err != nil {
 		t.Fatalf("settle payment: %v", err)
 	}
 	t.Cleanup(func() {
@@ -80,7 +81,7 @@ func TestPaymentReceiptReadbackUsesSettledLedger(t *testing.T) {
 	if err != nil || receipt == nil {
 		t.Fatalf("receipt = (%#v, %v), want settled receipt", receipt, err)
 	}
-	if receipt.GetTransactionId() != "tx-receipt" || receipt.GetCurrency() != "USD" || receipt.GetTotalAmount() != 499 || receipt.GetTitle() != "Test invoice" {
+	if receipt.GetTransactionId() != transactionID || receipt.GetCurrency() != "USD" || receipt.GetTotalAmount() != 499 || receipt.GetTitle() != "Test invoice" {
 		t.Fatalf("receipt = %#v, want provider-settled fields", receipt)
 	}
 }
@@ -109,7 +110,8 @@ func TestStarsUnavailableDoesNotAccessPersistence(t *testing.T) {
 			return result != nil, err
 		}},
 		{"gift options", func() (bool, error) {
-			result, err := c.PaymentsGetStarsGiftOptions(nil)
+			self := mtproto.MakeTLInputUserSelf(&mtproto.InputUser{}).To_InputUser()
+			result, err := c.PaymentsGetStarsGiftOptions(&mtproto.TLPaymentsGetStarsGiftOptions{UserId: self})
 			return result != nil, err
 		}},
 		{"revenue stats", func() (bool, error) {

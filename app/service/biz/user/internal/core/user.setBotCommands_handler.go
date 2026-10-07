@@ -67,17 +67,19 @@ func (c *UserCore) UserSetBotCommands(in *user.TLUserSetBotCommands) (*mtproto.B
 	if botDO == nil || botDO.BotId != in.GetBotId() {
 		return nil, mtproto.ErrBotInvalid
 	}
-	if botDO.CreatorUserId <= 0 {
-		if c.Logger != nil {
-			c.Logger.Errorf("user.setBotCommands - bot(%d) has no authoritative creator", in.GetBotId())
+	if botDO.BotId != in.GetUserId() {
+		if botDO.CreatorUserId <= 0 {
+			if c.Logger != nil {
+				c.Logger.Errorf("user.setBotCommands - bot(%d) has no authoritative creator", in.GetBotId())
+			}
+			return nil, mtproto.ErrMethodNotImpl
 		}
-		return nil, mtproto.ErrMethodNotImpl
-	}
-	if botDO.CreatorUserId != in.GetUserId() {
-		if c.Logger != nil {
-			c.Logger.Errorf("user.setBotCommands - user(%d) is not creator of bot(%d)", in.GetUserId(), in.GetBotId())
+		if botDO.CreatorUserId != in.GetUserId() {
+			if c.Logger != nil {
+				c.Logger.Errorf("user.setBotCommands - user(%d) is not creator or bot owner of bot(%d)", in.GetUserId(), in.GetBotId())
+			}
+			return nil, mtproto.ErrForbiddenUserBotInvalid
 		}
-		return nil, mtproto.ErrForbiddenUserBotInvalid
 	}
 
 	result := sqlx.TxWrapper(c.ctx, c.svcCtx.Dao.DB, func(tx *sqlx.Tx, storeResult *sqlx.StoreResult) {

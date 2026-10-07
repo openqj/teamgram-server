@@ -20,7 +20,7 @@ package core
 
 import (
 	"github.com/teamgram/proto/mtproto"
-	"github.com/teamgram/teamgram-server/app/service/biz/message/message"
+	"github.com/teamgram/teamgram-server/app/bff/apifull/channelview"
 	userpb "github.com/teamgram/teamgram-server/app/service/biz/user/user"
 )
 
@@ -33,7 +33,7 @@ func (c *SavedMessageDialogsCore) ChannelsGetMessageAuthor(in *mtproto.TLChannel
 	if in == nil {
 		return nil, mtproto.ErrInputRequestInvalid
 	}
-	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.MessageClient == nil {
+	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.UserClient == nil {
 		return nil, mtproto.ErrMethodNotImpl
 	}
 	channelID := inputChannelID(in.GetChannel())
@@ -45,26 +45,17 @@ func (c *SavedMessageDialogsCore) ChannelsGetMessageAuthor(in *mtproto.TLChannel
 		return emptyUser(), nil
 	}
 
-	// Only this user's own box. A miss, or a hit in some other peer, is userEmpty
-	// so the caller cannot tell whether a hidden message exists.
-	box, err := c.svcCtx.Dao.MessageClient.MessageGetUserMessage(c.ctx, &message.TLMessageGetUserMessage{
-		UserId: c.MD.UserId,
-		Id:     in.GetId(),
-	})
-	if err != nil || box == nil || !boxInChannel(box, channelID) {
-		if err != nil {
-			c.Logger.Errorf("channels.getMessageAuthor - error: %v", err)
-		}
-		return emptyUser(), nil
+	resolveAuthor := c.channelMessageAuthor
+	if resolveAuthor == nil {
+		resolveAuthor = channelview.ChannelMessageAuthor
 	}
-
-	authorID := messageAuthorUserID(box)
+	authorID, err := resolveAuthor(c.MD.UserId, in.GetChannel(), in.GetId())
+	if err != nil {
+		c.Logger.Errorf("channels.getMessageAuthor - error: %v", err)
+		return nil, err
+	}
 	if authorID <= 0 {
 		return emptyUser(), nil
-	}
-
-	if c.svcCtx.Dao.UserClient == nil {
-		return nil, mtproto.ErrMethodNotImpl
 	}
 	users, err := c.svcCtx.Dao.UserClient.UserGetMutableUsers(c.ctx, &userpb.TLUserGetMutableUsers{
 		Id: []int64{authorID},

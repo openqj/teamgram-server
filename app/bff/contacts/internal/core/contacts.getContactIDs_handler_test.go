@@ -35,15 +35,6 @@ func newGetContactIDsTestCore(client userclient.UserClient) *ContactsCore {
 	}
 }
 
-func contactsHash(ids ...int64) int64 {
-	const hashMod = uint64(0x80000000)
-	hash := uint64(0)
-	for _, id := range ids {
-		hash = (hash*20261 + hashMod + uint64(id)) % hashMod
-	}
-	return int64(hash)
-}
-
 func TestContactsGetContactIDsSortsAndReturnsProtocolInts(t *testing.T) {
 	client := &getContactIDsUserClientStub{contacts: &userpb.Vector_ContactData{Datas: []*mtproto.ContactData{
 		{ContactUserId: 9},
@@ -56,7 +47,7 @@ func TestContactsGetContactIDsSortsAndReturnsProtocolInts(t *testing.T) {
 		t.Fatalf("ContactsGetContactIDs() = (%+v, %v), want sorted [2 9]", got, err)
 	}
 
-	got, err = core.ContactsGetContactIDs(&mtproto.TLContactsGetContactIDs{Hash: contactsHash(2, 9)})
+	got, err = core.ContactsGetContactIDs(&mtproto.TLContactsGetContactIDs{Hash: calculateContactsHash([]int64{2, 9})})
 	if err != nil || got == nil || len(got.Datas) != 0 {
 		t.Fatalf("matching hash result = (%+v, %v), want empty vector", got, err)
 	}

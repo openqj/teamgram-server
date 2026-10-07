@@ -9,6 +9,7 @@ import (
 	"github.com/teamgram/proto/mtproto/rpc/metadata"
 	"github.com/teamgram/teamgram-server/app/bff/authorization/internal/dao"
 	"github.com/teamgram/teamgram-server/app/bff/authorization/internal/svc"
+	verification "github.com/teamgram/teamgram-server/pkg/code"
 	"github.com/zeromicro/go-zero/core/logx"
 )
 
@@ -20,6 +21,19 @@ func newProviderGapCore() *AuthorizationCore {
 		MD:     &metadata.RpcMetadata{PermAuthKeyId: 91},
 		svcCtx: &svc.ServiceContext{Dao: &dao.Dao{}},
 	}
+}
+
+type missingCodeReporterStub struct {
+	readyErr   error
+	deliverErr error
+	delivery   verification.Delivery
+}
+
+func (s *missingCodeReporterStub) Ready() error { return s.readyErr }
+
+func (s *missingCodeReporterStub) Deliver(_ context.Context, delivery verification.Delivery) error {
+	s.delivery = delivery
+	return s.deliverErr
 }
 
 func validAuthAPI() (int32, string) {
@@ -71,6 +85,37 @@ func TestAuthorizationProviderGapInputErrors(t *testing.T) {
 	}
 	if result, err := c.AuthResetLoginEmail(nil); result != nil || !errors.Is(err, mtproto.ErrInputRequestInvalid) {
 		t.Fatalf("nil reset-email request = (%v, %v), want (nil, INPUT_REQUEST_INVALID)", result, err)
+	}
+}
+
+func TestAuthReportMissingCodeUsesConfiguredProvider(t *testing.T) {
+	reporter := &missingCodeReporterStub{}
+	c := newProviderGapCore()
+	c.svcCtx.MissingCodeReporter = reporter
+	c.ctx = context.Background()
+
+	result, err := c.AuthReportMissingCode(&mtproto.TLAuthReportMissingCode{
+		PhoneNumber: "+1 415 555 2671", PhoneCodeHash: "challenge", Mnc: "310",
+	})
+	if err != nil || result != mtproto.BoolTrue {
+		t.Fatalf("report missing code = (%v, %v), want BoolTrue", result, err)
+	}
+	if reporter.delivery.Channel != verification.ChannelSMS || reporter.delivery.Destination != "14155552671" || reporter.delivery.ChallengeID != "challenge" || reporter.delivery.Purpose != "auth.reportMissingCode" || reporter.delivery.MNC != "310" {
+		t.Fatalf("delivery = %+v", reporter.delivery)
+	}
+}
+
+func TestAuthReportMissingCodePropagatesProviderFailure(t *testing.T) {
+	reporter := &missingCodeReporterStub{deliverErr: errors.New("report unavailable")}
+	c := newProviderGapCore()
+	c.svcCtx.MissingCodeReporter = reporter
+	c.ctx = context.Background()
+
+	result, err := c.AuthReportMissingCode(&mtproto.TLAuthReportMissingCode{
+		PhoneNumber: "+14155552671", PhoneCodeHash: "challenge",
+	})
+	if result != nil || !errors.Is(err, mtproto.ErrInternalServerError) {
+		t.Fatalf("report missing code = (%v, %v), want INTERNAL_SERVER_ERROR", result, err)
 	}
 }
 

@@ -79,7 +79,7 @@ func (c *PasskeyCore) AccountInitPasskeyRegistration(in *mtproto.TLAccountInitPa
 	}); err != nil {
 		return nil, passkeyStorageError(err)
 	}
-	data := &mtproto.DataJSON{Data: string(options)}
+	data := passkeyDataJSON(string(options))
 	return mtproto.MakeTLAccountPasskeyRegistrationOptions(&mtproto.Account_PasskeyRegistrationOptions{
 		Options: data,
 	}).To_Account_PasskeyRegistrationOptions(), nil

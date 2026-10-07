@@ -26,14 +26,29 @@ import (
 // UploadGetFile
 // upload.getFile#b15a9afc flags:# precise:flags.0?true cdn_supported:flags.1?true location:InputFileLocation offset:int limit:int = upload.File;
 func (c *FilesCore) UploadGetFile(in *mtproto.TLUploadGetFile) (*mtproto.Upload_File, error) {
+	if c == nil || c.MD == nil || c.MD.PermAuthKeyId == 0 || c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.DfsClient == nil {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
+	if in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
 	var (
 		location = in.GetLocation()
 		offset   = in.GetOffset_INT64()
 		limit    = in.GetLimit()
 	)
+	if location == nil {
+		return nil, mtproto.ErrLocationInvalid
+	}
 
 	if offset == 0 {
 		offset = int64(in.GetOffset_INT32())
+	}
+	if offset < 0 {
+		return nil, mtproto.ErrOffsetInvalid
+	}
+	if limit <= 0 {
+		return nil, mtproto.ErrLimitInvalid
 	}
 
 	switch location.GetPredicateName() {

@@ -132,8 +132,8 @@ func TestMessagesReportReactionFailsWithoutPersisting(t *testing.T) {
 
 	c := &ApiFullCore{MD: &metadata.RpcMetadata{UserId: 81009}}
 	reply, err := c.MessagesReportReaction(&mtproto.TLMessagesReportReaction{})
-	if reply != nil || !errors.Is(err, mtproto.ErrMethodNotImpl) {
-		t.Fatalf("report reaction: %#v %v, want nil result and METHOD_NOT_IMPL", reply, err)
+	if reply != nil || !sameRPCErrorCode(err, mtproto.ErrInputRequestInvalid) {
+		t.Fatalf("report reaction: %#v %v, want nil result and INPUT_REQUEST_INVALID", reply, err)
 	}
 	if store.writes != 0 {
 		t.Fatalf("report reaction wrote %d times, want no persistence", store.writes)

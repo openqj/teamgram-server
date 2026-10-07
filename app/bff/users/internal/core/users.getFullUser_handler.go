@@ -217,6 +217,9 @@ func (c *UsersCore) UsersGetFullUser(in *mtproto.TLUsersGetFullUser) (*mtproto.U
 		SavedMusic:               nil,
 		Note:                     nil,
 	}).To_UserFull()
+	if botManagerID := user.GetUser().GetBotManagerId(); botManagerID > 0 {
+		userFull.BotManagerId = mtproto.MakeFlagsInt64(botManagerID)
+	}
 
 	// PremiumGifts
 	if user.Premium() {

@@ -1,0 +1,6 @@
+FROM teamgram-server-latest:20261007-r17-prod
+
+COPY --chmod=0755 bff-r28 /app/bin/bff
+
+LABEL org.opencontainers.image.version="20261007-r18-prod" \
+      org.opencontainers.image.description="r17 runtime with channel-native author lookup"

@@ -19,32 +19,51 @@
 package core
 
 import (
+	"context"
 	"errors"
 	"testing"
 
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/proto/mtproto/rpc/metadata"
+	apifullDao "github.com/teamgram/teamgram-server/app/bff/apifull/internal/dao"
 	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/persist"
+	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/svc"
+	user_client "github.com/teamgram/teamgram-server/app/service/biz/user/client"
+	userpb "github.com/teamgram/teamgram-server/app/service/biz/user/user"
 )
+
+type botCommandsUserClient struct {
+	user_client.UserClient
+	commands []*mtproto.BotCommand
+}
+
+func (c *botCommandsUserClient) UserSetBotCommands(_ context.Context, in *userpb.TLUserSetBotCommands) (*mtproto.Bool, error) {
+	c.commands = in.GetCommands()
+	return mtproto.BoolTrue, nil
+}
+
+func (c *botCommandsUserClient) UserGetBotInfo(_ context.Context, _ *userpb.TLUserGetBotInfo) (*mtproto.BotInfo, error) {
+	return mtproto.MakeTLBotInfo(&mtproto.BotInfo{Commands: c.commands}).To_BotInfo(), nil
+}
 
 func TestBotCommandsAndMenuButtonRoundTrip(t *testing.T) {
 	if err := persist.Default.Set(botMenuButtonPersistKey(1, 7), ""); err != nil {
 		t.Fatal(err)
 	}
 
-	c := &ApiFullCore{MD: &metadata.RpcMetadata{UserId: 1}}
-	scope := mtproto.MakeTLBotCommandScopeDefault(&mtproto.BotCommandScope{}).To_BotCommandScope()
-	if err := persist.Default.Set(botCommandStoreKey(1, scope, "en"), ""); err != nil {
-		t.Fatal(err)
+	userClient := &botCommandsUserClient{}
+	c := &ApiFullCore{
+		svcCtx: &svc.ServiceContext{Dao: &apifullDao.Dao{UserClient: userClient}},
+		MD:     &metadata.RpcMetadata{UserId: 1},
 	}
+	scope := mtproto.MakeTLBotCommandScopeDefault(&mtproto.BotCommandScope{}).To_BotCommandScope()
 	if _, err := c.BotsSetBotCommands(&mtproto.TLBotsSetBotCommands{
 		Scope:    scope,
-		LangCode: "en",
 		Commands: []*mtproto.BotCommand{{Command: "start", Description: "hi"}},
 	}); err != nil {
 		t.Fatal(err)
 	}
-	got, err := c.BotsGetBotCommands(&mtproto.TLBotsGetBotCommands{Scope: scope, LangCode: "en"})
+	got, err := c.BotsGetBotCommands(&mtproto.TLBotsGetBotCommands{Scope: scope})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -88,7 +107,11 @@ func TestBotWritesNilError(t *testing.T) {
 	}
 	for _, fn := range fns {
 		err := fn.call()
-		if fn.name == "set bot info" || fn.name == "create bot" || fn.name == "export token" || fn.name == "edit access" || fn.name == "set join results" || fn.name == "broadcast rights" || fn.name == "group rights" || fn.name == "custom verification" {
+		if fn.name == "reset commands" || fn.name == "create bot" || fn.name == "export token" {
+			if !errors.Is(err, mtproto.ErrInputConstructorInvalid) {
+				t.Fatalf("%s: got %v, want INPUT_CONSTRUCTOR_INVALID", fn.name, err)
+			}
+		} else if fn.name == "set bot info" || fn.name == "edit access" || fn.name == "set join results" || fn.name == "broadcast rights" || fn.name == "group rights" || fn.name == "custom verification" {
 			if !errors.Is(err, mtproto.ErrMethodNotImpl) {
 				t.Fatalf("%s: got %v, want METHOD_NOT_IMPL", fn.name, err)
 			}

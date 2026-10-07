@@ -32,15 +32,20 @@ func (s *getDialogsDialogClientStub) DialogGetDialogs(context.Context, *dialog.T
 
 type getDialogsMessageClientStub struct {
 	messageclient.MessageClient
-	listErr error
+	response *messagepb.Vector_MessageBox
+	listErr  error
 }
 
 func (s *getDialogsMessageClientStub) MessageGetUserMessageList(context.Context, *messagepb.TLMessageGetUserMessageList) (*messagepb.Vector_MessageBox, error) {
+	if s.response != nil {
+		return s.response, s.listErr
+	}
 	return &messagepb.Vector_MessageBox{}, s.listErr
 }
 
 type getDialogsUserClientStub struct {
 	userclient.UserClient
+	users       *mtproto.MutableUsers
 	settingsErr error
 	usersErr    error
 }
@@ -50,6 +55,9 @@ func (s *getDialogsUserClientStub) UserGetAllNotifySettings(context.Context, *us
 }
 
 func (s *getDialogsUserClientStub) UserGetMutableUsersV2(context.Context, *userpb.TLUserGetMutableUsersV2) (*mtproto.MutableUsers, error) {
+	if s.users != nil {
+		return s.users, s.usersErr
+	}
 	return &mtproto.MutableUsers{}, s.usersErr
 }
 
@@ -124,5 +132,49 @@ func TestMessagesGetDialogsPropagatesLoadErrors(t *testing.T) {
 				t.Fatalf("MessagesGetDialogs() = (%v, %v), want nil result and propagated load error", got, err)
 			}
 		})
+	}
+}
+
+func TestMessagesGetDialogsCapsLimitAtLayer229Maximum(t *testing.T) {
+	dialogs := make([]*dialog.DialogExt, 501)
+	for i := range dialogs {
+		dialogs[i] = &dialog.DialogExt{
+			Order: int64(501 - i),
+			Dialog: mtproto.MakeTLDialog(&mtproto.Dialog{
+				Peer:       mtproto.MakePeerUser(41),
+				TopMessage: 1,
+			}).To_Dialog(),
+		}
+	}
+	box := mtproto.MakeTLMessageBox(&mtproto.MessageBox{
+		MessageId: 1,
+		PeerType:  mtproto.PEER_USER,
+		PeerId:    41,
+		Message: mtproto.MakeTLMessage(&mtproto.Message{
+			Id:     1,
+			PeerId: mtproto.MakePeerUser(41),
+			Date:   1,
+		}).To_Message(),
+	}).To_MessageBox()
+	caller := mtproto.MakeTLImmutableUser(&mtproto.ImmutableUser{
+		User: &mtproto.UserData{Id: 41, AccessHash: 410},
+	}).To_ImmutableUser()
+
+	core := newGetDialogsTestCore(
+		&getDialogsDialogClientStub{response: &dialog.Vector_DialogExt{Datas: dialogs}},
+		&getDialogsMessageClientStub{response: &messagepb.Vector_MessageBox{Datas: []*mtproto.MessageBox{box}}},
+		&getDialogsUserClientStub{users: &mtproto.MutableUsers{Users: []*mtproto.ImmutableUser{caller}}},
+		&getDialogsChatClientStub{},
+	)
+
+	got, err := core.MessagesGetDialogs(&mtproto.TLMessagesGetDialogs{
+		OffsetPeer: mtproto.MakeTLInputPeerEmpty(nil).To_InputPeer(),
+		Limit:      501,
+	})
+	if err != nil {
+		t.Fatalf("MessagesGetDialogs() error = %v", err)
+	}
+	if got == nil || len(got.GetDialogs()) != 500 {
+		t.Fatalf("MessagesGetDialogs() returned %d dialogs, want 500", len(got.GetDialogs()))
 	}
 }

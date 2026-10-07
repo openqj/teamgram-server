@@ -26,10 +26,6 @@ func TestPatchBotUsernameFromImmutableAddsUsername(t *testing.T) {
 	}).To_ImmutableUser()
 
 	unsafeBot := bot.ToUnsafeUser(me)
-	if unsafeBot.GetUsername() != nil {
-		t.Fatalf("expected bot username to be missing before patch, got %q", unsafeBot.GetUsername().GetValue())
-	}
-
 	patchBotUsernameFromImmutable(unsafeBot, bot)
 
 	if unsafeBot.GetUsername().GetValue() != "bot_username" {

@@ -42,6 +42,11 @@ func (c *PasskeyCore) AuthFinishPasskeyLogin(in *mtproto.TLAuthFinishPasskeyLogi
 	if err != nil {
 		return nil, err
 	}
+	if fromAuthKeyID := in.GetFromAuthKeyId(); fromAuthKeyID != nil {
+		if in.GetFromDcId() == nil || fromAuthKeyID.GetValue() <= 0 {
+			return nil, mtproto.ErrAuthKeyInvalid
+		}
+	}
 	if fromDC := in.GetFromDcId(); fromDC != nil {
 		if err = validatePasskeySourceDc(c.svcCtx.Config.DcId, fromDC.GetValue()); err != nil {
 			return nil, err
@@ -70,6 +75,13 @@ func (c *PasskeyCore) AuthFinishPasskeyLogin(in *mtproto.TLAuthFinishPasskeyLogi
 	}
 	var authenticatedUser *passkeyUser
 	user, credential, err := w.ValidatePasskeyLogin(func(_ []byte, userHandle []byte) (webauthn.User, error) {
+		handleDcID, ok := userHandleDcID(userHandle)
+		if !ok {
+			return nil, mtproto.ErrAuthTokenInvalid
+		}
+		if handleDcID != c.svcCtx.Config.DcId {
+			return nil, mtproto.ErrDcIdInvalid
+		}
 		userID, ok := userHandleID(userHandle)
 		if !ok {
 			return nil, mtproto.ErrAuthTokenInvalid
@@ -107,13 +119,13 @@ func (c *PasskeyCore) AuthFinishPasskeyLogin(in *mtproto.TLAuthFinishPasskeyLogi
 	if in.GetFromAuthKeyId() != nil {
 		authKeyID = in.GetFromAuthKeyId().GetValue()
 	}
-	if authKeyID == 0 {
+	if authKeyID <= 0 {
 		authKeyID = c.MD.PermAuthKeyId
 	}
-	if authKeyID == 0 {
+	if authKeyID <= 0 {
 		authKeyID = c.MD.AuthId
 	}
-	if authKeyID == 0 {
+	if authKeyID <= 0 {
 		return nil, mtproto.ErrAuthKeyUnregistered
 	}
 	if _, err = c.svcCtx.Dao.AuthsessionClient.AuthsessionBindAuthKeyUser(c.ctx, &authsession.TLAuthsessionBindAuthKeyUser{

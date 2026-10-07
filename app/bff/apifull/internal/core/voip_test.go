@@ -61,6 +61,11 @@ func voipPeer(id, accessHash int64) *mtproto.InputPhoneCall {
 }
 
 func TestPhoneRequestCallAuthed(t *testing.T) {
+	previousRelay := domain.Relay
+	domain.SetRelay("turn.example.test", 3478)
+	domain.SetRelayCredentials("fixture-user", "fixture-password")
+	t.Cleanup(func() { domain.Relay = previousRelay })
+
 	adminID, participantID := int64(710001), int64(710002)
 	adminHash, participantHash := int64(810001), int64(810002)
 	users := map[int64]*mtproto.UserData{

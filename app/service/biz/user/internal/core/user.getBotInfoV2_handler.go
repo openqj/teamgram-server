@@ -20,7 +20,6 @@ package core
 
 import (
 	"github.com/teamgram/proto/mtproto"
-	"github.com/teamgram/teamgram-server/app/service/biz/user/internal/dal/dataobject"
 	"github.com/teamgram/teamgram-server/app/service/biz/user/user"
 	"github.com/teamgram/teamgram-server/app/service/media/media"
 )
@@ -53,15 +52,16 @@ func (c *UserCore) UserGetBotInfoV2(in *user.TLUserGetBotInfoV2) (*user.BotInfoD
 	// TODO: HasPreviewMedias
 
 	// Commands
-	_, _ = c.svcCtx.Dao.BotCommandsDAO.SelectListWithCB(
-		c.ctx,
-		in.BotId,
-		func(sz, i int, v *dataobject.BotCommandsDO) {
-			botInfo.Commands = append(botInfo.Commands, mtproto.MakeTLBotCommand(&mtproto.BotCommand{
-				Command:     v.Command,
-				Description: v.Description,
-			}).To_BotCommand())
-		})
+	commands, err := c.svcCtx.Dao.BotCommandsDAO.SelectList(c.ctx, in.BotId)
+	if err != nil {
+		return nil, err
+	}
+	for i := range commands {
+		botInfo.Commands = append(botInfo.Commands, mtproto.MakeTLBotCommand(&mtproto.BotCommand{
+			Command:     commands[i].Command,
+			Description: commands[i].Description,
+		}).To_BotCommand())
+	}
 
 	// MenuButton
 	if botsDO.HasMenuButton {
@@ -93,7 +93,6 @@ func (c *UserCore) UserGetBotInfoV2(in *user.TLUserGetBotInfoV2) (*user.BotInfoD
 		BotInfo:    botInfo,
 		MainAppUrl: mtproto.MakeFlagsString(botsDO.MainAppUrl),
 		BotInline:  botsDO.BotInlinePlaceholder != "",
-		Token:      botsDO.Token,
 		BotId:      botsDO.BotId,
 	}).To_BotInfoData(), nil
 }

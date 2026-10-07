@@ -42,6 +42,9 @@ func stickerUploadMedia(in *media.TLMediaUploadStickerFile) (*mtproto.InputMedia
 }
 
 func (c *MediaCore) MediaUploadStickerFile(in *media.TLMediaUploadStickerFile) (*mtproto.Document, error) {
+	if in == nil || in.GetOwnerId() <= 0 {
+		return nil, mtproto.ErrMediaInvalid
+	}
 	inputMedia, err := stickerUploadMedia(in)
 	if err != nil {
 		return nil, err

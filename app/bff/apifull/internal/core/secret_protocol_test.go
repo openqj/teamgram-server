@@ -83,7 +83,7 @@ func TestMessagesGetDhConfigVersionAndRandom(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get unchanged DH config: %v", err)
 	}
-	if notModified.To_MessagesDhConfig().GetPredicateName() != mtproto.Predicate_messages_dhConfigNotModified {
+	if notModified.GetPredicateName() != mtproto.Predicate_messages_dhConfigNotModified {
 		t.Fatalf("versioned response = %s", notModified.To_MessagesDhConfig().GetPredicateName())
 	}
 	if len(notModified.To_MessagesDhConfig().GetRandom()) != 16 {
@@ -99,5 +99,13 @@ func TestNewSecretAccessHash(t *testing.T) {
 	second, err := newSecretAccessHash()
 	if err != nil || second == 0 || second == first {
 		t.Fatalf("second = (%d, %v), first = %d", second, err, first)
+	}
+}
+
+func TestSecretDeviceIDAcceptsSignedAuthKeyIDs(t *testing.T) {
+	core := &ApiFullCore{MD: &metadata.RpcMetadata{PermAuthKeyId: -7}}
+	got, err := core.secretDeviceID()
+	if err != nil || got != -7 {
+		t.Fatalf("signed permanent auth key id = (%d, %v)", got, err)
 	}
 }

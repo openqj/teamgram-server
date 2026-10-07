@@ -18,7 +18,8 @@ import (
 )
 
 type (
-	Config = config.Config
+	Config                 = config.Config
+	SearchPostsFloodConfig = config.SearchPostsFloodConfig
 )
 
 func New(c Config, plugin plugin.MessagesPlugin) *service.Service {

@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -11,6 +12,7 @@ import (
 	"github.com/teamgram/teamgram-server/app/bff/apifull/channelview"
 	apifullDao "github.com/teamgram/teamgram-server/app/bff/apifull/internal/dao"
 	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/domain"
+	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/persist"
 	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/svc"
 	user_client "github.com/teamgram/teamgram-server/app/service/biz/user/client"
 	userpb "github.com/teamgram/teamgram-server/app/service/biz/user/user"
@@ -247,6 +249,59 @@ func TestChannelsCreateThenGetTitle(t *testing.T) {
 	}
 }
 
+func TestChannelsCanonicalStoreDoesNotResurrectKVOnlyChannel(t *testing.T) {
+	if !domain.Ready() {
+		t.Skip("canonical channel store is not configured")
+	}
+	const userID int64 = 98391
+	channelID := time.Now().UnixNano()
+	dataKey := chanDataKey(userID, channelID)
+	indexKey := chanIndexKey(userID)
+	if err := persist.Default.Set(dataKey, `{"title":"kv-only","about":""}`); err != nil {
+		t.Fatal("seed kv-only channel:", err)
+	}
+	if err := persist.Default.Set(indexKey, fmt.Sprintf("[%d]", channelID)); err != nil {
+		t.Fatal("seed kv-only channel index:", err)
+	}
+	t.Cleanup(func() {
+		_ = persist.Default.Set(dataKey, "")
+		_ = persist.Default.Set(indexKey, "")
+	})
+
+	core := &ApiFullCore{MD: &metadata.RpcMetadata{UserId: userID}}
+	input := mtproto.MakeTLInputChannel(&mtproto.InputChannel{ChannelId: channelID, AccessHash: channelID}).To_InputChannel()
+	if _, err := core.ChannelsGetChannels(&mtproto.TLChannelsGetChannels{Id: []*mtproto.InputChannel{input}}); !errors.Is(err, mtproto.ErrChannelInvalid) {
+		t.Fatalf("KV-only channel resolved while canonical store is ready: %v", err)
+	}
+}
+
+func TestChannelsRecommendationsReadCanonicalStoreWithoutKVIndex(t *testing.T) {
+	if !domain.Ready() {
+		t.Skip("canonical channel store is not configured")
+	}
+	const userID int64 = 98392
+	channelID := time.Now().UnixNano()
+	if err := domain.SaveChannel(domain.Channel{
+		ID: channelID, AccessHash: channelID, Creator: userID, Title: "canonical-recommendation", Broadcast: true,
+	}); err != nil {
+		t.Fatal("save canonical channel:", err)
+	}
+	t.Cleanup(func() { _ = domain.DeleteChannel(userID, channelID) })
+	// Deliberately clear the old KV index. Canonical recommendations must not
+	// depend on a stale or missing legacy index.
+	if err := persist.Default.Set(chanIndexKey(userID), ""); err != nil {
+		t.Fatal("clear legacy channel index:", err)
+	}
+
+	result, err := (&ApiFullCore{MD: &metadata.RpcMetadata{UserId: userID}}).ChannelsGetChannelRecommendations(nil)
+	if err != nil {
+		t.Fatal("get channel recommendations:", err)
+	}
+	if result == nil || len(result.GetChats()) != 1 || result.GetChats()[0].GetId() != channelID {
+		t.Fatalf("canonical recommendation result: %+v", result)
+	}
+}
+
 func TestChannelsEditTitleRoundTrip(t *testing.T) {
 	const owner, outsider int64 = 81401, 81402
 	ownerCore := &ApiFullCore{MD: &metadata.RpcMetadata{UserId: owner}}
@@ -348,10 +403,24 @@ func TestChannelSettingsRoundTrip(t *testing.T) {
 	if err != nil || updated == nil || len(updated.GetChats()) != 1 {
 		t.Fatalf("toggle hidden participants: result=%+v err=%v", updated, err)
 	}
+	updated, err = c.ChannelsToggleAntiSpam(&mtproto.TLChannelsToggleAntiSpam{Channel: input, Enabled: mtproto.BoolTrue})
+	if err != nil || updated == nil || len(updated.GetChats()) != 1 {
+		t.Fatalf("toggle antispam: result=%+v err=%v", updated, err)
+	}
 
 	loaded, ok, err := domain.LoadChannel(channelID)
-	if err != nil || !ok || !loaded.Signatures || !loaded.SignatureProfiles || !loaded.HiddenPrehistory || !loaded.ParticipantsHidden || loaded.SlowmodeSeconds != 30 {
+	if err != nil || !ok || !loaded.Signatures || !loaded.SignatureProfiles || !loaded.HiddenPrehistory || !loaded.ParticipantsHidden || !loaded.Antispam || loaded.SlowmodeSeconds != 30 {
 		t.Fatalf("stored channel settings: channel=%+v ok=%v err=%v", loaded, ok, err)
+	}
+	if _, err = channelview.Post(owner, channelID, "anti-spam false positive", 0); err != nil {
+		t.Fatalf("seed anti-spam report message: %v", err)
+	}
+	reported, err := c.ChannelsReportAntiSpamFalsePositive(&mtproto.TLChannelsReportAntiSpamFalsePositive{Channel: input, MsgId: 1})
+	if err != nil || reported == nil || !mtproto.FromBool(reported) {
+		t.Fatalf("report anti-spam false positive: result=%v err=%v", reported, err)
+	}
+	if _, err = c.ChannelsReportAntiSpamFalsePositive(&mtproto.TLChannelsReportAntiSpamFalsePositive{Channel: input, MsgId: 2}); !errors.Is(err, mtproto.ErrMessageIdInvalid) {
+		t.Fatalf("report unknown anti-spam message: %v", err)
 	}
 	chats, err := c.ChannelsGetChannels(&mtproto.TLChannelsGetChannels{Id: []*mtproto.InputChannel{input}})
 	if err != nil || chats == nil || len(chats.GetChats()) != 1 || !chats.GetChats()[0].GetSignatures() || !chats.GetChats()[0].GetSignatureProfiles() {
@@ -362,7 +431,7 @@ func TestChannelSettingsRoundTrip(t *testing.T) {
 		t.Fatalf("get full channel: %v", err)
 	}
 	fullChannel := full.GetFullChat().To_ChannelFull()
-	if !fullChannel.GetHiddenPrehistory() || !fullChannel.GetParticipantsHidden() || fullChannel.GetSlowmodeSeconds().GetValue() != 30 {
+	if !fullChannel.GetHiddenPrehistory() || !fullChannel.GetParticipantsHidden() || !fullChannel.GetAntispam() || fullChannel.GetSlowmodeSeconds().GetValue() != 30 {
 		t.Fatalf("full channel settings: %+v", fullChannel)
 	}
 
@@ -797,7 +866,7 @@ func TestChannelDeleteMethods(t *testing.T) {
 		t.Fatalf("non-creator delete: got %v", err)
 	}
 	deleted, err := ownerCore.ChannelsDeleteMessages(&mtproto.TLChannelsDeleteMessages{Channel: input, Id: []int32{2}})
-	if err != nil || deleted.GetPtsCount() != 1 || deleted.GetPts() != 5 {
+	if err != nil || deleted.GetPtsCount() != 1 || deleted.GetPts() != 6 {
 		t.Fatalf("single delete: result=%+v err=%v", deleted, err)
 	}
 	if err = deleted.To_MessagesAffectedMessages().Encode(mtproto.NewEncodeBuf(512), 229); err != nil {
@@ -859,7 +928,7 @@ func TestChannelDeleteMethods(t *testing.T) {
 		t.Fatalf("global history delete: result=%+v err=%v", globalDelete, err)
 	}
 	update := globalDelete.GetUpdates()[0]
-	if update.GetPredicateName() != mtproto.Predicate_updateDeleteChannelMessages || len(update.GetMessages()) != 2 || update.Pts_INT32 != 7 || update.PtsCount != 2 {
+	if update.GetPredicateName() != mtproto.Predicate_updateDeleteChannelMessages || len(update.GetMessages()) != 2 || update.Pts_INT32 != 8 || update.PtsCount != 2 {
 		t.Fatalf("global delete update: %+v", update)
 	}
 	if err = globalDelete.To_Updates().Encode(mtproto.NewEncodeBuf(2048), 229); err != nil {
@@ -870,7 +939,7 @@ func TestChannelDeleteMethods(t *testing.T) {
 		t.Fatalf("owner history after global delete: result=%+v err=%v", ownerHistory, err)
 	}
 	row, err := domain.InsertChannelMessage(channelID, owner, 0, "after-delete")
-	if err != nil || row.MessageID != 4 || row.Pts != 8 {
+	if err != nil || row.MessageID != 4 || row.Pts != 9 {
 		t.Fatalf("sequence after deleting history: row=%+v err=%v", row, err)
 	}
 }

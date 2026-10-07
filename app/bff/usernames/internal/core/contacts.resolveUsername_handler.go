@@ -60,12 +60,31 @@ func (c *UsernamesCore) ContactsResolveUsername(in *mtproto.TLContactsResolveUse
 
 	switch peer.PeerType {
 	case mtproto.PEER_USER:
-		mUsers, _ := c.svcCtx.Dao.UserClient.UserGetMutableUsers(c.ctx, &userpb.TLUserGetMutableUsers{
+		mUsers, err := c.svcCtx.Dao.UserClient.UserGetMutableUsers(c.ctx, &userpb.TLUserGetMutableUsers{
 			Id: []int64{c.MD.UserId, peer.PeerId},
 		})
-		// .UserFacade.GetUserById(ctx, md.UserId, peer.PeerId)
-		if mUsers != nil {
-			resolvedPeer.Users = mUsers.GetUserListByIdList(c.MD.UserId, peer.PeerId)
+		if err != nil {
+			c.Logger.Errorf("contacts.resolveUsername - user.getMutableUsers error: %v", err)
+			return nil, err
+		}
+		if mUsers == nil {
+			c.Logger.Errorf("contacts.resolveUsername - user.getMutableUsers returned no response")
+			return nil, mtproto.ErrInternalServerError
+		}
+		for _, user := range mUsers.GetDatas() {
+			if user == nil || user.GetUser() == nil {
+				c.Logger.Errorf("contacts.resolveUsername - user.getMutableUsers returned an incomplete user")
+				return nil, mtproto.ErrInternalServerError
+			}
+		}
+		if !mUsers.CheckExistUser(c.MD.UserId, peer.PeerId) {
+			c.Logger.Errorf("contacts.resolveUsername - user.getMutableUsers omitted requester or resolved user")
+			return nil, mtproto.ErrInternalServerError
+		}
+		resolvedPeer.Users = mUsers.GetUserListByIdList(c.MD.UserId, peer.PeerId)
+		if len(resolvedPeer.Users) != 1 || resolvedPeer.Users[0] == nil || resolvedPeer.Users[0].GetId() != peer.PeerId {
+			c.Logger.Errorf("contacts.resolveUsername - user.getMutableUsers did not hydrate resolved user %d", peer.PeerId)
+			return nil, mtproto.ErrInternalServerError
 		}
 	case mtproto.PEER_CHAT:
 		chat, _ := c.svcCtx.Dao.ChatClient.ChatGetChatBySelfId(c.ctx, &chat.TLChatGetChatBySelfId{

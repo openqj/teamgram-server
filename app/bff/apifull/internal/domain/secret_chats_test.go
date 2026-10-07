@@ -163,15 +163,17 @@ func TestSecretChatDeviceRetryDoesNotRollbackNewerKey(t *testing.T) {
 	}); err != nil || !inserted {
 		t.Fatalf("create = inserted %v err %v", inserted, err)
 	}
-	first, changed, err := AcceptSecretChatOnDevice(chatID, accessHash, participantID, seed+10, 1, []byte{4}, seed+4)
+	firstDeviceID := -(seed + 10)
+	secondDeviceID := -(seed + 11)
+	first, changed, err := AcceptSecretChatOnDevice(chatID, accessHash, participantID, firstDeviceID, 1, []byte{4}, seed+4)
 	if err != nil || !changed || string(first.GB) != string([]byte{4}) {
 		t.Fatalf("first device accept = (%+v, %v, %v)", first, changed, err)
 	}
-	second, changed, err := AcceptSecretChatOnDevice(chatID, accessHash, participantID, seed+11, 1, []byte{5}, seed+5)
+	second, changed, err := AcceptSecretChatOnDevice(chatID, accessHash, participantID, secondDeviceID, 1, []byte{5}, seed+5)
 	if err != nil || !changed || string(second.GB) != string([]byte{5}) {
 		t.Fatalf("second device accept = (%+v, %v, %v)", second, changed, err)
 	}
-	retry, changed, err := AcceptSecretChatOnDevice(chatID, accessHash, participantID, seed+10, 1, []byte{4}, seed+4)
+	retry, changed, err := AcceptSecretChatOnDevice(chatID, accessHash, participantID, firstDeviceID, 1, []byte{4}, seed+4)
 	if err != nil || changed || string(retry.GB) != string([]byte{5}) {
 		t.Fatalf("stale device retry = (%+v, %v, %v)", retry, changed, err)
 	}

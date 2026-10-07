@@ -40,7 +40,7 @@ func (c *UserCore) UserSaveMusic(in *user.TLUserSaveMusic) (*mtproto.Bool, error
 			c.ctx,
 			in.GetUserId(),
 			func(sz int, i int, v *dataobject.UserSavedMusicDO) {
-				if v.SavedMusicId == in.GetUserId() {
+				if savedMusicEntryMatches(v, in.GetId()) {
 					_, _ = c.svcCtx.Dao.UserSavedMusicDAO.Delete(c.ctx, in.GetUserId(), in.GetId())
 					unsaveIdx = i
 				}
@@ -89,4 +89,8 @@ func (c *UserCore) UserSaveMusic(in *user.TLUserSaveMusic) (*mtproto.Bool, error
 	}
 
 	return mtproto.BoolTrue, nil
+}
+
+func savedMusicEntryMatches(entry *dataobject.UserSavedMusicDO, musicID int64) bool {
+	return entry != nil && musicID > 0 && entry.SavedMusicId == musicID
 }

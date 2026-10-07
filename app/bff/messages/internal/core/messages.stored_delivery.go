@@ -7,6 +7,7 @@ import (
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/bff/apifull/channelview"
 	"github.com/teamgram/teamgram-server/app/bff/apifull/schedstore"
+	syncpb "github.com/teamgram/teamgram-server/app/messenger/sync/sync"
 	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
@@ -32,7 +33,7 @@ func schedulePeer(userID int64, peer *mtproto.PeerUtil) (*mtproto.Peer, error) {
 
 // deliverStored handles a scheduled send, or a channel send, before the stock
 // messenger path. A non-zero schedule date wins. ok is false when neither applies.
-func (c *MessagesCore) deliverStored(inputPeer *mtproto.InputPeer, peer *mtproto.PeerUtil, when int32, text string, replyToMsgID, replyToTopID int32) (*mtproto.Updates, bool, error) {
+func (c *MessagesCore) deliverStored(inputPeer *mtproto.InputPeer, peer *mtproto.PeerUtil, when int32, text string, replyToMsgID, replyToTopID int32, randomID int64) (*mtproto.Updates, bool, error) {
 	if c.MD == nil || c.MD.UserId == 0 {
 		return nil, false, mtproto.ErrAuthKeyUnregistered
 	}
@@ -53,10 +54,51 @@ func (c *MessagesCore) deliverStored(inputPeer *mtproto.InputPeer, peer *mtproto
 		return up, true, err
 	}
 	if peer != nil && peer.IsChannel() {
-		up, err := channelview.PostForInputPeerWithReply(c.MD.UserId, inputPeer, text, time.Now().Unix(), replyToMsgID, replyToTopID)
-		return up, true, err
+		up, err := channelview.PostForInputPeerWithReplyAndRandomID(c.MD.UserId, inputPeer, text, time.Now().Unix(), replyToMsgID, replyToTopID, randomID)
+		if err != nil {
+			return nil, true, err
+		}
+		if err = c.pushChannelUpdates(inputPeer.GetChannelId(), up); err != nil {
+			return up, true, err
+		}
+		return up, true, nil
 	}
 	return nil, false, nil
+}
+
+func (c *MessagesCore) pushChannelUpdates(channelID int64, updates *mtproto.Updates) error {
+	if c == nil || c.MD == nil || c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.SyncClient == nil {
+		return mtproto.ErrMethodNotImpl
+	}
+	if updates == nil || channelID <= 0 {
+		return mtproto.ErrInputRequestInvalid
+	}
+	chat, err := channelview.ChatForUpdates(c.MD.UserId, channelID)
+	if err != nil {
+		return err
+	}
+	updates.Chats = []*mtproto.Chat{chat}
+	userIDs, err := channelview.UpdateRecipientIDs(channelID)
+	if err != nil {
+		return err
+	}
+	var excludes []int64
+	if c.MD.PermAuthKeyId != 0 {
+		excludes = []int64{c.MD.PermAuthKeyId}
+	}
+	for _, userID := range userIDs {
+		if userID <= 0 {
+			return mtproto.ErrInternalServerError
+		}
+		if _, err = c.svcCtx.Dao.SyncClient.SyncPushUpdatesIfNot(c.ctx, &syncpb.TLSyncPushUpdatesIfNot{
+			UserId:   userID,
+			Excludes: excludes,
+			Updates:  updates,
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func storedReplyIDs(replyTo *mtproto.InputReplyTo, legacy *wrapperspb.Int32Value) (int32, int32) {

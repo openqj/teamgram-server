@@ -112,14 +112,9 @@ func (s *Service) UserGetImmutableUserByPhone(ctx context.Context, request *user
 // user.getImmutableUserByToken token:string = ImmutableUser;
 func (s *Service) UserGetImmutableUserByToken(ctx context.Context, request *user.TLUserGetImmutableUserByToken) (*mtproto.ImmutableUser, error) {
 	c := core.New(ctx, s.svcCtx)
-	c.Logger.Debugf("user.getImmutableUserByToken - metadata: {%s}, request: {%s}", c.MD, request)
+	c.Logger.Debugf("user.getImmutableUserByToken - metadata: {%s}, token supplied", c.MD)
 
 	r, err := c.UserGetImmutableUserByToken(request)
-	if err != nil {
-		return nil, err
-	}
-
-	c.Logger.Debugf("user.getImmutableUserByToken - reply: {%s}", r)
 	return r, err
 }
 
@@ -922,14 +917,9 @@ func (s *Service) UserGetUserDataListByIdList(ctx context.Context, request *user
 // user.getUserDataByToken token:string = UserData;
 func (s *Service) UserGetUserDataByToken(ctx context.Context, request *user.TLUserGetUserDataByToken) (*mtproto.UserData, error) {
 	c := core.New(ctx, s.svcCtx)
-	c.Logger.Debugf("user.getUserDataByToken - metadata: {%s}, request: {%s}", c.MD, request)
+	c.Logger.Debugf("user.getUserDataByToken - metadata: {%s}, token supplied", c.MD)
 
 	r, err := c.UserGetUserDataByToken(request)
-	if err != nil {
-		return nil, err
-	}
-
-	c.Logger.Debugf("user.getUserDataByToken - reply: {%s}", r)
 	return r, err
 }
 
@@ -961,6 +951,28 @@ func (s *Service) UserUpdateBotData(ctx context.Context, request *user.TLUserUpd
 
 	c.Logger.Debugf("user.updateBotData - reply: {%s}", r)
 	return r, err
+}
+
+// UserCreateBot
+// user.createBot name:string username:string = ImmutableUser;
+func (s *Service) UserCreateBot(ctx context.Context, request *user.TLUserCreateBot) (*mtproto.ImmutableUser, error) {
+	c := core.New(ctx, s.svcCtx)
+	c.Logger.Debugf("user.createBot - metadata: {%s}, request: {%s}", c.MD, request)
+	return c.UserCreateBot(request)
+}
+
+// UserExportBotToken
+// user.exportBotToken bot_id:long revoke:Bool = String;
+func (s *Service) UserExportBotToken(ctx context.Context, request *user.TLUserExportBotToken) (*mtproto.String, error) {
+	c := core.New(ctx, s.svcCtx)
+	if request != nil {
+		userId := int64(0)
+		if c.MD != nil {
+			userId = c.MD.GetUserId()
+		}
+		c.Logger.Debugf("user.exportBotToken - user_id:%d bot_id:%d revoke:%t", userId, request.GetBotId(), request.GetRevoke())
+	}
+	return c.UserExportBotToken(request)
 }
 
 // UserGetImmutableUserV2
@@ -1180,11 +1192,6 @@ func (s *Service) UserGetBotInfoV2(ctx context.Context, request *user.TLUserGetB
 	c.Logger.Debugf("user.getBotInfoV2 - metadata: {%s}, request: {%s}", c.MD, request)
 
 	r, err := c.UserGetBotInfoV2(request)
-	if err != nil {
-		return nil, err
-	}
-
-	c.Logger.Debugf("user.getBotInfoV2 - reply: {%s}", r)
 	return r, err
 }
 

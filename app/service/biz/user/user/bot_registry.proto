@@ -1,0 +1,28 @@
+syntax = "proto3";
+
+package user;
+
+import "user.tl.proto";
+import "schema.tl.sync.proto";
+
+option go_package = "github.com/teamgram/teamgram-server/app/service/biz/user/user";
+
+message BotRegistryGetCreatedBotsRequest {}
+
+message BotRegistryGetAdminedBotsRequest {}
+
+message BotRegistryCreateBotRequest {
+  string name = 1;
+  string username = 2;
+  int64 manager_bot_id = 3;
+  int64 manager_access_hash = 4;
+}
+
+service RPCBotRegistry {
+  rpc getCreatedBots(BotRegistryGetCreatedBotsRequest)
+      returns (Vector_ImmutableUser) {}
+  rpc getAdminedBots(BotRegistryGetAdminedBotsRequest)
+      returns (Vector_ImmutableUser) {}
+  rpc createBot(BotRegistryCreateBotRequest)
+      returns (mtproto.ImmutableUser) {}
+}
