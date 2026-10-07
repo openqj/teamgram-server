@@ -385,7 +385,7 @@ func (c *MessagesCore) sendChannelMediaAlbum(in *mtproto.TLMessagesSendMultiMedi
 	if err != nil {
 		return nil, err
 	}
-	if err = c.pushChannelUpdates(in.GetPeer().GetChannelId(), updates); err != nil {
+	if err = c.pushChannelUpdates(updates); err != nil {
 		return updates, err
 	}
 	return updates, nil

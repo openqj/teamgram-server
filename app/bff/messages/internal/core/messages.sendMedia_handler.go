@@ -123,7 +123,7 @@ func (c *MessagesCore) MessagesSendMedia(in *mtproto.TLMessagesSendMedia) (*mtpr
 		if postErr != nil {
 			return nil, postErr
 		}
-		if postErr = c.pushChannelUpdates(in.GetPeer().GetChannelId(), updates); postErr != nil {
+		if postErr = c.pushChannelUpdates(updates); postErr != nil {
 			return updates, postErr
 		}
 		return updates, nil

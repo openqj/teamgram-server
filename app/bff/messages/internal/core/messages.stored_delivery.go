@@ -58,7 +58,7 @@ func (c *MessagesCore) deliverStored(inputPeer *mtproto.InputPeer, peer *mtproto
 		if err != nil {
 			return nil, true, err
 		}
-		if err = c.pushChannelUpdates(inputPeer.GetChannelId(), up); err != nil {
+		if err = c.pushChannelUpdates(up); err != nil {
 			return up, true, err
 		}
 		return up, true, nil
@@ -66,11 +66,25 @@ func (c *MessagesCore) deliverStored(inputPeer *mtproto.InputPeer, peer *mtproto
 	return nil, false, nil
 }
 
-func (c *MessagesCore) pushChannelUpdates(channelID int64, updates *mtproto.Updates) error {
+func (c *MessagesCore) pushChannelUpdates(updates *mtproto.Updates) error {
 	if c == nil || c.MD == nil || c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.SyncClient == nil {
 		return mtproto.ErrMethodNotImpl
 	}
-	if updates == nil || channelID <= 0 {
+	if updates == nil {
+		return mtproto.ErrInputRequestInvalid
+	}
+	var channelID int64
+	for _, update := range updates.GetUpdates() {
+		message := update.GetMessage_MESSAGE()
+		if message == nil || message.GetPeerId() == nil || message.GetPeerId().GetChannelId() <= 0 {
+			continue
+		}
+		if channelID != 0 && channelID != message.GetPeerId().GetChannelId() {
+			return mtproto.ErrInputRequestInvalid
+		}
+		channelID = message.GetPeerId().GetChannelId()
+	}
+	if channelID <= 0 {
 		return mtproto.ErrInputRequestInvalid
 	}
 	chat, err := channelview.ChatForUpdates(c.MD.UserId, channelID)

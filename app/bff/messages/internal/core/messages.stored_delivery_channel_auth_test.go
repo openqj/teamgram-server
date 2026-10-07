@@ -168,8 +168,17 @@ func TestPushChannelUpdatesFansOutToVisibleMembers(t *testing.T) {
 		MD:     &metadata.RpcMetadata{UserId: owner, PermAuthKeyId: 99101},
 		Logger: logx.WithContext(ctx),
 	}
-	updates := mtproto.MakeUpdatesByUpdates()
-	if err = core.pushChannelUpdates(channelID, updates); err != nil {
+	channelMessage := mtproto.MakeTLMessage(&mtproto.Message{
+		Id:     1,
+		PeerId: mtproto.MakePeerChannel(channelID),
+	}).To_Message()
+	channelUpdate := mtproto.MakeTLUpdateNewChannelMessage(&mtproto.Update{
+		Message_MESSAGE: channelMessage,
+		Pts_INT32:       1,
+		PtsCount:        1,
+	}).To_Update()
+	updates := mtproto.MakeUpdatesByUpdates(channelUpdate)
+	if err = core.pushChannelUpdates(updates); err != nil {
 		t.Fatal("push channel updates:", err)
 	}
 	if len(syncer.calls) != 2 {
