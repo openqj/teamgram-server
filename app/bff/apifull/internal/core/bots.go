@@ -107,10 +107,45 @@ func validateBotCommandScope(scope *mtproto.BotCommandScope, langCode string) er
 }
 
 func (c *ApiFullCore) BotsSetBotInfo(in *mtproto.TLBotsSetBotInfo) (*mtproto.Bool, error) {
-	if _, err := c.requireUserId(); err != nil {
+	userID, err := c.requireUserId()
+	if err != nil {
 		return nil, err
 	}
-	return nil, mtproto.ErrMethodNotImpl
+	if in == nil || in.GetBot() == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if in.GetLangCode() != "" {
+		return nil, mtproto.ErrMethodNotImpl
+	}
+	bot := in.GetBot()
+	switch bot.GetPredicateName() {
+	case mtproto.Predicate_inputUserSelf:
+	case mtproto.Predicate_inputUser:
+		if bot.GetUserId() != userID || bot.GetAccessHash() == 0 {
+			return nil, mtproto.ErrUserIdInvalid
+		}
+	default:
+		return nil, mtproto.ErrInputConstructorInvalid
+	}
+	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.UserClient == nil || c.svcCtx.Dao.BotRegistryClient == nil {
+		return nil, mtproto.ErrMethodNotImpl
+	}
+	profile, err := c.svcCtx.Dao.UserGetImmutableUser(c.ctx, &userpb.TLUserGetImmutableUser{Id: userID})
+	if err != nil {
+		return nil, err
+	}
+	if profile == nil || profile.GetUser() == nil || profile.GetUser().GetBot() == nil || profile.Deleted() {
+		return nil, mtproto.ErrBotInvalid
+	}
+	if bot.GetPredicateName() == mtproto.Predicate_inputUser && profile.GetUser().GetAccessHash() != bot.GetAccessHash() {
+		return nil, mtproto.ErrUserIdInvalid
+	}
+	return c.svcCtx.Dao.BotRegistryClient.SetBotInfo(c.ctx, &userpb.BotRegistrySetBotInfoRequest{
+		BotId:       userID,
+		Name:        in.GetName(),
+		About:       in.GetAbout(),
+		Description: in.GetDescription(),
+	})
 }
 
 func (c *ApiFullCore) BotsGetBotInfoDCD914FD(in *mtproto.TLBotsGetBotInfoDCD914FD) (*mtproto.Bots_BotInfo, error) {

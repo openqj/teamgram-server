@@ -67,6 +67,7 @@ type MessageHistoryReader interface {
 type Dao struct {
 	dialog_client.DialogClient
 	user_client.UserClient
+	BotRegistryClient user_client.BotRegistryClient
 	chat_client.ChatClient
 	sync_client.SyncClient
 	dfs_client.DfsClient
@@ -99,9 +100,11 @@ func New(c config.Config) *Dao {
 		}
 	}
 	messageClient := message_client.NewMessageClient(rpcx.GetCachedRpcClient(c.MessageClient))
+	userRpcClient := rpcx.GetCachedRpcClient(c.UserClient)
 	return &Dao{
 		DialogClient:            dialog_client.NewDialogClient(rpcx.GetCachedRpcClient(c.DialogClient)),
-		UserClient:              user_client.NewUserClient(rpcx.GetCachedRpcClient(c.UserClient)),
+		UserClient:              user_client.NewUserClient(userRpcClient),
+		BotRegistryClient:       user_client.NewBotRegistryClient(userRpcClient),
 		ChatClient:              chat_client.NewChatClient(rpcx.GetCachedRpcClient(c.ChatClient)),
 		DfsClient:               dfs_client.NewDfsClient(rpcx.GetCachedRpcClient(c.DfsClient)),
 		ScheduledMessageSender:  msg_client.NewMsgClient(rpcx.GetCachedRpcClient(c.MsgClient)),

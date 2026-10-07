@@ -3,7 +3,9 @@ syntax = "proto3";
 package user;
 
 import "user.tl.proto";
+import "schema.tl.core_types.proto";
 import "schema.tl.sync.proto";
+import "google/protobuf/wrappers.proto";
 
 option go_package = "github.com/teamgram/teamgram-server/app/service/biz/user/user";
 
@@ -18,6 +20,13 @@ message BotRegistryCreateBotRequest {
   int64 manager_access_hash = 4;
 }
 
+message BotRegistrySetBotInfoRequest {
+  int64 bot_id = 1;
+  google.protobuf.StringValue name = 2;
+  google.protobuf.StringValue about = 3;
+  google.protobuf.StringValue description = 4;
+}
+
 service RPCBotRegistry {
   rpc getCreatedBots(BotRegistryGetCreatedBotsRequest)
       returns (Vector_ImmutableUser) {}
@@ -25,4 +34,5 @@ service RPCBotRegistry {
       returns (Vector_ImmutableUser) {}
   rpc createBot(BotRegistryCreateBotRequest)
       returns (mtproto.ImmutableUser) {}
+  rpc setBotInfo(BotRegistrySetBotInfoRequest) returns (mtproto.Bool) {}
 }

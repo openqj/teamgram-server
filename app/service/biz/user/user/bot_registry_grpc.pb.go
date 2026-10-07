@@ -23,6 +23,7 @@ const (
 	RPCBotRegistry_GetCreatedBots_FullMethodName = "/user.RPCBotRegistry/getCreatedBots"
 	RPCBotRegistry_GetAdminedBots_FullMethodName = "/user.RPCBotRegistry/getAdminedBots"
 	RPCBotRegistry_CreateBot_FullMethodName      = "/user.RPCBotRegistry/createBot"
+	RPCBotRegistry_SetBotInfo_FullMethodName     = "/user.RPCBotRegistry/setBotInfo"
 )
 
 // RPCBotRegistryClient is the client API for RPCBotRegistry service.
@@ -32,6 +33,7 @@ type RPCBotRegistryClient interface {
 	GetCreatedBots(ctx context.Context, in *BotRegistryGetCreatedBotsRequest, opts ...grpc.CallOption) (*Vector_ImmutableUser, error)
 	GetAdminedBots(ctx context.Context, in *BotRegistryGetAdminedBotsRequest, opts ...grpc.CallOption) (*Vector_ImmutableUser, error)
 	CreateBot(ctx context.Context, in *BotRegistryCreateBotRequest, opts ...grpc.CallOption) (*mtproto.ImmutableUser, error)
+	SetBotInfo(ctx context.Context, in *BotRegistrySetBotInfoRequest, opts ...grpc.CallOption) (*mtproto.Bool, error)
 }
 
 type rPCBotRegistryClient struct {
@@ -72,17 +74,27 @@ func (c *rPCBotRegistryClient) CreateBot(ctx context.Context, in *BotRegistryCre
 	return out, nil
 }
 
+func (c *rPCBotRegistryClient) SetBotInfo(ctx context.Context, in *BotRegistrySetBotInfoRequest, opts ...grpc.CallOption) (*mtproto.Bool, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(mtproto.Bool)
+	err := c.cc.Invoke(ctx, RPCBotRegistry_SetBotInfo_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // RPCBotRegistryServer is the server API for RPCBotRegistry service.
-// All implementations must embed UnimplementedRPCBotRegistryServer
+// All implementations should embed UnimplementedRPCBotRegistryServer
 // for forward compatibility.
 type RPCBotRegistryServer interface {
 	GetCreatedBots(context.Context, *BotRegistryGetCreatedBotsRequest) (*Vector_ImmutableUser, error)
 	GetAdminedBots(context.Context, *BotRegistryGetAdminedBotsRequest) (*Vector_ImmutableUser, error)
 	CreateBot(context.Context, *BotRegistryCreateBotRequest) (*mtproto.ImmutableUser, error)
-	mustEmbedUnimplementedRPCBotRegistryServer()
+	SetBotInfo(context.Context, *BotRegistrySetBotInfoRequest) (*mtproto.Bool, error)
 }
 
-// UnimplementedRPCBotRegistryServer must be embedded to have
+// UnimplementedRPCBotRegistryServer should be embedded to have
 // forward compatible implementations.
 //
 // NOTE: this should be embedded by value instead of pointer to avoid a nil
@@ -98,8 +110,10 @@ func (UnimplementedRPCBotRegistryServer) GetAdminedBots(context.Context, *BotReg
 func (UnimplementedRPCBotRegistryServer) CreateBot(context.Context, *BotRegistryCreateBotRequest) (*mtproto.ImmutableUser, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method CreateBot not implemented")
 }
-func (UnimplementedRPCBotRegistryServer) mustEmbedUnimplementedRPCBotRegistryServer() {}
-func (UnimplementedRPCBotRegistryServer) testEmbeddedByValue()                        {}
+func (UnimplementedRPCBotRegistryServer) SetBotInfo(context.Context, *BotRegistrySetBotInfoRequest) (*mtproto.Bool, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method SetBotInfo not implemented")
+}
+func (UnimplementedRPCBotRegistryServer) testEmbeddedByValue() {}
 
 // UnsafeRPCBotRegistryServer may be embedded to opt out of forward compatibility for this service.
 // Use of this interface is not recommended, as added methods to RPCBotRegistryServer will
@@ -173,6 +187,24 @@ func _RPCBotRegistry_CreateBot_Handler(srv interface{}, ctx context.Context, dec
 	return interceptor(ctx, in, info, handler)
 }
 
+func _RPCBotRegistry_SetBotInfo_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(BotRegistrySetBotInfoRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RPCBotRegistryServer).SetBotInfo(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RPCBotRegistry_SetBotInfo_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RPCBotRegistryServer).SetBotInfo(ctx, req.(*BotRegistrySetBotInfoRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // RPCBotRegistry_ServiceDesc is the grpc.ServiceDesc for RPCBotRegistry service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -191,6 +223,10 @@ var RPCBotRegistry_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "createBot",
 			Handler:    _RPCBotRegistry_CreateBot_Handler,
+		},
+		{
+			MethodName: "setBotInfo",
+			Handler:    _RPCBotRegistry_SetBotInfo_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

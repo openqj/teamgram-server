@@ -22,3 +22,8 @@ func (s *Service) CreateBot(ctx context.Context, request *user.BotRegistryCreate
 	c := core.New(ctx, s.svcCtx)
 	return c.UserCreateManagedBot(request)
 }
+
+func (s *Service) SetBotInfo(ctx context.Context, request *user.BotRegistrySetBotInfoRequest) (*mtproto.Bool, error) {
+	c := core.New(ctx, s.svcCtx)
+	return c.UserSetBotInfo(request)
+}
