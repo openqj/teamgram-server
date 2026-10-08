@@ -29,14 +29,15 @@ func (c *UserCore) UserUpdateBotData(in *user.TLUserUpdateBotData) (*mtproto.Boo
 	if in == nil || in.GetBotId() <= 0 {
 		return nil, mtproto.ErrInputRequestInvalid
 	}
-	if c == nil || c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.DB == nil || c.svcCtx.Dao.BotsDAO == nil {
+	if c == nil || c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.Postgres == nil ||
+		c.svcCtx.Dao.Postgres.Store == nil || c.svcCtx.Dao.Postgres.Store.Bots == nil {
 		return nil, mtproto.ErrMethodNotImpl
 	}
 	if c.MD == nil || c.MD.GetUserId() <= 0 {
 		return nil, mtproto.ErrMethodNotImpl
 	}
 
-	botDO, err := c.svcCtx.Dao.BotsDAO.Select(c.ctx, in.GetBotId())
+	botDO, err := c.svcCtx.Dao.Postgres.Store.Bots.Select(c.ctx, in.GetBotId())
 	if err != nil {
 		return nil, err
 	}
@@ -50,7 +51,7 @@ func (c *UserCore) UserUpdateBotData(in *user.TLUserUpdateBotData) (*mtproto.Boo
 		return nil, mtproto.ErrForbiddenUserBotInvalid
 	}
 
-	changes := make(map[string]interface{}, 6)
+	changes := make(map[string]any, 6)
 	if in.GetBotChatHistory() != nil {
 		changes["bot_chat_history"] = mtproto.FromBool(in.GetBotChatHistory())
 	}
@@ -73,7 +74,7 @@ func (c *UserCore) UserUpdateBotData(in *user.TLUserUpdateBotData) (*mtproto.Boo
 		return mtproto.BoolTrue, nil
 	}
 
-	if _, err = c.svcCtx.Dao.BotsDAO.Update(c.ctx, changes, in.GetBotId()); err != nil {
+	if _, err = c.svcCtx.Dao.Postgres.Store.Bots.Update(c.ctx, changes, in.GetBotId()); err != nil {
 		return nil, err
 	}
 

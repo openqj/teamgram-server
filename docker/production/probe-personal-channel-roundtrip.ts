@@ -13,13 +13,13 @@ globalAny.addEventListener ??= () => {};
 globalAny.self.addEventListener ??= globalAny.addEventListener;
 
 function sql(query: string): string {
-  return execFileSync('docker', ['exec', 'mysql', 'mysql', '-N', '-s', '-uteamgram', '-pteamgram', '-Dteamgram', '-e', query], {
+  return execFileSync('docker', ['exec', 'teamgram-postgres', 'psql', '-v', 'ON_ERROR_STOP=1', '-At', '-q', '-F', '\t', '-U', 'teamgram', '-d', 'teamgram', '-c', query], {
     encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'],
   }).trim();
 }
 
 function sqlWrite(query: string): void {
-  execFileSync('docker', ['exec', 'mysql', 'mysql', '-N', '-s', '-uteamgram', '-pteamgram', '-Dteamgram', '-e', query], {
+  execFileSync('docker', ['exec', 'teamgram-postgres', 'psql', '-v', 'ON_ERROR_STOP=1', '-At', '-q', '-F', '\t', '-U', 'teamgram', '-d', 'teamgram', '-c', query], {
     stdio: ['ignore', 'ignore', 'ignore'],
   });
 }

@@ -83,7 +83,7 @@ func unmarshalChannelMemberSnapshot(raw string) (*ChannelMember, error) {
 // to the audit stream. Banned or missing members fail closed.
 func CanViewChannelAdminLog(channelID, userID int64) (bool, error) {
 	if db == nil {
-		return false, errors.New("domain mysql is not open")
+		return false, errors.New("domain PostgreSQL is not open")
 	}
 	if channelID <= 0 || userID <= 0 {
 		return false, ErrInvalidChannelMember
@@ -130,7 +130,7 @@ func CanViewChannelAdminLog(channelID, userID int64) (bool, error) {
 // because unrelated events filled the page.
 func ListChannelAdminLogs(channelID, minID, maxID int64, limit int32, actorIDs []int64) ([]ChannelAdminLog, error) {
 	if db == nil {
-		return nil, errors.New("domain mysql is not open")
+		return nil, errors.New("domain PostgreSQL is not open")
 	}
 	if channelID <= 0 {
 		return nil, ErrChannelMissing

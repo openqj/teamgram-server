@@ -10,10 +10,9 @@
 package core
 
 import (
-	"context"
+	"errors"
 	"time"
 
-	"github.com/teamgram/marmota/pkg/stores/sqlx"
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/service/biz/chat/chat"
 	"github.com/teamgram/teamgram-server/app/service/biz/chat/internal/dal/dataobject"
@@ -82,58 +81,44 @@ func (c *ChatCore) ChatAddChatUser(in *chat.TLChatAddChatUser) (*mtproto.Mutable
 		}
 	}
 
-	_, _, err = c.svcCtx.Dao.Exec(
-		c.ctx,
-		func(ctx context.Context, conn *sqlx.DB) (int64, int64, error) {
-			tR := sqlx.TxWrapper(c.ctx, c.svcCtx.Dao.DB, func(tx *sqlx.Tx, result *sqlx.StoreResult) {
-				chatParticipantDO := &dataobject.ChatParticipantsDO{
-					ChatId:          chat2.Chat.Id,
-					UserId:          userId,
-					ParticipantType: mtproto.ChatMemberNormal,
-					InviterUserId:   inviterId,
-					InvitedAt:       now,
-					Date2:           now,
-					IsBot:           in.GetIsBot(),
-				}
-				if chat2.Chat.Creator == userId {
-					chatParticipantDO.ParticipantType = mtproto.ChatMemberCreator
-				}
-				if willAdd == nil {
-					lastInsertId, _, err2 := c.svcCtx.Dao.ChatParticipantsDAO.InsertTx(tx, chatParticipantDO)
-					if err2 != nil {
-						result.Err = err2
-						return
-					}
-					chatParticipantDO.Id = lastInsertId
-					willAdd = c.svcCtx.Dao.MakeImmutableChatParticipant(chatParticipantDO)
-				} else {
-					chatParticipantDO.Id = willAdd.Id
-					_, err2 := c.svcCtx.Dao.ChatParticipantsDAO.UpdateTx(
-						tx,
-						chatParticipantDO.ParticipantType,
-						inviterId,
-						now,
-						in.GetIsBot(),
-						chatParticipantDO.Id)
-					if err != nil {
-						result.Err = err2
-						return
-					}
-				}
-				chat2.Chat.ParticipantsCount += 1
-				chat2.Chat.Version += 1
-				chat2.Chat.Date = now
-				_, result.Err = c.svcCtx.Dao.ChatsDAO.UpdateParticipantCountTx(tx, chat2.Chat.ParticipantsCount, chatId)
-			})
-			return 0, 0, tR.Err
-		},
-		c.svcCtx.Dao.GetChatCacheKey(chat2.Id()),
-		c.svcCtx.Dao.GetChatParticipantCacheKey(chat2.Id(), userId))
+	if c.svcCtx.Dao.Postgres == nil || c.svcCtx.Dao.Postgres.Store == nil {
+		return nil, errors.New("chat.addChatUser: PostgreSQL store is not initialized")
+	}
 
+	tx, err := c.svcCtx.Dao.Postgres.Pool.Begin(c.ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(c.ctx)
+	participantDO := &dataobject.ChatParticipantsDO{
+		ChatId: chat2.Chat.Id, UserId: userId, ParticipantType: mtproto.ChatMemberNormal,
+		InviterUserId: inviterId, InvitedAt: now, Date2: now, IsBot: in.GetIsBot(),
+	}
+	if chat2.Chat.Creator == userId {
+		participantDO.ParticipantType = mtproto.ChatMemberCreator
+	}
+	if willAdd == nil {
+		participantDO.Id, _, err = c.svcCtx.Dao.Postgres.Store.Participants.InsertOn(c.ctx, tx, participantDO)
+		if err == nil {
+			willAdd = c.svcCtx.Dao.MakeImmutableChatParticipant(participantDO)
+		}
+	} else {
+		participantDO.Id = willAdd.Id
+		_, err = c.svcCtx.Dao.Postgres.Store.Participants.UpdateOn(c.ctx, tx, participantDO.ParticipantType,
+			inviterId, now, in.GetIsBot(), participantDO.Id)
+	}
+	if err == nil {
+		chat2.Chat.ParticipantsCount++
+		chat2.Chat.Version++
+		chat2.Chat.Date = now
+		_, err = c.svcCtx.Dao.Postgres.Store.Chats.UpdateParticipantCountOn(c.ctx, tx, chat2.Chat.ParticipantsCount, chatId)
+	}
+	if err == nil {
+		err = tx.Commit(c.ctx)
+	}
 	if err != nil {
 		c.Logger.Errorf("chat.addChatUser - error: %v", err)
 		return nil, err
 	}
-
 	return chat2, nil
 }

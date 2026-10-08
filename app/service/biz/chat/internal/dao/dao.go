@@ -23,7 +23,6 @@ import (
 	"github.com/teamgram/teamgram-server/app/service/biz/chat/plugin"
 
 	"github.com/teamgram/marmota/pkg/stores/sqlc"
-	"github.com/teamgram/marmota/pkg/stores/sqlx"
 	"github.com/teamgram/teamgram-server/app/service/biz/chat/internal/config"
 	media_client "github.com/teamgram/teamgram-server/app/service/media/client"
 )
@@ -31,6 +30,7 @@ import (
 // Dao dao.
 type Dao struct {
 	*Mysql
+	*Postgres
 	sqlc.CachedConn
 	media_client.MediaClient
 	Plugin plugin.ChatPlugin
@@ -38,11 +38,17 @@ type Dao struct {
 
 // New new a dao and return.
 func New(c config.Config, plugin plugin.ChatPlugin) (dao *Dao) {
-	db := sqlx.NewMySQL(&c.Mysql)
-	return &Dao{
-		Mysql:       newMysqlDao(db),
-		CachedConn:  sqlc.NewConn(db, c.Cache),
+	if c.Postgres.DSN == "" {
+		panic("chat: Postgres.DSN is required")
+	}
+	dao = &Dao{
 		MediaClient: media_client.NewMediaClient(rpcx.GetCachedRpcClient(c.MediaClient)),
 		Plugin:      plugin,
 	}
+	pg, err := NewPostgres(c.Postgres)
+	if err != nil {
+		panic(err)
+	}
+	dao.Postgres = pg
+	return dao
 }

@@ -13,15 +13,15 @@ globalAny.self ??= globalThis;
 globalAny.addEventListener ??= () => {};
 globalAny.self.addEventListener ??= globalAny.addEventListener;
 
-function mysql(query: string): string {
+function postgres(query: string): string {
   return execFileSync('docker', [
-    'exec', 'mysql', 'mysql', '-N', '-s', '-uteamgram', '-pteamgram', '-Dteamgram', '-e', query,
+    'exec', 'teamgram-postgres', 'psql', '-v', 'ON_ERROR_STOP=1', '-At', '-q', '-F', '\t', '-U', 'teamgram', '-d', 'teamgram', '-c', query,
   ], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
 }
 
 function requiredValue(query: string, name: string): string {
-  const value = mysql(query);
-  if (!value) throw new Error(`${name} is absent from production MySQL`);
+  const value = postgres(query);
+  if (!value) throw new Error(`${name} is absent from production PostgreSQL`);
   return value;
 }
 
@@ -97,13 +97,13 @@ class ToggleSlowModeRequest {
 }
 
 function readSlowmode(channelId: bigint): number {
-  const value = mysql(`SELECT slowmode_seconds FROM apifull_channel WHERE id=${channelId}`);
+  const value = postgres(`SELECT slowmode_seconds FROM apifull_channel WHERE id=${channelId}`);
   if (value === '') throw new Error('temporary channel disappeared before cleanup');
   return Number(value);
 }
 
 function readChannelFlag(channelId: bigint, column: 'participants_hidden' | 'hidden_prehistory'): boolean {
-  return mysql(`SELECT ${column} FROM apifull_channel WHERE id=${channelId}`) === '1';
+  return postgres(`SELECT ${column} FROM apifull_channel WHERE id=${channelId}`) === '1';
 }
 
 async function main() {
@@ -183,7 +183,7 @@ async function main() {
     const fullEnabled = await client.invoke(new Api.channels.GetFullChannel({ channel: input }));
     const apiEnabled = Number(fullEnabled?.fullChat?.slowmodeSeconds ?? -1);
     if (storedEnabled !== 17 || apiEnabled !== 17) {
-      throw new Error(`slowmode enable readback mismatch: mysql=${storedEnabled}, api=${apiEnabled}`);
+      throw new Error(`slowmode enable readback mismatch: postgres=${storedEnabled}, api=${apiEnabled}`);
     }
 
     const disabled = await client.invoke(new ToggleSlowModeRequest(input, 0));
@@ -194,16 +194,16 @@ async function main() {
     const fullDisabled = await client.invoke(new Api.channels.GetFullChannel({ channel: input }));
     const apiDisabled = Number(fullDisabled?.fullChat?.slowmodeSeconds ?? 0);
     if (storedDisabled !== 0 || apiDisabled !== 0) {
-      throw new Error(`slowmode reset readback mismatch: mysql=${storedDisabled}, api=${apiDisabled}`);
+      throw new Error(`slowmode reset readback mismatch: postgres=${storedDisabled}, api=${apiDisabled}`);
     }
     evidence = {
       create: rpcName(created),
       toggleParticipantsHidden: [rpcName(participantsEnabled), rpcName(participantsDisabled)],
       togglePreHistoryHidden: [rpcName(prehistoryEnabled), rpcName(prehistoryDisabled)],
       enable: rpcName(enabled),
-      enabledValue: { api: apiEnabled, mysql: storedEnabled },
+      enabledValue: { api: apiEnabled, postgres: storedEnabled },
       disable: rpcName(disabled),
-      disabledValue: { api: apiDisabled, mysql: storedDisabled },
+      disabledValue: { api: apiDisabled, postgres: storedDisabled },
       channelId: channelId.toString(),
     };
   } catch (error) {
@@ -212,7 +212,7 @@ async function main() {
 
   if (channelId === 0n) {
     try {
-      const row = mysql(`SELECT id, access_hash FROM apifull_channel WHERE creator_user_id=${userId} AND title='${title}' LIMIT 1`);
+      const row = postgres(`SELECT id, access_hash FROM apifull_channel WHERE creator_user_id=${userId} AND title='${title}' LIMIT 1`);
       if (row) {
         const [id, hash] = row.split('\t');
         channelId = BigInt(id);
@@ -225,7 +225,7 @@ async function main() {
 
   if (channelId > 0n) {
     try {
-      if (Number(mysql(`SELECT COUNT(*) FROM apifull_channel WHERE id=${channelId}`)) > 0) {
+      if (Number(postgres(`SELECT COUNT(*) FROM apifull_channel WHERE id=${channelId}`)) > 0) {
         await client.invoke(new Api.channels.DeleteChannel({
           channel: new Api.InputChannel({ channelId, accessHash }),
         }));
@@ -237,7 +237,7 @@ async function main() {
   client.destroy();
 
   if (channelId === 0n) throw failure || new Error('production probe did not create a channel');
-  const leftover = Number(mysql(`SELECT COUNT(*) FROM apifull_channel WHERE id=${channelId}`));
+  const leftover = Number(postgres(`SELECT COUNT(*) FROM apifull_channel WHERE id=${channelId}`));
   evidence.channelRowsAfterDelete = leftover;
   if (leftover !== 0) throw new Error(`temporary channel cleanup failed: ${JSON.stringify(evidence)}`);
   if (failure) throw failure;

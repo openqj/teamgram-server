@@ -15,15 +15,15 @@ globalAny.self ??= globalThis;
 globalAny.addEventListener ??= () => {};
 globalAny.self.addEventListener ??= globalAny.addEventListener;
 
-function mysql(query: string): string {
+function postgres(query: string): string {
   return execFileSync('docker', [
-    'exec', 'mysql', 'mysql', '-N', '-s', '-uteamgram', '-pteamgram', '-Dteamgram', '-e', query,
+    'exec', 'teamgram-postgres', 'psql', '-v', 'ON_ERROR_STOP=1', '-At', '-q', '-F', '\t', '-U', 'teamgram', '-d', 'teamgram', '-c', query,
   ], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
 }
 
 function requiredValue(query: string, name: string): string {
-  const value = mysql(query);
-  if (!value) throw new Error(`${name} is absent from production MySQL`);
+  const value = postgres(query);
+  if (!value) throw new Error(`${name} is absent from production PostgreSQL`);
   return value;
 }
 
@@ -102,7 +102,7 @@ async function main() {
     LIMIT 1
   `, 'active outsider production auth key');
   const queryMessage = `
-    SELECT c.id, c.access_hash, m.message_id, m.sender_user_id, m.date, SHA2(m.message, 256)
+    SELECT c.id, c.access_hash, m.message_id, m.sender_user_id, m.date, encode(digest(m.message::text, 'sha256'), 'hex')
     FROM apifull_channel_message m
     JOIN apifull_channel c ON c.id=m.channel_id
     WHERE c.creator_user_id=${userId}
@@ -120,7 +120,7 @@ async function main() {
     throw new Error('production channel message contains an invalid numeric field');
   }
   const historyQuery = `
-    SELECT m.message_id, m.sender_user_id, m.date, SHA2(m.message, 256)
+    SELECT m.message_id, m.sender_user_id, m.date, encode(digest(m.message::text, 'sha256'), 'hex')
     FROM apifull_channel_message m
     WHERE m.channel_id=${channelId} AND NOT EXISTS (
       SELECT 1 FROM apifull_channel_message_hidden h
@@ -129,7 +129,7 @@ async function main() {
     ORDER BY m.message_id DESC
     LIMIT 20
   `;
-  const expectedHistory = mysql(historyQuery).split('\n').filter(Boolean).map((line) => {
+  const expectedHistory = postgres(historyQuery).split('\n').filter(Boolean).map((line) => {
     const [id, sender, date, hash] = line.split('\t');
     return { id: Number(id), sender: BigInt(sender), date: Number(date), hash };
   });
@@ -196,7 +196,7 @@ async function main() {
           && sha256(String(item?.message ?? '')) === expected.hash;
       });
     if (!historyType.endsWith('Messages') || !historyMatches) {
-      throw new Error(`messages.getHistory mismatch: type=${historyType}, returned=${historyMessages.length}, mysql=${expectedHistory.length}`);
+      throw new Error(`messages.getHistory mismatch: type=${historyType}, returned=${historyMessages.length}, postgres=${expectedHistory.length}`);
     }
     if (!Array.isArray(history?.chats) || !history.chats.some((chat: any) => BigInt(chat?.id ?? 0) === channelId)) {
       throw new Error('messages.getHistory omitted the channel entity');
@@ -206,15 +206,15 @@ async function main() {
     )));
     await expectRpcError('history outsider read', 'USER_NOT_PARTICIPANT', () => outsiderClient.invoke(historyRequest(inputPeer)));
 
-    const rowAfter = mysql(queryMessage);
+    const rowAfter = postgres(queryMessage);
     const rowBefore = [rawChannelId, rawAccessHash, rawMessageId, rawSender, rawDate, contentHash].join('\t');
     if (rowAfter !== rowBefore) throw new Error('read-only getMessages changed the persisted channel message row');
-    if (mysql(historyQuery) !== expectedHistory.map((row) => [row.id, row.sender, row.date, row.hash].join('\t')).join('\n')) {
+    if (postgres(historyQuery) !== expectedHistory.map((row) => [row.id, row.sender, row.date, row.hash].join('\t')).join('\n')) {
       throw new Error('read-only history changed the persisted channel message rows');
     }
     console.log(JSON.stringify({
       userId: String(me.id),
-      transport: `DC${dcId} WebSocket -> gateway -> session -> BFF -> APIFull/MySQL`,
+      transport: `DC${dcId} WebSocket -> gateway -> session -> BFF -> APIFull/PostgreSQL`,
       resultType: actualType,
       channelId: String(channelId),
       messageId,
@@ -228,7 +228,7 @@ async function main() {
       getHistory: {
         type: historyType,
         messages: historyMessages.length,
-        mysqlMessages: expectedHistory.length,
+        postgresMessages: expectedHistory.length,
         newestFirst: true,
         allFieldsMatched: true,
       },

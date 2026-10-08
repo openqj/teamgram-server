@@ -53,38 +53,47 @@ func (c *ChatCore) ChatGetAdminsWithInvites(in *chat.TLChatGetAdminsWithInvites)
 		return nil
 	})
 
-	_, err = c.svcCtx.Dao.ChatInvitesDAO.SelectListByChatIdWithCB(
-		c.ctx,
-		in.ChatId,
-		func(sz, i int, v *dataobject.ChatInvitesDO) {
-			var (
-				admin *mtproto.ChatAdminWithInvites
-			)
+	processInvite := func(v *dataobject.ChatInvitesDO) {
+		var (
+			admin *mtproto.ChatAdminWithInvites
+		)
 
-			if ok := container2.ContainsInt64(canInviteUsers, v.AdminId); !ok {
-				return
-			}
+		if ok := container2.ContainsInt64(canInviteUsers, v.AdminId); !ok {
+			return
+		}
 
-			for _, a := range rAdmins {
-				if a.AdminId == v.AdminId {
-					admin = a
-					break
-				}
+		for _, a := range rAdmins {
+			if a.AdminId == v.AdminId {
+				admin = a
+				break
 			}
-			if admin == nil {
-				admin = mtproto.MakeTLChatAdminWithInvites(&mtproto.ChatAdminWithInvites{
-					AdminId:             v.AdminId,
-					InvitesCount:        0,
-					RevokedInvitesCount: 0,
-				}).To_ChatAdminWithInvites()
-				rAdmins = append(rAdmins, admin)
-			}
-			if v.Revoked {
-				admin.RevokedInvitesCount++
-			} else {
-				admin.InvitesCount++
-			}
-		})
+		}
+		if admin == nil {
+			admin = mtproto.MakeTLChatAdminWithInvites(&mtproto.ChatAdminWithInvites{
+				AdminId:             v.AdminId,
+				InvitesCount:        0,
+				RevokedInvitesCount: 0,
+			}).To_ChatAdminWithInvites()
+			rAdmins = append(rAdmins, admin)
+		}
+		if v.Revoked {
+			admin.RevokedInvitesCount++
+		} else {
+			admin.InvitesCount++
+		}
+	}
+	if c.svcCtx.Dao.Postgres != nil && c.svcCtx.Dao.Postgres.Store != nil {
+		invites, selectErr := c.svcCtx.Dao.Postgres.Store.Invites.SelectListByChatId(c.ctx, in.ChatId)
+		if selectErr != nil {
+			return nil, selectErr
+		}
+		for i := range invites {
+			processInvite(&invites[i])
+		}
+	} else {
+		_, err = c.svcCtx.Dao.ChatInvitesDAO.SelectListByChatIdWithCB(c.ctx, in.ChatId,
+			func(sz, i int, v *dataobject.ChatInvitesDO) { processInvite(v) })
+	}
 	if err != nil {
 		return nil, err
 	}

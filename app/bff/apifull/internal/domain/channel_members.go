@@ -114,7 +114,7 @@ type ChannelMember struct {
 
 func JoinChannel(channelID, userID int64) error {
 	if db == nil {
-		return errors.New("domain mysql is not open")
+		return errors.New("domain PostgreSQL is not open")
 	}
 	if userID <= 0 {
 		return ErrInvalidChannelMember
@@ -159,7 +159,7 @@ func JoinChannel(channelID, userID int64) error {
 
 func LeaveChannel(channelID, userID int64) error {
 	if db == nil {
-		return errors.New("domain mysql is not open")
+		return errors.New("domain PostgreSQL is not open")
 	}
 	if userID <= 0 {
 		return ErrInvalidChannelMember
@@ -210,7 +210,7 @@ func LeaveChannel(channelID, userID int64) error {
 // change; the creator row itself is immutable.
 func EditChannelAdmin(channelID, actorID, userID int64, rights *ChannelAdminRights, rank string) error {
 	if db == nil {
-		return errors.New("domain mysql is not open")
+		return errors.New("domain PostgreSQL is not open")
 	}
 	if actorID <= 0 || userID <= 0 {
 		return ErrInvalidChannelMember
@@ -285,7 +285,7 @@ func EditChannelAdmin(channelID, actorID, userID int64, rights *ChannelAdminRigh
 // A view_messages ban is a kick, so clearing it removes the member row.
 func EditChannelBanned(channelID, actorID, userID int64, rights *ChannelBannedRights, bannedAt int64) error {
 	if db == nil {
-		return errors.New("domain mysql is not open")
+		return errors.New("domain PostgreSQL is not open")
 	}
 	if actorID <= 0 || userID <= 0 {
 		return ErrInvalidChannelMember
@@ -421,7 +421,7 @@ func EditChannelBanned(channelID, actorID, userID int64, rights *ChannelBannedRi
 
 func InviteChannelMembers(channelID, inviterID int64, userIDs []int64) error {
 	if db == nil {
-		return errors.New("domain mysql is not open")
+		return errors.New("domain PostgreSQL is not open")
 	}
 	if len(userIDs) == 0 {
 		return ErrNoChannelMembers
@@ -551,7 +551,7 @@ func ChannelIsMember(channelID, userID int64) (bool, error) {
 // the query's explicit OR branch.
 func ListChannelIDsForUser(userID int64) ([]int64, error) {
 	if db == nil {
-		return nil, errors.New("domain mysql is not open")
+		return nil, errors.New("domain PostgreSQL is not open")
 	}
 	if userID <= 0 {
 		return []int64{}, nil
@@ -583,7 +583,7 @@ func ListChannelIDsForUser(userID int64) ([]int64, error) {
 // Creators are represented by apifull_channel rather than a member row.
 func CommonChannelIDs(firstUserID, secondUserID int64) ([]int64, error) {
 	if db == nil {
-		return nil, errors.New("domain mysql is not open")
+		return nil, errors.New("domain PostgreSQL is not open")
 	}
 	if firstUserID <= 0 || secondUserID <= 0 || firstUserID == secondUserID {
 		return []int64{}, nil

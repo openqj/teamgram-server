@@ -33,28 +33,31 @@ func (c *InboxCore) InboxReadUserMediaUnreadToInbox(in *inbox.TLInboxReadUserMed
 		idList = append(idList, id.DialogMessageId)
 	}
 
-	_, _ = c.svcCtx.Dao.MessagesDAO.SelectByMessageDataIdListWithCB(
-		c.ctx,
-		c.svcCtx.Dao.MessagesDAO.CalcTableName(in.PeerUserId),
-		idList,
-		func(sz, i int, v *dataobject.MessagesDO) {
-			_, _ = c.svcCtx.Dao.MessagesDAO.UpdateMediaUnread(c.ctx, v.UserId, v.UserMessageBoxId)
+	// The PG query accepts one dialog_message_id; preserve the previous vector
+	// behavior by processing each requested id independently.
+	for _, dialogMessageID := range idList {
+		_, _ = c.svcCtx.Dao.SelectMessagesByDataIDUsers(
+			c.ctx,
+			dialogMessageID,
+			nil,
+			func(sz, i int, v *dataobject.MessagesDO) {
+				_, _ = c.svcCtx.Dao.UpdateMessageMediaUnread(c.ctx, v.UserId, v.UserMessageBoxId)
 
-			// TODO: batch handle
-			pts := c.svcCtx.Dao.IDGenClient2.NextPtsId(c.ctx, v.UserId)
-			updateReadMessagesContents := mtproto.MakeTLUpdateReadMessagesContents(&mtproto.Update{
-				Messages:  []int32{v.UserMessageBoxId},
-				Pts_INT32: pts,
-				PtsCount:  1,
-			}).To_Update()
-			c.persistPtsUpdate(c.ctx, v.UserId, updateReadMessagesContents)
+				// TODO: batch handle
+				pts := c.svcCtx.Dao.IDGenClient2.NextPtsId(c.ctx, v.UserId)
+				updateReadMessagesContents := mtproto.MakeTLUpdateReadMessagesContents(&mtproto.Update{
+					Messages:  []int32{v.UserMessageBoxId},
+					Pts_INT32: pts,
+					PtsCount:  1,
+				}).To_Update()
+				c.persistPtsUpdate(c.ctx, v.UserId, updateReadMessagesContents)
 
-			_, _ = c.svcCtx.Dao.SyncClient.SyncPushUpdates(c.ctx, &sync.TLSyncPushUpdates{
-				UserId:  v.UserId,
-				Updates: mtproto.MakeUpdatesByUpdates(updateReadMessagesContents),
+				_, _ = c.svcCtx.Dao.SyncClient.SyncPushUpdates(c.ctx, &sync.TLSyncPushUpdates{
+					UserId:  v.UserId,
+					Updates: mtproto.MakeUpdatesByUpdates(updateReadMessagesContents),
+				})
 			})
-		},
-	)
+	}
 
 	return mtproto.EmptyVoid, nil
 }

@@ -61,6 +61,9 @@ func voipPeer(id, accessHash int64) *mtproto.InputPhoneCall {
 }
 
 func TestPhoneRequestCallAuthed(t *testing.T) {
+	if os.Getenv("APIFULL_MYSQL_DSN") == "" {
+		t.Skip("APIFULL_MYSQL_DSN is not configured; PostgreSQL runtime tests cover production storage")
+	}
 	previousRelay := domain.Relay
 	domain.SetRelay("turn.example.test", 3478)
 	domain.SetRelayCredentials("fixture-user", "fixture-password")

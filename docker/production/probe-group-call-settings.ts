@@ -18,7 +18,7 @@ const Connection = requireModule(path.join(gramjsDir, 'src/lib/gramjs/network/co
 const quietLogger = { debug() {}, info() {}, warn() {}, error() {} };
 
 function sql(query: string): string {
-  return execFileSync('docker', ['exec', 'mysql', 'mysql', '-N', '-s', '-uteamgram', '-pteamgram', '-Dteamgram', '-e', query], {
+  return execFileSync('docker', ['exec', 'teamgram-postgres', 'psql', '-v', 'ON_ERROR_STOP=1', '-At', '-q', '-F', '\t', '-U', 'teamgram', '-d', 'teamgram', '-c', query], {
     encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'],
   }).trim();
 }
@@ -137,12 +137,12 @@ function callFromUpdates(value: any): any {
 }
 
 function dbSettings(callId: bigint): string {
-  return sql(`SELECT join_muted,messages_enabled,COALESCE(send_paid_messages_stars,''),record_active,record_video,record_title,record_video_portrait
+  return sql(`SELECT join_muted,messages_enabled,COALESCE(send_paid_messages_stars::text,''),record_active,record_video,record_title,record_video_portrait
     FROM apifull_group_call_settings WHERE call_id=${callId}`);
 }
 
 function dbParticipant(callId: bigint): string {
-  return sql(`SELECT muted,COALESCE(volume,''),raise_hand,video_stopped,video_paused,presentation_paused,presentation_active
+  return sql(`SELECT muted,COALESCE(volume::text,''),raise_hand,video_stopped,video_paused,presentation_paused,presentation_active
     FROM apifull_group_call_participant WHERE call_id=${callId} AND user_id=${userId}`);
 }
 

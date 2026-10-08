@@ -10,8 +10,7 @@
 package core
 
 import (
-	"context"
-	"github.com/teamgram/marmota/pkg/stores/sqlx"
+	"errors"
 	"time"
 
 	"github.com/teamgram/proto/mtproto"
@@ -51,14 +50,18 @@ func (c *ChatCore) ChatEditChatAbout(in *chat.TLChatEditChatAbout) (*mtproto.Mut
 		err = mtproto.ErrChatAdminRequired
 		return nil, err
 	}
+	if c.svcCtx.Dao.Postgres == nil || c.svcCtx.Dao.Postgres.Store == nil {
+		return nil, errors.New("chat.editChatAbout: PostgreSQL store is not initialized")
+	}
 
-	_, _, err = c.svcCtx.Dao.CachedConn.Exec(
-		c.ctx,
-		func(ctx context.Context, conn *sqlx.DB) (int64, int64, error) {
-			rowsAffected, err2 := c.svcCtx.Dao.ChatsDAO.UpdateAbout(c.ctx, in.About, chat2.Id())
-			return 0, rowsAffected, err2
-		},
-		c.svcCtx.Dao.GetChatCacheKey(chat2.Id()))
+	tx, err := c.svcCtx.Dao.Postgres.Pool.Begin(c.ctx)
+	if err == nil {
+		defer tx.Rollback(c.ctx)
+		_, err = c.svcCtx.Dao.Postgres.Store.Chats.UpdateAboutOn(c.ctx, tx, in.About, chat2.Id())
+		if err == nil {
+			err = tx.Commit(c.ctx)
+		}
+	}
 	if err != nil {
 		return nil, err
 	}

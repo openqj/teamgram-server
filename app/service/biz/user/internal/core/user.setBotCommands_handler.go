@@ -33,10 +33,16 @@ func (c *UserCore) UserSetBotCommands(in *user.TLUserSetBotCommands) (*mtproto.B
 		return nil, err
 	}
 
-	if c == nil || c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.Mysql == nil ||
-		c.svcCtx.Dao.Mysql.DB == nil || c.svcCtx.Dao.Mysql.BotsDAO == nil ||
-		c.svcCtx.Dao.Mysql.BotCommandsDAO == nil {
+	if c == nil || c.svcCtx == nil || c.svcCtx.Dao == nil {
 		if c != nil && c.Logger != nil {
+			c.Logger.Errorf("user.setBotCommands - error: bot command storage is not configured")
+		}
+		return nil, mtproto.ErrMethodNotImpl
+	}
+	hasPostgres := c.svcCtx.Dao.Postgres != nil && c.svcCtx.Dao.Postgres.Pool != nil && c.svcCtx.Dao.Postgres.Store != nil && c.svcCtx.Dao.Postgres.Store.Bots != nil && c.svcCtx.Dao.Postgres.Store.BotCommands != nil
+	hasMysql := c.svcCtx.Dao.Mysql != nil && c.svcCtx.Dao.Mysql.DB != nil && c.svcCtx.Dao.BotsDAO != nil && c.svcCtx.Dao.BotCommandsDAO != nil
+	if !hasPostgres && !hasMysql {
+		if c.Logger != nil {
 			c.Logger.Errorf("user.setBotCommands - error: bot command storage is not configured")
 		}
 		return nil, mtproto.ErrMethodNotImpl
@@ -57,7 +63,12 @@ func (c *UserCore) UserSetBotCommands(in *user.TLUserSetBotCommands) (*mtproto.B
 		}
 	}
 
-	botDO, err := c.svcCtx.Dao.BotsDAO.Select(c.ctx, in.GetBotId())
+	var botDO *dataobject.BotsDO
+	if hasPostgres {
+		botDO, err = c.svcCtx.Dao.Postgres.Store.Bots.Select(c.ctx, in.GetBotId())
+	} else {
+		botDO, err = c.svcCtx.Dao.BotsDAO.Select(c.ctx, in.GetBotId())
+	}
 	if err != nil {
 		if c.Logger != nil {
 			c.Logger.Errorf("user.setBotCommands - select bot(%d) error: %v", in.GetBotId(), err)
@@ -82,19 +93,37 @@ func (c *UserCore) UserSetBotCommands(in *user.TLUserSetBotCommands) (*mtproto.B
 		}
 	}
 
-	result := sqlx.TxWrapper(c.ctx, c.svcCtx.Dao.DB, func(tx *sqlx.Tx, storeResult *sqlx.StoreResult) {
-		if _, storeResult.Err = c.svcCtx.Dao.BotCommandsDAO.DeleteTx(tx, in.GetBotId()); storeResult.Err != nil {
-			return
+	var txErr error
+	if hasPostgres {
+		tx, err := c.svcCtx.Dao.Postgres.Pool.Begin(c.ctx)
+		if err == nil {
+			defer func() { _ = tx.Rollback(c.ctx) }()
+			_, txErr = c.svcCtx.Dao.Postgres.Store.BotCommands.DeleteTx(c.ctx, tx, in.GetBotId())
+			if txErr == nil && len(doList) > 0 {
+				_, _, txErr = c.svcCtx.Dao.Postgres.Store.BotCommands.InsertBulkTx(c.ctx, tx, doList)
+			}
+			if txErr == nil {
+				txErr = tx.Commit(c.ctx)
+			}
+		} else {
+			txErr = err
 		}
-		if len(doList) > 0 {
-			_, _, storeResult.Err = c.svcCtx.Dao.BotCommandsDAO.InsertBulkTx(tx, doList)
-		}
-	})
-	if result.Err != nil {
+	} else {
+		result := sqlx.TxWrapper(c.ctx, c.svcCtx.Dao.DB, func(tx *sqlx.Tx, storeResult *sqlx.StoreResult) {
+			if _, storeResult.Err = c.svcCtx.Dao.BotCommandsDAO.DeleteTx(tx, in.GetBotId()); storeResult.Err != nil {
+				return
+			}
+			if len(doList) > 0 {
+				_, _, storeResult.Err = c.svcCtx.Dao.BotCommandsDAO.InsertBulkTx(tx, doList)
+			}
+		})
+		txErr = result.Err
+	}
+	if txErr != nil {
 		if c.Logger != nil {
-			c.Logger.Errorf("user.setBotCommands - replace bot(%d) commands error: %v", in.GetBotId(), result.Err)
+			c.Logger.Errorf("user.setBotCommands - replace bot(%d) commands error: %v", in.GetBotId(), txErr)
 		}
-		return nil, result.Err
+		return nil, txErr
 	}
 
 	return mtproto.BoolTrue, nil

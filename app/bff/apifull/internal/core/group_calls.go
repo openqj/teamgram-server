@@ -275,14 +275,7 @@ func (c *ApiFullCore) groupCallChannelID(userID int64, peer *mtproto.InputPeer) 
 	return channel.ID, nil
 }
 
-func participantSource(id int64) (int32, bool) {
-	if id <= 0 || id > 2147483647 {
-		return 0, false
-	}
-	return int32(id), true
-}
-
-func filterGroupUserIDs(ids []int64, want []*mtproto.InputPeer, sources []int32) []int64 {
+func filterGroupUserIDs(callID int64, ids []int64, want []*mtproto.InputPeer, sources []int32) ([]int64, error) {
 	if len(want) > 0 {
 		set := make(map[int64]struct{}, len(want))
 		for _, p := range want {
@@ -305,17 +298,20 @@ func filterGroupUserIDs(ids []int64, want []*mtproto.InputPeer, sources []int32)
 		}
 		next := make([]int64, 0, len(ids))
 		for _, id := range ids {
-			src, ok := participantSource(id)
-			if !ok {
+			state, ok, err := domain.LoadGroupCallParticipant(callID, id)
+			if err != nil {
+				return nil, err
+			}
+			if !ok || state.MediaSource <= 0 {
 				continue
 			}
-			if _, hit := set[src]; hit {
+			if _, hit := set[state.MediaSource]; hit {
 				next = append(next, id)
 			}
 		}
 		ids = next
 	}
-	return ids
+	return ids, nil
 }
 
 func pageGroupUserIDs(ids []int64, offset string, limit int32) ([]int64, string) {
@@ -351,8 +347,8 @@ func groupParticipantViews(ids []int64, self, callID int64) ([]*mtproto.GroupCal
 			CanSelfUnmute: !muted,
 			Muted:         muted,
 		}
-		if src, ok := participantSource(id); ok {
-			p.Source = src
+		if ok && state.MediaSource > 0 {
+			p.Source = state.MediaSource
 		}
 		if ok && state.Volume != nil {
 			p.Volume = wrapperspb.Int32(*state.Volume)
@@ -641,6 +637,10 @@ func (c *ApiFullCore) PhoneJoinGroupCall(in *mtproto.TLPhoneJoinGroupCall) (*mtp
 	if in == nil || in.GetCall() == nil || in.GetCall().GetId() == 0 {
 		return nil, mtproto.ErrGroupCallInvalid
 	}
+	if in.GetParams() == nil || len(in.GetParams().GetData()) == 0 || len(in.GetParams().GetData()) > 64*1024 ||
+		!json.Valid([]byte(in.GetParams().GetData())) {
+		return nil, mtproto.ErrDataJsonInvalid
+	}
 	var uid int64
 	var record domain.GroupCall
 	var ids []int64
@@ -676,12 +676,6 @@ func (c *ApiFullCore) PhoneJoinGroupCall(in *mtproto.TLPhoneJoinGroupCall) (*mtp
 			return nil, err
 		}
 	}
-	if !groupCallHasUser(ids, uid) {
-		ids = append(ids, uid)
-		if err := saveGroupUserIDs(record.ID, record.AccessHash, record.Creator, ids); err != nil {
-			return nil, err
-		}
-	}
 	settings, err := domain.LoadGroupCallSettings(record.ID)
 	if err != nil {
 		return nil, err
@@ -693,19 +687,55 @@ func (c *ApiFullCore) PhoneJoinGroupCall(in *mtproto.TLPhoneJoinGroupCall) (*mtp
 	if usedInvite && !invitedSelfUnmute {
 		muted = true
 	}
-	if err := domain.SaveGroupCallParticipant(domain.GroupCallParticipantState{
+	if err = c.gcallPut("PhoneJoinGroupCall", in); err != nil {
+		return nil, err
+	}
+	provider, err := c.newGroupCallMediaProvider()
+	if err != nil {
+		return nil, err
+	}
+	joinKey := fmt.Sprintf("group-call-join:%d:%d", record.ID, uid)
+	leavePayload := groupCallMediaRequest{
+		Operation: "leave_group_call",
+		UserID:    uid,
+		CallID:    record.ID,
+		ChannelID: record.ChannelID,
+	}
+	cleanupJoin := func() {
+		if _, cleanupErr := requestGroupCallMedia(c.secretContext(), provider, leavePayload, fmt.Sprintf("group-call-leave:%d:%d", record.ID, uid)); cleanupErr != nil {
+			c.Logger.Errorf("group call media join cleanup failed for call %d user %d: %v", record.ID, uid, cleanupErr)
+		}
+	}
+	mediaResult, err := requestGroupCallMedia(c.secretContext(), provider, groupCallMediaRequest{
+		Operation:    "join_group_call",
+		UserID:       uid,
+		CallID:       record.ID,
+		ChannelID:    record.ChannelID,
+		Muted:        muted,
+		VideoStopped: in.GetVideoStopped(),
+		Params:       in.GetParams().GetData(),
+	}, joinKey)
+	if err != nil {
+		cleanupJoin()
+		return nil, err
+	}
+	if mediaResult.MediaSource <= 0 {
+		cleanupJoin()
+		return nil, mtproto.ErrInternalServerError
+	}
+	ids, err = domain.JoinGroupCallParticipant(domain.GroupCallParticipantState{
 		CallID:       record.ID,
 		UserID:       uid,
 		Muted:        muted,
 		VideoStopped: in.GetVideoStopped(),
 		JoinParams:   in.GetParams().GetData(),
-	}); err != nil {
+		MediaSource:  mediaResult.MediaSource,
+	})
+	if err != nil {
+		cleanupJoin()
 		return nil, err
 	}
-	if err := c.gcallPut("PhoneJoinGroupCall", in); err != nil {
-		return nil, err
-	}
-	return mtproto.MakeEmptyUpdates(), nil
+	return groupCallParticipantUpdates(record, ids, uid)
 }
 
 func (c *ApiFullCore) PhoneLeaveGroupCall(in *mtproto.TLPhoneLeaveGroupCall) (*mtproto.Updates, error) {
@@ -719,21 +749,29 @@ func (c *ApiFullCore) PhoneLeaveGroupCall(in *mtproto.TLPhoneLeaveGroupCall) (*m
 	if !groupCallHasUser(ids, uid) {
 		return nil, mtproto.ErrGroupcallJoinMissing
 	}
-	if _, joined, loadErr := domain.LoadGroupCallParticipant(record.ID, uid); loadErr != nil {
+	state, joined, loadErr := domain.LoadGroupCallParticipant(record.ID, uid)
+	if loadErr != nil {
 		return nil, loadErr
-	} else if !joined {
+	}
+	if !joined {
 		return nil, mtproto.ErrGroupcallJoinMissing
 	}
-	next := make([]int64, 0, len(ids)-1)
-	for _, id := range ids {
-		if id != uid {
-			next = append(next, id)
+	if state.MediaSource > 0 {
+		provider, providerErr := c.newGroupCallMediaProvider()
+		if providerErr != nil {
+			return nil, providerErr
+		}
+		_, providerErr = requestGroupCallMedia(c.secretContext(), provider, groupCallMediaRequest{
+			Operation: "leave_group_call",
+			UserID:    uid,
+			CallID:    record.ID,
+			ChannelID: record.ChannelID,
+		}, fmt.Sprintf("group-call-leave:%d:%d", record.ID, uid))
+		if providerErr != nil {
+			return nil, providerErr
 		}
 	}
-	if err := saveGroupUserIDs(record.ID, record.AccessHash, record.Creator, next); err != nil {
-		return nil, err
-	}
-	if err := domain.DeleteGroupCallParticipant(record.ID, uid); err != nil {
+	if _, err = domain.RemoveGroupCallParticipant(record.ID, uid); err != nil {
 		return nil, err
 	}
 	if err = c.gcallPut("PhoneLeaveGroupCall", in); err != nil {
@@ -775,6 +813,25 @@ func (c *ApiFullCore) PhoneDiscardGroupCall(in *mtproto.TLPhoneDiscardGroupCall)
 	_, record, _, err := c.loadCreatorGroupCall(in.GetCall())
 	if err != nil {
 		return nil, err
+	}
+	hasMediaParticipants, err := domain.GroupCallHasMediaParticipants(record.ID)
+	if err != nil {
+		return nil, err
+	}
+	if record.RtmpStream || hasMediaParticipants {
+		provider, providerErr := c.newGroupCallMediaProvider()
+		if providerErr != nil {
+			return nil, providerErr
+		}
+		_, providerErr = requestGroupCallMedia(c.secretContext(), provider, groupCallMediaRequest{
+			Operation: "discard_group_call",
+			UserID:    record.Creator,
+			CallID:    record.ID,
+			ChannelID: record.ChannelID,
+		}, fmt.Sprintf("group-call-discard:%d", record.ID))
+		if providerErr != nil {
+			return nil, providerErr
+		}
 	}
 	deleted, err := domain.DeleteGroupCall(record.ID)
 	if err != nil {
@@ -926,7 +983,10 @@ func (c *ApiFullCore) PhoneGetGroupParticipants(in *mtproto.TLPhoneGetGroupParti
 	if err != nil {
 		return nil, err
 	}
-	matched := filterGroupUserIDs(all, want, sources)
+	matched, err := filterGroupUserIDs(record.ID, all, want, sources)
+	if err != nil {
+		return nil, err
+	}
 	page, next := pageGroupUserIDs(matched, offset, limit)
 	parts, users, err := groupParticipantViews(page, uid, record.ID)
 	if err != nil {
@@ -949,14 +1009,18 @@ func (c *ApiFullCore) PhoneCheckGroupCall(in *mtproto.TLPhoneCheckGroupCall) (*m
 		call = in.GetCall()
 		sources = in.GetSources()
 	}
-	_, _, ids, err := c.loadAuthorizedGroupCall(call)
+	_, record, ids, err := c.loadAuthorizedGroupCall(call)
 	if err != nil {
 		return nil, err
 	}
 	present := make(map[int32]struct{}, len(ids))
 	for _, userID := range ids {
-		if src, ok := participantSource(userID); ok {
-			present[src] = struct{}{}
+		state, ok, loadErr := domain.LoadGroupCallParticipant(record.ID, userID)
+		if loadErr != nil {
+			return nil, loadErr
+		}
+		if ok && state.MediaSource > 0 {
+			present[state.MediaSource] = struct{}{}
 		}
 	}
 	out := make([]int32, 0, len(sources))

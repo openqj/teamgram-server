@@ -16,7 +16,7 @@ globalAny.self.addEventListener ??= globalAny.addEventListener;
 
 function sql(query: string): string {
   return execFileSync('docker', [
-    'exec', 'mysql', 'mysql', '-N', '-s', '-uteamgram', '-pteamgram', '-Dteamgram', '-e', query,
+    'exec', 'teamgram-postgres', 'psql', '-v', 'ON_ERROR_STOP=1', '-At', '-q', '-F', '\t', '-U', 'teamgram', '-d', 'teamgram', '-c', query,
   ], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
 }
 
@@ -39,6 +39,46 @@ function storySnapshot(): string {
   const value = sql(`SELECT v FROM apifull_kv WHERE k='story:${userId}'`);
   if (!value) throw new Error(`no production story record found for user ${userId}`);
   return createHash('sha256').update(value).digest('hex');
+}
+
+function storyViewsBaseline(): string {
+  return sql(`SELECT jsonb_array_length(v::jsonb->'order'), (SELECT count(*) FROM jsonb_object_keys(v::jsonb->'items')),
+      (SELECT count(*) FROM jsonb_object_keys(v::jsonb->'viewers')), (SELECT count(*) FROM jsonb_object_keys(v::jsonb->'reactions')),
+      ((v::jsonb #> '{items,1,views}') IS NOT NULL)::int
+    FROM apifull_kv WHERE k='story:${userId}'`);
+}
+
+function int32(value: number): Uint8Array {
+  const out = new Uint8Array(4);
+  new DataView(out.buffer).setInt32(0, value, true);
+  return out;
+}
+
+function concat(...parts: Uint8Array[]): Uint8Array {
+  const out = new Uint8Array(parts.reduce((size, part) => size + part.length, 0));
+  let offset = 0;
+  for (const part of parts) {
+    out.set(part, offset);
+    offset += part.length;
+  }
+  return out;
+}
+
+function rawGetStoryReactionsListRequest(storyId: number, limit: number): any {
+  const constructorId = 0xb9b2881f;
+  return {
+    className: 'stories.GetStoryReactionsList',
+    classType: 'request',
+    CONSTRUCTOR_ID: constructorId,
+    getBytes: () => concat(
+      int32(constructorId),
+      int32(0),
+      int32(0x7da07ec9),
+      int32(storyId),
+      int32(limit),
+    ),
+    readResult: (reader: any) => reader.tgReadObject(),
+  };
 }
 
 const requireModule = createRequire(import.meta.url);
@@ -82,6 +122,10 @@ function storyIds(result: any): number[] {
 
 async function main() {
   const before = storySnapshot();
+  const viewsBaseline = storyViewsBaseline();
+  if (viewsBaseline !== '8\t8\t0\t0\t0') {
+    throw new Error(`unexpected production story-view baseline: ${viewsBaseline}`);
+  }
   const client = makeClient(loadAuthKey());
   try {
     (client as any)._borrowExportedSender = async () => undefined;
@@ -113,8 +157,41 @@ async function main() {
       throw new Error(`unexpected stories by id: ${byIdIds.join(',')}`);
     }
 
+    const storyViews = await client.invoke(new Api.stories.GetStoriesViews({
+      peer: new Api.InputPeerSelf(), id: [1, 2, 3],
+    }));
+    const storyViewItems = Array.isArray(storyViews?.views) ? storyViews.views : [];
+    if (!rpcName(storyViews).toLowerCase().endsWith('storyviews')
+      || storyViewItems.length !== 3
+      || storyViewItems.some((item: any) => Number(item?.viewsCount) !== 0
+        || (Array.isArray(item?.recentViewers) && item.recentViewers.length > 0))) {
+      throw new Error(`unexpected stories.getStoriesViews result: type=${rpcName(storyViews)}, count=${storyViewItems.length}`);
+    }
+
+    const viewsList = await client.invoke(new Api.stories.GetStoryViewsList({
+      peer: new Api.InputPeerSelf(), id: 1, offset: '', limit: 100,
+    }));
+    const listedViews = Array.isArray(viewsList?.views) ? viewsList.views : [];
+    if (!rpcName(viewsList).toLowerCase().endsWith('storyviewslist')
+      || Number(viewsList?.count) !== 0
+      || Number(viewsList?.viewsCount) !== 0
+      || Number(viewsList?.reactionsCount) !== 0
+      || listedViews.length !== 0) {
+      throw new Error(`unexpected stories.getStoryViewsList result: type=${rpcName(viewsList)}, count=${String(viewsList?.count)}, views=${listedViews.length}`);
+    }
+
+    const reactionsList = await client.invoke(rawGetStoryReactionsListRequest(1, 100));
+    const listedReactions = Array.isArray(reactionsList?.reactions) ? reactionsList.reactions : [];
+    if (!rpcName(reactionsList).toLowerCase().endsWith('storyreactionslist')
+      || Number(reactionsList?.count) !== 0
+      || listedReactions.length !== 0) {
+      throw new Error(`unexpected stories.getStoryReactionsList result: type=${rpcName(reactionsList)}, count=${String(reactionsList?.count)}, reactions=${listedReactions.length}`);
+    }
+
     const after = storySnapshot();
-    if (before !== after) throw new Error('story KV changed during read-only probe');
+    if (before !== after || viewsBaseline !== storyViewsBaseline()) {
+      throw new Error('story KV changed during read-only probe');
+    }
     console.log(JSON.stringify({
       userId: String(me.id),
       archiveType: rpcName(archive),
@@ -123,6 +200,23 @@ async function main() {
       byIdType: rpcName(byId),
       byIdCount: byIdIds.length,
       byIdIds,
+      getStoriesViews: {
+        type: rpcName(storyViews),
+        count: storyViewItems.length,
+        viewsCounts: storyViewItems.map((item: any) => Number(item?.viewsCount)),
+      },
+      getStoryViewsList: {
+        type: rpcName(viewsList),
+        count: Number(viewsList.count),
+        viewsCount: Number(viewsList.viewsCount),
+        reactionsCount: Number(viewsList.reactionsCount),
+        views: listedViews.length,
+      },
+      getStoryReactionsList: {
+        type: rpcName(reactionsList),
+        count: Number(reactionsList.count),
+        reactions: listedReactions.length,
+      },
       storyKvSha256: after,
       writes: 0,
     }));

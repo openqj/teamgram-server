@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"strings"
 	"time"
 
@@ -54,7 +55,7 @@ func (c *MessagesCore) deliverStored(inputPeer *mtproto.InputPeer, peer *mtproto
 		return up, true, err
 	}
 	if peer != nil && peer.IsChannel() {
-		up, err := channelview.PostForInputPeerWithReplyAndRandomID(c.MD.UserId, inputPeer, text, time.Now().Unix(), replyToMsgID, replyToTopID, randomID)
+		up, err := channelview.PostForInputPeerWithReplyAndRandomIDForDelivery(c.MD.UserId, inputPeer, text, time.Now().Unix(), replyToMsgID, replyToTopID, randomID, c.MD.PermAuthKeyId)
 		if err != nil {
 			return nil, true, err
 		}
@@ -70,49 +71,29 @@ func (c *MessagesCore) pushChannelUpdates(updates *mtproto.Updates) error {
 	if c == nil || c.MD == nil || c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.SyncClient == nil {
 		return mtproto.ErrMethodNotImpl
 	}
-	if updates == nil {
-		return mtproto.ErrInputRequestInvalid
+	key, err := channelview.DeliveryKeyFromUpdates(updates)
+	if err != nil {
+		return err
 	}
-	var channelID int64
-	for _, update := range updates.GetUpdates() {
-		message := update.GetMessage_MESSAGE()
-		if message == nil || message.GetPeerId() == nil || message.GetPeerId().GetChannelId() <= 0 {
-			continue
-		}
-		if channelID != 0 && channelID != message.GetPeerId().GetChannelId() {
-			return mtproto.ErrInputRequestInvalid
-		}
-		channelID = message.GetPeerId().GetChannelId()
-	}
-	if channelID <= 0 {
-		return mtproto.ErrInputRequestInvalid
-	}
-	chat, err := channelview.ChatForUpdates(c.MD.UserId, channelID)
+	chat, err := channelview.ChatForUpdates(c.MD.UserId, key.ChannelID)
 	if err != nil {
 		return err
 	}
 	updates.Chats = []*mtproto.Chat{chat}
-	userIDs, err := channelview.UpdateRecipientIDs(channelID)
-	if err != nil {
-		return err
-	}
-	var excludes []int64
-	if c.MD.PermAuthKeyId != 0 {
-		excludes = []int64{c.MD.PermAuthKeyId}
-	}
-	for _, userID := range userIDs {
-		if userID <= 0 {
-			return mtproto.ErrInternalServerError
-		}
-		if _, err = c.svcCtx.Dao.SyncClient.SyncPushUpdatesIfNot(c.ctx, &syncpb.TLSyncPushUpdatesIfNot{
+	_, err = channelview.DeliverPendingChannelUpdates(c.ctx, key, false, func(pushCtx context.Context, userID int64, excludes []int64, recipientUpdates *mtproto.Updates) error {
+		callCtx, cancel := context.WithTimeout(pushCtx, 10*time.Second)
+		defer cancel()
+		result, pushErr := c.svcCtx.Dao.SyncClient.SyncPushUpdatesIfNot(callCtx, &syncpb.TLSyncPushUpdatesIfNot{
 			UserId:   userID,
 			Excludes: excludes,
-			Updates:  updates,
-		}); err != nil {
-			return err
+			Updates:  recipientUpdates,
+		})
+		if pushErr == nil && result == nil {
+			return mtproto.ErrMethodNotImpl
 		}
-	}
-	return nil
+		return pushErr
+	})
+	return err
 }
 
 func storedReplyIDs(replyTo *mtproto.InputReplyTo, legacy *wrapperspb.Int32Value) (int32, int32) {

@@ -19,8 +19,7 @@
 package core
 
 import (
-	"context"
-	"github.com/teamgram/marmota/pkg/stores/sqlx"
+	"errors"
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/service/biz/chat/chat"
 )
@@ -38,19 +37,24 @@ func (c *ChatCore) ChatSetHistoryTTL(in *chat.TLChatSetHistoryTTL) (*mtproto.Mut
 		c.Logger.Errorf("chat.setHistoryTTL - error: %v", err)
 		return nil, err
 	}
+	if c.svcCtx.Dao.Postgres == nil || c.svcCtx.Dao.Postgres.Store == nil {
+		return nil, errors.New("chat.setHistoryTTL: PostgreSQL store is not initialized")
+	}
 
-	_, _, err = c.svcCtx.Dao.CachedConn.Exec(
-		c.ctx,
-		func(ctx context.Context, conn *sqlx.DB) (int64, int64, error) {
-			rowsAffected, err2 := c.svcCtx.Dao.ChatsDAO.UpdateTTLPeriod(c.ctx, in.TtlPeriod, in.ChatId)
-			return 0, rowsAffected, err2
-		},
-		c.svcCtx.Dao.GetChatCacheKey(in.ChatId))
+	tx, err := c.svcCtx.Dao.Postgres.Pool.Begin(c.ctx)
+	if err == nil {
+		defer tx.Rollback(c.ctx)
+		_, err = c.svcCtx.Dao.Postgres.Store.Chats.UpdateTTLPeriodOn(c.ctx, tx, in.TtlPeriod, in.ChatId)
+		if err == nil {
+			err = tx.Commit(c.ctx)
+		}
+	}
 
 	if err != nil {
 		c.Logger.Errorf("chat.setHistoryTTL - error: %v", err)
 		return nil, err
 	}
 
+	mChat.Chat.TtlPeriod = in.TtlPeriod
 	return mChat, nil
 }

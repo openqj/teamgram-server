@@ -33,7 +33,7 @@ func (c *MsgCore) MsgUpdatePinnedMessage(in *msg.TLMsgUpdatePinnedMessage) (*mtp
 	case mtproto.PEER_SELF,
 		mtproto.PEER_USER,
 		mtproto.PEER_CHAT:
-		boxMsg, err := c.svcCtx.Dao.MessagesDAO.SelectByMessageId(c.ctx, in.UserId, in.Id)
+		boxMsg, err := c.svcCtx.Dao.SelectMessageByID(c.ctx, in.UserId, in.Id)
 		if err != nil {
 			c.Logger.Errorf("msg.updatePinnedMessage - error: %v", err)
 			return nil, mtproto.ErrMsgIdInvalid
@@ -46,7 +46,7 @@ func (c *MsgCore) MsgUpdatePinnedMessage(in *msg.TLMsgUpdatePinnedMessage) (*mtp
 			var (
 				pinnedMsgId int32 = 0
 			)
-			idList, _ := c.svcCtx.Dao.MessagesDAO.SelectLastTwoPinnedList(c.ctx, in.UserId, boxMsg.DialogId1, boxMsg.DialogId2)
+			idList, _ := c.svcCtx.Dao.SelectLastTwoPinnedMessages(c.ctx, in.UserId, boxMsg.DialogId1, boxMsg.DialogId2)
 			if len(idList) == 2 {
 				if in.Id == idList[0] {
 					pinnedMsgId = idList[1]
@@ -87,7 +87,7 @@ func (c *MsgCore) MsgUpdatePinnedMessage(in *msg.TLMsgUpdatePinnedMessage) (*mtp
 		}
 
 		// pinned
-		c.svcCtx.Dao.MessagesDAO.UpdatePinned(c.ctx, !in.GetUnpin(), in.UserId, in.Id)
+		c.svcCtx.Dao.UpdateMessagePinned(c.ctx, !in.GetUnpin(), in.UserId, in.Id)
 		pinnedPts := c.svcCtx.Dao.IDGenClient2.NextPtsId(c.ctx, in.UserId)
 		updatePinnedMessage := mtproto.MakeTLUpdatePinnedMessages(&mtproto.Update{
 			Pinned:    !in.GetUnpin(),

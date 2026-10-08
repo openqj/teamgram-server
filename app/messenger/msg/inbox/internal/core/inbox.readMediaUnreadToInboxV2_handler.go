@@ -27,7 +27,7 @@ import (
 // InboxReadMediaUnreadToInboxV2
 // inbox.readMediaUnreadToInboxV2 user_id:long peer_type:int peer_id:long dialog_message_id:long = Void;
 func (c *InboxCore) InboxReadMediaUnreadToInboxV2(in *inbox.TLInboxReadMediaUnreadToInboxV2) (*mtproto.Void, error) {
-	unreadDO, err := c.svcCtx.Dao.MessagesDAO.SelectByMessageDataId(c.ctx, in.UserId, in.DialogMessageId)
+	unreadDO, err := c.svcCtx.Dao.SelectMessageByDataID(c.ctx, in.UserId, in.DialogMessageId)
 	if err != nil {
 		c.Logger.Errorf("inbox.readMediaUnreadToInboxV2 - error: %v", err)
 		return nil, err
@@ -40,7 +40,7 @@ func (c *InboxCore) InboxReadMediaUnreadToInboxV2(in *inbox.TLInboxReadMediaUnre
 	if !unreadDO.MediaUnread {
 		return mtproto.EmptyVoid, nil
 	}
-	_, err = c.svcCtx.Dao.MessagesDAO.UpdateMediaUnread(c.ctx, unreadDO.UserId, unreadDO.UserMessageBoxId)
+	_, err = c.svcCtx.Dao.UpdateMessageMediaUnread(c.ctx, unreadDO.UserId, unreadDO.UserMessageBoxId)
 	if err != nil {
 		c.Logger.Errorf("inbox.readMediaUnreadToInboxV2 - error: %v", err)
 		return nil, err

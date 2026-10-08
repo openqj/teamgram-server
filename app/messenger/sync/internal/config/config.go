@@ -20,11 +20,10 @@ package config
 
 import (
 	kafka "github.com/teamgram/marmota/pkg/mq"
+	"github.com/teamgram/teamgram-server/pkg/storage/postgres"
 	"github.com/zeromicro/go-zero/core/stores/cache"
 	"github.com/zeromicro/go-zero/core/stores/kv"
 	"github.com/zeromicro/go-zero/zrpc"
-
-	"github.com/teamgram/marmota/pkg/stores/sqlx"
 )
 
 // Routine routine.
@@ -35,7 +34,7 @@ type Routine struct {
 
 type Config struct {
 	zrpc.RpcServerConf
-	Mysql            sqlx.Config
+	Postgres         postgres.Config
 	Cache            cache.CacheConf
 	KV               kv.KvConf
 	Routine          Routine

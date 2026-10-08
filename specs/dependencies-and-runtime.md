@@ -6,14 +6,20 @@ This document covers core dependencies, recommended versions, and the Docker sta
 
 | Component | Purpose | Recommended version |
 |-----------|---------|---------------------|
-| **MySQL** | Primary data store | 5.7 or 8.0 (Docker stack uses 8.0) |
+| **PostgreSQL** | Primary data store | 18 (migration target) |
 | **Redis** | Cache, session, deduplication | 6.x / 7.x |
 | **etcd** | Service discovery and config | v3.5.x |
 | **Kafka** | Message and event pipeline | 3.x (KRaft, no Zookeeper) |
 | **MinIO** | Object storage (documents, photos, videos) | Current stable |
 | **FFmpeg** | Media transcoding (install on server) | Per install docs |
 
-- Create database `teamgram` and run all init and migrate scripts under **`teamgramd/deploy/sql/`** in order.
+- Create an empty `teamgram` database on PostgreSQL 18 and apply the checked-in
+  migrations with `teamgramd/deploy/postgres/apply.sh` (or the
+  `postgres-migrate` service in `docker-compose-postgres.yaml`).
+- **PostgreSQL 18 is the sole production database target**. The application
+  services are being switched in slices; a service is not considered migrated
+  until its complete method set, transactions, tests, and Layer 229 probes use
+  the PostgreSQL path.
 - MinIO: create buckets `documents`, `encryptedfiles`, `photos`, `videos` (auto-created by minio-mc when using the provided Docker stack).
 
 ## Optional: monitoring and logging
@@ -40,7 +46,7 @@ Aligned with `docker-compose-env.yaml` and [README-env-cn.md](../README-env-cn.m
 - **Kafka**: bitnamilegacy/kafka:3.5.1 (KRaft)
 - **etcd**: quay.io/coreos/etcd:v3.5.11
 - **Redis**: redis:7-alpine
-- **MySQL**: mysql:8.0
+- **PostgreSQL**: postgres:18
 - **MinIO**: minio/minio:latest; minio-mc for bucket init
 - **Jaeger**: jaegertracing/all-in-one:1.52
 - **Prometheus**: prom/prometheus:v2.47.2
@@ -62,4 +68,5 @@ If you install components yourself, see:
 - [Manual installation (Linux)](../docs/install-manual-linux.md)
 - [Manual installation (macOS)](../docs/install-manual-macos.md)
 
-Then ensure MySQL, Redis, etcd, Kafka, MinIO, and FFmpeg are available and run `make` and `teamgramd/bin/runall2.sh`.
+Then ensure PostgreSQL, Redis, etcd, Kafka, MinIO, and FFmpeg are available,
+apply the PostgreSQL migrations, and run `make` and `teamgramd/bin/runall2.sh`.

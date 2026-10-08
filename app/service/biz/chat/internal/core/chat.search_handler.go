@@ -51,7 +51,13 @@ func (c *ChatCore) ChatSearch(in *chat.TLChatSearch) (*chat.Vector_MutableChat, 
 		limit = 50
 	}
 
-	ids, err := c.svcCtx.Dao.ChatsDAO.SearchByQueryStringForUserOffset(c.ctx, in.GetSelfId(), "%"+in.GetQ()+"%", in.GetOffset(), limit)
+	var ids []int64
+	var err error
+	if c.svcCtx.Dao.Postgres != nil && c.svcCtx.Dao.Postgres.Store != nil {
+		ids, err = c.svcCtx.Dao.Postgres.Store.Chats.SearchByQueryStringForUserOffset(c.ctx, in.GetSelfId(), "%"+in.GetQ()+"%", in.GetOffset(), limit)
+	} else {
+		ids, err = c.svcCtx.Dao.ChatsDAO.SearchByQueryStringForUserOffset(c.ctx, in.GetSelfId(), "%"+in.GetQ()+"%", in.GetOffset(), limit)
+	}
 	if err != nil {
 		c.Logger.Errorf("chat.search - search error: %v", err)
 		return nil, err

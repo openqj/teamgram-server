@@ -46,6 +46,17 @@ func TestChannelsDeleteChannelOwnerTransactionRoundTrip(t *testing.T) {
 			approved_by BIGINT NOT NULL DEFAULT 0,
 			date2 BIGINT NOT NULL
 		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+		`CREATE TABLE IF NOT EXISTS apifull_channel_message_request (
+			channel_id BIGINT NOT NULL,
+			sender_user_id BIGINT NOT NULL,
+			random_id BIGINT NOT NULL,
+			message_id INT NOT NULL,
+			pts INT NOT NULL,
+			request_hash BINARY(32) NOT NULL,
+			created_at INT NOT NULL,
+			PRIMARY KEY (channel_id, sender_user_id, random_id),
+			KEY idx_apifull_channel_message_request_message (channel_id, message_id)
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 	} {
 		if _, err = db.Exec(statement); err != nil {
 			t.Fatal("create shared invite test table:", err)
@@ -59,6 +70,7 @@ func TestChannelsDeleteChannelOwnerTransactionRoundTrip(t *testing.T) {
 	legacyKey := chanDataKey(owner, channelID)
 	t.Cleanup(func() {
 		for _, query := range []string{
+			`DELETE FROM apifull_channel_message_request WHERE channel_id=?`,
 			`DELETE FROM apifull_channel_message_hidden WHERE channel_id=?`,
 			`DELETE FROM apifull_channel_message WHERE channel_id=?`,
 			`DELETE FROM apifull_channel_message_seq WHERE channel_id=?`,
@@ -84,6 +96,11 @@ func TestChannelsDeleteChannelOwnerTransactionRoundTrip(t *testing.T) {
 	}
 	if _, err = channelview.Post(owner, channelID, "delete me", time.Now().Unix()); err != nil {
 		t.Fatal("save channel message:", err)
+	}
+	if _, err = db.Exec(`INSERT INTO apifull_channel_message_request
+		(channel_id, sender_user_id, random_id, message_id, pts, request_hash, created_at)
+		VALUES (?,?,?,?,?,?,?)`, channelID, owner, 91024001, 1, 1, make([]byte, 32), time.Now().Unix()); err != nil {
+		t.Fatal("save channel message request mapping:", err)
 	}
 	if _, err = db.Exec(`INSERT INTO apifull_channel_message_hidden (user_id, channel_id, message_id) VALUES (?,?,?)`, member, channelID, 1); err != nil {
 		t.Fatal("save hidden-message row:", err)
@@ -138,6 +155,7 @@ func TestChannelsDeleteChannelOwnerTransactionRoundTrip(t *testing.T) {
 	for name, query := range map[string]string{
 		"members":            `SELECT COUNT(*) FROM apifull_channel_member WHERE channel_id=?`,
 		"messages":           `SELECT COUNT(*) FROM apifull_channel_message WHERE channel_id=?`,
+		"message_requests":   `SELECT COUNT(*) FROM apifull_channel_message_request WHERE channel_id=?`,
 		"hidden":             `SELECT COUNT(*) FROM apifull_channel_message_hidden WHERE channel_id=?`,
 		"sequence":           `SELECT COUNT(*) FROM apifull_channel_message_seq WHERE channel_id=?`,
 		"read":               `SELECT COUNT(*) FROM apifull_channel_read_state WHERE channel_id=?`,

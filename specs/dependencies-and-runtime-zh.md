@@ -6,14 +6,17 @@
 
 | 组件 | 用途 | 推荐版本 |
 |------|------|----------|
-| **MySQL** | 主数据存储 | 5.7 或 8.0（Docker 栈使用 8.0） |
+| **PostgreSQL** | 主数据存储 | 18（迁移目标） |
 | **Redis** | 缓存、会话、去重 | 6.x / 7.x |
 | **etcd** | 服务发现与配置 | v3.5.x |
 | **Kafka** | 消息与事件管道 | 3.x（KRaft，无需 Zookeeper） |
 | **MinIO** | 对象存储（文档、图片、视频等） | 当前 stable |
 | **FFmpeg** | 媒体转码（服务端安装） | 见各安装文档 |
 
-- 创建数据库 `teamgram`，并按顺序执行 **`teamgramd/deploy/sql/`** 下所有初始化与 migrate 脚本。
+- 在 PostgreSQL 18 中创建空数据库 `teamgram`，使用
+  `teamgramd/deploy/postgres/apply.sh` 执行仓库内迁移（或直接使用
+  `docker-compose-postgres.yaml` 中的 `postgres-migrate` 服务）。
+- **PostgreSQL 18 是唯一生产数据库目标**。各服务按切片切换；只有完整方法集、事务、测试和 Layer 229 探针都走 PostgreSQL 后，才算该服务迁移完成。
 - MinIO：创建桶 `documents`、`encryptedfiles`、`photos`、`videos`（使用仓库提供的 Docker 栈时由 minio-mc 自动创建）。
 
 ## 可选：监控与日志
@@ -40,7 +43,7 @@
 - **Kafka**: bitnamilegacy/kafka:3.5.1（KRaft）
 - **etcd**: quay.io/coreos/etcd:v3.5.11
 - **Redis**: redis:7-alpine
-- **MySQL**: mysql:8.0
+- **PostgreSQL**: postgres:18
 - **MinIO**: minio/minio:latest；minio-mc 用于 bucket 初始化
 - **Jaeger**: jaegertracing/all-in-one:1.52
 - **Prometheus**: prom/prometheus:v2.47.2
@@ -62,4 +65,5 @@
 - [手动安装（Linux）](../docs/install-manual-linux-zh.md)
 - [手动安装（macOS）](../docs/install-manual-macos-zh.md)
 
-确保 MySQL、Redis、etcd、Kafka、MinIO、FFmpeg 可用后，执行 `make` 与 `teamgramd/bin/runall2.sh`。
+确保 PostgreSQL、Redis、etcd、Kafka、MinIO、FFmpeg 可用，执行 PostgreSQL
+迁移后，再运行 `make` 与 `teamgramd/bin/runall2.sh`。

@@ -11,7 +11,6 @@ package core
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/teamgram/marmota/pkg/threading2"
 	"github.com/teamgram/proto/mtproto"
@@ -34,7 +33,7 @@ func (c *MsgCore) MsgReadHistory(in *msg.TLMsgReadHistory) (*mtproto.Messages_Af
 		unreadCount   int32 = 0
 	)
 
-	dlg, err := c.svcCtx.Dao.DialogsDAO.SelectDialog(c.ctx, in.UserId, in.PeerType, in.PeerId)
+	dlg, err := c.svcCtx.Dao.SelectDialog(c.ctx, in.UserId, in.PeerType, in.PeerId)
 	if err != nil {
 		c.Logger.Errorf("messages.readHistory - error: invalid peer %v", err)
 		return nil, mtproto.ErrInternalServerError
@@ -49,7 +48,7 @@ func (c *MsgCore) MsgReadHistory(in *msg.TLMsgReadHistory) (*mtproto.Messages_Af
 
 	// inbox readed
 	if dlg.UnreadCount > 0 || maxId > dlg.ReadInboxMaxId {
-		maxInboxMsg, err3 := c.svcCtx.Dao.MessagesDAO.SelectByMessageId(c.ctx, in.UserId, maxId)
+		maxInboxMsg, err3 := c.svcCtx.Dao.SelectMessageByID(c.ctx, in.UserId, maxId)
 		if err3 != nil {
 			c.Logger.Errorf("messages.readHistory - error: not found dialog(%d,%d), error is %v", in.UserId, maxId, err3)
 			return nil, mtproto.ErrInternalServerError
@@ -74,11 +73,10 @@ func (c *MsgCore) MsgReadHistory(in *msg.TLMsgReadHistory) (*mtproto.Messages_Af
 	}
 
 	if maxId > dlg.ReadInboxMaxId {
-		readCount := c.svcCtx.Dao.CommonDAO.CalcSizeByWhere(
-			c.ctx,
-			c.svcCtx.Dao.MessagesDAO.CalcTableName(in.UserId),
-			fmt.Sprintf("user_id = %d AND dialog_id1 = %d AND dialog_id2 = %d AND sender_user_id <> %d AND user_message_box_id > %d AND user_message_box_id <= %d AND deleted = 0",
-				in.UserId, did.A, did.B, in.UserId, dlg.ReadInboxMaxId, maxId))
+		readCount, err := c.svcCtx.Dao.CountUnreadIncoming(c.ctx, in.UserId, did.A, did.B, in.UserId, dlg.ReadInboxMaxId, maxId)
+		if err != nil {
+			return nil, err
+		}
 		unreadCount = dlg.UnreadCount - int32(readCount)
 		if unreadCount < 0 {
 			unreadCount = 0

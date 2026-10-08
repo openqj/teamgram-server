@@ -15,6 +15,7 @@ import (
 
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/service/biz/chat/chat"
+	"github.com/teamgram/teamgram-server/app/service/biz/chat/internal/dal/dataobject"
 )
 
 // ChatGetMutableChatByLink
@@ -25,7 +26,13 @@ func (c *ChatCore) ChatGetMutableChatByLink(in *chat.TLChatGetMutableChatByLink)
 	}
 
 	link := chat.GetInviteHashByLink(strings.TrimSpace(in.GetLink()))
-	invite, err := c.svcCtx.Dao.ChatInvitesDAO.SelectByLink(c.ctx, link)
+	var invite *dataobject.ChatInvitesDO
+	var err error
+	if c.svcCtx.Dao.Postgres != nil && c.svcCtx.Dao.Postgres.Store != nil {
+		invite, err = c.svcCtx.Dao.Postgres.Store.Invites.SelectByLink(c.ctx, link)
+	} else {
+		invite, err = c.svcCtx.Dao.ChatInvitesDAO.SelectByLink(c.ctx, link)
+	}
 	if err != nil {
 		c.Logger.Errorf("chat.getMutableChatByLink - error: %v", err)
 		return nil, err

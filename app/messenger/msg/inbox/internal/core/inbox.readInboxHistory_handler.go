@@ -19,8 +19,6 @@
 package core
 
 import (
-	"fmt"
-
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/messenger/msg/inbox/inbox"
 	"github.com/teamgram/teamgram-server/app/messenger/sync/sync"
@@ -39,11 +37,10 @@ func (c *InboxCore) InboxReadInboxHistory(in *inbox.TLInboxReadInboxHistory) (*m
 	)
 
 	if maxId > in.ReadInboxMaxId {
-		readCount := c.svcCtx.Dao.CommonDAO.CalcSizeByWhere(
-			c.ctx,
-			c.svcCtx.Dao.MessagesDAO.CalcTableName(in.UserId),
-			fmt.Sprintf("user_id = %d AND dialog_id1 = %d AND dialog_id2 = %d AND sender_user_id <> %d AND user_message_box_id > %d AND user_message_box_id <= %d AND deleted = 0",
-				in.UserId, did.A, did.B, in.UserId, in.ReadInboxMaxId, maxId))
+		readCount, err := c.svcCtx.Dao.CountUnreadIncoming(c.ctx, in.UserId, did.A, did.B, in.UserId, in.ReadInboxMaxId, maxId)
+		if err != nil {
+			return nil, err
+		}
 		unreadCount = in.UnreadCount - int32(readCount)
 		if unreadCount < 0 {
 			unreadCount = 0

@@ -10,10 +10,7 @@
 package core
 
 import (
-	"context"
-
 	"github.com/teamgram/marmota/pkg/hack"
-	"github.com/teamgram/marmota/pkg/stores/sqlx"
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/service/biz/dialog/dialog"
 	"github.com/teamgram/teamgram-server/app/service/biz/dialog/internal/dal/dataobject"
@@ -25,49 +22,27 @@ import (
 // dialog.saveDraftMessage user_id:long peer_type:int peer_id:long message:DraftMessage = Bool;
 func (c *DialogCore) DialogSaveDraftMessage(in *dialog.TLDialogSaveDraftMessage) (*mtproto.Bool, error) {
 	draft, _ := jsonx.Marshal(in.Message)
-	cacheKeys := []string{
-		dialog.GetDialogCacheKeyByPeer(in.UserId, in.PeerType, in.PeerId),
-		dialog.GetAllDraftIdListCacheKey(in.UserId),
+	if c == nil || c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.Postgres == nil || c.svcCtx.Dao.Postgres.Store == nil {
+		return nil, mtproto.ErrInternalServerError
 	}
-	if cacheKey := dialog.GetCacheKeyByPeerType(in.UserId, in.PeerType); cacheKey != "" {
-		cacheKeys = append(cacheKeys, cacheKey)
-	}
-
-	_, _, err := c.svcCtx.Dao.CachedConn.Exec(
-		c.ctx,
-		func(ctx context.Context, conn *sqlx.DB) (int64, int64, error) {
-			rowsAffected, err := c.svcCtx.Dao.DialogsDAO.SaveDraft(
-				ctx,
-				2,
-				hack.String(draft),
-				in.UserId,
-				in.PeerType,
-				in.PeerId)
-			if err != nil || rowsAffected != 0 {
-				return 0, rowsAffected, err
-			}
-
-			_, _, err = c.svcCtx.Dao.DialogsDAO.InsertIgnore(ctx, &dataobject.DialogsDO{
-				UserId:           in.UserId,
-				PeerType:         in.PeerType,
-				PeerId:           in.PeerId,
-				PeerDialogId:     mtproto.MakePeerDialogId(in.PeerType, in.PeerId),
-				DraftMessageData: "null",
+	tx, err := c.svcCtx.Dao.Postgres.Pool.Begin(c.ctx)
+	if err == nil {
+		defer func() { _ = tx.Rollback(c.ctx) }()
+		rowsAffected, txErr := c.svcCtx.Dao.Postgres.Store.Dialogs.SaveDraftTx(c.ctx, tx, 2, hack.String(draft), in.UserId, in.PeerType, in.PeerId)
+		if txErr == nil && rowsAffected == 0 {
+			_, _, txErr = c.svcCtx.Dao.Postgres.Store.Dialogs.InsertIgnoreTx(c.ctx, tx, &dataobject.DialogsDO{
+				UserId: in.UserId, PeerType: in.PeerType, PeerId: in.PeerId,
+				PeerDialogId: mtproto.MakePeerDialogId(in.PeerType, in.PeerId), DraftMessageData: "null",
 			})
-			if err != nil {
-				return 0, 0, err
+			if txErr == nil {
+				_, txErr = c.svcCtx.Dao.Postgres.Store.Dialogs.SaveDraftTx(c.ctx, tx, 2, hack.String(draft), in.UserId, in.PeerType, in.PeerId)
 			}
-
-			rowsAffected, err = c.svcCtx.Dao.DialogsDAO.SaveDraft(
-				ctx,
-				2,
-				hack.String(draft),
-				in.UserId,
-				in.PeerType,
-				in.PeerId)
-			return 0, rowsAffected, err
-		},
-		cacheKeys...)
+		}
+		err = txErr
+		if err == nil {
+			err = tx.Commit(c.ctx)
+		}
+	}
 	if err != nil {
 		c.Logger.Errorf("dialog.saveDraftMessage - error: %v", err)
 		return nil, err

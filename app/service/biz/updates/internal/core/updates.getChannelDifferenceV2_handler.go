@@ -11,13 +11,13 @@ package core
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"sort"
 	"strings"
 
-	"github.com/teamgram/marmota/pkg/stores/sqlx"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/service/biz/updates/updates"
 	"google.golang.org/protobuf/types/known/wrapperspb"
@@ -35,29 +35,29 @@ type persistedChannelMember struct {
 }
 
 type persistedChannelMessage struct {
-	ChannelID   int64          `db:"channel_id"`
-	MessageID   int32          `db:"message_id"`
-	Sender      int64          `db:"sender_user_id"`
-	Date        int64          `db:"date"`
-	Text        string         `db:"message"`
-	ContentJSON sql.NullString `db:"content_json"`
-	Edited      bool           `db:"edited"`
-	EditedAt    int64          `db:"edited_at"`
-	Pinned      bool           `db:"pinned"`
+	ChannelID   int64  `db:"channel_id"`
+	MessageID   int32  `db:"message_id"`
+	Sender      int64  `db:"sender_user_id"`
+	Date        int64  `db:"date"`
+	Text        string `db:"message"`
+	ContentJSON string `db:"content_json"`
+	Edited      bool   `db:"edited"`
+	EditedAt    int64  `db:"edited_at"`
+	Pinned      bool   `db:"pinned"`
 }
 
 type persistedChannelEvent struct {
-	ChannelID   int64          `db:"channel_id"`
-	Pts         int32          `db:"pts"`
-	PtsCount    int32          `db:"pts_count"`
-	EventType   string         `db:"event_type"`
-	MessageIDs  string         `db:"message_ids"`
-	Sender      int64          `db:"sender_user_id"`
-	Date        int64          `db:"date"`
-	Text        string         `db:"message"`
-	ContentJSON sql.NullString `db:"content_json"`
-	EditedAt    int64          `db:"edited_at"`
-	Pinned      bool           `db:"pinned"`
+	ChannelID   int64  `db:"channel_id"`
+	Pts         int32  `db:"pts"`
+	PtsCount    int32  `db:"pts_count"`
+	EventType   string `db:"event_type"`
+	MessageIDs  string `db:"message_ids"`
+	Sender      int64  `db:"sender_user_id"`
+	Date        int64  `db:"date"`
+	Text        string `db:"message"`
+	ContentJSON string `db:"content_json"`
+	EditedAt    int64  `db:"edited_at"`
+	Pinned      bool   `db:"pinned"`
 }
 
 type channelDifferenceItem struct {
@@ -88,45 +88,29 @@ func (c *UpdatesCore) UpdatesGetChannelDifferenceV2(in *updates.TLUpdatesGetChan
 	if in.GetLimit() <= 0 || in.GetLimit() > channelDifferenceMaxLimit {
 		return nil, mtproto.ErrLimitInvalid
 	}
-	if c == nil || c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.Mysql == nil || c.svcCtx.Dao.DB == nil {
+	if c == nil || c.svcCtx == nil || c.svcCtx.Dao == nil {
 		return nil, mtproto.ErrInternalServerError
 	}
 
-	state, err := loadChannelState(c.ctx, c.svcCtx.Dao.DB, in.GetChannelId())
+	var (
+		state     persistedChannelState
+		rows      []persistedChannelMessage
+		events    []persistedChannelEvent
+		hiddenIDs []int32
+		err       error
+	)
+	if c.svcCtx.Dao.Postgres == nil || c.svcCtx.Dao.Postgres.Pool == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
+	state, rows, events, hiddenIDs, err = loadChannelDataPostgres(c.ctx, c.svcCtx.Dao.Postgres.Pool,
+		in.GetChannelId(), in.GetUserId(), in.GetPts(), in.GetLimit())
 	if err != nil {
-		return nil, err
-	}
-	if err = ensureChannelMember(c.ctx, c.svcCtx.Dao.DB, in.GetChannelId(), in.GetUserId(), state.CreatorUserID); err != nil {
-		return nil, err
-	}
-
-	rows := make([]persistedChannelMessage, 0, in.GetLimit()+1)
-	err = c.svcCtx.Dao.DB.QueryRowsPartial(c.ctx, &rows, `SELECT channel_id, message_id, sender_user_id, date, message, COALESCE(content_json,''), edited, edited_at, pinned
-		FROM apifull_channel_message WHERE channel_id=? AND message_id>? AND NOT EXISTS (
-			SELECT 1 FROM apifull_channel_message_hidden h
-			WHERE h.user_id=? AND h.channel_id=apifull_channel_message.channel_id
-			AND h.message_id=apifull_channel_message.message_id)
-		ORDER BY message_id ASC LIMIT ?`, in.GetChannelId(), in.GetPts(), in.GetUserId(), in.GetLimit()+1)
-	if err != nil {
-		return nil, err
-	}
-
-	events := make([]persistedChannelEvent, 0, in.GetLimit()+1)
-	if err = c.svcCtx.Dao.DB.QueryRowsPartial(c.ctx, &events, `SELECT channel_id, pts, pts_count, event_type, message_ids,
-		sender_user_id, date, message, COALESCE(content_json,''), edited_at, pinned
-		FROM apifull_channel_event WHERE channel_id=? AND pts>? ORDER BY pts ASC LIMIT ?`,
-		in.GetChannelId(), in.GetPts(), in.GetLimit()+1); err != nil && !missingChannelEventTable(err) {
 		return nil, err
 	}
 
 	hidden := make(map[int32]struct{})
-	var hiddenIDs []int32
-	if err = c.svcCtx.Dao.DB.QueryRowsPartial(c.ctx, &hiddenIDs, `SELECT message_id FROM apifull_channel_message_hidden WHERE user_id=? AND channel_id=?`, in.GetUserId(), in.GetChannelId()); err == nil {
-		for _, id := range hiddenIDs {
-			hidden[id] = struct{}{}
-		}
-	} else if !missingChannelEventTable(err) {
-		return nil, err
+	for _, id := range hiddenIDs {
+		hidden[id] = struct{}{}
 	}
 
 	items := make([]channelDifferenceItem, 0, len(rows)+len(events))
@@ -246,42 +230,125 @@ func missingChannelEventTable(err error) bool {
 	return strings.Contains(msg, "apifull_channel_event") && (strings.Contains(msg, "doesn't exist") || strings.Contains(msg, "does not exist") || strings.Contains(msg, "unknown table"))
 }
 
-func loadChannelState(ctx context.Context, db *sqlx.DB, channelID int64) (persistedChannelState, error) {
+// loadChannelDataPostgres mirrors the legacy channel-difference reads with
+// PostgreSQL placeholders and pgx scans. The APIFull PostgreSQL schema is
+// initialized by the APIFull domain store before this path is served.
+func loadChannelDataPostgres(ctx context.Context, pool *pgxpool.Pool, channelID, userID int64, pts, limit int32) (
+	persistedChannelState, []persistedChannelMessage, []persistedChannelEvent, []int32, error) {
 	var state persistedChannelState
-	err := db.QueryRowPartial(ctx, &state, `SELECT c.creator_user_id,
+	if err := pool.QueryRow(ctx, `SELECT c.creator_user_id,
 		COALESCE(s.pts, (SELECT COALESCE(MAX(m.message_id), 0) FROM apifull_channel_message m WHERE m.channel_id=c.id)) AS pts
 		FROM apifull_channel c
 		LEFT JOIN apifull_channel_message_seq s ON s.channel_id=c.id
-		WHERE c.id=?`, channelID)
-	if errors.Is(err, sql.ErrNoRows) {
-		return persistedChannelState{}, mtproto.ErrChannelInvalid
+		WHERE c.id = $1`, channelID).Scan(&state.CreatorUserID, &state.Pts); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return persistedChannelState{}, nil, nil, nil, mtproto.ErrChannelInvalid
+		}
+		return persistedChannelState{}, nil, nil, nil, err
 	}
+	if err := ensureChannelMemberPostgres(ctx, pool, channelID, userID, state.CreatorUserID); err != nil {
+		return persistedChannelState{}, nil, nil, nil, err
+	}
+
+	rows := make([]persistedChannelMessage, 0, limit+1)
+	messageRows, err := pool.Query(ctx, `SELECT channel_id, message_id, sender_user_id, date, message,
+		COALESCE(content_json, '') AS content_json, edited, edited_at, pinned
+		FROM apifull_channel_message
+		WHERE channel_id = $1 AND message_id > $2 AND NOT EXISTS (
+			SELECT 1 FROM apifull_channel_message_hidden h
+			WHERE h.user_id = $3 AND h.channel_id = apifull_channel_message.channel_id
+			AND h.message_id = apifull_channel_message.message_id)
+		ORDER BY message_id ASC LIMIT $4`, channelID, pts, userID, limit+1)
 	if err != nil {
-		return persistedChannelState{}, err
+		return persistedChannelState{}, nil, nil, nil, err
 	}
-	return state, nil
+	for messageRows.Next() {
+		var row persistedChannelMessage
+		var edited, pinned int16
+		if err := messageRows.Scan(&row.ChannelID, &row.MessageID, &row.Sender, &row.Date, &row.Text,
+			&row.ContentJSON, &edited, &row.EditedAt, &pinned); err != nil {
+			messageRows.Close()
+			return persistedChannelState{}, nil, nil, nil, err
+		}
+		row.Edited, row.Pinned = edited != 0, pinned != 0
+		rows = append(rows, row)
+	}
+	if err := messageRows.Err(); err != nil {
+		messageRows.Close()
+		return persistedChannelState{}, nil, nil, nil, err
+	}
+	messageRows.Close()
+
+	events := make([]persistedChannelEvent, 0, limit+1)
+	eventRows, err := pool.Query(ctx, `SELECT channel_id, pts, pts_count, event_type, message_ids,
+		sender_user_id, date, message, COALESCE(content_json, '') AS content_json, edited_at, pinned
+		FROM apifull_channel_event WHERE channel_id = $1 AND pts > $2
+		ORDER BY pts ASC LIMIT $3`, channelID, pts, limit+1)
+	if err == nil {
+		for eventRows.Next() {
+			var row persistedChannelEvent
+			var pinned int16
+			if scanErr := eventRows.Scan(&row.ChannelID, &row.Pts, &row.PtsCount, &row.EventType,
+				&row.MessageIDs, &row.Sender, &row.Date, &row.Text, &row.ContentJSON, &row.EditedAt, &pinned); scanErr != nil {
+				eventRows.Close()
+				return persistedChannelState{}, nil, nil, nil, scanErr
+			}
+			row.Pinned = pinned != 0
+			events = append(events, row)
+		}
+		if rowsErr := eventRows.Err(); rowsErr != nil {
+			eventRows.Close()
+			return persistedChannelState{}, nil, nil, nil, rowsErr
+		}
+		eventRows.Close()
+	} else if !missingChannelEventTable(err) {
+		return persistedChannelState{}, nil, nil, nil, err
+	}
+
+	hiddenIDs := make([]int32, 0)
+	hiddenRows, err := pool.Query(ctx, `SELECT message_id FROM apifull_channel_message_hidden WHERE user_id = $1 AND channel_id = $2`, userID, channelID)
+	if err == nil {
+		for hiddenRows.Next() {
+			var id int32
+			if scanErr := hiddenRows.Scan(&id); scanErr != nil {
+				hiddenRows.Close()
+				return persistedChannelState{}, nil, nil, nil, scanErr
+			}
+			hiddenIDs = append(hiddenIDs, id)
+		}
+		if rowsErr := hiddenRows.Err(); rowsErr != nil {
+			hiddenRows.Close()
+			return persistedChannelState{}, nil, nil, nil, rowsErr
+		}
+		hiddenRows.Close()
+	} else if !missingChannelEventTable(err) {
+		return persistedChannelState{}, nil, nil, nil, err
+	}
+
+	return state, rows, events, hiddenIDs, nil
 }
 
-func ensureChannelMember(ctx context.Context, db *sqlx.DB, channelID, userID, creatorID int64) error {
+func ensureChannelMemberPostgres(ctx context.Context, pool *pgxpool.Pool, channelID, userID, creatorID int64) error {
 	if userID == creatorID {
 		return nil
 	}
-	var member persistedChannelMember
-	err := db.QueryRowPartial(ctx, &member, `SELECT banned_rights FROM apifull_channel_member WHERE channel_id=? AND user_id=?`, channelID, userID)
-	if errors.Is(err, sql.ErrNoRows) {
+	var bannedRights string
+	err := pool.QueryRow(ctx, `SELECT banned_rights FROM apifull_channel_member WHERE channel_id = $1 AND user_id = $2`, channelID, userID).Scan(&bannedRights)
+	if errors.Is(err, pgx.ErrNoRows) {
 		return mtproto.ErrUserNotParticipant
 	}
 	if err != nil {
 		return err
 	}
-	if member.BannedRights != "" {
-		var rights channelBannedRights
-		if err = json.Unmarshal([]byte(member.BannedRights), &rights); err != nil {
-			return err
-		}
-		if rights.ViewMessages {
-			return mtproto.ErrUserNotParticipant
-		}
+	if bannedRights == "" {
+		return nil
+	}
+	var rights channelBannedRights
+	if err := json.Unmarshal([]byte(bannedRights), &rights); err != nil {
+		return err
+	}
+	if rights.ViewMessages {
+		return mtproto.ErrUserNotParticipant
 	}
 	return nil
 }
@@ -293,8 +360,8 @@ func persistedChannelMessageToMTProto(row persistedChannelMessage) (*mtproto.Mes
 		ReplyMarkup *mtproto.ReplyMarkup     `json:"reply_markup,omitempty"`
 		GroupedID   int64                    `json:"grouped_id,omitempty"`
 	}
-	if row.ContentJSON.Valid && row.ContentJSON.String != "" {
-		if err := json.Unmarshal([]byte(row.ContentJSON.String), &content); err != nil {
+	if row.ContentJSON != "" {
+		if err := json.Unmarshal([]byte(row.ContentJSON), &content); err != nil {
 			return nil, err
 		}
 	}

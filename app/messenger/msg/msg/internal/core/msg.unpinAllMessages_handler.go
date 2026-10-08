@@ -35,7 +35,7 @@ func (c *MsgCore) MsgUnpinAllMessages(in *msg.TLMsgUnpinAllMessages) (*mtproto.M
 	case mtproto.PEER_SELF,
 		mtproto.PEER_USER,
 		mtproto.PEER_CHAT:
-		boxMsgList, err := c.svcCtx.Dao.MessagesDAO.SelectPinnedListWithCB(
+		boxMsgList, err := c.svcCtx.Dao.SelectPinnedMessages(
 			c.ctx,
 			in.UserId,
 			dialogId.A,
@@ -67,7 +67,7 @@ func (c *MsgCore) MsgUnpinAllMessages(in *msg.TLMsgUnpinAllMessages) (*mtproto.M
 				Date2:           nil,
 			})
 
-		c.svcCtx.Dao.MessagesDAO.UpdateUnPinnedByIdList(c.ctx, in.UserId, idList)
+		c.svcCtx.Dao.UpdateUnPinnedMessages(c.ctx, in.UserId, idList)
 
 		// update
 		pts = c.svcCtx.Dao.IDGenClient2.NextNPtsId(c.ctx, in.UserId, len(idList))

@@ -29,7 +29,7 @@ Telemetry:
 
 KV:
   - Host: redis:6379
-MysqlDSN: teamgram:teamgram@tcp(mysql:3306)/teamgram?charset=utf8mb4&parseTime=true
+PostgresDSN: postgres://teamgram:teamgram@postgres:5432/teamgram?sslmode=disable
 
 SearchPostsFlood:
   TotalDaily: 10

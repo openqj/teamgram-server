@@ -28,7 +28,7 @@ const quietLogger = { debug() {}, info() {}, warn() {}, error() {} };
 
 function sql(query: string): string {
   return execFileSync('docker', [
-    'exec', 'mysql', 'mysql', '-N', '-s', '-uteamgram', '-pteamgram', '-Dteamgram', '-e', query,
+    'exec', 'teamgram-postgres', 'psql', '-v', 'ON_ERROR_STOP=1', '-At', '-q', '-F', '\t', '-U', 'teamgram', '-d', 'teamgram', '-c', query,
   ], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
 }
 
@@ -156,7 +156,7 @@ async function main() {
       if (ownerUsername() !== '' || activeOwnerUsernameRows() !== 0 || candidateUsernameRows(username).length !== 0) {
         throw new Error('production username cleanup left user or username index rows');
       }
-      evidence.cleanup = 'username cleared through account.updateUsername; MySQL rows absent';
+      evidence.cleanup = 'username cleared through account.updateUsername; PostgreSQL rows absent';
     } catch (error) {
       cleanupError = error;
     }
@@ -170,7 +170,7 @@ async function main() {
 
   console.log(JSON.stringify({
     backend: process.env.TEAMGRAM_BACKEND_TAG || 'r24',
-    transport: `DC${dcId} WebSocket -> gateway -> session -> Usernames BFF -> User service -> MySQL`,
+    transport: `DC${dcId} WebSocket -> gateway -> session -> Usernames BFF -> User service -> PostgreSQL`,
     ownerUserId,
     resolverUserId,
     ...evidence,

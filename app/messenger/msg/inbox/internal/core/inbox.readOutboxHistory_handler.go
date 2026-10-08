@@ -35,7 +35,7 @@ import (
 func (c *InboxCore) InboxReadOutboxHistory(in *inbox.TLInboxReadOutboxHistory) (*mtproto.Void, error) {
 	switch in.PeerType {
 	case mtproto.PEER_USER:
-		replyId, err := c.svcCtx.Dao.MessagesDAO.SelectByMessageDataId(
+		replyId, err := c.svcCtx.Dao.SelectMessageByDataID(
 			c.ctx,
 			in.UserId,
 			in.MaxDialogMessageId)
@@ -50,7 +50,7 @@ func (c *InboxCore) InboxReadOutboxHistory(in *inbox.TLInboxReadOutboxHistory) (
 		c.Logger.Infof("inbox.readOutboxHistory: %v", replyId)
 
 		// TODO: check if the message is already read
-		_, _, err2 := c.svcCtx.Dao.MessageReadOutboxDAO.InsertOrUpdate(
+		_, _, err2 := c.svcCtx.Dao.InsertOrUpdateMessageReadOutbox(
 			c.ctx,
 			&dataobject.MessageReadOutboxDO{
 				UserId:            in.UserId,
@@ -96,7 +96,7 @@ func (c *InboxCore) InboxReadOutboxHistory(in *inbox.TLInboxReadOutboxHistory) (
 			Updates: mtproto.MakeUpdatesByUpdates(updateReadHistoryOutbox),
 		})
 	case mtproto.PEER_CHAT:
-		replyId, err := c.svcCtx.Dao.MessagesDAO.SelectByMessageDataId(
+		replyId, err := c.svcCtx.Dao.SelectMessageByDataID(
 			c.ctx,
 			in.UserId,
 			in.MaxDialogMessageId)
@@ -110,7 +110,7 @@ func (c *InboxCore) InboxReadOutboxHistory(in *inbox.TLInboxReadOutboxHistory) (
 		}
 		c.Logger.Infof("inbox.readOutboxHistory: %v", replyId)
 
-		_, _ = c.svcCtx.Dao.DialogsDAO.SelectPeerDialogListWithCB(
+		_, _ = c.svcCtx.Dao.SelectPeerDialogListWithCB(
 			c.ctx,
 			replyId.UserId,
 			[]int64{mtproto.MakePeerDialogId(in.PeerType, in.PeerId)},

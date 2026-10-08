@@ -14,13 +14,13 @@ globalAny.addEventListener ??= () => {};
 globalAny.self.addEventListener ??= globalAny.addEventListener;
 
 function sql(query: string): string {
-  return execFileSync('docker', ['exec', 'mysql', 'mysql', '-N', '-s', '-uteamgram', '-pteamgram', '-Dteamgram', '-e', query], {
+  return execFileSync('docker', ['exec', 'teamgram-postgres', 'psql', '-v', 'ON_ERROR_STOP=1', '-At', '-q', '-F', '\t', '-U', 'teamgram', '-d', 'teamgram', '-c', query], {
     encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'],
   }).trim();
 }
 
 function sqlWrite(query: string): void {
-  execFileSync('docker', ['exec', 'mysql', 'mysql', '-N', '-s', '-uteamgram', '-pteamgram', '-Dteamgram', '-e', query], {
+  execFileSync('docker', ['exec', 'teamgram-postgres', 'psql', '-v', 'ON_ERROR_STOP=1', '-At', '-q', '-F', '\t', '-U', 'teamgram', '-d', 'teamgram', '-c', query], {
     stdio: ['ignore', 'ignore', 'ignore'],
   });
 }
@@ -34,7 +34,7 @@ function loadAuthKey(): string {
 }
 
 function kvSnapshot(): { present: boolean; value: string } {
-  const encoded = sql(`SELECT CONCAT('1:',HEX(v)) FROM apifull_kv WHERE k='${kvKey}'
+  const encoded = sql(`SELECT CONCAT('1:',encode(convert_to(v::text, 'UTF8'), 'hex')) FROM apifull_kv WHERE k='${kvKey}'
     UNION ALL SELECT '0:' WHERE NOT EXISTS (SELECT 1 FROM apifull_kv WHERE k='${kvKey}') LIMIT 1`);
   if (!encoded) throw new Error('could not read profile-tab KV snapshot');
   if (encoded.startsWith('0:')) return { present: false, value: '' };
@@ -48,7 +48,7 @@ function restore(snapshot: { present: boolean; value: string }): void {
   }
   const value = snapshot.value.replaceAll('\\', '\\\\').replaceAll("'", "''");
   sqlWrite(`INSERT INTO apifull_kv (k,v) VALUES ('${kvKey}','${value}')
-    ON DUPLICATE KEY UPDATE v=VALUES(v)`);
+    ON CONFLICT (k) DO UPDATE SET v=EXCLUDED.v`);
 }
 
 const requireModule = createRequire(import.meta.url);

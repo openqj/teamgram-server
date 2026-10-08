@@ -19,12 +19,10 @@
 package core
 
 import (
-	"github.com/teamgram/marmota/pkg/container2/sets"
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/messenger/msg/inbox/inbox"
 	"github.com/teamgram/teamgram-server/app/messenger/msg/internal/dal/dataobject"
 	"github.com/teamgram/teamgram-server/app/messenger/sync/sync"
-	chatpb "github.com/teamgram/teamgram-server/app/service/biz/chat/chat"
 	"github.com/teamgram/teamgram-server/app/service/biz/dialog/dialog"
 
 	"google.golang.org/protobuf/types/known/wrapperspb"
@@ -46,7 +44,7 @@ func (c *InboxCore) InboxUpdatePinnedMessage(in *inbox.TLInboxUpdatePinnedMessag
 			pinnedMsgId int32 = 0
 		)
 		if in.GetUnpin() {
-			idList, _ := c.svcCtx.Dao.MessagesDAO.SelectLastTwoPinnedList(c.ctx, v.UserId, v.DialogId1, v.DialogId2)
+			idList, _ := c.svcCtx.Dao.SelectLastTwoPinnedMessages(c.ctx, v.UserId, v.DialogId1, v.DialogId2)
 			if len(idList) == 2 {
 				if v.UserMessageBoxId == idList[0] {
 					pinnedMsgId = idList[1]
@@ -58,7 +56,7 @@ func (c *InboxCore) InboxUpdatePinnedMessage(in *inbox.TLInboxUpdatePinnedMessag
 			pinnedMsgId = v.UserMessageBoxId
 		}
 
-		_, _ = c.svcCtx.Dao.MessagesDAO.UpdatePinned(c.ctx, !in.GetUnpin(), v.UserId, v.UserMessageBoxId)
+		_, _ = c.svcCtx.Dao.UpdateMessagePinned(c.ctx, !in.GetUnpin(), v.UserId, v.UserMessageBoxId)
 
 		if peer.PeerType == mtproto.PEER_USER {
 			_, _ = c.svcCtx.Dao.DialogClient.DialogInsertOrUpdateDialog(
@@ -129,35 +127,21 @@ func (c *InboxCore) InboxUpdatePinnedMessage(in *inbox.TLInboxUpdatePinnedMessag
 
 	switch peer.PeerType {
 	case mtproto.PEER_USER:
-		_, _ = c.svcCtx.Dao.MessagesDAO.SelectByMessageDataIdListWithCB(
+		_, _ = c.svcCtx.Dao.SelectMessagesByDataIDUsers(
 			c.ctx,
-			c.svcCtx.Dao.MessagesDAO.CalcTableName(in.PeerId),
-			[]int64{in.DialogMessageId},
+			in.DialogMessageId,
+			nil,
 			func(sz, i int, v *dataobject.MessagesDO) {
 				doUpdatePinnedMessageF(peer, v)
 			})
 	case mtproto.PEER_CHAT:
-		var (
-			tables = sets.NewWithLength(1)
-		)
-
-		pUserIdList, _ := c.svcCtx.ChatClient.ChatGetChatParticipantIdList(c.ctx, &chatpb.TLChatGetChatParticipantIdList{
-			ChatId: peer.PeerId,
-		})
-
-		for _, uId := range pUserIdList.GetDatas() {
-			tables.Insert(c.svcCtx.Dao.MessagesDAO.CalcTableName(uId))
-		}
-
-		for tableName, _ := range tables {
-			_, _ = c.svcCtx.Dao.MessagesDAO.SelectByMessageDataIdListWithCB(
-				c.ctx,
-				tableName,
-				[]int64{in.DialogMessageId},
-				func(sz, i int, v *dataobject.MessagesDO) {
-					doUpdatePinnedMessageF(peer, v)
-				})
-		}
+		_, _ = c.svcCtx.Dao.SelectMessagesByDataIDUsers(
+			c.ctx,
+			in.DialogMessageId,
+			nil,
+			func(sz, i int, v *dataobject.MessagesDO) {
+				doUpdatePinnedMessageF(peer, v)
+			})
 	case mtproto.PEER_CHANNEL:
 	}
 

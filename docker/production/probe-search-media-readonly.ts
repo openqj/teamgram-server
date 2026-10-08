@@ -21,15 +21,15 @@ const Api = requireModule(path.join(gramjsDir, 'src/lib/gramjs/tl/index.ts')).Ap
 const Connection = requireModule(path.join(gramjsDir, 'src/lib/gramjs/network/connection/TCPObfuscated.ts')).ConnectionTCPObfuscated;
 const quietLogger = { debug() {}, info() {}, warn() {}, error() {} };
 
-function mysql(query: string): string {
+function postgres(query: string): string {
   return execFileSync('docker', [
-    'exec', 'mysql', 'mysql', '-N', '-s', '-uteamgram', '-pteamgram', '-Dteamgram', '-e', query,
+    'exec', 'teamgram-postgres', 'psql', '-v', 'ON_ERROR_STOP=1', '-At', '-q', '-F', '\t', '-U', 'teamgram', '-d', 'teamgram', '-c', query,
   ], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
 }
 
 function requiredValue(query: string, name: string): string {
-  const value = mysql(query);
-  if (!value) throw new Error(`${name} is absent from production MySQL`);
+  const value = postgres(query);
+  if (!value) throw new Error(`${name} is absent from production PostgreSQL`);
   return value;
 }
 
@@ -121,17 +121,17 @@ async function main() {
     `SELECT access_hash FROM channels WHERE id=${channelId} AND deleted=0 LIMIT 1`,
     'production channel access hash',
   );
-  const expectedCounter = Number(mysql(`
+  const expectedCounter = Number(postgres(`
     SELECT COUNT(*) FROM messages
     WHERE user_id=${userId} AND dialog_id1=-4 AND dialog_id2=${channelId}
       AND message_filter_type=7 AND deleted=0
   `));
-  const expectedPositions = Number(mysql(`
+  const expectedPositions = Number(postgres(`
     SELECT COUNT(*) FROM messages
     WHERE user_id=${userId} AND dialog_id1=${userId} AND dialog_id2=${userId}
       AND message_filter_type IN (0,7,8) AND deleted=0
   `));
-  const expectedSent = Number(mysql(`
+  const expectedSent = Number(postgres(`
     SELECT COUNT(*) FROM messages
     WHERE user_id=${userId} AND sender_user_id=${userId}
       AND message_filter_type=7 AND deleted=0
@@ -195,18 +195,18 @@ async function main() {
         itemType: rpcName(counter),
         filter: rpcName(counter.filter),
         count: Number(counter.count),
-        mysqlCount: expectedCounter,
+        postgresCount: expectedCounter,
       },
       getSearchResultsPositions: {
         type: rpcName(positions),
         count: Number(positions.count),
         positions: positions.positions.length,
-        mysqlCount: expectedPositions,
+        postgresCount: expectedPositions,
       },
       searchSentMedia: {
         type: rpcName(sentMedia),
         messages: sentMessages.length,
-        mysqlCount: expectedSent,
+        postgresCount: expectedSent,
         messageIds: sentMessages.map((item: any) => Number(item?.id)),
       },
       writes: 0,

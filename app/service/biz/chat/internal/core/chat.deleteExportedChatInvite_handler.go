@@ -26,7 +26,20 @@ func (c *ChatCore) ChatDeleteExportedChatInvite(in *chat.TLChatDeleteExportedCha
 		return nil, err
 	}
 
-	rows, err := c.svcCtx.Dao.ChatInvitesDAO.DeleteByLink(c.ctx, in.ChatId, link)
+	var rows int64
+	if c.svcCtx.Dao.Postgres != nil && c.svcCtx.Dao.Postgres.Store != nil {
+		tx, txErr := c.svcCtx.Dao.Postgres.Pool.Begin(c.ctx)
+		if txErr == nil {
+			defer tx.Rollback(c.ctx)
+			rows, txErr = c.svcCtx.Dao.Postgres.Store.Invites.DeleteByLinkOn(c.ctx, tx, in.ChatId, link)
+			if txErr == nil {
+				txErr = tx.Commit(c.ctx)
+			}
+		}
+		err = txErr
+	} else {
+		rows, err = c.svcCtx.Dao.ChatInvitesDAO.DeleteByLink(c.ctx, in.ChatId, link)
+	}
 	if err != nil {
 		c.Logger.Errorf("chat.deleteExportedChatInvite - error: %v", err)
 		return nil, err

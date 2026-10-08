@@ -30,5 +30,20 @@ var (
 )
 
 func New(c Config) *kafka.ConsumerGroup {
-	return mq.New(svc.NewServiceContext(c), c.InboxConsumer)
+	consumer, _ := NewWithContext(c)
+	return consumer
+}
+
+// NewWithContext constructs the inbox consumer and returns a lifecycle
+// callback so callers that own the process can close the PostgreSQL pool
+// during shutdown. New keeps the generated helper's original API for other
+// callers.
+func NewWithContext(c Config) (*kafka.ConsumerGroup, func()) {
+	ctx := svc.NewServiceContext(c)
+	closeContext := func() {
+		if ctx.Dao != nil && ctx.Dao.Postgres != nil {
+			ctx.Dao.Postgres.Close()
+		}
+	}
+	return mq.New(ctx, c.InboxConsumer), closeContext
 }

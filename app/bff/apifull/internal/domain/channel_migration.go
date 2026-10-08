@@ -33,7 +33,7 @@ type MigratedChannel struct {
 // identities fail without changing the stored projection.
 func ImportMigratedChannel(in MigratedChannel) error {
 	if db == nil {
-		return errors.New("domain mysql is not open")
+		return errors.New("domain PostgreSQL is not open")
 	}
 	if in.ChatID <= 0 || in.ChannelID <= 0 || in.AccessHash == 0 || in.CreatorID <= 0 {
 		return ErrChannelMigrationConflict

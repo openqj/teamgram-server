@@ -1,0 +1,53 @@
+# PostgreSQL 18 migration environment.
+#
+# This file provides a clean PostgreSQL 18 instance for schema, DAO, and
+# integration checks. Use it instead of the full environment stack when only
+# the relational database and migration runner are needed.
+
+services:
+  postgres:
+    image: postgres:18
+    container_name: teamgram-postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-teamgram}
+      POSTGRES_USER: ${POSTGRES_USER:-teamgram}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-teamgram}
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./data/postgres:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+    networks:
+      teamgram_net:
+        aliases:
+          - postgres
+
+  # Applies the checked-in PostgreSQL schema after the server is healthy. The
+  # runner is idempotent and records checksums in schema_migrations, so it is
+  # safe for `docker compose up` to invoke it on every fresh deployment.
+  postgres-migrate:
+    image: postgres:18
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-teamgram}:${POSTGRES_PASSWORD:-teamgram}@postgres:5432/${POSTGRES_DB:-teamgram}?sslmode=disable
+    volumes:
+      - ./teamgramd/deploy:/workspace/teamgramd/deploy:ro
+    entrypoint: ["/bin/bash", "-euc"]
+    command:
+      - /workspace/teamgramd/deploy/postgres/apply.sh
+    restart: "no"
+    networks:
+      - teamgram_net
+
+networks:
+  # Keep the default project-scoped name so this file shares the same network
+  # as docker-compose.yaml and docker-compose-env.yaml when run in this repo.
+  teamgram_net:

@@ -127,7 +127,7 @@ func CompareAndSwap(key, expected, replacement string) (bool, error) {
 	}
 	// Test doubles and legacy stores may expose only Get/Set. Keep their
 	// behavior compatible; production Redis/MySQL stores implement the atomic
-	// path above or in mysql.go.
+	// path above or in the database-specific store implementation.
 	current, err := Default.Get(key)
 	if err != nil {
 		return false, err

@@ -123,6 +123,28 @@ func applyProviderEnvironment(c *config.Config) error {
 		name   string
 		target *string
 	}{
+		{name: "TEAMGRAM_AUTH_PROVIDER_ENDPOINT", target: &c.AuthProviderEndpoint},
+		{name: "TEAMGRAM_AUTH_PROVIDER_KEY", target: &c.AuthProviderKey},
+		{name: "TEAMGRAM_AUTH_PROVIDER_SIGNING_KEY", target: &c.AuthProviderSigningKey},
+	} {
+		if value, ok := os.LookupEnv(override.name); ok {
+			if override.name == "TEAMGRAM_AUTH_PROVIDER_ENDPOINT" {
+				value = strings.TrimSpace(value)
+			}
+			*override.target = value
+		}
+	}
+	if value, ok := os.LookupEnv("TEAMGRAM_AUTH_PROVIDER_TIMEOUT_SECONDS"); ok {
+		timeout, err := strconv.Atoi(strings.TrimSpace(value))
+		if err != nil || timeout < 0 || timeout > 300 {
+			return errors.New("TEAMGRAM_AUTH_PROVIDER_TIMEOUT_SECONDS must be an integer from 0 to 300")
+		}
+		c.AuthProviderTimeoutSeconds = timeout
+	}
+	for _, override := range []struct {
+		name   string
+		target *string
+	}{
 		{name: "TEAMGRAM_GROUP_CALL_MEDIA_ENDPOINT", target: &c.GroupCallMediaEndpoint},
 		{name: "TEAMGRAM_GROUP_CALL_MEDIA_API_KEY", target: &c.GroupCallMediaAPIKey},
 		{name: "TEAMGRAM_GROUP_CALL_MEDIA_SIGNING_KEY", target: &c.GroupCallMediaSigningKey},
@@ -211,7 +233,10 @@ func applyProviderEnvironment(c *config.Config) error {
 }
 
 type Server struct {
-	grpcSrv *zrpc.RpcServer
+	grpcSrv        *zrpc.RpcServer
+	apiFullWorkers interface {
+		StopWorkers()
+	}
 }
 
 type contactsChannelPlugin struct{}
@@ -245,6 +270,9 @@ func (s *Server) Initialize() error {
 	if err := applyProviderEnvironment(&c); err != nil {
 		return err
 	}
+	if strings.TrimSpace(c.PostgresDSN) == "" {
+		return errors.New("bff: PostgresDSN is required")
+	}
 
 	logx.Infof("bff configuration loaded for DC %d", c.DcId)
 	// ctx := svc.NewServiceContext(c)
@@ -275,7 +303,7 @@ func (s *Server) Initialize() error {
 					KnownDcIds:        c.KnownDcIds,
 					TrustedApps:       c.QrCode.TrustedApps,
 					KV:                c.KV,
-					MysqlDSN:          c.MysqlDSN,
+					PostgresDSN:       c.PostgresDSN,
 					UserClient:        c.BizServiceClient,
 					AuthSessionClient: c.AuthSessionClient,
 					SyncClient:        c.SyncClient,
@@ -294,20 +322,24 @@ func (s *Server) Initialize() error {
 			grpcServer,
 			authorization_helper.New(
 				authorization_helper.Config{
-					RpcServerConf:             c.RpcServerConf,
-					DcId:                      c.DcId,
-					KnownDcIds:                c.KnownDcIds,
-					KV:                        c.KV,
-					MysqlDSN:                  c.MysqlDSN,
-					Code:                      c.Code,
-					UserClient:                c.BizServiceClient,
-					AuthsessionClient:         c.AuthSessionClient,
-					ChatClient:                c.BizServiceClient,
-					StatusClient:              c.StatusClient,
-					SyncClient:                c.SyncClient,
-					MsgClient:                 c.MsgClient,
-					SignInMessage:             c.SignInMessage,
-					SignInServiceNotification: c.SignInServiceNotification,
+					RpcServerConf:              c.RpcServerConf,
+					DcId:                       c.DcId,
+					KnownDcIds:                 c.KnownDcIds,
+					KV:                         c.KV,
+					PostgresDSN:                c.PostgresDSN,
+					Code:                       c.Code,
+					AuthProviderEndpoint:       c.AuthProviderEndpoint,
+					AuthProviderKey:            c.AuthProviderKey,
+					AuthProviderSigningKey:     c.AuthProviderSigningKey,
+					AuthProviderTimeoutSeconds: c.AuthProviderTimeoutSeconds,
+					UserClient:                 c.BizServiceClient,
+					AuthsessionClient:          c.AuthSessionClient,
+					ChatClient:                 c.BizServiceClient,
+					StatusClient:               c.StatusClient,
+					SyncClient:                 c.SyncClient,
+					MsgClient:                  c.MsgClient,
+					SignInMessage:              c.SignInMessage,
+					SignInServiceNotification:  c.SignInServiceNotification,
 				},
 				nil,
 				nil))
@@ -371,7 +403,7 @@ func (s *Server) Initialize() error {
 			grpcServer,
 			updates_helper.New(updates_helper.Config{
 				RpcServerConf:     c.RpcServerConf,
-				MysqlDSN:          c.MysqlDSN,
+				PostgresDSN:       c.PostgresDSN,
 				UpdatesClient:     c.BizServiceClient,
 				UserClient:        c.BizServiceClient,
 				ChatClient:        c.BizServiceClient,
@@ -543,7 +575,7 @@ func (s *Server) Initialize() error {
 			passkeyhelper.New(passkeyhelper.Config{
 				RpcServerConf:     c.RpcServerConf,
 				Provider:          c.Passkey,
-				MysqlDSN:          c.MysqlDSN,
+				PostgresDSN:       c.PostgresDSN,
 				DcId:              c.DcId,
 				UserClient:        c.BizServiceClient,
 				AuthSessionClient: c.AuthSessionClient,
@@ -566,7 +598,7 @@ func (s *Server) Initialize() error {
 			SyncClient:                    c.SyncClient,
 			KV:                            c.KV,
 			Code:                          c.Code,
-			MysqlDSN:                      c.MysqlDSN,
+			PostgresDSN:                   c.PostgresDSN,
 			PaymentProviderEndpoint:       c.PaymentProviderEndpoint,
 			PaymentProviderKey:            c.PaymentProviderKey,
 			PaymentProviderSigningKey:     c.PaymentProviderSigningKey,
@@ -583,6 +615,8 @@ func (s *Server) Initialize() error {
 			TurnSharedSecret:              c.TurnSharedSecret,
 			TurnCredentialTTLSeconds:      c.TurnCredentialTTLSeconds,
 		})
+		s.apiFullWorkers = apiFull
+		apiFull.StartWorkers()
 		mtproto.RegisterRPCAccentColorsServer(grpcServer, apiFull)
 		mtproto.RegisterRPCAffiliateProgramsServer(grpcServer, apiFull)
 		mtproto.RegisterRPCAiComposeToneServer(grpcServer, apiFull)
@@ -684,5 +718,8 @@ func (s *Server) RunLoop() {
 }
 
 func (s *Server) Destroy() {
+	if s.apiFullWorkers != nil {
+		s.apiFullWorkers.StopWorkers()
+	}
 	s.grpcSrv.Stop()
 }

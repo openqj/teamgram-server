@@ -7,7 +7,7 @@ import (
 
 func LoadRTMPGroupCallByChannel(channelID int64) (GroupCall, bool, error) {
 	if db == nil {
-		return GroupCall{}, false, errors.New("domain mysql is not open")
+		return GroupCall{}, false, errors.New("domain PostgreSQL is not open")
 	}
 	if channelID <= 0 {
 		return GroupCall{}, false, errors.New("invalid group call channel")

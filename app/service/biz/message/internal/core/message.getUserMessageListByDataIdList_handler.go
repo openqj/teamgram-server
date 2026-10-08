@@ -11,24 +11,26 @@ package core
 
 import (
 	"github.com/teamgram/proto/mtproto"
-	"github.com/teamgram/teamgram-server/app/service/biz/message/internal/dal/dataobject"
 	"github.com/teamgram/teamgram-server/app/service/biz/message/message"
 )
 
 // MessageGetUserMessageListByDataIdList
 // message.getUserMessageListByDataIdList user_id:long id_list:Vector<long> = Vector<MessageBox>;
 func (c *MessageCore) MessageGetUserMessageListByDataIdList(in *message.TLMessageGetUserMessageListByDataIdList) (*message.Vector_MessageBox, error) {
+	if in == nil || c == nil || c.svcCtx == nil || c.svcCtx.Dao == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
 	rValueList := &message.Vector_MessageBox{
 		Datas: make([]*mtproto.MessageBox, 0, len(in.IdList)),
 	}
 
-	c.svcCtx.Dao.MessagesDAO.SelectByMessageDataIdListWithCB(
-		c.ctx,
-		c.svcCtx.Dao.MessagesDAO.CalcTableName(in.UserId),
-		in.IdList,
-		func(sz, i int, v *dataobject.MessagesDO) {
-			rValueList.Datas = append(rValueList.GetDatas(), c.svcCtx.Dao.MakeMessageBox(c.ctx, in.UserId, v))
-		})
+	rows, err := c.svcCtx.Dao.SelectMessageByDataIdList(c.ctx, in.UserId, in.IdList)
+	if err != nil {
+		return nil, err
+	}
+	for i := range rows {
+		rValueList.Datas = append(rValueList.GetDatas(), c.svcCtx.Dao.MakeMessageBox(c.ctx, in.UserId, &rows[i]))
+	}
 
 	return rValueList, nil
 }

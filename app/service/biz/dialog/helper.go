@@ -13,6 +13,7 @@ package dialog_helper
 import (
 	"github.com/teamgram/teamgram-server/app/service/biz/dialog/internal/config"
 	"github.com/teamgram/teamgram-server/app/service/biz/dialog/internal/dal/dao/mysql_dao"
+	"github.com/teamgram/teamgram-server/app/service/biz/dialog/internal/dal/dao/postgres_dao"
 	"github.com/teamgram/teamgram-server/app/service/biz/dialog/internal/dal/dataobject"
 	"github.com/teamgram/teamgram-server/app/service/biz/dialog/internal/dao"
 	"github.com/teamgram/teamgram-server/app/service/biz/dialog/internal/server/grpc/service"
@@ -29,15 +30,20 @@ func New(c Config) *service.Service {
 }
 
 type (
-	DialogsDAO      = mysql_dao.DialogsDAO
-	DialogsDO       = dataobject.DialogsDO
-	SavedDialogsDAO = mysql_dao.SavedDialogsDAO
-	SavedDialogsDO  = dataobject.SavedDialogsDO
+	DialogsDAO           = mysql_dao.DialogsDAO
+	DialogsDO            = dataobject.DialogsDO
+	SavedDialogsDAO      = mysql_dao.SavedDialogsDAO
+	SavedDialogsDO       = dataobject.SavedDialogsDO
+	PostgresDB           = postgres_dao.DB
+	PostgresDialogsDAO   = postgres_dao.DialogsDAO
+	PostgresSavedDialogs = postgres_dao.SavedDialogsDAO
 
 	Dao = dao.Dao
 )
 
 var (
-	NewDialogsDAO      = mysql_dao.NewDialogsDAO
-	NewSavedDialogsDAO = mysql_dao.NewSavedDialogsDAO
+	NewDialogsDAO              = mysql_dao.NewDialogsDAO
+	NewSavedDialogsDAO         = mysql_dao.NewSavedDialogsDAO
+	NewPostgresDialogsDAO      = postgres_dao.NewDialogsDAO
+	NewPostgresSavedDialogsDAO = postgres_dao.NewSavedDialogsDAO
 )

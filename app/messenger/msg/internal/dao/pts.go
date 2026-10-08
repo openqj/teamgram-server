@@ -35,7 +35,12 @@ func (d *Dao) AddToPtsQueueE(ctx context.Context, userId int64, pts, ptsCount in
 		Date2:      time.Now().Unix(),
 	}
 
-	i, _, err := d.UserPtsUpdatesDAO.Insert(ctx, do)
+	var i int64
+	if d.Postgres != nil && d.Postgres.Store != nil && d.Postgres.Store.UserPtsUpdates != nil {
+		i, _, err = d.Postgres.Store.UserPtsUpdates.Insert(ctx, do)
+	} else {
+		i, _, err = d.UserPtsUpdatesDAO.Insert(ctx, do)
+	}
 	if err != nil {
 		logx.WithContext(ctx).Errorf("AddToPtsQueue - insert into user_pts_updates error: %v, do: %v", err, do)
 		return int32(i), err
@@ -65,7 +70,12 @@ func (d *Dao) AddToPtsQueueTx(tx *sqlx.Tx, userId int64, pts, ptsCount int32, up
 // CheckPtsContinuity checks whether a user's pts sequence is continuous
 // starting from afterPts. Returns any gaps found as (expectedPts, actualPts) pairs.
 func (d *Dao) CheckPtsContinuity(ctx context.Context, userId int64, afterPts int32) (gaps [][2]int32, err error) {
-	rows, err := d.UserPtsUpdatesDAO.SelectByGtPts(ctx, userId, afterPts)
+	var rows []dataobject.UserPtsUpdatesDO
+	if d.Postgres != nil && d.Postgres.Store != nil && d.Postgres.Store.UserPtsUpdates != nil {
+		rows, err = d.Postgres.Store.UserPtsUpdates.SelectByGtPts(ctx, userId, afterPts)
+	} else {
+		rows, err = d.UserPtsUpdatesDAO.SelectByGtPts(ctx, userId, afterPts)
+	}
 	if err != nil {
 		return nil, err
 	}

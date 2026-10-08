@@ -72,29 +72,41 @@ const (
 )
 
 func InsertChannelMessage(channelID, sender, date int64, text string) (ChannelMessage, error) {
-	return insertChannelMessage(channelID, sender, date, text, 0, 0, 0, ChannelMessageContent{}, "")
+	return insertChannelMessage(channelID, sender, date, text, 0, 0, 0, ChannelMessageContent{}, "", 0)
 }
 
 // InsertChannelMessageWithReply persists the reply index used by channel
 // discussions. The root is validated inside the same writer transaction.
 func InsertChannelMessageWithReply(channelID, sender, date int64, text string, replyToMsgID, replyToTopID int32) (ChannelMessage, error) {
-	return insertChannelMessage(channelID, sender, date, text, replyToMsgID, replyToTopID, 0, ChannelMessageContent{}, "")
+	return insertChannelMessage(channelID, sender, date, text, replyToMsgID, replyToTopID, 0, ChannelMessageContent{}, "", 0)
 }
 
 func InsertChannelMessageWithReplyAndRandomID(channelID, sender, date int64, text string, replyToMsgID, replyToTopID int32, randomID int64) (ChannelMessage, error) {
-	return insertChannelMessage(channelID, sender, date, text, replyToMsgID, replyToTopID, randomID, ChannelMessageContent{}, "")
+	return insertChannelMessage(channelID, sender, date, text, replyToMsgID, replyToTopID, randomID, ChannelMessageContent{}, "", 0)
 }
 
 func InsertChannelMessageWithContentAndRandomID(channelID, sender, date int64, text string, replyToMsgID, replyToTopID int32, randomID int64, content ChannelMessageContent, requestFingerprint string) (ChannelMessage, error) {
-	return insertChannelMessage(channelID, sender, date, text, replyToMsgID, replyToTopID, randomID, content, requestFingerprint)
+	return insertChannelMessage(channelID, sender, date, text, replyToMsgID, replyToTopID, randomID, content, requestFingerprint, 0)
+}
+
+func InsertChannelMessageWithContentAndRandomIDForDelivery(channelID, sender, date int64, text string, replyToMsgID, replyToTopID int32, randomID int64, content ChannelMessageContent, requestFingerprint string, excludeAuthKeyID int64) (ChannelMessage, error) {
+	return insertChannelMessage(channelID, sender, date, text, replyToMsgID, replyToTopID, randomID, content, requestFingerprint, excludeAuthKeyID)
 }
 
 // InsertChannelMessagesBatch inserts every album item and its channel events
 // in one transaction. A retry is accepted only when every item is already
 // present with the same request fingerprint and complete album random-id list.
 func InsertChannelMessagesBatch(channelID, sender, date int64, inputs []ChannelMessageInput) ([]ChannelMessage, error) {
+	return insertChannelMessagesBatch(channelID, sender, date, inputs, 0)
+}
+
+func InsertChannelMessagesBatchForDelivery(channelID, sender, date int64, inputs []ChannelMessageInput, excludeAuthKeyID int64) ([]ChannelMessage, error) {
+	return insertChannelMessagesBatch(channelID, sender, date, inputs, excludeAuthKeyID)
+}
+
+func insertChannelMessagesBatch(channelID, sender, date int64, inputs []ChannelMessageInput, excludeAuthKeyID int64) ([]ChannelMessage, error) {
 	if db == nil {
-		return nil, errors.New("domain mysql is not open")
+		return nil, errors.New("domain PostgreSQL is not open")
 	}
 	if len(inputs) == 0 {
 		return nil, ErrInvalidMessageID
@@ -189,6 +201,9 @@ func InsertChannelMessagesBatch(channelID, sender, date int64, inputs []ChannelM
 		for i := range prepared {
 			rows[i] = prepared[i].row
 		}
+		if err = insertChannelDeliveryTx(tx, channelID, sender, excludeAuthKeyID, rows); err != nil {
+			return nil, err
+		}
 		if err = tx.Commit(); err != nil {
 			return nil, err
 		}
@@ -223,6 +238,9 @@ func InsertChannelMessagesBatch(channelID, sender, date int64, inputs []ChannelM
 	if err = saveChannelMessageSequence(tx, channelID, lastID, pts); err != nil {
 		return nil, err
 	}
+	if err = insertChannelDeliveryTx(tx, channelID, sender, excludeAuthKeyID, rows); err != nil {
+		return nil, err
+	}
 	if err = tx.Commit(); err != nil {
 		return nil, err
 	}
@@ -243,7 +261,7 @@ func sameAlbumRandomIDs(left, right []int64) bool {
 
 func ValidateChannelMessageWrite(channelID, sender int64) error {
 	if db == nil {
-		return errors.New("domain mysql is not open")
+		return errors.New("domain PostgreSQL is not open")
 	}
 	tx, err := db.Begin()
 	if err != nil {
@@ -296,10 +314,10 @@ func validateChannelMessageWriteTx(tx *sql.Tx, channelID, sender int64) error {
 	return nil
 }
 
-func insertChannelMessage(channelID, sender, date int64, text string, replyToMsgID, replyToTopID int32, randomID int64, content ChannelMessageContent, requestFingerprint string) (ChannelMessage, error) {
+func insertChannelMessage(channelID, sender, date int64, text string, replyToMsgID, replyToTopID int32, randomID int64, content ChannelMessageContent, requestFingerprint string, excludeAuthKeyID int64) (ChannelMessage, error) {
 	var row ChannelMessage
 	if db == nil {
-		return row, errors.New("domain mysql is not open")
+		return row, errors.New("domain PostgreSQL is not open")
 	}
 	if date == 0 {
 		date = time.Now().Unix()
@@ -368,6 +386,9 @@ func insertChannelMessage(channelID, sender, date int64, text string, replyToMsg
 			if err = decodeChannelMessageContent(contentJSON.String, &row.Content); err != nil {
 				return ChannelMessage{}, err
 			}
+			if err = insertChannelDeliveryTx(tx, channelID, sender, excludeAuthKeyID, []ChannelMessage{row}); err != nil {
+				return ChannelMessage{}, err
+			}
 			if err = tx.Commit(); err != nil {
 				return ChannelMessage{}, err
 			}
@@ -401,11 +422,15 @@ func insertChannelMessage(channelID, sender, date int64, text string, replyToMsg
 	if err = appendChannelEventTx(tx, channelID, pts, 1, channelEventNew, []int32{next}, sender, date, text, contentJSON, 0, false); err != nil {
 		return row, err
 	}
+	row = ChannelMessage{ChannelID: channelID, MessageID: next, Pts: pts, Sender: sender, Date: date,
+		Text: text, ReplyToMsgID: replyToMsgID, ReplyToTopID: replyToTopID, Content: content}
+	if err = insertChannelDeliveryTx(tx, channelID, sender, excludeAuthKeyID, []ChannelMessage{row}); err != nil {
+		return ChannelMessage{}, err
+	}
 	if err = tx.Commit(); err != nil {
 		return row, err
 	}
-	return ChannelMessage{ChannelID: channelID, MessageID: next, Pts: pts, Sender: sender, Date: date, Text: text,
-		ReplyToMsgID: replyToMsgID, ReplyToTopID: replyToTopID, Content: content}, nil
+	return row, nil
 }
 
 func encodeChannelMessageContent(content ChannelMessageContent) (string, error) {
@@ -429,7 +454,7 @@ func decodeChannelMessageContent(encoded string, content *ChannelMessageContent)
 func UpdateChannelMessage(channelID, sender int64, messageID int32, text string) (ChannelMessage, error) {
 	var row ChannelMessage
 	if db == nil {
-		return row, errors.New("domain mysql is not open")
+		return row, errors.New("domain PostgreSQL is not open")
 	}
 	tx, err := db.Begin()
 	if err != nil {
@@ -473,22 +498,25 @@ func UpdateChannelMessage(channelID, sender int64, messageID int32, text string)
 	if err = appendChannelEventTx(tx, channelID, pts, 1, channelEventEdit, []int32{messageID}, row.Sender, row.Date, text, contentJSON.String, editedAt, pinned != 0); err != nil {
 		return ChannelMessage{}, err
 	}
-	if err = tx.Commit(); err != nil {
-		return ChannelMessage{}, err
-	}
 	row.ChannelID = channelID
 	row.Pts = pts
 	row.Text = text
 	row.Edited = true
 	row.EditedAt = editedAt
 	row.Pinned = pinned != 0
+	if err = insertChannelDeliveryEventTx(tx, channelID, sender, 0, channelEventEdit, []ChannelMessage{row}, []int32{messageID}, row.Pinned, pts, pts); err != nil {
+		return ChannelMessage{}, err
+	}
+	if err = tx.Commit(); err != nil {
+		return ChannelMessage{}, err
+	}
 	return row, nil
 }
 
 func SetChannelMessagePinned(channelID, sender int64, messageID int32, pinned bool) (ChannelMessage, error) {
 	var row ChannelMessage
 	if db == nil {
-		return row, errors.New("domain mysql is not open")
+		return row, errors.New("domain PostgreSQL is not open")
 	}
 	tx, err := db.Begin()
 	if err != nil {
@@ -535,13 +563,16 @@ func SetChannelMessagePinned(channelID, sender int64, messageID int32, pinned bo
 	if err = appendChannelEventTx(tx, channelID, pts, 1, channelEventPin, []int32{messageID}, row.Sender, row.Date, row.Text, contentJSON.String, row.EditedAt, pinned); err != nil {
 		return ChannelMessage{}, err
 	}
-	if err = tx.Commit(); err != nil {
-		return ChannelMessage{}, err
-	}
 	row.ChannelID = channelID
 	row.Pts = pts
 	row.Edited = edited != 0
 	row.Pinned = pinned
+	if err = insertChannelDeliveryEventTx(tx, channelID, sender, 0, channelEventPin, []ChannelMessage{row}, []int32{messageID}, pinned, pts, pts); err != nil {
+		return ChannelMessage{}, err
+	}
+	if err = tx.Commit(); err != nil {
+		return ChannelMessage{}, err
+	}
 	return row, nil
 }
 
@@ -549,7 +580,7 @@ func SetChannelMessagePinned(channelID, sender int64, messageID int32, pinned bo
 // atomic creator-authorized update and returns the affected message IDs.
 func ClearChannelMessagePins(channelID, sender int64) ([]int32, int32, error) {
 	if db == nil {
-		return nil, 0, errors.New("domain mysql is not open")
+		return nil, 0, errors.New("domain PostgreSQL is not open")
 	}
 	tx, err := db.Begin()
 	if err != nil {
@@ -591,6 +622,9 @@ func ClearChannelMessagePins(channelID, sender int64) ([]int32, int32, error) {
 		if err = appendChannelEventTx(tx, channelID, pts, int32(len(ids)), channelEventPin, ids, 0, 0, "", "", 0, false); err != nil {
 			return nil, 0, err
 		}
+		if err = insertChannelDeliveryEventTx(tx, channelID, sender, 0, channelEventPin, nil, ids, false, pts-int32(len(ids))+1, pts); err != nil {
+			return nil, 0, err
+		}
 	}
 	if err = tx.Commit(); err != nil {
 		return nil, 0, err
@@ -600,7 +634,7 @@ func ClearChannelMessagePins(channelID, sender int64) ([]int32, int32, error) {
 
 func DeleteChannelMessages(channelID, sender int64, ids []int32) ([]int32, int32, error) {
 	if db == nil {
-		return nil, 0, errors.New("domain mysql is not open")
+		return nil, 0, errors.New("domain PostgreSQL is not open")
 	}
 	for _, id := range ids {
 		if id <= 0 {
@@ -633,6 +667,11 @@ func DeleteChannelMessages(channelID, sender int64, ids []int32) ([]int32, int32
 	if err = appendChannelEventTx(tx, channelID, pts, int32(len(deleted)), channelEventDelete, deleted, 0, 0, "", "", 0, false); err != nil {
 		return nil, 0, err
 	}
+	if len(deleted) > 0 {
+		if err = insertChannelDeliveryEventTx(tx, channelID, sender, 0, channelEventDelete, nil, deleted, false, pts-int32(len(deleted))+1, pts); err != nil {
+			return nil, 0, err
+		}
+	}
 	if err = tx.Commit(); err != nil {
 		return nil, 0, err
 	}
@@ -641,7 +680,7 @@ func DeleteChannelMessages(channelID, sender int64, ids []int32) ([]int32, int32
 
 func DeleteChannelHistory(channelID, sender int64, maxID int32) ([]int32, int32, error) {
 	if db == nil {
-		return nil, 0, errors.New("domain mysql is not open")
+		return nil, 0, errors.New("domain PostgreSQL is not open")
 	}
 	if maxID < 0 {
 		return nil, 0, ErrInvalidMessageID
@@ -669,6 +708,11 @@ func DeleteChannelHistory(channelID, sender int64, maxID int32) ([]int32, int32,
 	if err = appendChannelEventTx(tx, channelID, pts, int32(len(deleted)), channelEventDelete, deleted, 0, 0, "", "", 0, false); err != nil {
 		return nil, 0, err
 	}
+	if len(deleted) > 0 {
+		if err = insertChannelDeliveryEventTx(tx, channelID, sender, 0, channelEventDelete, nil, deleted, false, pts-int32(len(deleted))+1, pts); err != nil {
+			return nil, 0, err
+		}
+	}
 	if err = tx.Commit(); err != nil {
 		return nil, 0, err
 	}
@@ -677,7 +721,7 @@ func DeleteChannelHistory(channelID, sender int64, maxID int32) ([]int32, int32,
 
 func DeleteChannelParticipantHistory(channelID, actorID, participantID int64) (int32, int32, error) {
 	if db == nil {
-		return 0, 0, errors.New("domain mysql is not open")
+		return 0, 0, errors.New("domain PostgreSQL is not open")
 	}
 	if participantID <= 0 {
 		return 0, 0, ErrInvalidChannelMember
@@ -724,6 +768,9 @@ func DeleteChannelParticipantHistory(channelID, actorID, participantID int64) (i
 		if err = appendChannelEventTx(tx, channelID, pts, ptsCount, channelEventDelete, deleted, participantID, 0, "", "", 0, false); err != nil {
 			return 0, 0, err
 		}
+		if err = insertChannelDeliveryEventTx(tx, channelID, actorID, 0, channelEventDelete, nil, deleted, false, pts-ptsCount+1, pts); err != nil {
+			return 0, 0, err
+		}
 	}
 	if err = tx.Commit(); err != nil {
 		return 0, 0, err
@@ -760,7 +807,7 @@ func lockChannelMessageDeletePermission(tx *sql.Tx, channelID, actorID int64) er
 
 func HideChannelHistory(userID, channelID int64, maxID int32) (int32, error) {
 	if db == nil {
-		return 0, errors.New("domain mysql is not open")
+		return 0, errors.New("domain PostgreSQL is not open")
 	}
 	if maxID < 0 {
 		return 0, ErrInvalidMessageID
@@ -949,7 +996,7 @@ func deleteChannelMessagesTx(tx *sql.Tx, channelID int64, ids []int32) error {
 
 func ListChannelMessages(userID, channelID int64, beforeID, limit int32) ([]ChannelMessage, error) {
 	if db == nil {
-		return nil, errors.New("domain mysql is not open")
+		return nil, errors.New("domain PostgreSQL is not open")
 	}
 	if limit <= 0 {
 		limit = 20
@@ -979,7 +1026,7 @@ func ListChannelMessages(userID, channelID int64, beforeID, limit int32) ([]Chan
 
 func ListChannelMessagesRange(userID, channelID int64, minID, maxID, limit int32) ([]ChannelMessage, int32, error) {
 	if db == nil {
-		return nil, 0, errors.New("domain mysql is not open")
+		return nil, 0, errors.New("domain PostgreSQL is not open")
 	}
 	if limit <= 0 {
 		limit = 20
@@ -1017,7 +1064,7 @@ func ListChannelMessagesRange(userID, channelID int64, minID, maxID, limit int32
 
 func ListPinnedChannelMessages(userID, channelID int64, limit int32) ([]ChannelMessage, error) {
 	if db == nil {
-		return nil, errors.New("domain mysql is not open")
+		return nil, errors.New("domain PostgreSQL is not open")
 	}
 	if limit <= 0 {
 		limit = 20
@@ -1040,7 +1087,7 @@ func ListPinnedChannelMessages(userID, channelID int64, limit int32) ([]ChannelM
 
 func ChannelMessagesByID(userID, channelID int64, ids []int32) ([]ChannelMessage, error) {
 	if db == nil {
-		return nil, errors.New("domain mysql is not open")
+		return nil, errors.New("domain PostgreSQL is not open")
 	}
 	if len(ids) == 0 {
 		return []ChannelMessage{}, nil
@@ -1070,7 +1117,7 @@ func ChannelMessagesByID(userID, channelID int64, ids []int32) ([]ChannelMessage
 // core channel service; APIFull owns channels that exist only in its own store.
 func ChannelMessageAuthor(userID, channelID, accessHash int64, messageID int32) (int64, bool, error) {
 	if db == nil {
-		return 0, false, errors.New("domain mysql is not open")
+		return 0, false, errors.New("domain PostgreSQL is not open")
 	}
 	if userID <= 0 || channelID <= 0 || accessHash == 0 || messageID <= 0 {
 		return 0, false, nil
@@ -1155,7 +1202,7 @@ func likeContains(q string) string {
 
 func SearchChannelMessages(userID, channelID int64, q string, sender int64, beforeID, addOffset, minDate, maxDate, minID, maxID, limit int32) ([]ChannelMessage, int32, error) {
 	if db == nil {
-		return nil, 0, errors.New("domain mysql is not open")
+		return nil, 0, errors.New("domain PostgreSQL is not open")
 	}
 	if limit <= 0 {
 		limit = 20
@@ -1223,7 +1270,7 @@ func SearchChannelMessages(userID, channelID int64, q string, sender int64, befo
 
 func TopChannelMessage(channelID int64) (int32, error) {
 	if db == nil {
-		return 0, errors.New("domain mysql is not open")
+		return 0, errors.New("domain PostgreSQL is not open")
 	}
 	var id sql.NullInt64
 	if err := db.QueryRow(`SELECT MAX(message_id) FROM apifull_channel_message WHERE channel_id=?`, channelID).Scan(&id); err != nil {
@@ -1237,7 +1284,7 @@ func TopChannelMessage(channelID int64) (int32, error) {
 
 func ChannelMessagePTS(channelID int64) (int32, error) {
 	if db == nil {
-		return 0, errors.New("domain mysql is not open")
+		return 0, errors.New("domain PostgreSQL is not open")
 	}
 	var pts int32
 	err := db.QueryRow(`SELECT pts FROM apifull_channel_message_seq WHERE channel_id=?`, channelID).Scan(&pts)
@@ -1249,7 +1296,7 @@ func ChannelMessagePTS(channelID int64) (int32, error) {
 
 func MarkChannelReadHistory(userID, channelID int64, maxID int32) (int32, error) {
 	if db == nil {
-		return 0, errors.New("domain mysql is not open")
+		return 0, errors.New("domain PostgreSQL is not open")
 	}
 	if maxID <= 0 {
 		return 0, ErrInvalidMessageID
@@ -1295,7 +1342,7 @@ func MarkChannelReadHistory(userID, channelID int64, maxID int32) (int32, error)
 // unknown message cannot result in a partial receipt batch.
 func MarkChannelMessageContentsRead(userID, channelID, accessHash int64, ids []int32) error {
 	if db == nil {
-		return errors.New("domain mysql is not open")
+		return errors.New("domain PostgreSQL is not open")
 	}
 	if userID <= 0 || channelID <= 0 || accessHash <= 0 {
 		return ErrInvalidChannelAccessHash
@@ -1396,7 +1443,7 @@ func MarkChannelMessageContentsRead(userID, channelID, accessHash int64, ids []i
 
 func ChannelReadMaxID(userID, channelID int64) (int32, error) {
 	if db == nil {
-		return 0, errors.New("domain mysql is not open")
+		return 0, errors.New("domain PostgreSQL is not open")
 	}
 	var readMax int32
 	err := db.QueryRow(`SELECT read_max_id FROM apifull_channel_read_state WHERE user_id=? AND channel_id=?`,
@@ -1411,7 +1458,7 @@ func ChannelReadMaxID(userID, channelID int64) (int32, error) {
 // include each requested message.
 func ChannelMessageViewCounts(channelID int64, ids []int32) (map[int32]int32, error) {
 	if db == nil {
-		return nil, errors.New("domain mysql is not open")
+		return nil, errors.New("domain PostgreSQL is not open")
 	}
 	counts := make(map[int32]int32, len(ids))
 	if len(ids) == 0 {
@@ -1449,7 +1496,7 @@ func ChannelMessageViewCounts(channelID int64, ids []int32) (map[int32]int32, er
 
 func ChannelOutboxMaxID(userID, channelID int64) (int32, error) {
 	if db == nil {
-		return 0, errors.New("domain mysql is not open")
+		return 0, errors.New("domain PostgreSQL is not open")
 	}
 	var maxID int32
 	err := db.QueryRow(`SELECT COALESCE(MAX(message_id),0) FROM apifull_channel_message

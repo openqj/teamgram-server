@@ -19,9 +19,13 @@ type ServiceContext struct {
 	*dao.Dao
 }
 
-func NewServiceContext(c config.Config) *ServiceContext {
+func NewServiceContext(c config.Config) (*ServiceContext, error) {
+	d, err := dao.New(c)
+	if err != nil {
+		return nil, err
+	}
 	return &ServiceContext{
 		Config: c,
-		Dao:    dao.New(c),
-	}
+		Dao:    d,
+	}, nil
 }

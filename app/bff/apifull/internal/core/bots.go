@@ -209,11 +209,11 @@ func (c *ApiFullCore) BotsGetAdminedBots(in *mtproto.TLBotsGetAdminedBots) (*mtp
 	if in == nil {
 		return nil, mtproto.ErrInputConstructorInvalid
 	}
-	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.UserClient == nil {
+	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.BotRegistryClient == nil {
 		return nil, mtproto.ErrMethodNotImpl
 	}
 
-	admined, err := c.svcCtx.Dao.UserGetCreatedBots(c.ctx)
+	admined, err := c.svcCtx.Dao.BotRegistryClient.GetAdminedBots(c.ctx, &userpb.BotRegistryGetAdminedBotsRequest{})
 	if err != nil {
 		return nil, err
 	}

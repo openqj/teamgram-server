@@ -4,13 +4,79 @@
 
 `LAYER229_METHOD_LEDGER.csv` 是本项目 Layer 229 方法台账的唯一权威来源。方法数量、`audit_status`、`production_acceptance_status` 及对应证据均以该文件为准；历史重复文件 `PARTIAL_COMPONENT_ONLY` 已退役，后续不再读取或更新。
 
-## 2026-10-07 纵向业务链后端加固（未验收）
+## 2026-10-08 PostgreSQL 18 migration runner 验证（未完成生产迁移）
 
-- 原生频道文本写入新增 `random_id` 请求映射和 migration `migrate-20261007-channel-message-idempotency.sql`；同一键重试会返回原消息，键复用但正文/回复不同则拒绝。频道编辑和 `updates.getChannelDifference` 现在验证 `InputPeer`/`InputChannel` access hash 与成员关系。APIFull 单条非计划频道媒体和非计划频道相册现通过 Media provider 写入内容 JSON canonical 行及差分事件；相册以单事务写入所有项，逐项 `random_id`、完整相册随机 ID 列表和原始输入指纹共同做重试冲突校验，历史与差分恢复 `grouped_id`。`migrate-20261008-channel-message-media.sql` 和 `migrate-20261007-channel-message-idempotency.sql` 尚未应用，也未做真实频道 session 读写验收。计划媒体仍返回 `METHOD_NOT_IMPL`。
-- 支付入口现在只允许 `inputInvoiceSlug` + `inputStorePaymentPremiumSubscription` 自订阅；restore、upgrade、礼品和其他商品在打开结算前失败关闭。APIFull 将本人受益人和所需商品发给 provider，并校验签名 form/settlement 的用户、form、请求指纹、商品、月数和交易号。已结算账单会保留完整签名响应；User 服务用 provider+交易号幂等授予 Premium，并在同一事务内写授予记录和更新到期时间。命名锁继续串行同一请求，provider endpoint 限制为 HTTPS 或 loopback HTTP。外部 provider 未配置，provider 对请求商品约束的执行、退款、对账和真实结算仍未验收。
-- 登录/改号/邮箱 challenge 使用独立 `Code.ChallengeSecret` 做 HMAC；生产配置要求至少 32 字节。共享 SMS/Email provider 仅允许 HTTPS 或 loopback HTTP；旧 `me` GET provider 只允许 loopback HTTP。challenge 与电话码清理使用独立短时 context。仓库示例配置的 challenge key 和 SMS provider 仍为空，所以该链不能据此视为已配置或生产可用。
-- Bot registry 的创建者/父子关系写链已有实现；creator-index 与 manager-hierarchy 迁移现在按 `information_schema` 补缺列/索引，可用于基础 schema 和已升级数据库，但仍未应用。`bot_can_manage_bots` 继续默认关闭，只允许运维通过受控数据库操作授予，客户端没有授予入口。语音与群通话保留状态控制/信令记录；TURN/media relay、录制和真实音视频转发仍依赖未配置的外部基础设施。
-- 本轮 `go build ./app/service/biz/user/... ./app/bff/apifull/...` 通过；没有运行测试、应用数据库迁移或调用生产 provider/探针。新增的 `migrate-20261008-user-premium-payment-grant.sql` 尚未应用，production acceptance 状态不提升。
+- `teamgramd/deploy/postgres/apply.sh` 现在在任何 schema 写入前检查 `server_version_num`，只接受 PostgreSQL 18（18.0 至 18.x），其它版本直接失败。Compose 数据库服务为 `postgres:18`，迁移服务使用显式 `postgres` 网络别名，避免 `container_name` 覆盖服务 DNS 名称后 one-off runner 无法解析数据库。
+- 在全新临时数据库 `teamgram_verify_20261008`（PostgreSQL 18.6，`server_version_num=180006`）上按文件顺序执行 `000_bootstrap` 至 `011_pgcrypto` 共 12 个迁移成功；第二次运行全部通过 checksum 幂等跳过。临时数据库已删除，未触碰业务数据。
+- 现有开发数据库的 runner 在 `004_biz_dialog` checksum 漂移处按设计停止，未覆盖记录或自动修复；这说明迁移文件被修改后必须重新建立验证库或经审查更新 checksum，不能绕过漂移保护。上述结果是迁移/部署验证，不代表所有服务已切换 PostgreSQL，也不提升 Layer 229 生产接受状态。
+
+## 2026-10-07 持久频道消息投递 outbox（未验收）
+
+- 频道单条消息与媒体相册现在在写入消息、幂等映射和 channel event 的同一事务中记录 PTS 范围 outbox 及接收者快照。同步 fan-out 与 APIFull worker 共用 MySQL 命名锁，逐接收者确认，失败按退避重试；重试前检查当前成员/kick 状态和用户隐藏消息状态，并为每位接收者单独构造 Chat。
+- 完成事件保留轻量 PTS 标记并清除 payload，避免晚到的相同 `random_id` 重试重新广播历史消息。推送与确认之间若进程中断，语义仍为至少一次投递；同步客户端重复 PTS 的跨会话处理尚未通过故障注入验收。
+- 新增 `migrate-20261007-channel-message-delivery-outbox.sql`，完整 schema 与本地自动 schema 也包含两张 outbox 表。生产 schema 为只读模式，必须先应用 migration；本轮没有执行生产迁移、生产部署、测试或多成员/重启场景验证，因此相关方法的生产接受状态不提升。
+
+## 2026-10-07 r28 provider 部署环境自包含
+
+- r28 backend Compose overlay 补齐 TURN、支付 provider、授权 provider、SMS/Email challenge 和群通话媒体 provider 所需的环境变量；此前 r28 只显式声明授权与群通话媒体变量，使用该 overlay 单独部署会丢失其它 provider 的环境覆盖。
+- 默认 provider endpoint、key、signing key 和 TURN 凭据仍为空，配置完整不等于 provider 已配置或可用；Compose 合并解析确认关键变量存在，未部署或调用真实 provider。
+
+## 2026-10-07 频道媒体 provider 缺口失败关闭（未验收）
+
+- `messages.sendMedia` 的 InputMediaPhoto 现在从 Media 服务读取 canonical Photo，并拒绝空照片、ID/access hash 不匹配及 provider 错误；上传照片/文档验证 Media provider 的实际返回类型，已有文档读取也传播 provider 错误。
+- 外部照片/文档、Game、Invoice、Story、WebPage、PaidMedia 和 Todo 尚无解析/授权 provider 时，在频道/消息持久化前返回 `METHOD_NOT_IMPL`，不再持久化 `MessageMediaUnsupported` 并报告成功。
+- 本轮只做源码与目标包构建验证，没有运行测试、真实图片/文档 session 或 provider 调用；`messages.sendMedia` 仍保持部分 session 验收。照片成功、错 hash 拒绝和 provider 故障分支待隔离 session 验收。
+
+## 2026-10-07 VoIP signaling 生命周期限制（未验收）
+
+- `phone.sendSignalingData` 仍通过 Sync 向另一参与者实时投递；domain 现在拒绝已丢弃通话的 signaling 写入。通话状态转为 `discarded` 时，同一事务删除该通话持久化的 signaling artifact，避免通话结束后继续保留候选/协商数据。
+- 变更只影响 `signaling` artifact；rating、debug 和 call log 的保留逻辑不变。尚未运行测试或真实双用户 session，本项仅为源码级改进，未提升生产验收状态。
+
+## 2026-10-07 r28 原生频道媒体生产回环与差分修复
+
+- 修复 `updates.getChannelDifferenceV2` 的媒体丢失：`content_json` 扫描字段改为字符串，消息表和事件表查询都显式使用 `COALESCE(content_json,'') AS content_json`。r27 真实回环暴露了无别名表达式未映射到结构体字段的问题；`go test ./app/service/biz/updates/internal/core` 通过，并增加了媒体经 protobuf/gRPC 往返的回归用例。
+- 从 r27 构建 linux/arm64 镜像 `teamgram-server-latest:20261007-r28-prod`（manifest digest `sha256:6e753ee6ff83b5a2199cecd5746e7f81d8290eb7e216700ffa8019bd2aac790e`），仅通过 Compose 重建 `backend-backend-1`。当前容器 `running`、`restart=0`、`oom=false`；MySQL、Redis、etcd、Kafka 未重启，也未执行数据库迁移。
+- 使用生产用户 `136907714` 经 DC2 WebSocket -> gateway -> session -> BFF -> APIFull/MySQL 运行 `docker/production/probe-channel-media-production.ts`：`messages.sendMedia` 单条联系人媒体、同一 `random_id` 重试、`messages.sendMultiMedia` 两项相册、历史读取及 `updates.getChannelDifference` 均返回正确类型；差分中的三条消息均保留 `MessageMediaContact`，相册保留相同 `grouped_id`。删除临时频道后 channel、members、messages、requests、sequence、events、hidden、content-read、read-state、admin-log 共 10 类行全部为 0。
+- 同一 r28 backend 运行只读 `docker/production/probe-message-edit-data-readonly.ts`，用内存编码的原始 TL `messages.getMessageEditData#fda68d36` 读取既有频道消息，返回 `messages.MessageEditData(caption=false)`；请求前后目标消息字段与 SHA-256 不变，业务写入为 0。
+- 这次只把 `messages.sendMedia`、`messages.sendMultiMedia` 和 `updates.getChannelDifference` 的证据更新为 `PARTIAL_ISOLATED_SESSION_E2E`，不提升为全量通过。其它媒体类型、成员跨会话推送、计划媒体、进程重启后的回放、外部短信/支付/Passkey/多 DC/通话媒体 provider 仍未验收。
+
+## 2026-10-07 认证 provider 接线（未验收）
+
+- `auth.importBotAuthorization` 和 `auth.importWebTokenAuthorization` 现在都要求配置签名 authorization provider。请求使用 HTTPS（开发环境仅允许 loopback HTTP）、Bearer API key 和 HMAC-SHA256 请求签名；响应必须限长、2xx、HMAC 有效，并精确绑定 operation、api_id 和正数 user_id。
+- Bot token 仍由 User 服务的 Bot registry 权威解析，provider 返回的 user_id 必须与 token 解析结果一致；Web token 返回的 user_id 也必须重新从 User 服务读取。两条路径最后都通过 authsession 绑定当前永久 auth key，空绑定结果、删除用户、错误 provider 响应均失败关闭。
+- 新增 `TEAMGRAM_AUTH_PROVIDER_ENDPOINT`、`TEAMGRAM_AUTH_PROVIDER_KEY`、`TEAMGRAM_AUTH_PROVIDER_SIGNING_KEY` 和 `TEAMGRAM_AUTH_PROVIDER_TIMEOUT_SECONDS` 部署覆盖，样例默认空值。provider、凭据、真实 bot/web token、authsession 持久化、staging 和 production acceptance 尚未提供，因此生产状态仍为 `BLOCKED_BY_IMPLEMENTATION_GAP`。
+- web-token 绑定进一步校验 provider 确认的 user_id 与 User 服务读回的 user.id 相同。`go test ./app/bff/authorization/internal/core -run 'Test(AuthProvider|AuthImport(Bot|WebToken)Authorization)'` 通过，覆盖 bot/web 成功、身份不匹配拒绝、错误签名和旧 nonce；测试用本地 HTTP stub 和虚构凭据，不构成真实 provider 或生产验收。
+
+## 2026-10-07 r28：生产账号外观、搜索与频道读取续验
+
+- `docker/production/probe-account-look-readonly.ts` 使用生产用户 `136907714` 经 DC2 WebSocket -> gateway -> session -> r28 BFF 读取 `account.getContentSettings`、`account.getWallPapers`、`account.getThemes` 和 `account.getChatThemes`。ContentSettings 返回 `sensitive_enabled=false`、`sensitive_can_change=true`，与生产 `user_settings` 中已有的 active false 行一致，调用前后该行未变。壁纸、主题和聊天主题均返回合法空集合；各自以返回 hash 重读均得到 NotModified，wallpaper/theme KV 的 SHA-256 前后不变。结果只覆盖空目录和 hash 分支，不覆盖非空上传文档或全局目录/provider。
+- 新增 `docker/production/probe-account-content-settings-roundtrip.ts`，在同一生产用户上经真实 session 调用 `account.setContentSettings(true)`、读取 true，再调用 `account.setContentSettings(false)` 并读回 false。两次 setter 均返回 `Boolean`；原 `user_settings` 行的 ID、值和 active 状态恢复一致，RPC 写入 2 次。GramJS 将缺省 false flag 解码为字段缺省；探针按 TL flag 语义校验。该单账户回环不覆盖其它账户策略或进程重启。
+- `docker/production/probe-search-media-readonly.ts` 验证真实照片搜索数据：`messages.getSearchCounters` 返回 photos count=1，与 MySQL 一致；`messages.searchSentMedia` 返回 `messages.Messages`、消息 ID 3，与 MySQL 发送照片计数 1 一致；`messages.getSearchResultsPositions` 返回 `messages.SearchResultsPositions(count=0, positions=0)`，与 self-peer 的照片零行一致。三类 MySQL 计数在探针前后均为 1/0/1，writes=0。其它媒体类型、非空排名、分页和未支持的 poll/mentions/geo 过滤仍未验收。
+- `docker/production/probe-channel-messages-readonly.ts` 验证 `channels.getMessages` 与 `messages.getHistory` 均返回 `messages.Messages`。已有频道 ID 1790115796396772258 的消息 7 以及 7 条历史记录，ID、发送者、日期、内容 SHA-256 和新到旧顺序与生产 MySQL 一致；错误 access hash 返回 `CHANNEL_INVALID`，非成员返回 `USER_NOT_PARTICIPANT`。探针前后消息快照一致，writes=0；不覆盖原生频道存储、多 ID 排序、后续分页或重启恢复。
+- `docker/production/probe-group-call-readonly.ts` 对同一生产用户的持久群通话只读复验 `phone.getGroupCall`、`phone.getGroupParticipants`、`phone.checkGroupCall`。响应为 `phone.GroupCall` / `phone.GroupParticipants`；call ID、access hash、参与者数 1、participants version 1 及 caller self 标记与 MySQL 一致；两个 source 请求只返回已存在的 caller source。call 行和 participants JSON SHA-256 前后不变，writes=0。这是 r19 已验方法的 r28 复验；跨用户/远端 source、媒体信令与 relay、多页过滤和重启持久性仍未验收。
+- 扩展 `docker/production/probe-stories-readonly.ts`，读取生产用户 `136907714` 的 8 条本人故事，并通过真实 session 调用 `stories.getStoriesViews`、`stories.getStoryViewsList`、`stories.getStoryReactionsList`。三者返回 `stories.StoryViews`（3 个零计数）、`StoryViewsList(count=0, viewsCount=0, reactionsCount=0)`、`StoryReactionsList(count=0)`，与 MySQL 中缺少 views 字段、空 viewers/reactions 映射一致；story KV SHA-256 前后相同，writes=0。GramJS 缺少最后一个方法的请求构造器，探针按 Layer 229 的 `#b9b2881f` 在内存编码。仅验空态，非空浏览/反应、用户 hydration 和分页仍未验收。
+- 扩展 `docker/production/probe-channel-username-resolution.ts`，在真实双用户生产流程中调用此前只有隔离库证据的 `channels.getAdminedPublicChannels`。创建者设置唯一 username 后收到 `messages.Chats`，其中的 `Channel` ID、标题和 username 与新建频道一致；随后通过 RPC 清理 username 并删除频道，生产 MySQL 对应频道/活跃 username 行为 0，创建者原频道快照恢复一致。此项覆盖自有公开频道，不覆盖 delegated admin 或原生频道。
+- 新增 `docker/production/probe-updates-state-readonly.ts`，通过真实用户 session 调用 `updates.getState`，返回 `updates.State(pts=853, seq=-1, qts=8)`。PTS 与 Redis 当前值一致，缺省 seq 对应 -1，QTS 与生产 MySQL `apifull_secret_user_state.last_qts` 一致；调用前后 Redis 计数键和 MySQL 行不变，writes=0。生产既有非零 PTS 避免了 handler 的初始化递增分支；非零 seq 与多会话状态仍未验收。
+- `docker/production/probe-personal-channel-roundtrip.ts` 在用户 `136907714` 的自有频道 1 上经真实 session 调用 `account.updatePersonalChannel`，响应为 `Boolean(true)`，MySQL `personal_channel_id` 暂时由 0 变为 1。清理后外部读回确认 DB 恢复为 0；Redis `user_data.2#136907714` 的原存在性、TTL=-1 和 SHA-256 均恢复一致。`users.getFullUser` 返回 `users.UserFull`，但当前 users BFF 未暴露可断言的 `personalChannelId` 字段。此单用户回环不覆盖所有权校验、跨会话推送和重启持久性。
+- 新增 `docker/production/probe-channel-participants-readonly.ts`，在生产用户 `136907714` 的现有自有频道上调用 `channels.getParticipants` 的 Recent/Admins filter，以及 `channels.getParticipant(InputPeerSelf)`。该频道已有消息、成员表无显式行且未隐藏名单；两个 roster 请求都返回 `channels.ChannelParticipants(count=1)`、`ChannelParticipantCreator` 和 hydrated creator User，单体查询也返回对应创建者。频道、成员、消息、事件快照前后不变，writes=0。非创建者 roster、其它 filter 与重启持久性仍未验收。
+- 新增 `docker/production/probe-channel-color-roundtrip.ts`，在临时频道上读取两个 peer-color 目录（均 7 项），用内存编码的 Layer 229 `channels.updateColor#d8aa3671` 分别更新普通和资料颜色。两次均返回 `Updates`；`channels.getChannels` 与 MySQL 的 `color/profile_color` 均读回 ID 0。删除临时频道后 channel、member、message、event、admin-log 五类表行均为 0。GramJS 缺少该请求构造器；仅验证创建者路径和当前固定目录，不覆盖 delegated admin 或可配置目录。
+- 新增 `docker/production/probe-channel-location-roundtrip.ts`，用真实生产 session 在临时频道调用 `channels.editLocation#58e63f6d` 设置坐标与地址，再经 `channels.getFullChannel` / MySQL 读回。`InputGeoPointEmpty` 清理返回 `Boolean`，位置变为 `ChannelLocationEmpty`，数据库坐标和地址清空；删除后 channel、member、message、event、admin-log 五类表行均为 0。GramJS 缺少请求构造器，探针按 Layer 229 schema 在内存编码；其它授权角色和原生频道存储仍未验收。
+- 探针后 `backend-backend-1` 仍为 `teamgram-server-latest:20261007-r28-prod`，状态 running、restart=0、oom=false；MySQL、Redis、etcd 未重启，本轮未部署或迁移。频道成员查询、账号内容设置、频道颜色和频道位置生产证据已并入 `LAYER229_METHOD_LEDGER.csv`，仍是部分 session 验收；813 项全量生产验收仍未完成。
+
+## 2026-10-07 r26 频道消息幂等与删除生产回环
+
+- 使用 docker/production/build-r26.sh 构建 linux/arm64 镜像 teamgram-server-latest:20261007-r26-prod，只通过 Compose 重建 backend 服务。backend-backend-1 当前运行、restart=0、oom=false；MySQL、Redis、etcd、Kafka 均保持运行，本次没有定向重启或迁移数据库。
+- 生产用户 136907714 经 DC2 WebSocket -> gateway -> session -> BFF -> APIFull -> MySQL，在临时频道 1791367701066347344 发送文本。首次调用和同一 random_id 重试均返回 Updates，重试复用 message_id=1；消息、频道事件、请求映射都保持各 1 行。updates.getChannelDifference 返回 updates.ChannelDifference 并包含该消息；channels.deleteChannel 返回 Updates。
+- 删除后逐项查询频道、成员、消息、random_id 映射、序列、事件、隐藏状态、内容已读、阅读状态和管理日志，均为 0 行。只读 schema 核对确认 apifull_channel_message_request、user_premium_payment_grant 和频道内容列存在；探针完成后全库计数为频道 13、频道消息 8、请求映射 0。本次未执行数据库 DDL。
+- 这是单一真实授权、单个临时频道的文本重试/差分/删除闭环；不同请求内容复用 random_id 的拒绝、多成员推送、并发重试、重启后重放和媒体消息仍未通过生产验收。频道媒体迁移字段虽存在，真实频道媒体写链尚未由本探针覆盖。
+
+## 2026-10-07 纵向业务链后端加固（分项验收）
+
+- 原生频道文本写入支持 random_id 幂等映射；生产 schema 有 apifull_channel_message_request，r26 真实会话已验证相同请求重试不重复插入消息/事件。频道编辑和 updates.getChannelDifference 校验 InputPeer/InputChannel access hash 与成员关系。APIFull 单条非计划频道媒体和非计划频道相册已实现 Media provider 写入及差分恢复，但本轮未验收媒体会话路径；计划媒体仍返回 METHOD_NOT_IMPL。
+- 支付入口只允许 inputInvoiceSlug + inputStorePaymentPremiumSubscription 自订阅。APIFull 校验签名 form/settlement、商品、受益人和交易号，并按 provider+交易号幂等授予 Premium。生产 schema 的 user_premium_payment_grant 表已存在，但外部 provider 未配置；真实扣款、退款、对账和权益授予尚未生产验收。
+- 登录/改号/邮箱 challenge 使用独立 Code.ChallengeSecret 做 HMAC，生产配置要求至少 32 字节。共享 SMS/Email provider 仅允许 HTTPS 或 loopback HTTP；旧 me GET provider 只允许 loopback HTTP。仓库示例里的 challenge key 和 SMS provider 仍为空，短信/邮件链仍未验收。
+- Bot registry 的创建者/父子关系写链已有实现；生产 schema 已有 creator/manager 字段和对应索引。bot_can_manage_bots 仍默认关闭，只允许运维受控授予，客户端没有入口。Bot 创建/管理尚无本轮生产会话验收。语音与群通话保留状态控制/信令记录；TURN/media relay、录制和真实音视频转发仍依赖未配置的外部基础设施。
+- r26 镜像构建和频道生产回环通过；短信/邮件 provider、支付 provider、Bot 写链、原生频道媒体和通话媒体控制面仍未完成生产级验收，不能据此提升相关方法的生产状态。
 
 ## 2026-10-07 Premium 自订阅结算与权益发放
 
@@ -81,6 +147,18 @@
 - `docker/production/probe-contacts-readonly.ts` 在同一 r25 部署验证 `contacts.getContactIDs`、`contacts.getStatuses`、`contacts.getContacts`：联系人 ID、离线状态与 `user_contacts`/`user_presences` 一致；完整响应带 1 个 Contact 和 1 个 User，匹配 hash 返回 `contacts.ContactsNotModified`。关系与 presence 快照前后相同，业务写入为 0。
 - `docker/production/probe-contacts-search-readonly.ts` 返回 `contacts.Found`，生产 MySQL 样本 `777000` 不在该用户联系人列表中，且与 `results` 中的 `PeerUser` 和 hydration `User` 一致；返回数 `results=1`、`users=1`、`my_results=0`、`chats=0`，业务写入为 0。搜索的联系人分类、频道/群结果仍未验收。
 - 以上探针均针对运行中的 `teamgram-server-latest:20261007-r25-prod`。这些是部分生产 session 证据，不覆盖多联系人、缺失 presence、native channel、跨会话推送或进程重启持久性；813 项全量生产验收仍未完成。
+
+## 2026-10-07 全新数据库初始化顺序修复
+
+- 历史上曾在一次性 MySQL 8.0 空库按文件名字典序执行仓库全部 61 个 `teamgramd/deploy/sql/*.sql`，发现 `migrate-20260309.sql` 为 `chat_invite_participants.requested` 建索引，但该列到 `migrate-20260929-chat-invite-request-columns.sql` 才添加，导致新库初始化中断。该复现仅用于定位遗留 Teamgram MySQL 开发栈的迁移顺序问题，不构成 MySQL 版本支持承诺；当前生产数据库目标为 PostgreSQL 18，旧 SQL 仅保留在迁移边界。
+- 将 `idx_chat_requested` 的创建移至 2026-09 请求状态迁移，并先检查 `information_schema.statistics`；2026-03 迁移只保留依赖已存在列的 `idx_chat_user`。从空库重跑全部 61 个 SQL 成功，随后重复执行两个相关迁移也成功；新库有 82 张表，目标列和索引均存在。
+- 只修改了本地一次性 MySQL 容器，未对生产执行迁移或 DDL。生产当前观测到的 36 张 APIFull、Passkey 和 dialog filter 表均存在；但应用启动期尚无覆盖完整 APIFull 列集合的 schema preflight，这项风险仍未关闭。
+
+## 2026-10-07 r25 生产 schema 差异复核
+
+- 对生产 `information_schema` 做只读核对后，发现 r25 新增写链所需对象尚未部署：`apifull_channel_message_request` 不存在；`bots.manager_bot_id`、`bots.bot_can_manage_bots` 以及 `idx_bots_creator_bot_id`/`idx_bots_manager_bot_id` 不存在；`user_premium_payment_grant` 不存在。`apifull_channel_message.content_json`、`reply_to_msg_id`、`reply_to_top_id`、`pinned` 与 `apifull_channel_event.content_json` 已存在。
+- 因此当前生产频道消息/媒体幂等写链、Bot 管理层级写链及 Premium provider 授权落库均不能标为生产可用。相关 migration 在隔离全新库执行成功，但按既有“不对生产执行 migration/DDL”的约束没有应用到运行库；后续要验收这些分支，需先把生产 schema 部署到与当前二进制匹配的版本。
+- 目前应用只读 schema 模式仍没有覆盖所有服务表、列和索引的统一启动 preflight。生产用户回环只证明前述已存在 schema 的读取与用户名更新/清理路径，不代表缺失 schema 的新写路径可用。
 
 ## 2026-10-07 r24 `messages.getMessageEditData` 生产回归复测
 
@@ -1270,7 +1348,7 @@
 
 ## 本轮第四十二次复核：授权 provider 失败关闭
 
-- `auth.importBotAuthorization` 仍可查询真实 bot token，但当前授权 BFF 没有可信的 `api_id/api_hash` 注册表；合法形状的 API 凭证不再触发 authsession 绑定，认证后明确返回 `METHOD_NOT_IMPL`。`auth.importWebTokenAuthorization` 同样要求非空 token、认证上下文和 API 形状后，在没有 web-token verifier 时返回 `METHOD_NOT_IMPL`。
+- `auth.importBotAuthorization` 和 `auth.importWebTokenAuthorization` 在没有配置签名 authorization provider 时仍失败关闭；合法形状的 API 凭证不会触发 authsession 绑定。provider 接线和响应约束见本文件顶部的认证 provider 记录，真实 provider 验收仍未完成。
 - `auth.dropTempAuthKeys` 现在区分无效永久 auth key、空请求和缺失临时密钥后端：没有临时密钥存储或 authsession drop RPC 时返回 `METHOD_NOT_IMPL`，不再把永久 key 报成 `AUTH_KEY_INVALID` 或返回 `BoolTrue`。
 - `auth.requestFirebaseSms` 在验证 Firebase token 的手机号与已签发 phone-code 后仍需 SMS provider；没有 provider 时返回 `METHOD_NOT_IMPL`，不会把 token attestation 当成短信发送成功。`auth.reportMissingCode` 没有 provider 事故/报告 sink 时返回 `METHOD_NOT_IMPL`，不把本地 phone-code 记录当作已上报。`auth.checkPaidAuth` 没有支付表单/provider 时返回 `METHOD_NOT_IMPL`，不再合成 `auth.sentCodePaymentRequired`。
 - `auth.resetLoginEmail` 只接受未过期且处于可重发状态的已有 phone-code，并通过 shared challenge service 的真实 SMS provider 重新投递；provider 缺失时返回 `SMS_CODE_CREATE_FAILED`，不会改变成功状态。新增 authorization provider-gap focused tests；`go test ./app/bff/authorization/internal/core` 与 `go test ./pkg/code/...` 通过。APIFull `account.getTmpPassword` 和密码邮件拒绝测试仍依赖其隔离 MySQL test harness，本轮环境未设置 `APIFULL_MYSQL_DSN`，因此未运行该包。
@@ -1908,6 +1986,12 @@
 - `payments.sendPaymentForm` 现在把用户 ID 和本地 payment request key 做 SHA-256，作为稳定的 `Idempotency-Key` 发送给结算 bridge。并发 RPC 重试可以用同一键在外部扣款前去重；bridge 必须将该键传递给或映射到支付处理器的幂等机制。
 - 本地 MySQL request/receipt ledger 和 HMAC 响应校验仍是结算依据。未配置外部 provider，也未运行测试、session 或生产结算；因此此项仍为 `BLOCKED_BY_IMPLEMENTATION_GAP`，不能据此发放权益或记作支付验收。
 
+## 2026-10-07：Premium 权益发放恢复
+
+- 经过验签的 Premium 结算现在与 entitlement outbox 在同一 APIFull MySQL 事务中提交。User RPC 失败不会回滚已确认的扣款或丢弃发放请求；BFF 后台 worker 持 MySQL 命名锁批量重试到期记录，失败时间采用最多 15 分钟的指数退避。
+- 同步 RPC、客户端重放和后台 worker 都使用同一个 provider/transaction ID；User 服务按该幂等键事务写入 Premium 到期时间，因此 RPC 超时但事务已提交时的重试不会重复加月数。
+- 本地不重新调用扣款 provider 来恢复 entitlement。生产仍须先应用 APIFull outbox 与 User grant migrations；当前没有已配置支付 provider 或真实扣款/退款/对账验收，台账状态保持阻塞。
+
 ## 2026-10-07：认证 provider 传输重试去重
 
 - 每次验证码投递生成独立随机 `DeliveryID`，通用 HTTP SMS/Email provider 在 payload 和 `Idempotency-Key` 请求头中发送该值。一次投递内的网络/5xx 重试共享 ID；不同验证码投递不会复用可能固定的 challenge ID。
@@ -2022,3 +2106,99 @@
 - 原生频道文本、单媒体和相册消息提交 canonical APIFull 存储后，现在通过 `SyncPushUpdatesIfNot` 将同一组 `Updates` 发给频道可见成员，并排除发送请求的永久授权 key。有效 roster 来自 APIFull 频道成员表；当前被禁止查看频道的成员不会收到更新。Updates 同时携带频道实体。
 - 任一 Sync 投递失败会返回给客户端；消息已提交，重试通过 `random_id` 与请求指纹复用原消息并再次尝试 fan-out。投递按成员逐一发布，没有与消息写入同事务的独立 fan-out outbox；若进程中断且客户端不重试，在线投递可能不完整，持久化 channel difference 仍可用于追赶。
 - `go build ./app/bff/messages/internal/core ./app/bff/apifull/channelview` 通过。新增的隔离 MySQL fan-out 用例在当前环境编译通过，但 `APIFULL_MYSQL_DSN` 未配置，数据库断言未执行；没有应用频道迁移或进行真实 session/生产验证，因此生产验收级别不变。`LAYER229_METHOD_LEDGER.csv` 是这三种发送方法唯一状态来源。
+
+## 2026-10-07 r28：个人频道历史非空生产回环
+
+- 新增 `docker/production/probe-personal-channel-history-production.ts`，使用生产用户 `136907714` 经 DC2 WebSocket -> gateway -> session -> UserChannelProfiles + APIFull/MySQL 调用 `messages.getPersonalChannelHistory`。探针临时把该用户自己的既有 APIFull 频道设为 personal channel，随后读回 7 条可见历史消息；最新消息正文摘要和返回条数均与生产 MySQL 一致。
+- 探针 finally 将 `users.personal_channel_id` 恢复到原值 `0`，并恢复调用前 Redis 用户缓存快照；调用后的只读检查确认关系仍为 `0`、缓存键存在。频道消息和事件没有写入。该回环通过受限 SQL 恢复关系，不能视为用户关系恢复路径的 RPC 验收。
+- `messages.getPersonalChannelHistory` 从仅隔离库验收提升为 `PARTIAL_ISOLATED_SESSION_E2E`。证据只覆盖单账户、自有 APIFull 频道、单页非空历史；原生频道 provider、跨用户授权、分页边界和重启持久性仍未验收。
+
+## 2026-10-07 r28：频道签名设置生产回环
+
+- 新增 `docker/production/probe-channel-signatures-roundtrip.ts`，使用生产用户 `136907714` 经 DC2 WebSocket -> gateway -> session -> APIFull/MySQL 创建临时广播频道。`channels.toggleSignatures` 开启签名和作者资料后返回包含 `Channel(signatures=true, signatureProfiles=true)` 的 `Updates`；`channels.getChannels` 与 MySQL 均读回 `1/1`。关闭两项后再次返回 `Updates`，API 和数据库均读回 `0/0`。
+- 探针删除临时频道，频道、成员、消息、请求、序列、事件、隐藏、内容已读、阅读状态和管理日志共 10 类记录全部为 0。该结果只覆盖频道创建者路径；非创建者权限拒绝及重启持久性仍未验收。
+- `channels.toggleSignatures` 从隔离库-only 提升为 `PARTIAL_ISOLATED_SESSION_E2E`；本轮未部署、迁移或重启服务。
+
+## 2026-10-07 r28：论坛消息视图设置生产回环
+
+- 新增 `docker/production/probe-channel-forum-view-roundtrip.ts`，使用生产用户 `136907714` 经 DC2 WebSocket -> gateway -> session -> APIFull/MySQL 在临时超级群启用论坛。`channels.toggleViewForumAsMessages(true)` 和 `(false)` 均返回包含 `UpdateChannelViewForumAsMessages` 的 Updates；每次回读 MySQL KV，分别得到 `viewAsMessages=true` 与 `false`，且论坛 `enabled=true`、`tabs=false` 保持不变。
+- 探针通过 `channels.deleteChannel` 删除临时频道，并仅删除预检为空且由本探针写入的两个论坛 KV 键。频道关联 10 表及论坛 KV 残留均为 0。
+- `channels.toggleViewForumAsMessages` 从隔离库-only 提升为 `PARTIAL_ISOLATED_SESSION_E2E`。这只验证服务端持久化和 creator path，不代表客户端视图行为、非 owner 权限、原生论坛存储或重启持久性已验收。
+
+## 2026-10-07 r28：联系人 token 导出生产验收
+
+- 新增 `docker/production/probe-contact-token-export-production.ts`，使用生产用户 `136907714` 经 DC2 WebSocket -> gateway -> session -> APIFull/User service/MySQL 调用 `contacts.exportContactToken`。GramJS 缺少请求构造器，探针按 Layer 229 constructor `0xf8654027` 在内存编码；服务返回 `ExportedContactToken`，token 长度 32，expiry 为 86,400 秒，MySQL KV 中的 owner 和 expiry 与响应一致。
+- token 与链接没有输出或分享。探针通过精确 KV 键和值删除刚生成的记录，并确认 token 行为 0；没有调用导入，因此没有改动联系人关系。
+- `contacts.exportContactToken` 从隔离库-only 提升为 `PARTIAL_ISOLATED_SESSION_E2E`。导入、跨账号联系人更新及链接解析仍未验收。
+
+## 2026-10-07 r28：频道成员权限生产回环
+
+- 新增 `docker/production/probe-channel-member-rights-roundtrip.ts`，使用生产用户 `136907714` 和测试用户 `136907713` 经 DC2 WebSocket -> gateway -> session -> APIFull/User service/MySQL 操作临时超级群。邀请返回 `messages.InvitedUsers`，MySQL 出现目标成员行；授予 `manageTopics` 与 rank 后返回 `Updates`，`channels.getParticipant` 返回管理员，数据库 JSON rights/rank 一致；撤销权限后 MySQL 字段清空，参与者恢复为普通 `ChannelParticipant`。
+- 随后设置 `sendMessages=true`，返回的 `ChannelParticipantBanned` 和 MySQL rights/actor/date 一致；清除限制后读回普通成员。删群后频道、成员、消息、请求、序列、事件、隐藏、内容已读、阅读状态和管理日志 10 类记录均为 0；两个账号的联系人关系没有改动。
+- `channels.inviteToChannel`、`channels.editAdmin`、`channels.editBanned` 的部分 session 验收证据已更新。此处不证明受限成员的发消息路径实际拒绝发送，也未覆盖 delegated admin、接收方实时更新或重启持久性。
+
+## 2026-10-07 r28：频道标题生产回环
+
+- 新增 `docker/production/probe-channel-title-roundtrip.ts`，使用生产用户 `136907714` 经 DC2 WebSocket -> gateway -> session -> APIFull/MySQL 创建临时广播频道。`channels.editTitle` 将标题改为随机值并通过 `channels.getChannels`/MySQL 读回；随后经同一 RPC 恢复原标题并再次核对，两个修改都返回 Updates。
+- 探针在恢复原标题后删除频道，频道、成员、消息、请求、序列、事件、隐藏、内容已读、阅读状态和管理日志 10 类表全部为 0。`channels.editTitle` 从隔离库-only 提升为部分 session 验收；非创建者拒绝和重启持久性仍未由本次覆盖。
+
+## 2026-10-07 r28：自动保存设置生产回环
+
+- 新增 `docker/production/probe-autosave-roundtrip.ts`，使用辅助测试用户 `136907713` 经生产 DC2 WebSocket -> gateway -> session -> APIFull/MySQL。预检确认 `autosave:136907713` KV 不存在，API 返回默认 `account.AutoSaveSettings` 且用户、群组、广播设置和例外均为空；存在任何原始设置时探针会拒绝写入。
+- GramJS runtime 没有这三个 Layer 229 请求构造器，探针按协议 constructor 手工编码。`account.saveAutoSaveSettings` 分别保存用户类别设置和一个随机合成群 peer 例外，API 读回类型、peer、照片/视频开关及 video max size；`account.deleteAutoSaveExceptions` 返回 Bool，清空例外且保留用户类别设置。
+- 探针只用 RPC 清理例外；随后按探针记录的精确 KV SHA-256 条件删除本次新建的行。API 再次返回全部默认值，KV 恢复为原先不存在，未创建真实群或修改聊天、联系人数据。三项方法提升为 `PARTIAL_ISOLATED_SESSION_E2E`；未覆盖客户端自动下载效果、多个原有例外或进程重启持久性。
+
+## 2026-10-07 r28：反应通知设置生产回环
+
+- 新增 `docker/production/probe-reaction-notify-roundtrip.ts`，使用生产 DC2 WebSocket -> gateway -> session -> APIFull/MySQL 调用 `account.getReactionsNotifySettings` 与 `account.setReactionsNotifySettings`。GramJS runtime 未导出这两个 Layer 229 请求构造器，探针按已登记 constructor 手工编码；预检确认 `react:136907713:notify_settings` 和 `b18:136907713:react` 均不存在，getter 返回 `ReactionsNotifySettings`、默认铃声 ID 0、`showPreviews=false` 和空通知来源。
+- Setter 写入 `showPreviews=true`，返回类型和 getter/MySQL KV 均读回对应值。探针只删除与预检为空、且精确匹配本次预期 JSON/旧版铃声值及 SHA-256 的行；最终 getter 恢复默认值，两个键恢复不存在。未修改实际铃声和通知来源设置，也没有重启进程。
+- `account.getReactionsNotifySettings` 与 `account.setReactionsNotifySettings` 从组件级验收提升为部分生产 session 验收。未覆盖已有非默认设置、三类通知来源、其它铃声构造及重启持久性。
+
+## 2026-10-07 r28：自动下载设置生产回环
+
+- 修正 `docker/production/probe-auto-download-readonly.ts` 的存储检查：autodownload BFF 通过共享 APIFull store 写入 `apifull_kv`，并非 Redis。生产只读探针对用户 `136907714` 返回三个类型化档位；MySQL 中 low/high 键不存在，medium 键存在且调用前后 SHA-256 相同。
+- 新增 `docker/production/probe-auto-download-roundtrip.ts`，在 low 键预检不存在后，经 session 调用 `account.saveAutoDownloadSettings` 写入唯一标记。setter 返回 Bool，getter 读回 disabled、照片/视频/文件上限、视频码率和队列字段；medium/high 档读回保持不变。MySQL binlog 的 `Write_rows` 事件确认该键此前不存在。
+- 探针按精确 SHA-256 条件删除本次新增 MySQL 行，并再次通过 API 读回原默认档位；low 键恢复不存在，三个档位和 preflight 一致。`account.getAutoDownloadSettings`、`account.saveAutoDownloadSettings` 维持部分 session 验收状态，分别补足和完成当前记录的设置读写路径；客户端真实下载行为及进程重启持久性仍未覆盖。
+- 首次写入尝试的清理检查误查 Redis，未清理任何记录并立即停止；MySQL 全量行镜像 binlog 显示该 low 键对应 `Write_rows`，确认这是本次新插入而非覆盖旧记录。随后只按键名和已核对的 SHA-256 删除该行，API 再读回 preflight 默认值；修正后的探针将 MySQL 预检和恢复纳入流程并完整重跑通过。
+
+## 2026-10-07 r28：授权 TTL 生产回环
+
+- 新增 `docker/production/probe-authorization-ttl-roundtrip.ts`，使用生产辅助用户 `136907713` 经 DC2 WebSocket -> gateway -> Authorization BFF -> User service/MySQL 调用 `account.setAuthorizationTTL`。预检确认 `authorization_ttl_days=180`；接口支持 90 与 180，另一测试账号当前为 0 天且接口不接受 0 作为恢复值，因此没有选用该账号。
+- `account.setAuthorizationTTL(90)` 和恢复到 180 均返回 Bool，MySQL 读回分别为 90 和 180。探针随后仅在授权 TTL 仍为 180、`updated_at` 仍匹配本次 RPC 写入时间时，恢复原始审计时间；最终行的 TTL 与时间戳都与 preflight 完全一致。
+- `account.setAuthorizationTTL` 从隔离库验收提升为部分生产 session 验收；此探针不覆盖空闲期限到期时的会话回收、设备间同步或登录态清理。
+
+## 2026-10-07 r28：近期位置只读验收
+
+- 新增 `docker/production/probe-recent-locations-readonly.ts`，使用辅助用户 `136907713` 经生产 DC2 WebSocket -> gateway -> session -> Messages BFF -> Message/User service 调用 `messages.getRecentLocations`，请求目标是 Saved Messages 的 `InputPeerSelf`。
+- 当前 GramJS runtime 没有该 Layer 229 请求构造器，探针按 `messages.getRecentLocations` 与 `InputPeerSelf` constructor 手工编码。API 返回类型化 `messages.Messages`，消息和聊天列表为空，用户列表包含 1 个本人；调用前后 MySQL user 行摘要一致，writes=0。
+- 该合法空结果仅将 `messages.getRecentLocations` 提升为部分生产 session 验收；未覆盖非空 geo 结果、用户/群历史分页和实体补齐，频道分支仍明确返回 `METHOD_NOT_IMPL`。
+
+## 2026-10-07 r29：支付保存资料只读验收与编码修复
+
+- 首次生产探针发现 `payments.getSavedInfo` 在无支付资料时仍构造空的 `PaymentRequestedInfo`；session 日志显示 `saved_info:{}`，客户端 decoder 因缺少合法构造器字段而耗尽数据并断连。`app/bff/apifull/internal/core/payments.go` 现仅在姓名、手机号或邮箱至少一个非空时编码 `saved_info`，空状态使用 Layer 229 的缺省 flags。
+- 用当前工作树构建 `teamgram-server-latest:20261007-r29-prod`，只替换 `backend-backend-1`（compose 仍使用 r28 tag 别名指向 r29 digest）；MySQL、Redis、etcd、Kafka 未重建且容器 ID 不变，backend restart=0。
+- 修复后 `docker/production/probe-payment-saved-info-readonly.ts` 通过真实 DC2 WebSocket -> gateway -> session -> APIFull/MySQL，返回 `payments.SavedInfo`、`hasSavedCredentials=false`、无 `savedInfo`，`pay:info:136907713` 与 `pay:cred:136907713` 两行均不存在且前后快照一致，writes=0。非空保存资料和保存凭证分支仍待验收。
+
+## 2026-10-08 r29：群通话与礼物只读复验、PostgreSQL 迁移入口
+
+- r29 生产只读探针 `docker/production/probe-group-call-readonly.ts` 通过用户 `136907714` 的 DC2 WebSocket 链路，验证 `phone.getGroupCall`、`phone.getGroupParticipants` 和 `phone.checkGroupCall`。响应类型、call ID/access hash、参与者数量、roster version 和 self participant 与 MySQL 一致；当前 fixture 没有媒体 provider source，因此 source 检查正确返回空向量。call/participant 快照未变化，writes=0。
+- `docker/production/probe-saved-star-gifts-readonly.ts` 通过同一生产授权验证 `payments.getSavedStarGifts` 和 `payments.getSavedStarGift`，均返回类型化 `payments.SavedStarGifts` 空结果；保存礼物行保持 0，writes=0。现有 `payments.getStarGifts` / `payments.getUniqueStarGift` 探针也继续通过。
+- PostgreSQL 18 的 `biz/chat` 切片新增 `teamgramd/deploy/sql/postgres/000_bootstrap.sql`、`001_authsession.sql`、`002_biz_chat.sql`，以及独立 `postgres_dao` 的 chats 和 chat participants DAO。迁移脚本现在默认扫描 `deploy/sql/postgres`，支持 `POSTGRES_MIGRATION_DIR` 覆盖并拒绝不存在或空目录；未接入全局旧 Dao，Teamgram MySQL 运行栈保持原状。
+
+## 当前 Layer 229 验收统计（2026-10-08）
+
+- `LAYER229_METHOD_LEDGER.csv` 仍包含 813 个唯一方法。按当前生产验收列统计：部分生产 session 验收 322、部分隔离库验收 21、静态实现缺口 280、部分组件验收 121、未验收 50、隔离组件验收 6、隔离库验收 2、仅传输包装 11。
+- 本轮没有方法达到完整生产验收；本轮提升的条目仍只覆盖各自探针记录的账户、实体和数据分支。`backend-backend-1` 当前运行 r29 digest；本轮只重建 backend，MySQL、Redis、etcd、Kafka 未重建。群通话 `media_source` 兼容迁移已应用到现有 MySQL，PostgreSQL 18 迁移仅完成脚本和 DAO 验证，尚未切换生产运行时。
+
+## 2026-10-07：群通话 provider 分配媒体 source
+
+- `phone.joinGroupCall` 现在校验 JSON join params，调用签名媒体 provider 取得正数 `media_source`，再用一个 MySQL 事务同步写入 call roster 与参与者状态；同一通话的 source 由唯一索引约束。DB 写入失败时会向 provider 补偿离会。
+- `phone.leaveGroupCall` 先请求 provider 释放调用者媒体，再在事务中更新 roster 并删除参与者行。`phone.discardGroupCall` 在删除本地通话前要求 provider 释放 RTMP/参与者媒体。参与者列表和 `phone.checkGroupCall` 只使用 provider 分配并持久化的 source。
+- `migrate-20261008-group-call-media-source.sql` 为现有 MySQL schema 增加 nullable source 列与通话内唯一索引；该迁移已在目标数据库应用。provider 请求与 response 必须回显随机 request ID、operation 和 call identity，契约见 `docs/group-call-media-provider.md`。
+- 真实媒体 provider 仍未配置，因此 join/leave/discard 的 provider 写链和媒体协商、TURN/relay、真实跨用户音视频仍未完成；当前只读 source 读取已通过 r29 生产探针。
+
+## 2026-10-08：PostgreSQL message/user 运行时切片
+
+- `biz/message` 的 `message.search`、`message.searchGlobal`、`message.searchByMediaType` 和 `message.getSavedHistoryMessages` 已补齐 PostgreSQL 查询、分页和空结果编码；保存历史计数、媒体筛选、全文匹配、标签消息读取均使用 `$N` 参数和 PostgreSQL 布尔字段。
+- `user.setBotCommands` 已支持 PostgreSQL 事务替换命令集合，删除与批量 upsert 在同一 `pgx.Tx` 中完成；`dialog` 的 filter-tags 读写已优先使用 PostgreSQL DAO。
+- 这些切片的包级测试、相关 msg/chat/dialog/user 测试和 PostgreSQL migration portability check 通过。msg 收件箱/出站消息、message 置顶与历史列表仍有生成式旧 DAO 直接引用，尚未达到全服务切换条件；没有部署新镜像，也没有改变 r29 生产容器。

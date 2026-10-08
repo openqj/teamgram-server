@@ -19,6 +19,7 @@
 package server
 
 import (
+	"errors"
 	"flag"
 	"github.com/teamgram/teamgram-server/app/service/biz/biz/internal/config"
 	chat_helper "github.com/teamgram/teamgram-server/app/service/biz/chat"
@@ -53,6 +54,9 @@ func New() *Server {
 func (s *Server) Initialize() error {
 	var c config.Config
 	conf.MustLoad(*configFile, &c)
+	if c.Postgres.DSN == "" {
+		return errors.New("biz: Postgres.DSN is required")
+	}
 
 	logx.Infov(c)
 	// ctx := svc.NewServiceContext(c)
@@ -65,7 +69,7 @@ func (s *Server) Initialize() error {
 			chat_helper.New(
 				chat_helper.Config{
 					RpcServerConf: c.RpcServerConf,
-					Mysql:         c.Mysql,
+					Postgres:      c.Postgres,
 					Cache:         c.Cache,
 					MediaClient:   c.MediaClient,
 				},
@@ -76,7 +80,6 @@ func (s *Server) Initialize() error {
 			grpcServer,
 			code_helper.New(code_helper.Config{
 				RpcServerConf: c.RpcServerConf,
-				Mysql:         c.Mysql,
 				Cache:         c.Cache,
 				KV:            c.KV,
 			}))
@@ -86,7 +89,7 @@ func (s *Server) Initialize() error {
 			grpcServer,
 			dialog_helper.New(dialog_helper.Config{
 				RpcServerConf: c.RpcServerConf,
-				Mysql:         c.Mysql,
+				Postgres:      c.Postgres,
 				Cache:         c.Cache,
 			}))
 
@@ -96,7 +99,7 @@ func (s *Server) Initialize() error {
 			message_helper.New(
 				message_helper.Config{
 					RpcServerConf:   c.RpcServerConf,
-					Mysql:           c.Mysql,
+					Postgres:        c.Postgres,
 					Cache:           c.Cache,
 					MessageSharding: c.MessageSharding,
 				},
@@ -107,7 +110,7 @@ func (s *Server) Initialize() error {
 			grpcServer,
 			updates_helper.New(updates_helper.Config{
 				RpcServerConf: c.RpcServerConf,
-				Mysql:         c.Mysql,
+				Postgres:      c.Postgres,
 				KV:            c.KV,
 				IdgenClient:   c.IdgenClient,
 			}))
@@ -117,7 +120,7 @@ func (s *Server) Initialize() error {
 			grpcServer,
 			user_helper.New(user_helper.Config{
 				RpcServerConf: c.RpcServerConf,
-				Mysql:         c.Mysql,
+				Postgres:      c.Postgres,
 				Cache:         c.Cache,
 				MediaClient:   c.MediaClient,
 			}))

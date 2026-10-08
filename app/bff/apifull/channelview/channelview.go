@@ -66,7 +66,7 @@ func peerColor(color *int32, backgroundEmojiID *int64) *mtproto.PeerColor {
 func ChatsByID(userID int64, ids []int64) []*mtproto.Chat {
 	if !domain.Ready() {
 		if len(ids) > 0 {
-			logx.Errorf("channel chats: domain mysql is not open")
+			logx.Errorf("channel chats: domain PostgreSQL is not open")
 		}
 		return []*mtproto.Chat{}
 	}
@@ -177,7 +177,7 @@ func AppendCreatorDialogs(out *mtproto.Messages_Dialogs, userID int64, alreadyCo
 		return
 	}
 	if !domain.Ready() {
-		logx.Errorf("messages.getDialogs channel list: domain mysql is not open")
+		logx.Errorf("messages.getDialogs channel list: domain PostgreSQL is not open")
 		return
 	}
 	rows, err := domain.ListByCreator(userID)
@@ -205,7 +205,7 @@ func AppendRequested(out *mtproto.Messages_PeerDialogs, userID int64, channelIDs
 		return
 	}
 	if !domain.Ready() {
-		logx.Errorf("messages.getPeerDialogs channel: domain mysql is not open")
+		logx.Errorf("messages.getPeerDialogs channel: domain PostgreSQL is not open")
 		return
 	}
 	present := channelIDsIn(out.Dialogs)

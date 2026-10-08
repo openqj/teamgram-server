@@ -11,7 +11,6 @@ package core
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/teamgram/marmota/pkg/stores/sqlx"
 	"github.com/teamgram/proto/mtproto"
@@ -76,20 +75,19 @@ func (c *MsgCore) readMentionedMessageContents(in *msg.TLMsgReadMessageContents)
 		if ptsCount > 0 {
 			// CommonDAO.CalcSize converts query errors to a zero count. This path
 			// mutates unread state, so keep the underlying database error visible.
-			var sz int
-			query := fmt.Sprintf("SELECT count(id) FROM %s WHERE user_id = ? AND peer_type = ? AND peer_id = ? AND mentioned = ? AND deleted = ?", c.svcCtx.Dao.MessagesDAO.CalcTableName(in.UserId))
-			if err := c.svcCtx.Dao.DB.QueryRow(c.ctx, &sz, query, in.UserId, mtproto.PEER_CHAT, in.PeerId, 1, 0); err != nil {
+			unreadMentions, err := c.svcCtx.Dao.CountMentionedMessages(c.ctx, in.UserId, mtproto.PEER_CHAT, in.PeerId)
+			if err != nil {
 				return 0, err
 			}
 			for _, m := range in.Id {
 				if m.Mentioned {
-					if _, err := c.svcCtx.Dao.MessagesDAO.UpdateMentionedAndMediaUnread(c.ctx, in.UserId, m.Id); err != nil {
+					if _, err := c.svcCtx.Dao.UpdateMentionedAndMediaUnread(c.ctx, in.UserId, m.Id); err != nil {
 						return 0, err
 					}
 				}
 			}
 
-			sz = sz - int(ptsCount)
+			sz := int(unreadMentions) - int(ptsCount)
 			if sz < 0 {
 				sz = 0
 			}
@@ -97,7 +95,7 @@ func (c *MsgCore) readMentionedMessageContents(in *msg.TLMsgReadMessageContents)
 			if _, _, err := c.svcCtx.Dao.CachedConn.Exec(
 				c.ctx,
 				func(ctx context.Context, conn *sqlx.DB) (int64, int64, error) {
-					_, err2 := c.svcCtx.Dao.DialogsDAO.UpdateCustomMap(
+					_, err2 := c.svcCtx.Dao.UpdateDialogCustomMap(
 						ctx,
 						map[string]interface{}{
 							"unread_mentions_count": sz,
@@ -133,7 +131,7 @@ func (c *MsgCore) readMediaUnreadMessageContents(in *msg.TLMsgReadMessageContent
 		for _, m := range in.Id {
 			if m.MediaUnread {
 				ptsCount++
-				if _, err := c.svcCtx.Dao.MessagesDAO.UpdateMediaUnread(c.ctx, in.UserId, m.Id); err != nil {
+				if _, err := c.svcCtx.Dao.UpdateMessageMediaUnread(c.ctx, in.UserId, m.Id); err != nil {
 					return 0, err
 				}
 				if in.UserId != in.PeerId {
@@ -156,7 +154,7 @@ func (c *MsgCore) readMediaUnreadMessageContents(in *msg.TLMsgReadMessageContent
 		for _, m := range in.Id {
 			if m.MediaUnread {
 				ptsCount++
-				if _, err := c.svcCtx.Dao.MessagesDAO.UpdateMediaUnread(c.ctx, in.UserId, m.Id); err != nil {
+				if _, err := c.svcCtx.Dao.UpdateMessageMediaUnread(c.ctx, in.UserId, m.Id); err != nil {
 					return 0, err
 				}
 				if _, err := c.svcCtx.Dao.InboxClient.InboxReadMediaUnreadToInboxV2(
@@ -206,7 +204,7 @@ func (c *MsgCore) readReactionUnreadMessageContents(in *msg.TLMsgReadMessageCont
 		if _, _, err := c.svcCtx.Dao.CachedConn.Exec(
 			c.ctx,
 			func(ctx context.Context, conn *sqlx.DB) (int64, int64, error) {
-				_, err2 := c.svcCtx.Dao.DialogsDAO.UpdateUnreadCount(
+				_, err2 := c.svcCtx.Dao.UpdateDialogUnreadCount(
 					ctx,
 					0,
 					0,

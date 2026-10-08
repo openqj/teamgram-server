@@ -83,7 +83,7 @@ func (c *InboxCore) InboxSendUserMessageToInboxV2(in *inbox.TLInboxSendUserMessa
 					c.Logger.Errorf("inbox.sendUserMessageToInboxV2 - error: sendToSelfUser")
 				} else {
 					peer := mtproto.FromPeer(peer2)
-					_, _, _ = c.svcCtx.Dao.SavedDialogsDAO.InsertOrUpdate(
+					_, _, _ = c.svcCtx.Dao.InsertOrUpdateSavedDialog(
 						c.ctx,
 						&dataobject.SavedDialogsDO{
 							UserId:     in.FromId,

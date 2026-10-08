@@ -5,13 +5,16 @@
 > [English (primary)](./install-manual-macos.md) | 中文  
 > 若使用 Docker 部署，请参阅 [install-docker.md](./install-docker.md)。
 
+> **数据库：** 新部署使用 PostgreSQL 18。启动服务前先执行仓库内 PostgreSQL
+> 迁移。应用运行时仍按服务逐步切换，路线图验收门槛全部通过前不能宣称全量就绪。
+
 ---
 
 ## 一、环境要求
 
 - **macOS**：10.15 或更高（建议 11+，Apple Silicon 已支持）
-- **Go**：1.21 及以上
-- **MySQL**：8.x
+- **Go**：1.25 及以上
+- **PostgreSQL**：18
 - **Redis**：6.x
 - **Etcd**：3.5.x
 - **Kafka**：2.x / 3.x（需 Zookeeper，Homebrew 版 Kafka 通常自带）
@@ -29,26 +32,20 @@
 
 ## 二、安装依赖
 
-### 2.1 安装 MySQL
+### 2.1 安装 PostgreSQL 18
 
 ```bash
-brew install mysql
-brew services start mysql
+brew install postgresql@18
+brew services start postgresql@18
 ```
 
-**配置并创建数据库：**
+**创建应用角色和数据库：**
 
 ```bash
 # 首次安装可能需设置 root 密码，按提示操作
-mysql_secure_installation
-
-mysql -uroot -p
-
-mysql> CREATE DATABASE teamgram;
-mysql> UPDATE mysql.user SET authentication_string='' WHERE user='root';
-mysql> ALTER USER 'root'@'localhost' IDENTIFIED BY '';
-mysql> FLUSH PRIVILEGES;
-mysql> exit
+createuser -s teamgram
+psql -d postgres -c "ALTER ROLE teamgram PASSWORD 'teamgram';"
+createdb -O teamgram teamgram
 ```
 
 ### 2.2 安装 Redis
@@ -177,11 +174,8 @@ cd teamgram-server
 在项目根目录执行（SQL 位于 `teamgramd/deploy/sql/`）：
 
 ```bash
-mysql -uroot -e "CREATE DATABASE IF NOT EXISTS teamgram;"
-
-mysql -uroot teamgram < teamgramd/deploy/sql/1_teamgram.sql
-for f in teamgramd/deploy/sql/migrate-*.sql; do mysql -uroot teamgram < "$f"; done
-mysql -uroot teamgram < teamgramd/deploy/sql/z_init.sql
+DATABASE_URL='postgresql://teamgram:teamgram@127.0.0.1:5432/teamgram?sslmode=disable' \
+  ./teamgramd/deploy/postgres/apply.sh
 ```
 
 ---
@@ -212,9 +206,11 @@ make
 
 3. **所有 YAML**  
    - `Etcd.Hosts`：`127.0.0.1:2379`  
-   - MySQL：`127.0.0.1:3306`  
+   - PostgreSQL：`127.0.0.1:5432`
    - Redis：`127.0.0.1:6379`  
    - Kafka：`127.0.0.1:9092`
+
+服务 YAML 按服务逐步迁移。只有路线图标记该服务通过运行时验收后，才可使用 PostgreSQL 启动该服务。
 
 示例（dfs.yaml 片段）：
 
@@ -232,7 +228,7 @@ SSDB:
 
 ## 六、启动服务
 
-确认 MySQL、Redis、Etcd、Kafka（及 Zookeeper）、MinIO 均已启动后：
+确认 PostgreSQL、Redis、Etcd、Kafka（及 Zookeeper）、MinIO 均已启动后：
 
 ```bash
 cd teamgramd/bin
@@ -254,7 +250,7 @@ cd teamgramd/bin
 停止依赖服务（按需）：
 
 ```bash
-brew services stop mysql
+brew services stop postgresql@18
 brew services stop redis
 brew services stop etcd
 # Kafka / Zookeeper 需手动 kill 或通过 brew services 停止
@@ -264,7 +260,7 @@ brew services stop etcd
 
 ## 八、常见问题
 
-- **Apple Silicon (M1/M2/M3)**：Go、MySQL、Redis、Etcd、Kafka、MinIO 的 Homebrew 版均支持 ARM，一般无需额外配置。  
+- **Apple Silicon (M1/M2/M3)**：Go、PostgreSQL、Redis、Etcd、Kafka、MinIO 的 Homebrew 版均支持 ARM，一般无需额外配置。
 - **Kafka 路径**：使用 `brew --prefix kafka` 查看安装路径，配置文件在其 `libexec/config/` 下。  
 - **MinIO 数据目录**：生产环境请将 `/tmp/minio-data` 改为持久化目录。  
 - **Pika**：若无 macOS 预编译包，可不装 Pika，配置中 SSDB 使用 Redis 即可。  

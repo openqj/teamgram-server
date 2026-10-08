@@ -37,21 +37,32 @@ func (c *ChatCore) ChatGetExportedChatInvites(in *chat.TLChatGetExportedChatInvi
 		return nil, mtproto.ErrLimitInvalid
 	}
 
-	_, err = c.svcCtx.Dao.ChatInvitesDAO.SelectListByAdminIdWithCB(
-		c.ctx,
-		in.ChatId,
-		in.AdminId,
-		func(sz, i int, v *dataobject.ChatInvitesDO) {
-			if in.Revoked {
-				if v.Revoked {
-					rInvites = append(rInvites, c.svcCtx.Dao.MakeChatInviteExported(c.ctx, v))
-				}
-			} else {
-				if !v.Revoked {
-					rInvites = append(rInvites, c.svcCtx.Dao.MakeChatInviteExported(c.ctx, v))
-				}
+	if c.svcCtx.Dao.Postgres != nil && c.svcCtx.Dao.Postgres.Store != nil {
+		var invites []dataobject.ChatInvitesDO
+		invites, err = c.svcCtx.Dao.Postgres.Store.Invites.SelectListByAdminId(c.ctx, in.ChatId, in.AdminId)
+		for i := range invites {
+			v := &invites[i]
+			if in.Revoked == v.Revoked {
+				rInvites = append(rInvites, c.svcCtx.Dao.MakeChatInviteExported(c.ctx, v))
 			}
-		})
+		}
+	} else {
+		_, err = c.svcCtx.Dao.ChatInvitesDAO.SelectListByAdminIdWithCB(
+			c.ctx,
+			in.ChatId,
+			in.AdminId,
+			func(sz, i int, v *dataobject.ChatInvitesDO) {
+				if in.Revoked {
+					if v.Revoked {
+						rInvites = append(rInvites, c.svcCtx.Dao.MakeChatInviteExported(c.ctx, v))
+					}
+				} else {
+					if !v.Revoked {
+						rInvites = append(rInvites, c.svcCtx.Dao.MakeChatInviteExported(c.ctx, v))
+					}
+				}
+			})
+	}
 	if err != nil {
 		return nil, err
 	}

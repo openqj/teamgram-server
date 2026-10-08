@@ -19,9 +19,10 @@
 package dao
 
 import (
+	"errors"
+
 	"github.com/teamgram/marmota/pkg/net/rpcx"
 	"github.com/teamgram/marmota/pkg/stores/sqlc"
-	"github.com/teamgram/marmota/pkg/stores/sqlx"
 	"github.com/teamgram/teamgram-server/app/service/biz/user/internal/config"
 	media_client "github.com/teamgram/teamgram-server/app/service/media/client"
 )
@@ -29,16 +30,21 @@ import (
 // Dao dao.
 type Dao struct {
 	*Mysql
+	*Postgres
 	sqlc.CachedConn
 	media_client.MediaClient
 }
 
 // New new a dao and return.
 func New(c config.Config) *Dao {
-	db := sqlx.NewMySQL(&c.Mysql)
-	return &Dao{
-		Mysql:       newMysqlDao(db),
-		CachedConn:  sqlc.NewConn(db, c.Cache),
-		MediaClient: media_client.NewMediaClient(rpcx.GetCachedRpcClient(c.MediaClient)),
+	if c.Postgres.DSN == "" {
+		panic(errors.New("biz/user: Postgres.DSN is required"))
 	}
+	dao := &Dao{MediaClient: media_client.NewMediaClient(rpcx.GetCachedRpcClient(c.MediaClient))}
+	pg, err := NewPostgres(c.Postgres)
+	if err != nil {
+		panic(err)
+	}
+	dao.Postgres = pg
+	return dao
 }

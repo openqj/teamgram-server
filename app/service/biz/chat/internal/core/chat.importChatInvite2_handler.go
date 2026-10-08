@@ -34,7 +34,13 @@ func (c *ChatCore) ChatImportChatInvite2(in *chat.TLChatImportChatInvite2) (*cha
 	if _, err := c.requireInviteSelf(in.SelfId); err != nil {
 		return nil, err
 	}
-	chatInviteDO, err := c.svcCtx.Dao.ChatInvitesDAO.SelectByLink(c.ctx, in.Hash)
+	var err error
+	var chatInviteDO *dataobject.ChatInvitesDO
+	if c.svcCtx.Dao.Postgres != nil && c.svcCtx.Dao.Postgres.Store != nil {
+		chatInviteDO, err = c.svcCtx.Dao.Postgres.Store.Invites.SelectByLink(c.ctx, in.Hash)
+	} else {
+		chatInviteDO, err = c.svcCtx.Dao.ChatInvitesDAO.SelectByLink(c.ctx, in.Hash)
+	}
 	if err != nil {
 		c.Logger.Errorf("chat.importChatInvite - error: %v", err)
 		return nil, err
@@ -80,7 +86,12 @@ func (c *ChatCore) ChatImportChatInvite2(in *chat.TLChatImportChatInvite2) (*cha
 			return nil, mtproto.ErrUserAlreadyParticipant
 		}
 
-		pendingRequests, err := c.svcCtx.Dao.ChatInviteParticipantsDAO.SelectListByLink(c.ctx, in.Hash, 1)
+		var pendingRequests []dataobject.ChatInviteParticipantsDO
+		if c.svcCtx.Dao.Postgres != nil && c.svcCtx.Dao.Postgres.Store != nil {
+			pendingRequests, err = c.svcCtx.Dao.Postgres.Store.InviteParticipants.SelectListByLink(c.ctx, in.Hash, 1)
+		} else {
+			pendingRequests, err = c.svcCtx.Dao.ChatInviteParticipantsDAO.SelectListByLink(c.ctx, in.Hash, 1)
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -99,13 +110,30 @@ func (c *ChatCore) ChatImportChatInvite2(in *chat.TLChatImportChatInvite2) (*cha
 		}
 
 		if !alreadyRequested {
-			if _, _, err = c.svcCtx.Dao.ChatInviteParticipantsDAO.Insert(c.ctx, &dataobject.ChatInviteParticipantsDO{
+			inviteParticipant := &dataobject.ChatInviteParticipantsDO{
 				ChatId:    chatInviteDO.ChatId,
 				Link:      in.Hash,
 				UserId:    in.SelfId,
 				Requested: chatInviteDO.RequestNeeded,
 				Date2:     time.Now().Unix(),
-			}); err != nil {
+			}
+			if c.svcCtx.Dao.Postgres != nil && c.svcCtx.Dao.Postgres.Store != nil {
+				tx, txErr := c.svcCtx.Dao.Postgres.Pool.Begin(c.ctx)
+				if txErr == nil {
+					defer tx.Rollback(c.ctx)
+					_, _, txErr = c.svcCtx.Dao.Postgres.Store.InviteParticipants.InsertOn(c.ctx, tx, inviteParticipant)
+					if txErr == nil {
+						txErr = tx.Commit(c.ctx)
+					}
+				}
+				err = txErr
+			} else {
+				_, _, err = c.svcCtx.Dao.ChatInviteParticipantsDAO.Insert(c.ctx, inviteParticipant)
+			}
+			if err != nil {
+				if c.svcCtx.Dao.Postgres != nil && c.svcCtx.Dao.Postgres.Store != nil {
+					return nil, err
+				}
 				var mysqlErr *mysql.MySQLError
 				if !errors.As(err, &mysqlErr) || mysqlErr.Number != 1062 {
 					c.Logger.Errorf("chat.importChatInvite - error: %v", err)
@@ -118,13 +146,22 @@ func (c *ChatCore) ChatImportChatInvite2(in *chat.TLChatImportChatInvite2) (*cha
 			RequestsPending:  0,
 			RecentRequesters: []int64{},
 		}).To_RecentChatInviteRequesters()
-		_, err = c.svcCtx.Dao.ChatInviteParticipantsDAO.SelectRecentRequestedListWithCB(
-			c.ctx,
-			mChat.Id(),
-			func(sz, i int, v *dataobject.ChatInviteParticipantsDO) {
-				requesters.RequestsPending += 1
-				requesters.RecentRequesters = append(requesters.RecentRequesters, v.UserId)
-			})
+		if c.svcCtx.Dao.Postgres != nil && c.svcCtx.Dao.Postgres.Store != nil {
+			var recent []dataobject.ChatInviteParticipantsDO
+			recent, err = c.svcCtx.Dao.Postgres.Store.InviteParticipants.SelectRecentRequestedList(c.ctx, mChat.Id())
+			for i := range recent {
+				requesters.RequestsPending++
+				requesters.RecentRequesters = append(requesters.RecentRequesters, recent[i].UserId)
+			}
+		} else {
+			_, err = c.svcCtx.Dao.ChatInviteParticipantsDAO.SelectRecentRequestedListWithCB(
+				c.ctx,
+				mChat.Id(),
+				func(sz, i int, v *dataobject.ChatInviteParticipantsDO) {
+					requesters.RequestsPending += 1
+					requesters.RecentRequesters = append(requesters.RecentRequesters, v.UserId)
+				})
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -144,13 +181,27 @@ func (c *ChatCore) ChatImportChatInvite2(in *chat.TLChatImportChatInvite2) (*cha
 			return nil, err
 		}
 
-		if _, _, err = c.svcCtx.Dao.ChatInviteParticipantsDAO.Insert(c.ctx, &dataobject.ChatInviteParticipantsDO{
+		inviteParticipant := &dataobject.ChatInviteParticipantsDO{
 			ChatId:    chatInviteDO.ChatId,
 			Link:      in.Hash,
 			UserId:    in.SelfId,
 			Requested: false,
 			Date2:     time.Now().Unix(),
-		}); err != nil {
+		}
+		if c.svcCtx.Dao.Postgres != nil && c.svcCtx.Dao.Postgres.Store != nil {
+			tx, txErr := c.svcCtx.Dao.Postgres.Pool.Begin(c.ctx)
+			if txErr == nil {
+				defer tx.Rollback(c.ctx)
+				_, _, txErr = c.svcCtx.Dao.Postgres.Store.InviteParticipants.InsertOn(c.ctx, tx, inviteParticipant)
+				if txErr == nil {
+					txErr = tx.Commit(c.ctx)
+				}
+			}
+			err = txErr
+		} else {
+			_, _, err = c.svcCtx.Dao.ChatInviteParticipantsDAO.Insert(c.ctx, inviteParticipant)
+		}
+		if err != nil {
 			c.Logger.Errorf("chat.importChatInvite - error: %v", err)
 			return nil, err
 		}

@@ -10,8 +10,7 @@
 package core
 
 import (
-	"context"
-	"github.com/teamgram/marmota/pkg/stores/sqlx"
+	"errors"
 	"time"
 
 	"github.com/teamgram/proto/mtproto"
@@ -60,14 +59,18 @@ func (c *ChatCore) ChatEditChatTitle(in *chat.TLChatEditChatTitle) (*mtproto.Mut
 		c.Logger.Errorf("chat.editChatTitle - error: %v", err)
 		return nil, err
 	}
+	if c.svcCtx.Dao.Postgres == nil || c.svcCtx.Dao.Postgres.Store == nil {
+		return nil, errors.New("chat.editChatTitle: PostgreSQL store is not initialized")
+	}
 
-	_, _, err = c.svcCtx.Dao.CachedConn.Exec(
-		c.ctx,
-		func(ctx context.Context, conn *sqlx.DB) (int64, int64, error) {
-			rowAffected, err2 := c.svcCtx.Dao.ChatsDAO.UpdateTitle(c.ctx, in.Title, chatId)
-			return 0, rowAffected, err2
-		},
-		c.svcCtx.Dao.GetChatCacheKey(chatId))
+	tx, err := c.svcCtx.Dao.Postgres.Pool.Begin(c.ctx)
+	if err == nil {
+		defer tx.Rollback(c.ctx)
+		_, err = c.svcCtx.Dao.Postgres.Store.Chats.UpdateTitleOn(c.ctx, tx, in.Title, chatId)
+		if err == nil {
+			err = tx.Commit(c.ctx)
+		}
+	}
 	if err != nil {
 		c.Logger.Errorf("chat.editChatTitle - error: %v", err)
 		return nil, err

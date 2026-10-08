@@ -59,7 +59,7 @@ type ChannelInviteImporter struct {
 // is also used to create the replacement for a permanent invite.
 func CreateChannelInvite(invite ChannelInvite) (ChannelInvite, error) {
 	if db == nil {
-		return ChannelInvite{}, errors.New("domain mysql is not open")
+		return ChannelInvite{}, errors.New("domain PostgreSQL is not open")
 	}
 	if invite.ChannelID <= 0 || invite.AdminID <= 0 || invite.Link == "" {
 		return ChannelInvite{}, ErrChannelInviteMissing
@@ -82,7 +82,7 @@ func CreateChannelInvite(invite ChannelInvite) (ChannelInvite, error) {
 
 func GetChannelInvite(channelID int64, link string) (ChannelInvite, error) {
 	if db == nil {
-		return ChannelInvite{}, errors.New("domain mysql is not open")
+		return ChannelInvite{}, errors.New("domain PostgreSQL is not open")
 	}
 	invite, err := loadChannelInvite(db, link)
 	if err != nil {
@@ -96,7 +96,7 @@ func GetChannelInvite(channelID int64, link string) (ChannelInvite, error) {
 
 func ListChannelInvites(channelID, adminID int64) ([]ChannelInvite, error) {
 	if db == nil {
-		return nil, errors.New("domain mysql is not open")
+		return nil, errors.New("domain PostgreSQL is not open")
 	}
 	rows, err := db.Query(`SELECT id, chat_id, admin_id, link, permanent, revoked, request_needed, start_date,
 		expire_date, usage_limit, usage2, requested, title, date2
@@ -110,7 +110,7 @@ func ListChannelInvites(channelID, adminID int64) ([]ChannelInvite, error) {
 
 func ListChannelInvitesForChannel(channelID int64) ([]ChannelInvite, error) {
 	if db == nil {
-		return nil, errors.New("domain mysql is not open")
+		return nil, errors.New("domain PostgreSQL is not open")
 	}
 	rows, err := db.Query(`SELECT id, chat_id, admin_id, link, permanent, revoked, request_needed, start_date,
 		expire_date, usage_limit, usage2, requested, title, date2
@@ -124,7 +124,7 @@ func ListChannelInvitesForChannel(channelID int64) ([]ChannelInvite, error) {
 
 func UpdateChannelInvite(channelID int64, link, replacementLink string, update ChannelInviteUpdate, now int64) ([]ChannelInvite, error) {
 	if db == nil {
-		return nil, errors.New("domain mysql is not open")
+		return nil, errors.New("domain PostgreSQL is not open")
 	}
 	tx, err := db.Begin()
 	if err != nil {
@@ -212,7 +212,7 @@ func UpdateChannelInvite(channelID int64, link, replacementLink string, update C
 
 func DeleteChannelInvite(channelID int64, link string) (bool, error) {
 	if db == nil {
-		return false, errors.New("domain mysql is not open")
+		return false, errors.New("domain PostgreSQL is not open")
 	}
 	result, err := db.Exec(`DELETE FROM chat_invites WHERE chat_id=? AND link=?`, channelID, link)
 	if err != nil {
@@ -224,7 +224,7 @@ func DeleteChannelInvite(channelID int64, link string) (bool, error) {
 
 func DeleteRevokedChannelInvites(channelID, adminID int64) error {
 	if db == nil {
-		return errors.New("domain mysql is not open")
+		return errors.New("domain PostgreSQL is not open")
 	}
 	_, err := db.Exec(`DELETE FROM chat_invites WHERE chat_id=? AND admin_id=? AND revoked=1`, channelID, adminID)
 	return err
@@ -232,7 +232,7 @@ func DeleteRevokedChannelInvites(channelID, adminID int64) error {
 
 func CountChannelInviteParticipants(channelID int64, link string, requested bool) (int32, error) {
 	if db == nil {
-		return 0, errors.New("domain mysql is not open")
+		return 0, errors.New("domain PostgreSQL is not open")
 	}
 	var count int32
 	err := db.QueryRow(`SELECT COUNT(*) FROM chat_invite_participants
@@ -242,7 +242,7 @@ func CountChannelInviteParticipants(channelID int64, link string, requested bool
 
 func ListChannelInviteImporters(channelID int64, link string, requested bool, query string) ([]ChannelInviteImporter, error) {
 	if db == nil {
-		return nil, errors.New("domain mysql is not open")
+		return nil, errors.New("domain PostgreSQL is not open")
 	}
 
 	args := []any{channelID, requested}
@@ -283,7 +283,7 @@ func ListChannelInviteImporters(channelID int64, link string, requested bool, qu
 // a non-empty link scopes the operation to that invite.
 func ResolveChannelInviteRequest(channelID, userID, approverID int64, link string, approved bool, now int64) error {
 	if db == nil {
-		return errors.New("domain mysql is not open")
+		return errors.New("domain PostgreSQL is not open")
 	}
 	if channelID <= 0 || userID <= 0 || approverID <= 0 {
 		return ErrInvalidChannelMember
@@ -429,7 +429,7 @@ func CheckChannelInvite(hash string, userID int64, now int64) (ChannelInvite, Ch
 // not exceed a configured usage limit.
 func ImportChannelInvite(hash string, userID, now int64) (ChannelInviteImport, error) {
 	if db == nil {
-		return ChannelInviteImport{}, errors.New("domain mysql is not open")
+		return ChannelInviteImport{}, errors.New("domain PostgreSQL is not open")
 	}
 	if userID <= 0 {
 		return ChannelInviteImport{}, ErrInvalidChannelMember
@@ -517,7 +517,7 @@ func ImportChannelInvite(hash string, userID, now int64) (ChannelInviteImport, e
 
 func activeChannelInvite(hash string, now int64) (ChannelInvite, Channel, error) {
 	if db == nil {
-		return ChannelInvite{}, Channel{}, errors.New("domain mysql is not open")
+		return ChannelInvite{}, Channel{}, errors.New("domain PostgreSQL is not open")
 	}
 	invite, err := loadChannelInvite(db, hash)
 	if err != nil {

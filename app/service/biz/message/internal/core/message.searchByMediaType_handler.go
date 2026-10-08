@@ -13,7 +13,6 @@ import (
 	"math"
 
 	"github.com/teamgram/proto/mtproto"
-	"github.com/teamgram/teamgram-server/app/service/biz/message/internal/dal/dataobject"
 	"github.com/teamgram/teamgram-server/app/service/biz/message/message"
 )
 
@@ -26,7 +25,7 @@ func (c *MessageCore) MessageSearchByMediaType(in *message.TLMessageSearchByMedi
 	if in.Limit < 0 {
 		return nil, mtproto.ErrLimitInvalid
 	}
-	if c == nil || c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.Mysql == nil {
+	if c == nil || c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.Postgres == nil || c.svcCtx.Dao.Postgres.Store == nil || c.svcCtx.Dao.Postgres.Store.Messages == nil {
 		return nil, mtproto.ErrInternalServerError
 	}
 	var (
@@ -73,18 +72,12 @@ func (c *MessageCore) MessageSearchByMediaType(in *message.TLMessageSearchByMedi
 
 func (c *MessageCore) searchSentByMediaType(userId int64, mediaType int32, offset, limit int32) ([]*mtproto.MessageBox, error) {
 	var boxList []*mtproto.MessageBox
-	_, err := c.svcCtx.Dao.MessagesDAO.SelectSentByMediaTypeWithCB(
-		c.ctx,
-		userId,
-		mediaType,
-		offset,
-		limit,
-		func(sz, i int, v *dataobject.MessagesDO) {
-			boxList = append(boxList, c.svcCtx.Dao.MakeMessageBox(c.ctx, userId, v))
-		},
-	)
+	rows, err := c.svcCtx.Dao.SelectSentMediaMessages(c.ctx, userId, mediaType, offset, limit)
 	if err != nil {
 		return nil, err
+	}
+	for i := range rows {
+		boxList = append(boxList, c.svcCtx.Dao.MakeMessageBox(c.ctx, userId, &rows[i]))
 	}
 	if boxList == nil {
 		boxList = []*mtproto.MessageBox{}
@@ -104,19 +97,12 @@ func (c *MessageCore) searchByPhotoVideoMediaType(
 		boxList  []*mtproto.MessageBox
 	)
 
-	_, err := c.svcCtx.Dao.MessagesDAO.SelectByPhotoVideoMediaTypeWithCB(
-		c.ctx,
-		userId,
-		dialogId.A,
-		dialogId.B,
-		mediaType,
-		offset,
-		limit,
-		func(sz, i int, v *dataobject.MessagesDO) {
-			boxList = append(boxList, c.svcCtx.Dao.MakeMessageBox(c.ctx, userId, v))
-		})
+	rows, err := c.svcCtx.Dao.SelectPhotoVideoMessages(c.ctx, userId, dialogId.A, dialogId.B, offset, limit)
 	if err != nil {
 		return nil, err
+	}
+	for i := range rows {
+		boxList = append(boxList, c.svcCtx.Dao.MakeMessageBox(c.ctx, userId, &rows[i]))
 	}
 
 	if boxList == nil {
@@ -138,19 +124,12 @@ func (c *MessageCore) searchByMediaType(
 		boxList  []*mtproto.MessageBox
 	)
 
-	_, err := c.svcCtx.Dao.MessagesDAO.SelectByMediaTypeWithCB(
-		c.ctx,
-		userId,
-		dialogId.A,
-		dialogId.B,
-		mediaType,
-		offset,
-		limit,
-		func(sz, i int, v *dataobject.MessagesDO) {
-			boxList = append(boxList, c.svcCtx.Dao.MakeMessageBox(c.ctx, userId, v))
-		})
+	rows, err := c.svcCtx.Dao.SelectMediaMessages(c.ctx, userId, dialogId.A, dialogId.B, mediaType, offset, limit)
 	if err != nil {
 		return nil, err
+	}
+	for i := range rows {
+		boxList = append(boxList, c.svcCtx.Dao.MakeMessageBox(c.ctx, userId, &rows[i]))
 	}
 
 	if boxList == nil {
@@ -162,17 +141,12 @@ func (c *MessageCore) searchByMediaType(
 
 func (c *MessageCore) searchByPhoneCall(userId int64, offset, limit int32) ([]*mtproto.MessageBox, error) {
 	var boxList []*mtproto.MessageBox
-	_, err := c.svcCtx.Dao.MessagesDAO.SelectPhoneCallListWithCB(
-		c.ctx,
-		userId,
-		mtproto.MEDIA_PHONE_CALL,
-		offset,
-		limit,
-		func(sz, i int, v *dataobject.MessagesDO) {
-			boxList = append(boxList, c.svcCtx.Dao.MakeMessageBox(c.ctx, userId, v))
-		})
+	rows, err := c.svcCtx.Dao.SelectPhoneCallMessages(c.ctx, userId, mtproto.MEDIA_PHONE_CALL, offset, limit)
 	if err != nil {
 		return nil, err
+	}
+	for i := range rows {
+		boxList = append(boxList, c.svcCtx.Dao.MakeMessageBox(c.ctx, userId, &rows[i]))
 	}
 
 	if boxList == nil {

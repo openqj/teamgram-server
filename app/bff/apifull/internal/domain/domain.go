@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"math"
 	"net"
@@ -15,12 +16,8 @@ import (
 	"strings"
 	"time"
 
-	mysql "github.com/go-sql-driver/mysql"
-	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/persist"
+	"github.com/jackc/pgx/v5/pgconn"
 )
-
-// DefaultDSN is the local teamgram database used by biz.yaml.
-const DefaultDSN = "root:root@tcp(127.0.0.1:3306)/teamgram?charset=utf8mb4&parseTime=true"
 
 // Relay is the configured TURN endpoint returned inside phoneCall connections.
 var Relay RelayConfig
@@ -97,37 +94,19 @@ func RelayConfigured() bool {
 
 var db *sql.DB
 
-// Open connects to MySQL, creates the apifull tables, and switches persist.Default.
+// Open is the single APIFull storage entry point. The independent deployment
+// uses PostgreSQL 18 exclusively; callers that still pass a MySQL DSN fail
+// fast instead of silently selecting a legacy backend.
 func Open(dsn string) error {
-	readOnlySchema := schemaReadOnly()
-	var openPersist func(string) error
-	if readOnlySchema {
-		openPersist = persist.OpenMySQLReadOnly
-	} else {
-		openPersist = persist.OpenMySQL
+	if !isPostgresDSN(dsn) {
+		return errors.New("apifull: PostgreSQL DSN is required")
 	}
-	if err := openPersist(dsn); err != nil {
-		return err
-	}
-	conn, err := sql.Open("mysql", dsn)
-	if err != nil {
-		return err
-	}
-	conn.SetMaxOpenConns(8)
-	conn.SetMaxIdleConns(8)
-	if err = conn.Ping(); err != nil {
-		_ = conn.Close()
-		return err
-	}
-	if !readOnlySchema {
-		err = migrate(conn)
-	}
-	if err != nil {
-		_ = conn.Close()
-		return err
-	}
-	db = conn
-	return nil
+	return openPostgresDomain(dsn, schemaReadOnly())
+}
+
+func isPostgresDSN(dsn string) bool {
+	dsn = strings.TrimSpace(strings.ToLower(dsn))
+	return strings.HasPrefix(dsn, "postgres://") || strings.HasPrefix(dsn, "postgresql://")
 }
 
 func schemaReadOnly() bool {
@@ -136,6 +115,29 @@ func schemaReadOnly() bool {
 }
 
 func migrate(conn *sql.DB) error {
+	return migrateDialect(conn, false)
+}
+
+// migratePostgres provisions a fresh APIFull schema using PostgreSQL-native
+// types and indexes. It shares the authoritative table definition below with
+// the transitional MySQL path, then applies a deterministic DDL conversion.
+func migratePostgres(conn *sql.DB) error {
+	tx, err := conn.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := migrateDialect(tx, true); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+type sqlExecer interface {
+	Exec(query string, args ...any) (sql.Result, error)
+}
+
+func migrateDialect(conn sqlExecer, postgres bool) error {
 	stmts := []string{
 		`CREATE TABLE IF NOT EXISTS apifull_channel (
 			id BIGINT NOT NULL PRIMARY KEY,
@@ -296,6 +298,21 @@ func migrate(conn *sql.DB) error {
 			UNIQUE KEY uniq_apifull_payment_receipt_transaction (provider, transaction_id),
 			KEY idx_apifull_payment_receipt_message (user_id, peer_id, msg_id)
 		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+		`CREATE TABLE IF NOT EXISTS apifull_payment_entitlement_outbox (
+			request_id BIGINT NOT NULL PRIMARY KEY,
+			user_id BIGINT NOT NULL,
+			provider VARCHAR(32) COLLATE utf8mb4_bin NOT NULL,
+			transaction_id VARCHAR(191) COLLATE utf8mb4_bin NOT NULL,
+			months TINYINT UNSIGNED NOT NULL,
+			state VARCHAR(16) NOT NULL DEFAULT 'pending',
+			attempts INT NOT NULL DEFAULT 0,
+			next_attempt_at BIGINT NOT NULL,
+			last_error VARCHAR(255) NOT NULL DEFAULT '',
+			created_at BIGINT NOT NULL,
+			updated_at BIGINT NOT NULL,
+			UNIQUE KEY uniq_apifull_payment_entitlement_transaction (provider, transaction_id),
+			KEY idx_apifull_payment_entitlement_due (state, next_attempt_at, request_id)
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 		`CREATE TABLE IF NOT EXISTS apifull_report (
 			id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
 			actor_user_id BIGINT NOT NULL,
@@ -370,6 +387,7 @@ func migrate(conn *sql.DB) error {
 		`CREATE TABLE IF NOT EXISTS apifull_group_call_participant (
 			call_id BIGINT NOT NULL,
 			user_id BIGINT NOT NULL,
+			media_source INT NULL,
 			muted TINYINT NOT NULL DEFAULT 0,
 			volume INT NULL,
 			raise_hand TINYINT NOT NULL DEFAULT 0,
@@ -381,6 +399,7 @@ func migrate(conn *sql.DB) error {
 			join_params MEDIUMTEXT NOT NULL,
 			updated_at INT NOT NULL,
 			PRIMARY KEY (call_id, user_id),
+			UNIQUE KEY uniq_apifull_group_call_participant_source (call_id, media_source),
 			KEY idx_apifull_group_call_participant_user (user_id)
 		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 		`CREATE TABLE IF NOT EXISTS apifull_group_call_subscription (
@@ -435,6 +454,30 @@ func migrate(conn *sql.DB) error {
 				PRIMARY KEY (channel_id, sender_user_id, random_id),
 				KEY idx_apifull_channel_message_request_message (channel_id, message_id)
 			) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+		`CREATE TABLE IF NOT EXISTS apifull_channel_delivery_outbox (
+			id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+			channel_id BIGINT NOT NULL,
+			pts_from INT NOT NULL,
+			pts_to INT NOT NULL,
+			sender_user_id BIGINT NOT NULL,
+			exclude_auth_key_id BIGINT NOT NULL DEFAULT 0,
+			state VARCHAR(16) NOT NULL DEFAULT 'pending',
+			payload MEDIUMBLOB NOT NULL,
+			created_at BIGINT NOT NULL,
+			UNIQUE KEY uniq_apifull_channel_delivery_event (channel_id, pts_from, pts_to),
+			KEY idx_apifull_channel_delivery_channel (channel_id, id)
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+		`CREATE TABLE IF NOT EXISTS apifull_channel_delivery_recipient (
+			delivery_id BIGINT NOT NULL,
+			user_id BIGINT NOT NULL,
+			state VARCHAR(16) NOT NULL DEFAULT 'pending',
+			attempts INT NOT NULL DEFAULT 0,
+			next_attempt_at BIGINT NOT NULL,
+			delivered_at BIGINT NOT NULL DEFAULT 0,
+			last_error VARCHAR(255) NOT NULL DEFAULT '',
+			PRIMARY KEY (delivery_id, user_id),
+			KEY idx_apifull_channel_delivery_due (state, next_attempt_at, delivery_id)
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 		`CREATE TABLE IF NOT EXISTS apifull_channel_message_hidden (
 			user_id BIGINT NOT NULL,
 			channel_id BIGINT NOT NULL,
@@ -533,9 +576,28 @@ func migrate(conn *sql.DB) error {
 		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 	}
 	for _, stmt := range stmts {
+		if postgres {
+			converted, indexes, err := postgresDDL(stmt)
+			if err != nil {
+				return err
+			}
+			stmt = converted
+			if _, err := conn.Exec(stmt); err != nil {
+				return err
+			}
+			for _, index := range indexes {
+				if _, err := conn.Exec(index); err != nil {
+					return err
+				}
+			}
+			continue
+		}
 		if _, err := conn.Exec(stmt); err != nil {
 			return err
 		}
+	}
+	if postgres {
+		return nil
 	}
 	if _, err := conn.Exec(`ALTER TABLE apifull_channel_message ADD COLUMN pinned TINYINT NOT NULL DEFAULT 0`); err != nil && !duplicateColumn(err) {
 		return err
@@ -575,6 +637,7 @@ func migrate(conn *sql.DB) error {
 		`ALTER TABLE apifull_group_call ADD COLUMN schedule_date INT NULL`,
 		`ALTER TABLE apifull_group_call_participant ADD COLUMN presentation_active TINYINT NOT NULL DEFAULT 0`,
 		`ALTER TABLE apifull_group_call_participant ADD COLUMN join_params MEDIUMTEXT NOT NULL`,
+		`ALTER TABLE apifull_group_call_participant ADD COLUMN media_source INT NULL`,
 		`ALTER TABLE apifull_call ADD COLUMN ga_hash VARBINARY(256) NULL`,
 		`ALTER TABLE apifull_call ADD COLUMN gb VARBINARY(256) NULL`,
 		`ALTER TABLE apifull_call ADD COLUMN ga VARBINARY(256) NULL`,
@@ -592,6 +655,9 @@ func migrate(conn *sql.DB) error {
 			return err
 		}
 	}
+	if _, err := conn.Exec(`CREATE UNIQUE INDEX uniq_apifull_group_call_participant_source ON apifull_group_call_participant (call_id, media_source)`); err != nil && !duplicateIndex(err) {
+		return err
+	}
 	// Older deployments used NOT NULL DEFAULT 0 for this optional link. Make
 	// it nullable before enforcing the unique index so ordinary channels do not
 	// collide on the same sentinel value.
@@ -605,21 +671,18 @@ func migrate(conn *sql.DB) error {
 }
 
 func duplicateColumn(err error) bool {
-	var me *mysql.MySQLError
-	if errors.As(err, &me) && me.Number == 1060 {
-		return true
-	}
-	return strings.Contains(err.Error(), "Duplicate column")
+	var pe *pgconn.PgError
+	return errors.As(err, &pe) && pe.Code == "42701"
 }
 
 func duplicateIndex(err error) bool {
-	var me *mysql.MySQLError
-	return errors.As(err, &me) && me.Number == 1061
+	var pe *pgconn.PgError
+	return errors.As(err, &pe) && pe.Code == "42P07"
 }
 
 func isDuplicateKey(err error) bool {
-	var me *mysql.MySQLError
-	return errors.As(err, &me) && me.Number == 1062
+	var pe *pgconn.PgError
+	return errors.As(err, &pe) && pe.Code == "23505"
 }
 
 func Ready() bool { return db != nil }
@@ -681,7 +744,7 @@ type ChannelSettings struct {
 
 func SaveChannel(ch Channel) error {
 	if db == nil {
-		return errors.New("domain mysql is not open")
+		return errors.New("domain PostgreSQL is not open")
 	}
 	if ch.CreatedAt == 0 {
 		ch.CreatedAt = time.Now().Unix()
@@ -704,7 +767,7 @@ func SaveChannel(ch Channel) error {
 func LoadChannel(id int64) (Channel, bool, error) {
 	var ch Channel
 	if db == nil {
-		return ch, false, errors.New("domain mysql is not open")
+		return ch, false, errors.New("domain PostgreSQL is not open")
 	}
 	var broadcast, megagroup, signatures, signatureProfiles, antispam, hiddenPrehistory, participantsHidden int
 	var color, profileColor sql.NullInt32
@@ -759,7 +822,7 @@ func LoadChannel(id int64) (Channel, bool, error) {
 // message tables instead of caller-local KV state.
 func ListInactiveChannels(creatorID, cutoff int64) ([]InactiveChannel, error) {
 	if db == nil {
-		return nil, errors.New("domain mysql is not open")
+		return nil, errors.New("domain PostgreSQL is not open")
 	}
 	rows, err := db.Query(`
 		SELECT c.id, COALESCE(MAX(m.date), c.created_at) AS last_active
@@ -798,7 +861,7 @@ func ListInactiveChannels(creatorID, cutoff int64) ([]InactiveChannel, error) {
 // service has accepted it. Clearing the photo uses a zero id and dc id.
 func UpdateChannelPhoto(userID, channelID, photoID int64, photoDCID int32, hasVideo bool) error {
 	if db == nil {
-		return errors.New("domain mysql is not open")
+		return errors.New("domain PostgreSQL is not open")
 	}
 	if photoID < 0 || photoDCID < 0 || (photoID == 0) != (photoDCID == 0) {
 		return errors.New("invalid channel photo")
@@ -820,7 +883,7 @@ func UpdateChannelPhoto(userID, channelID, photoID int64, photoDCID int32, hasVi
 
 func UpdateChannelColor(userID, channelID int64, forProfile bool, color *int32, backgroundEmojiID *int64) error {
 	if db == nil {
-		return errors.New("domain mysql is not open")
+		return errors.New("domain PostgreSQL is not open")
 	}
 	if color == nil && backgroundEmojiID == nil {
 		return errors.New("no channel color fields supplied")
@@ -856,7 +919,7 @@ func UpdateChannelColor(userID, channelID int64, forProfile bool, color *int32, 
 
 func UpdateChannelSettings(userID, channelID int64, settings ChannelSettings) error {
 	if db == nil {
-		return errors.New("domain mysql is not open")
+		return errors.New("domain PostgreSQL is not open")
 	}
 	sets := []string{}
 	args := []any{}
@@ -907,7 +970,7 @@ func UpdateChannelSettings(userID, channelID int64, settings ChannelSettings) er
 
 func UpdateChannelTitle(userID, channelID int64, title string) error {
 	if db == nil {
-		return errors.New("domain mysql is not open")
+		return errors.New("domain PostgreSQL is not open")
 	}
 	tx, err := db.Begin()
 	if err != nil {
@@ -927,7 +990,7 @@ func UpdateChannelTitle(userID, channelID int64, title string) error {
 // has accepted the change. Authorization belongs to that caller.
 func UpdateChannelUsername(channelID int64, username string) error {
 	if db == nil {
-		return errors.New("domain mysql is not open")
+		return errors.New("domain PostgreSQL is not open")
 	}
 	result, err := db.Exec(`UPDATE apifull_channel SET username=? WHERE id=?`, username, channelID)
 	if err != nil {
@@ -953,7 +1016,7 @@ func UpdateChannelUsername(channelID int64, username string) error {
 // clears the location, matching inputGeoPointEmpty.
 func UpdateChannelLocation(userID, channelID int64, lat, long *float64, address string) error {
 	if db == nil {
-		return errors.New("domain mysql is not open")
+		return errors.New("domain PostgreSQL is not open")
 	}
 	if (lat == nil) != (long == nil) {
 		return ErrInvalidLocation
@@ -980,7 +1043,7 @@ func UpdateChannelLocation(userID, channelID int64, lat, long *float64, address 
 // authorization check and the cleanup in one transaction.
 func DeleteChannel(userID, channelID int64) error {
 	if db == nil {
-		return errors.New("domain mysql is not open")
+		return errors.New("domain PostgreSQL is not open")
 	}
 	tx, err := db.Begin()
 	if err != nil {
@@ -992,7 +1055,10 @@ func DeleteChannel(userID, channelID int64) error {
 	}
 	for _, stmt := range []string{
 		`UPDATE apifull_channel SET discussion_group_id=NULL WHERE discussion_group_id=?`,
+		`DELETE FROM apifull_channel_delivery_recipient WHERE delivery_id IN (SELECT id FROM apifull_channel_delivery_outbox WHERE channel_id=?)`,
+		`DELETE FROM apifull_channel_delivery_outbox WHERE channel_id=?`,
 		`DELETE FROM apifull_channel_event WHERE channel_id=?`,
+		`DELETE FROM apifull_channel_message_request WHERE channel_id=?`,
 		`DELETE FROM apifull_channel_message_hidden WHERE channel_id=?`,
 		`DELETE FROM apifull_channel_message_content_read WHERE channel_id=?`,
 		`DELETE FROM apifull_channel_message WHERE channel_id=?`,
@@ -1036,7 +1102,7 @@ func lockChannelOwner(tx *sql.Tx, channelID, userID int64) error {
 
 func ListByCreator(creator int64) ([]Channel, error) {
 	if db == nil {
-		return nil, errors.New("domain mysql is not open")
+		return nil, errors.New("domain PostgreSQL is not open")
 	}
 	rows, err := db.Query(`SELECT id, access_hash, creator_user_id, title, about, broadcast, megagroup,
 		signatures_enabled, signature_profiles_enabled, hidden_prehistory, participants_hidden, slowmode_seconds, username, created_at
@@ -1118,7 +1184,7 @@ type CallTransition struct {
 // replaces the caller's previous rating for the same call.
 func SaveCallArtifact(callID, accessHash, userID int64, kind string, payload []byte) (Call, error) {
 	if db == nil {
-		return Call{}, errors.New("domain mysql is not open")
+		return Call{}, errors.New("domain PostgreSQL is not open")
 	}
 	if callID <= 0 || accessHash == 0 || userID <= 0 || strings.TrimSpace(kind) == "" || len(payload) == 0 || len(payload) > 1<<20 {
 		return Call{}, ErrCallInvalidState
@@ -1156,6 +1222,9 @@ func SaveCallArtifact(callID, accessHash, userID int64, kind string, payload []b
 	if call.AccessHash != accessHash || (call.AdminID != userID && call.ParticipantID != userID) {
 		return Call{}, ErrCallForbidden
 	}
+	if kind == "signaling" && call.State == "discarded" {
+		return Call{}, ErrCallInvalidState
+	}
 	if kind == "rating" {
 		if _, err = tx.Exec(`DELETE FROM apifull_call_artifact WHERE call_id=? AND user_id=? AND kind=?`, callID, userID, kind); err != nil {
 			return Call{}, err
@@ -1173,7 +1242,7 @@ func SaveCallArtifact(callID, accessHash, userID int64, kind string, payload []b
 
 func SaveCall(call Call) error {
 	if db == nil {
-		return errors.New("domain mysql is not open")
+		return errors.New("domain PostgreSQL is not open")
 	}
 	if call.CreatedAt == 0 {
 		call.CreatedAt = time.Now().Unix()
@@ -1198,7 +1267,7 @@ func SaveCall(call Call) error {
 func LoadCall(id int64) (Call, bool, error) {
 	var call Call
 	if db == nil {
-		return call, false, errors.New("domain mysql is not open")
+		return call, false, errors.New("domain PostgreSQL is not open")
 	}
 	var video int
 	var protocol sql.NullString
@@ -1226,7 +1295,7 @@ func LoadCall(id int64) (Call, bool, error) {
 // It is intentionally the only lifecycle write used by the VoIP handlers.
 func TransitionCall(id int64, transition CallTransition) (Call, error) {
 	if db == nil {
-		return Call{}, errors.New("domain mysql is not open")
+		return Call{}, errors.New("domain PostgreSQL is not open")
 	}
 	tx, err := db.Begin()
 	if err != nil {
@@ -1327,6 +1396,11 @@ func TransitionCall(id int64, transition CallTransition) (Call, error) {
 	if _, err = tx.Exec(`UPDATE apifull_call SET `+strings.Join(sets, ", ")+` WHERE id=?`, args...); err != nil {
 		return Call{}, err
 	}
+	if transition.ToState == "discarded" {
+		if _, err = tx.Exec(`DELETE FROM apifull_call_artifact WHERE call_id=? AND kind='signaling'`, id); err != nil {
+			return Call{}, err
+		}
+	}
 	if err = tx.Commit(); err != nil {
 		return Call{}, err
 	}
@@ -1408,7 +1482,7 @@ type StarsOffer struct {
 // code may use this helper when synchronising its authoritative catalog.
 func UpsertStarsOffer(kind string, stars int64, storeProduct, currency string, amount int64, extended bool) error {
 	if db == nil {
-		return errors.New("domain mysql is not open")
+		return errors.New("domain PostgreSQL is not open")
 	}
 	kind = strings.TrimSpace(kind)
 	storeProduct = strings.TrimSpace(storeProduct)
@@ -1428,7 +1502,7 @@ func UpsertStarsOffer(kind string, stars int64, storeProduct, currency string, a
 // stable order. An empty result is a real empty catalog.
 func ListStarsOffers(kind string) ([]StarsOffer, error) {
 	if db == nil {
-		return nil, errors.New("domain mysql is not open")
+		return nil, errors.New("domain PostgreSQL is not open")
 	}
 	if kind != "topup" && kind != "gift" {
 		return nil, ErrInvalidStarsTransaction
@@ -1452,11 +1526,47 @@ func ListStarsOffers(kind string) ([]StarsOffer, error) {
 	return offers, rows.Err()
 }
 
+func FindActiveStarsTopupOffer(stars int64, storeProduct, currency string, amount int64, extended *bool) (StarsOffer, bool, error) {
+	if db == nil {
+		return StarsOffer{}, false, errors.New("domain PostgreSQL is not open")
+	}
+	if stars <= 0 || amount < 0 {
+		return StarsOffer{}, false, ErrInvalidStarsTransaction
+	}
+	rows, err := db.Query(`SELECT id, kind, stars, store_product, currency, amount, extended
+		FROM apifull_stars_offer WHERE kind='topup' AND active=1 AND stars=? ORDER BY id`, stars)
+	if err != nil {
+		return StarsOffer{}, false, err
+	}
+	defer rows.Close()
+	var match StarsOffer
+	found := false
+	for rows.Next() {
+		var offer StarsOffer
+		var isExtended int
+		if err = rows.Scan(&offer.ID, &offer.Kind, &offer.Stars, &offer.StoreProduct, &offer.Currency, &offer.Amount, &isExtended); err != nil {
+			return StarsOffer{}, false, err
+		}
+		offer.Extended = isExtended != 0
+		if offer.StoreProduct != storeProduct || offer.Currency != currency || offer.Amount != amount || (extended != nil && offer.Extended != *extended) {
+			continue
+		}
+		if found {
+			return StarsOffer{}, false, ErrInvalidStarsTransaction
+		}
+		match, found = offer, true
+	}
+	if err = rows.Err(); err != nil {
+		return StarsOffer{}, false, err
+	}
+	return match, found, nil
+}
+
 // ApplyStars adds delta (negative debits). The same idempotency key does not apply twice.
 // A debit below zero returns an error and leaves the balance unchanged.
 func ApplyStars(userID, delta int64, idem string) (int64, error) {
 	if db == nil {
-		return 0, errors.New("domain mysql is not open")
+		return 0, errors.New("domain PostgreSQL is not open")
 	}
 	if userID <= 0 || delta == 0 || strings.TrimSpace(idem) == "" {
 		return 0, ErrInvalidStarsTransaction
@@ -1539,7 +1649,7 @@ func validateStarsDelta(balance, delta int64) error {
 
 func StarsBalance(userID int64) (int64, error) {
 	if db == nil {
-		return 0, errors.New("domain mysql is not open")
+		return 0, errors.New("domain PostgreSQL is not open")
 	}
 	if userID <= 0 {
 		return 0, ErrInvalidStarsTransaction
@@ -1551,7 +1661,7 @@ func StarsBalance(userID int64) (int64, error) {
 // direction filters are applied to the signed amount stored in the database.
 func ListStarsTransactions(userID int64, inbound, outbound, ascending bool, offset, limit int) ([]StarsTransaction, error) {
 	if db == nil {
-		return nil, errors.New("domain mysql is not open")
+		return nil, errors.New("domain PostgreSQL is not open")
 	}
 	if userID <= 0 || offset < 0 {
 		return nil, ErrInvalidStarsTransaction
@@ -1589,7 +1699,7 @@ func ListStarsTransactions(userID int64, inbound, outbound, ascending bool, offs
 
 func GetStarsTransaction(userID int64, id string) (StarsTransaction, bool, error) {
 	if db == nil {
-		return StarsTransaction{}, false, errors.New("domain mysql is not open")
+		return StarsTransaction{}, false, errors.New("domain PostgreSQL is not open")
 	}
 	if userID <= 0 || strings.TrimSpace(id) == "" {
 		return StarsTransaction{}, false, ErrInvalidStarsTransaction
@@ -1644,7 +1754,7 @@ func balanceForUpdate(tx *sql.Tx, userID int64) (int64, error) {
 // this function to create inventory.
 func SaveGift(from, to int64, slug string, stars int64) error {
 	if db == nil {
-		return errors.New("domain mysql is not open")
+		return errors.New("domain PostgreSQL is not open")
 	}
 	if from <= 0 || to <= 0 || strings.TrimSpace(slug) == "" || stars < 0 {
 		return ErrGiftNotFound
@@ -1659,7 +1769,7 @@ func SaveGift(from, to int64, slug string, stars int64) error {
 // mutating inventory.
 func FindGiftBySlug(slug string) (Gift, bool, error) {
 	if db == nil {
-		return Gift{}, false, errors.New("domain mysql is not open")
+		return Gift{}, false, errors.New("domain PostgreSQL is not open")
 	}
 	slug = strings.TrimSpace(slug)
 	if slug == "" {
@@ -1685,7 +1795,7 @@ func FindGiftBySlug(slug string) (Gift, bool, error) {
 // the same inventory twice.
 func TransferGift(from, to, giftID int64, slug string) error {
 	if db == nil {
-		return errors.New("domain mysql is not open")
+		return errors.New("domain PostgreSQL is not open")
 	}
 	if from <= 0 || to <= 0 || from == to || (giftID <= 0 && strings.TrimSpace(slug) == "") {
 		return ErrGiftNotFound
@@ -1719,7 +1829,7 @@ func TransferGift(from, to, giftID int64, slug string) error {
 // cannot credit the same gift twice.
 func ConvertGift(to int64, from *int64, slug string) error {
 	if db == nil {
-		return errors.New("domain mysql is not open")
+		return errors.New("domain PostgreSQL is not open")
 	}
 	if to <= 0 || strings.TrimSpace(slug) == "" {
 		return ErrGiftNotFound
@@ -1794,7 +1904,7 @@ func ConvertGift(to int64, from *int64, slug string) error {
 // grant or purchase operation.
 func SetGiftSaved(to int64, from *int64, slug string, saved bool) error {
 	if db == nil {
-		return errors.New("domain mysql is not open")
+		return errors.New("domain PostgreSQL is not open")
 	}
 	if slug == "" {
 		return ErrGiftNotFound
@@ -1824,7 +1934,7 @@ func SetGiftSaved(to int64, from *int64, slug string, saved bool) error {
 // synthesize gift records when no authoritative row exists.
 func GiftCatalog() ([]Gift, error) {
 	if db == nil {
-		return nil, errors.New("domain mysql is not open")
+		return nil, errors.New("domain PostgreSQL is not open")
 	}
 	rows, err := db.Query(`SELECT id, from_user, to_user, slug, stars, saved FROM apifull_gift ORDER BY id`)
 	if err != nil {
@@ -1874,7 +1984,7 @@ func ListGifts(to int64, savedOnly bool) ([]Gift, error) {
 
 func listGifts(to int64, savedOnly bool) ([]Gift, error) {
 	if db == nil {
-		return nil, errors.New("domain mysql is not open")
+		return nil, errors.New("domain PostgreSQL is not open")
 	}
 	if to <= 0 {
 		return nil, ErrGiftNotFound
@@ -1916,8 +2026,9 @@ func GiftSlugs(to int64) ([]string, error) {
 
 func ClaimUsername(name, kind string, owner int64) error {
 	if db == nil {
-		return errors.New("domain mysql is not open")
+		return errors.New("domain PostgreSQL is not open")
 	}
+	name = strings.ToLower(name)
 	_, err := db.Exec(`INSERT INTO apifull_username (username, owner_user_id, kind) VALUES (?,?,?)
 		ON DUPLICATE KEY UPDATE owner_user_id=VALUES(owner_user_id), kind=VALUES(kind)`, name, owner, kind)
 	return err
@@ -1925,8 +2036,9 @@ func ClaimUsername(name, kind string, owner int64) error {
 
 func LookupUsername(name string) (owner int64, kind string, ok bool, err error) {
 	if db == nil {
-		return 0, "", false, errors.New("domain mysql is not open")
+		return 0, "", false, errors.New("domain PostgreSQL is not open")
 	}
+	name = strings.ToLower(name)
 	err = db.QueryRow(`SELECT owner_user_id, kind FROM apifull_username WHERE username=?`, name).Scan(&owner, &kind)
 	if err == sql.ErrNoRows {
 		return 0, "", false, nil
@@ -1949,7 +2061,7 @@ func SaveGroupCallWithMetadata(id, access, creator, channelID int64, title, part
 // digest is persisted; the exported bearer token is never stored in clear.
 func SaveGroupCallInvite(callID, creatorID int64, token string, canSelfUnmute bool) error {
 	if db == nil {
-		return errors.New("domain mysql is not open")
+		return errors.New("domain PostgreSQL is not open")
 	}
 	if callID <= 0 || creatorID <= 0 || strings.TrimSpace(token) == "" {
 		return errors.New("invalid group call invite")
@@ -1970,7 +2082,7 @@ func SaveGroupCallInvite(callID, creatorID int64, token string, canSelfUnmute bo
 // matches and the invite has not been revoked.
 func CheckGroupCallInvite(callID int64, token string) (bool, bool, error) {
 	if db == nil {
-		return false, false, errors.New("domain mysql is not open")
+		return false, false, errors.New("domain PostgreSQL is not open")
 	}
 	if callID <= 0 || strings.TrimSpace(token) == "" {
 		return false, false, nil
@@ -1998,7 +2110,7 @@ func CheckGroupCallInvite(callID int64, token string) (bool, bool, error) {
 // for a call that has no invite yet.
 func RevokeGroupCallInvite(callID, creatorID int64) error {
 	if db == nil {
-		return errors.New("domain mysql is not open")
+		return errors.New("domain PostgreSQL is not open")
 	}
 	if callID <= 0 || creatorID <= 0 {
 		return errors.New("invalid group call invite")
@@ -2014,7 +2126,7 @@ func SaveConferenceCallWithMetadata(id, access, creator, channelID int64, title,
 
 func SaveConferenceCallControl(callID int64, publicKey, block []byte, params string) error {
 	if db == nil {
-		return errors.New("domain mysql is not open")
+		return errors.New("domain PostgreSQL is not open")
 	}
 	if callID <= 0 || len(publicKey) == 0 || len(publicKey) > 256 || len(block) == 0 {
 		return errors.New("invalid conference control block")
@@ -2031,7 +2143,7 @@ func SaveConferenceCallControl(callID int64, publicKey, block []byte, params str
 // truth for the currently advertised chain head.
 func UpdateConferenceCallBlock(callID int64, block []byte) error {
 	if db == nil {
-		return errors.New("domain mysql is not open")
+		return errors.New("domain PostgreSQL is not open")
 	}
 	if callID <= 0 || len(block) == 0 || len(block) > 1<<20 {
 		return errors.New("invalid conference broadcast block")
@@ -2061,7 +2173,7 @@ func UpdateConferenceCallBlock(callID int64, block []byte) error {
 // row is reported separately so callers can return a typed empty update.
 func LoadConferenceCallBlock(callID int64) ([]byte, bool, error) {
 	if db == nil {
-		return nil, false, errors.New("domain mysql is not open")
+		return nil, false, errors.New("domain PostgreSQL is not open")
 	}
 	if callID <= 0 {
 		return nil, false, errors.New("invalid conference call")
@@ -2079,7 +2191,7 @@ func LoadConferenceCallBlock(callID int64) ([]byte, bool, error) {
 
 func saveGroupCallWithMetadata(id, access, creator, channelID int64, title, participants string, scheduleDate *int32, rtmpStream, conference bool) error {
 	if db == nil {
-		return errors.New("domain mysql is not open")
+		return errors.New("domain PostgreSQL is not open")
 	}
 	var schedule any
 	if scheduleDate != nil {
@@ -2111,7 +2223,7 @@ type GroupCall struct {
 func LoadGroupCallRecord(id int64) (GroupCall, bool, error) {
 	var call GroupCall
 	if db == nil {
-		return call, false, errors.New("domain mysql is not open")
+		return call, false, errors.New("domain PostgreSQL is not open")
 	}
 	var rtmpStream, conference int
 	var scheduleDate sql.NullInt64
@@ -2143,7 +2255,7 @@ func LoadGroupCall(id int64) (participants string, ok bool, err error) {
 
 func UpdateGroupCallParticipants(id int64, participants string) (bool, error) {
 	if db == nil {
-		return false, errors.New("domain mysql is not open")
+		return false, errors.New("domain PostgreSQL is not open")
 	}
 	result, err := db.Exec(`UPDATE apifull_group_call SET participants=? WHERE id=?`, participants, id)
 	if err != nil {
@@ -2158,7 +2270,7 @@ func UpdateGroupCallParticipants(id int64, participants string) (bool, error) {
 
 func UpdateGroupCallTitle(id int64, title string) (bool, error) {
 	if db == nil {
-		return false, errors.New("domain mysql is not open")
+		return false, errors.New("domain PostgreSQL is not open")
 	}
 	result, err := db.Exec(`UPDATE apifull_group_call SET title=? WHERE id=?`, title, id)
 	if err != nil {
@@ -2186,7 +2298,7 @@ type GroupCallSettings struct {
 func LoadGroupCallSettings(callID int64) (GroupCallSettings, error) {
 	settings := GroupCallSettings{CallID: callID, MessagesEnabled: true}
 	if db == nil {
-		return settings, errors.New("domain mysql is not open")
+		return settings, errors.New("domain PostgreSQL is not open")
 	}
 	var joinMuted, messagesEnabled, recordActive, recordVideo, recordVideoPortrait, scheduledStarted int
 	var paid sql.NullInt64
@@ -2216,7 +2328,7 @@ func LoadGroupCallSettings(callID int64) (GroupCallSettings, error) {
 
 func SaveGroupCallSettings(settings GroupCallSettings) error {
 	if db == nil {
-		return errors.New("domain mysql is not open")
+		return errors.New("domain PostgreSQL is not open")
 	}
 	if settings.CallID == 0 {
 		return errors.New("invalid group call id")
@@ -2242,6 +2354,7 @@ func SaveGroupCallSettings(settings GroupCallSettings) error {
 type GroupCallParticipantState struct {
 	CallID             int64
 	UserID             int64
+	MediaSource        int32
 	Muted              bool
 	Volume             *int32
 	RaiseHand          bool
@@ -2256,14 +2369,14 @@ type GroupCallParticipantState struct {
 func LoadGroupCallParticipant(callID, userID int64) (GroupCallParticipantState, bool, error) {
 	state := GroupCallParticipantState{CallID: callID, UserID: userID}
 	if db == nil {
-		return state, false, errors.New("domain mysql is not open")
+		return state, false, errors.New("domain PostgreSQL is not open")
 	}
 	var muted, raiseHand, videoStopped, videoPaused, presentationPaused, presentationActive int
-	var volume sql.NullInt64
-	err := db.QueryRow(`SELECT muted, volume, raise_hand, video_stopped, video_paused,
+	var volume, mediaSource sql.NullInt64
+	err := db.QueryRow(`SELECT media_source, muted, volume, raise_hand, video_stopped, video_paused,
 		presentation_paused, presentation_active, presentation_params, join_params
 		FROM apifull_group_call_participant WHERE call_id=? AND user_id=?`,
-		callID, userID).Scan(&muted, &volume, &raiseHand, &videoStopped, &videoPaused, &presentationPaused,
+		callID, userID).Scan(&mediaSource, &muted, &volume, &raiseHand, &videoStopped, &videoPaused, &presentationPaused,
 		&presentationActive,
 		&state.PresentationParams, &state.JoinParams)
 	if err == sql.ErrNoRows {
@@ -2278,6 +2391,9 @@ func LoadGroupCallParticipant(callID, userID int64) (GroupCallParticipantState, 
 	state.VideoPaused = videoPaused != 0
 	state.PresentationPaused = presentationPaused != 0
 	state.PresentationActive = presentationActive != 0
+	if mediaSource.Valid {
+		state.MediaSource = int32(mediaSource.Int64)
+	}
 	if volume.Valid {
 		value := int32(volume.Int64)
 		state.Volume = &value
@@ -2287,7 +2403,7 @@ func LoadGroupCallParticipant(callID, userID int64) (GroupCallParticipantState, 
 
 func SaveGroupCallParticipant(state GroupCallParticipantState) error {
 	if db == nil {
-		return errors.New("domain mysql is not open")
+		return errors.New("domain PostgreSQL is not open")
 	}
 	if state.CallID == 0 || state.UserID == 0 {
 		return errors.New("invalid group call participant")
@@ -2311,15 +2427,148 @@ func SaveGroupCallParticipant(state GroupCallParticipantState) error {
 
 func DeleteGroupCallParticipant(callID, userID int64) error {
 	if db == nil {
-		return errors.New("domain mysql is not open")
+		return errors.New("domain PostgreSQL is not open")
 	}
 	_, err := db.Exec(`DELETE FROM apifull_group_call_participant WHERE call_id=? AND user_id=?`, callID, userID)
 	return err
 }
 
+func JoinGroupCallParticipant(state GroupCallParticipantState) ([]int64, error) {
+	if db == nil {
+		return nil, errors.New("domain PostgreSQL is not open")
+	}
+	if state.CallID <= 0 || state.UserID <= 0 || state.MediaSource <= 0 {
+		return nil, errors.New("invalid group call participant")
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	var participants string
+	if err = tx.QueryRow(`SELECT participants FROM apifull_group_call WHERE id=? FOR UPDATE`, state.CallID).Scan(&participants); err != nil {
+		return nil, err
+	}
+	var ids []int64
+	if err = json.Unmarshal([]byte(participants), &ids); err != nil {
+		return nil, err
+	}
+	if ids == nil {
+		ids = []int64{}
+	}
+	found := false
+	for _, id := range ids {
+		if id == state.UserID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		ids = append(ids, state.UserID)
+	}
+	encodedParticipants, err := json.Marshal(ids)
+	if err != nil {
+		return nil, err
+	}
+	if _, err = tx.Exec(`UPDATE apifull_group_call SET participants=? WHERE id=?`, string(encodedParticipants), state.CallID); err != nil {
+		return nil, err
+	}
+
+	var volume any
+	if state.Volume != nil {
+		volume = *state.Volume
+	}
+	var existing int
+	err = tx.QueryRow(`SELECT 1 FROM apifull_group_call_participant
+		WHERE call_id=? AND user_id=? FOR UPDATE`, state.CallID, state.UserID).Scan(&existing)
+	participantValues := []any{
+		state.MediaSource, boolInt(state.Muted), volume, boolInt(state.RaiseHand), boolInt(state.VideoStopped),
+		boolInt(state.VideoPaused), boolInt(state.PresentationPaused), boolInt(state.PresentationActive),
+		state.PresentationParams, state.JoinParams, time.Now().Unix(),
+	}
+	if err == sql.ErrNoRows {
+		args := append([]any{state.CallID, state.UserID}, participantValues...)
+		_, err = tx.Exec(`INSERT INTO apifull_group_call_participant
+			(call_id, user_id, media_source, muted, volume, raise_hand, video_stopped, video_paused,
+			presentation_paused, presentation_active, presentation_params, join_params, updated_at)
+			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`, args...)
+	} else if err == nil {
+		args := append(participantValues, state.CallID, state.UserID)
+		_, err = tx.Exec(`UPDATE apifull_group_call_participant SET media_source=?, muted=?, volume=?, raise_hand=?,
+			video_stopped=?, video_paused=?, presentation_paused=?, presentation_active=?, presentation_params=?,
+			join_params=?, updated_at=? WHERE call_id=? AND user_id=?`, args...)
+	}
+	if err != nil {
+		return nil, err
+	}
+	if err = tx.Commit(); err != nil {
+		return nil, err
+	}
+	return ids, nil
+}
+
+func RemoveGroupCallParticipant(callID, userID int64) ([]int64, error) {
+	if db == nil {
+		return nil, errors.New("domain PostgreSQL is not open")
+	}
+	if callID <= 0 || userID <= 0 {
+		return nil, errors.New("invalid group call participant")
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	var participants string
+	if err = tx.QueryRow(`SELECT participants FROM apifull_group_call WHERE id=? FOR UPDATE`, callID).Scan(&participants); err != nil {
+		return nil, err
+	}
+	var ids []int64
+	if err = json.Unmarshal([]byte(participants), &ids); err != nil {
+		return nil, err
+	}
+	next := make([]int64, 0, len(ids))
+	for _, id := range ids {
+		if id != userID {
+			next = append(next, id)
+		}
+	}
+	encodedParticipants, err := json.Marshal(next)
+	if err != nil {
+		return nil, err
+	}
+	if _, err = tx.Exec(`UPDATE apifull_group_call SET participants=? WHERE id=?`, string(encodedParticipants), callID); err != nil {
+		return nil, err
+	}
+	if _, err = tx.Exec(`DELETE FROM apifull_group_call_participant WHERE call_id=? AND user_id=?`, callID, userID); err != nil {
+		return nil, err
+	}
+	if err = tx.Commit(); err != nil {
+		return nil, err
+	}
+	return next, nil
+}
+
+func GroupCallHasMediaParticipants(callID int64) (bool, error) {
+	if db == nil {
+		return false, errors.New("domain PostgreSQL is not open")
+	}
+	if callID <= 0 {
+		return false, errors.New("invalid group call id")
+	}
+	var found int
+	err := db.QueryRow(`SELECT EXISTS(SELECT 1 FROM apifull_group_call_participant
+		WHERE call_id=? AND media_source IS NOT NULL AND media_source>0)`, callID).Scan(&found)
+	return found != 0, err
+}
+
 func SaveGroupCallSubscription(callID, userID int64, subscribed bool) error {
 	if db == nil {
-		return errors.New("domain mysql is not open")
+		return errors.New("domain PostgreSQL is not open")
 	}
 	_, err := db.Exec(`INSERT INTO apifull_group_call_subscription (call_id, user_id, subscribed, updated_at)
 		VALUES (?,?,?,?) ON DUPLICATE KEY UPDATE subscribed=VALUES(subscribed), updated_at=VALUES(updated_at)`,
@@ -2329,7 +2578,7 @@ func SaveGroupCallSubscription(callID, userID int64, subscribed bool) error {
 
 func LoadGroupCallSubscription(callID, userID int64) (bool, error) {
 	if db == nil {
-		return false, errors.New("domain mysql is not open")
+		return false, errors.New("domain PostgreSQL is not open")
 	}
 	var subscribed int
 	err := db.QueryRow(`SELECT subscribed FROM apifull_group_call_subscription WHERE call_id=? AND user_id=?`, callID, userID).Scan(&subscribed)
@@ -2344,7 +2593,7 @@ func LoadGroupCallSubscription(callID, userID int64) (bool, error) {
 
 func SaveGroupCallSendAs(callID, userID int64, sendAs string) error {
 	if db == nil {
-		return errors.New("domain mysql is not open")
+		return errors.New("domain PostgreSQL is not open")
 	}
 	_, err := db.Exec(`INSERT INTO apifull_group_call_send_as (call_id, user_id, send_as, updated_at)
 		VALUES (?,?,?,?) ON DUPLICATE KEY UPDATE send_as=VALUES(send_as), updated_at=VALUES(updated_at)`,
@@ -2354,7 +2603,7 @@ func SaveGroupCallSendAs(callID, userID int64, sendAs string) error {
 
 func LoadGroupCallSendAs(callID, userID int64) (string, bool, error) {
 	if db == nil {
-		return "", false, errors.New("domain mysql is not open")
+		return "", false, errors.New("domain PostgreSQL is not open")
 	}
 	var sendAs string
 	err := db.QueryRow(`SELECT send_as FROM apifull_group_call_send_as WHERE call_id=? AND user_id=?`, callID, userID).Scan(&sendAs)
@@ -2398,7 +2647,7 @@ func scanGroupCallMessage(row *sql.Row) (GroupCallMessage, error) {
 
 func CreateGroupCallMessage(callID, senderID, randomID int64, message, sendAs string, paidStars *int64) (GroupCallMessage, bool, error) {
 	if db == nil {
-		return GroupCallMessage{}, false, errors.New("domain mysql is not open")
+		return GroupCallMessage{}, false, errors.New("domain PostgreSQL is not open")
 	}
 	if callID == 0 || senderID == 0 || randomID == 0 {
 		return GroupCallMessage{}, false, errors.New("invalid group call message")
@@ -2427,7 +2676,7 @@ func CreateGroupCallMessage(callID, senderID, randomID int64, message, sendAs st
 
 func LoadGroupCallMessage(callID, randomID int64) (GroupCallMessage, bool, error) {
 	if db == nil {
-		return GroupCallMessage{}, false, errors.New("domain mysql is not open")
+		return GroupCallMessage{}, false, errors.New("domain PostgreSQL is not open")
 	}
 	message, err := scanGroupCallMessage(db.QueryRow(`SELECT id, call_id, sender_user_id, random_id, message,
 		send_as, paid_stars, date, deleted FROM apifull_group_call_message WHERE call_id=? AND random_id=?`, callID, randomID))
@@ -2442,7 +2691,7 @@ func LoadGroupCallMessage(callID, randomID int64) (GroupCallMessage, bool, error
 
 func LoadGroupCallMessageByID(callID, messageID int64) (GroupCallMessage, bool, error) {
 	if db == nil {
-		return GroupCallMessage{}, false, errors.New("domain mysql is not open")
+		return GroupCallMessage{}, false, errors.New("domain PostgreSQL is not open")
 	}
 	message, err := scanGroupCallMessage(db.QueryRow(`SELECT id, call_id, sender_user_id, random_id, message,
 		send_as, paid_stars, date, deleted FROM apifull_group_call_message WHERE call_id=? AND id=?`, callID, messageID))
@@ -2457,7 +2706,7 @@ func LoadGroupCallMessageByID(callID, messageID int64) (GroupCallMessage, bool, 
 
 func DeleteGroupCallMessages(callID int64, ids []int32) ([]int32, error) {
 	if db == nil {
-		return nil, errors.New("domain mysql is not open")
+		return nil, errors.New("domain PostgreSQL is not open")
 	}
 	deleted := make([]int32, 0, len(ids))
 	for _, id := range ids {
@@ -2481,7 +2730,7 @@ func DeleteGroupCallMessages(callID int64, ids []int32) ([]int32, error) {
 
 func DeleteGroupCallParticipantMessages(callID, senderID int64) ([]int32, error) {
 	if db == nil {
-		return nil, errors.New("domain mysql is not open")
+		return nil, errors.New("domain PostgreSQL is not open")
 	}
 	rows, err := db.Query(`SELECT id FROM apifull_group_call_message WHERE call_id=? AND sender_user_id=? AND deleted=0`, callID, senderID)
 	if err != nil {
@@ -2508,7 +2757,7 @@ func DeleteGroupCallParticipantMessages(callID, senderID int64) ([]int32, error)
 
 func DeleteGroupCall(id int64) (bool, error) {
 	if db == nil {
-		return false, errors.New("domain mysql is not open")
+		return false, errors.New("domain PostgreSQL is not open")
 	}
 	tx, err := db.Begin()
 	if err != nil {

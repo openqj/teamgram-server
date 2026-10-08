@@ -70,6 +70,16 @@ func TestBotCommandsAndMenuButtonRoundTrip(t *testing.T) {
 	if len(got.GetDatas()) != 1 || got.Datas[0].GetCommand() != "start" || got.Datas[0].GetDescription() != "hi" {
 		t.Fatalf("commands = %#v", got.GetDatas())
 	}
+	if _, err := c.BotsResetBotCommands(&mtproto.TLBotsResetBotCommands{Scope: scope}); err != nil {
+		t.Fatal(err)
+	}
+	got, err = c.BotsGetBotCommands(&mtproto.TLBotsGetBotCommands{Scope: scope})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == nil || got.GetDatas() == nil || len(got.GetDatas()) != 0 {
+		t.Fatalf("commands after reset = %#v, want empty vector", got)
+	}
 
 	user := &mtproto.InputUser{UserId: 7}
 	button := mtproto.MakeTLBotMenuButton(&mtproto.BotMenuButton{Text: "Open", Url: "https://example.com"}).To_BotMenuButton()

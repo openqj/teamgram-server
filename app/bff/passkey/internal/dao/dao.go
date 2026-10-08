@@ -24,7 +24,7 @@ import (
 	"strings"
 	"time"
 
-	_ "github.com/go-sql-driver/mysql"
+	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/teamgram/marmota/pkg/net/rpcx"
 	"github.com/teamgram/teamgram-server/app/bff/passkey/internal/config"
 	authsession_client "github.com/teamgram/teamgram-server/app/service/authsession/client"
@@ -74,11 +74,11 @@ func New(c config.Config) *Dao {
 		UserClient:        user_client.NewUserClient(rpcx.GetCachedRpcClient(c.UserClient)),
 		AuthsessionClient: authsession_client.NewAuthsessionClient(rpcx.GetCachedRpcClient(c.AuthSessionClient)),
 	}
-	if c.MysqlDSN == "" {
+	if c.PostgresDSN == "" {
 		d.DBErr = ErrUnavailable
 		return d
 	}
-	d.DB, d.DBErr = sql.Open("mysql", c.MysqlDSN)
+	d.DB, d.DBErr = sql.Open("pgx", c.PostgresDSN)
 	if d.DBErr != nil {
 		return d
 	}
@@ -115,23 +115,24 @@ func migrate(db *sql.DB) error {
 			challenge VARCHAR(255) NOT NULL PRIMARY KEY,
 			user_id BIGINT NOT NULL DEFAULT 0,
 			kind VARCHAR(16) NOT NULL,
-			data MEDIUMBLOB NOT NULL,
+			data BYTEA NOT NULL,
 			expires_at BIGINT NOT NULL,
-			used TINYINT NOT NULL DEFAULT 0,
+			used BOOLEAN NOT NULL DEFAULT FALSE,
 			created_at BIGINT NOT NULL,
-			KEY idx_apifull_passkey_session_expiry (expires_at)
-		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+			CONSTRAINT apifull_passkey_session_kind_key UNIQUE (challenge, kind)
+		)`,
 		`CREATE TABLE IF NOT EXISTS apifull_passkey_credential (
-			credential_id VARBINARY(255) NOT NULL PRIMARY KEY,
+			credential_id BYTEA NOT NULL PRIMARY KEY,
 			user_id BIGINT NOT NULL,
 			name VARCHAR(255) NOT NULL DEFAULT '',
 			date_created BIGINT NOT NULL,
 			last_usage_date BIGINT NOT NULL DEFAULT 0,
-			sign_count BIGINT UNSIGNED NOT NULL DEFAULT 0,
-			credential MEDIUMBLOB NOT NULL,
-			deleted TINYINT NOT NULL DEFAULT 0,
-			KEY idx_apifull_passkey_credential_user (user_id, deleted)
-		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+			sign_count BIGINT NOT NULL DEFAULT 0,
+			credential BYTEA NOT NULL,
+			deleted BOOLEAN NOT NULL DEFAULT FALSE
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_apifull_passkey_session_expiry ON apifull_passkey_session (expires_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_apifull_passkey_credential_user ON apifull_passkey_credential (user_id, deleted)`,
 	}
 	for _, statement := range statements {
 		if _, err := db.Exec(statement); err != nil {
@@ -150,7 +151,7 @@ func (d *Dao) PutSession(ctx context.Context, session *Session) error {
 	}
 	_, err := d.DB.ExecContext(ctx, `
 		INSERT INTO apifull_passkey_session (challenge, user_id, kind, data, expires_at, used, created_at)
-		VALUES (?, ?, ?, ?, ?, 0, ?)
+		VALUES ($1, $2, $3, $4, $5, FALSE, $6)
 	`, session.Challenge, session.UserID, session.Kind, session.Data, session.ExpiresAt, time.Now().Unix())
 	return err
 }
@@ -163,10 +164,10 @@ func (d *Dao) GetSession(ctx context.Context, challenge, kind string) (*Session,
 		return nil, ErrSessionNotFound
 	}
 	var session Session
-	var used int
+	var used bool
 	err := d.DB.QueryRowContext(ctx, `
 		SELECT challenge, user_id, kind, data, expires_at, used
-		FROM apifull_passkey_session WHERE challenge = ? AND kind = ?
+		FROM apifull_passkey_session WHERE challenge = $1 AND kind = $2
 	`, challenge, kind).Scan(&session.Challenge, &session.UserID, &session.Kind, &session.Data, &session.ExpiresAt, &used)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrSessionNotFound
@@ -174,7 +175,7 @@ func (d *Dao) GetSession(ctx context.Context, challenge, kind string) (*Session,
 	if err != nil {
 		return nil, err
 	}
-	if used != 0 || session.ExpiresAt < time.Now().Unix() {
+	if used || session.ExpiresAt < time.Now().Unix() {
 		return nil, ErrSessionUsed
 	}
 	return &session, nil
@@ -185,8 +186,8 @@ func (d *Dao) ConsumeSession(ctx context.Context, challenge, kind string) error 
 		return err
 	}
 	result, err := d.DB.ExecContext(ctx, `
-		UPDATE apifull_passkey_session SET used = 1
-		WHERE challenge = ? AND kind = ? AND used = 0 AND expires_at >= ?
+		UPDATE apifull_passkey_session SET used = TRUE
+		WHERE challenge = $1 AND kind = $2 AND used = FALSE AND expires_at >= $3
 	`, challenge, kind, time.Now().Unix())
 	if err != nil {
 		return err
@@ -207,7 +208,7 @@ func (d *Dao) ListCredentials(ctx context.Context, userID int64) ([]Credential, 
 	}
 	rows, err := d.DB.QueryContext(ctx, `
 		SELECT credential_id, user_id, name, date_created, last_usage_date, sign_count, credential
-		FROM apifull_passkey_credential WHERE user_id = ? AND deleted = 0 ORDER BY date_created, credential_id
+		FROM apifull_passkey_credential WHERE user_id = $1 AND deleted = FALSE ORDER BY date_created, credential_id
 	`, userID)
 	if err != nil {
 		return nil, err
@@ -240,7 +241,7 @@ func (d *Dao) GetCredential(ctx context.Context, id []byte) (*Credential, error)
 	var count uint64
 	err := d.DB.QueryRowContext(ctx, `
 		SELECT credential_id, user_id, name, date_created, last_usage_date, sign_count, credential
-		FROM apifull_passkey_credential WHERE credential_id = ? AND deleted = 0
+		FROM apifull_passkey_credential WHERE credential_id = $1 AND deleted = FALSE
 	`, id).Scan(&credential.ID, &credential.UserID, &credential.Name, &credential.Date, &credential.LastUsageDate, &count, &credential.Data)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrCredentialNotFound
@@ -262,7 +263,7 @@ func (d *Dao) InsertCredential(ctx context.Context, credential *Credential) erro
 	_, err := d.DB.ExecContext(ctx, `
 		INSERT INTO apifull_passkey_credential
 		(credential_id, user_id, name, date_created, last_usage_date, sign_count, credential, deleted)
-		VALUES (?, ?, ?, ?, ?, ?, ?, 0)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, FALSE)
 	`, credential.ID, credential.UserID, credential.Name, credential.Date, credential.LastUsageDate, credential.SignCount, credential.Data)
 	return err
 }
@@ -282,11 +283,11 @@ func (d *Dao) ConsumeAndInsertCredential(ctx context.Context, challenge, kind st
 	}
 	defer func() { _ = tx.Rollback() }()
 	var expiresAt int64
-	var used int
+	var used bool
 	var userID int64
 	err = tx.QueryRowContext(ctx, `
 		SELECT user_id, expires_at, used FROM apifull_passkey_session
-		WHERE challenge = ? AND kind = ? FOR UPDATE
+		WHERE challenge = $1 AND kind = $2 FOR UPDATE
 	`, challenge, kind).Scan(&userID, &expiresAt, &used)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ErrSessionNotFound
@@ -294,16 +295,16 @@ func (d *Dao) ConsumeAndInsertCredential(ctx context.Context, challenge, kind st
 	if err != nil {
 		return err
 	}
-	if used != 0 || expiresAt < time.Now().Unix() || userID != credential.UserID {
+	if used || expiresAt < time.Now().Unix() || userID != credential.UserID {
 		return ErrSessionUsed
 	}
-	if _, err = tx.ExecContext(ctx, `UPDATE apifull_passkey_session SET used = 1 WHERE challenge = ? AND kind = ?`, challenge, kind); err != nil {
+	if _, err = tx.ExecContext(ctx, `UPDATE apifull_passkey_session SET used = TRUE WHERE challenge = $1 AND kind = $2`, challenge, kind); err != nil {
 		return err
 	}
 	if _, err = tx.ExecContext(ctx, `
 		INSERT INTO apifull_passkey_credential
 		(credential_id, user_id, name, date_created, last_usage_date, sign_count, credential, deleted)
-		VALUES (?, ?, ?, ?, ?, ?, ?, 0)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, FALSE)
 	`, credential.ID, credential.UserID, credential.Name, credential.Date, credential.LastUsageDate, credential.SignCount, credential.Data); err != nil {
 		return err
 	}
@@ -316,8 +317,8 @@ func (d *Dao) UpdateCredential(ctx context.Context, id []byte, expectedCount uin
 	}
 	result, err := d.DB.ExecContext(ctx, `
 		UPDATE apifull_passkey_credential
-		SET sign_count = ?, credential = ?, last_usage_date = ?
-		WHERE credential_id = ? AND deleted = 0 AND sign_count = ?
+		SET sign_count = $1, credential = $2, last_usage_date = $3
+		WHERE credential_id = $4 AND deleted = FALSE AND sign_count = $5
 	`, nextCount, data, usageDate, id, expectedCount)
 	if err != nil {
 		return err
@@ -346,23 +347,23 @@ func (d *Dao) ConsumeLoginAndUpdateCredential(ctx context.Context, challenge, ki
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	var used int
+	var used bool
 	var expiresAt int64
 	if err = tx.QueryRowContext(ctx, `
 		SELECT expires_at, used FROM apifull_passkey_session
-		WHERE challenge = ? AND kind = ? FOR UPDATE
+		WHERE challenge = $1 AND kind = $2 FOR UPDATE
 	`, challenge, kind).Scan(&expiresAt, &used); errors.Is(err, sql.ErrNoRows) {
 		return ErrSessionNotFound
 	} else if err != nil {
 		return err
 	}
-	if used != 0 || expiresAt < time.Now().Unix() {
+	if used || expiresAt < time.Now().Unix() {
 		return ErrSessionUsed
 	}
 	result, err := tx.ExecContext(ctx, `
 		UPDATE apifull_passkey_credential
-		SET sign_count = ?, credential = ?, last_usage_date = ?
-		WHERE credential_id = ? AND deleted = 0 AND sign_count = ?
+		SET sign_count = $1, credential = $2, last_usage_date = $3
+		WHERE credential_id = $4 AND deleted = FALSE AND sign_count = $5
 	`, nextCount, data, usageDate, id, expectedCount)
 	if err != nil {
 		return err
@@ -372,7 +373,7 @@ func (d *Dao) ConsumeLoginAndUpdateCredential(ctx context.Context, challenge, ki
 	} else if n != 1 {
 		return ErrCounterReplay
 	}
-	if _, err = tx.ExecContext(ctx, `UPDATE apifull_passkey_session SET used = 1 WHERE challenge = ? AND kind = ?`, challenge, kind); err != nil {
+	if _, err = tx.ExecContext(ctx, `UPDATE apifull_passkey_session SET used = TRUE WHERE challenge = $1 AND kind = $2`, challenge, kind); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -383,8 +384,8 @@ func (d *Dao) DeleteCredential(ctx context.Context, userID int64, id []byte) (bo
 		return false, err
 	}
 	result, err := d.DB.ExecContext(ctx, `
-		UPDATE apifull_passkey_credential SET deleted = 1
-		WHERE user_id = ? AND credential_id = ? AND deleted = 0
+		UPDATE apifull_passkey_credential SET deleted = TRUE
+		WHERE user_id = $1 AND credential_id = $2 AND deleted = FALSE
 	`, userID, id)
 	if err != nil {
 		return false, err

@@ -24,8 +24,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/teamgram/marmota/pkg/stores/sqlc"
-	"github.com/teamgram/marmota/pkg/stores/sqlx"
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/service/media/internal/dal/dataobject"
 	"github.com/teamgram/teamgram-server/app/service/media/media"
@@ -226,7 +224,7 @@ func (m *Dao) SavePhotoSizeV2(ctx context.Context, szId int64, szList []*mtproto
 		if szDO == nil {
 			continue
 		}
-		if _, _, err := m.PhotoSizesDAO.Insert(ctx, szDO); err != nil {
+		if _, _, err := m.photoSizesStore().Insert(ctx, szDO); err != nil {
 			return err
 		}
 	}
@@ -235,7 +233,7 @@ func (m *Dao) SavePhotoSizeV2(ctx context.Context, szId int64, szList []*mtproto
 }
 
 func (m *Dao) SavePhotoV2(ctx context.Context, id, accessHash int64, hasStickers, hasVideo bool, fileName string) error {
-	_, _, err := m.PhotosDAO.Insert(ctx, &dataobject.PhotosDO{
+	_, _, err := m.photosStore().Insert(ctx, &dataobject.PhotosDO{
 		PhotoId:       id,
 		AccessHash:    accessHash,
 		HasStickers:   hasStickers,
@@ -254,7 +252,7 @@ func (m *Dao) GetPhotoSizeListList(ctx context.Context, idList []int64) (sizes m
 		return
 	}
 
-	sizeDOList, _ := m.PhotoSizesDAO.SelectListByPhotoSizeIdList(ctx, idList)
+	sizeDOList, _ := m.photoSizesStore().SelectListByPhotoSizeIdList(ctx, idList)
 	for i := 0; i < len(sizeDOList); i++ {
 		szList, ok := sizes[sizeDOList[i].PhotoSizeId]
 		if !ok {
@@ -272,7 +270,7 @@ func (m *Dao) GetPhotoSizeListList(ctx context.Context, idList []int64) (sizes m
 }
 
 func (m *Dao) GetPhotoSizeListV2(ctx context.Context, sizeId int64) (sizes []*mtproto.PhotoSize) {
-	sizeDOList, _ := m.PhotoSizesDAO.SelectListByPhotoSizeId(ctx, sizeId)
+	sizeDOList, _ := m.photoSizesStore().SelectListByPhotoSizeId(ctx, sizeId)
 
 	if len(sizeDOList) >= 0 {
 		sizes = make([]*mtproto.PhotoSize, 0, len(sizeDOList))
@@ -293,7 +291,7 @@ func (m *Dao) GetPhotoV2(ctx context.Context, photoId int64) (*mtproto.Photo, er
 		videoSizes []*mtproto.VideoSize
 	)
 
-	photoDO, err := m.PhotosDAO.SelectByPhotoId(ctx, photoId)
+	photoDO, err := m.photosStore().SelectByPhotoId(ctx, photoId)
 	if err != nil {
 		return nil, err
 	} else if photoDO == nil {
@@ -332,46 +330,26 @@ func (m *Dao) GetCachePhotoData(ctx context.Context, photoId int64) (*CachePhoto
 		VideoSizeList: nil,
 	}
 
-	err := m.CachedConn.QueryRow(
-		ctx,
-		cacheData,
-		genCachePhotoKey(photoId),
-		func(ctx context.Context, conn *sqlx.DB, v interface{}) error {
-			photoDO, err := m.PhotosDAO.SelectByPhotoId(ctx, photoId)
-			if err != nil {
-				return err
-			}
-			//if photoDO == nil {
-			//	return sqlc.ErrNotFound
-			//}
-
-			cData := v.(*CachePhotoData)
-			cData.Photo = photoDO
-
-			_, err = m.PhotoSizesDAO.SelectListByPhotoSizeIdWithCB(
-				ctx,
-				photoId,
-				func(sz, i int, v *dataobject.PhotoSizesDO) {
-					cData.SizeList = append(cData.SizeList, v)
-				})
-			if err != nil {
-				return err
-			}
-
-			if photoDO != nil && photoDO.HasVideo {
-				m.VideoSizesDAO.SelectListByVideoSizeIdWithCB(
-					ctx,
-					photoId,
-					func(sz, i int, v *dataobject.VideoSizesDO) {
-						cData.VideoSizeList = append(cData.VideoSizeList, v)
-					})
-			}
-
-			return nil
-		})
-
-	if err != nil && err != sqlc.ErrNotFound {
+	photoDO, err := m.photosStore().SelectByPhotoId(ctx, photoId)
+	if err != nil {
 		return nil, err
+	}
+	cacheData.Photo = photoDO
+	_, err = m.photoSizesStore().SelectListByPhotoSizeIdWithCB(ctx, photoId,
+		func(sz, i int, v *dataobject.PhotoSizesDO) {
+			cacheData.SizeList = append(cacheData.SizeList, v)
+		})
+	if err != nil {
+		return nil, err
+	}
+	if photoDO != nil && photoDO.HasVideo {
+		_, err = m.videoSizesStore().SelectListByVideoSizeIdWithCB(ctx, photoId,
+			func(sz, i int, v *dataobject.VideoSizesDO) {
+				cacheData.VideoSizeList = append(cacheData.VideoSizeList, v)
+			})
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	return cacheData, nil

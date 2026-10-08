@@ -41,11 +41,16 @@ type Config struct {
 	SyncClient                    *kafka.KafkaProducerConf
 	DfsClient                     zrpc.RpcClientConf
 	StatusClient                  zrpc.RpcClientConf
-	MysqlDSN                      string                       `json:",optional"`
+	PostgresDSN                   string                       `json:",optional"`
+	MysqlDSN                      string                       `json:",optional"` // legacy test-only alias
 	PaymentProviderEndpoint       string                       `json:",optional"`
 	PaymentProviderKey            string                       `json:",optional"`
 	PaymentProviderSigningKey     string                       `json:",optional"`
 	PaymentProviderTimeoutSeconds int                          `json:",optional"`
+	AuthProviderEndpoint          string                       `json:",optional"`
+	AuthProviderKey               string                       `json:",optional"`
+	AuthProviderSigningKey        string                       `json:",optional"`
+	AuthProviderTimeoutSeconds    int                          `json:",optional"`
 	GroupCallMediaEndpoint        string                       `json:",optional"`
 	GroupCallMediaAPIKey          string                       `json:",optional"`
 	GroupCallMediaSigningKey      string                       `json:",optional"`

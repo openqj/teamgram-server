@@ -25,6 +25,7 @@ var configFile = flag.String("f", "etc/authsession.yaml", "the config file")
 
 type Server struct {
 	grpcSrv *zrpc.RpcServer
+	ctx     *svc.ServiceContext
 }
 
 func New() *Server {
@@ -36,7 +37,11 @@ func (s *Server) Initialize() error {
 	conf.MustLoad(*configFile, &c)
 
 	logx.Infov(c)
-	ctx := svc.NewServiceContext(c)
+	ctx, err := svc.NewServiceContext(c)
+	if err != nil {
+		return err
+	}
+	s.ctx = ctx
 	s.grpcSrv = grpc.New(ctx, c.RpcServerConf)
 
 	go func() {
@@ -49,5 +54,12 @@ func (s *Server) RunLoop() {
 }
 
 func (s *Server) Destroy() {
-	s.grpcSrv.Stop()
+	if s.grpcSrv != nil {
+		s.grpcSrv.Stop()
+	}
+	if s.ctx != nil {
+		if closer, ok := s.ctx.Dao.(interface{ Close() }); ok {
+			closer.Close()
+		}
+	}
 }

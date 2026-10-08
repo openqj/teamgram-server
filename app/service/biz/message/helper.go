@@ -13,6 +13,7 @@ package message_helper
 import (
 	"github.com/teamgram/teamgram-server/app/service/biz/message/internal/config"
 	"github.com/teamgram/teamgram-server/app/service/biz/message/internal/dal/dao/mysql_dao"
+	"github.com/teamgram/teamgram-server/app/service/biz/message/internal/dal/dao/postgres_dao"
 	"github.com/teamgram/teamgram-server/app/service/biz/message/internal/dal/dataobject"
 	"github.com/teamgram/teamgram-server/app/service/biz/message/internal/plugin"
 	"github.com/teamgram/teamgram-server/app/service/biz/message/internal/server/grpc/service"
@@ -31,11 +32,16 @@ type (
 	MessagesDAO = mysql_dao.MessagesDAO
 	MessagesDO  = dataobject.MessagesDO
 
-	MessageReadOutboxDAO = mysql_dao.MessageReadOutboxDAO
-	MessageReadOutboxDO  = dataobject.MessageReadOutboxDO
+	MessageReadOutboxDAO         = mysql_dao.MessageReadOutboxDAO
+	MessageReadOutboxDO          = dataobject.MessageReadOutboxDO
+	PostgresDB                   = postgres_dao.DB
+	PostgresMessagesDAO          = postgres_dao.MessagesDAO
+	PostgresMessageReadOutboxDAO = postgres_dao.MessageReadOutboxDAO
 )
 
 var (
-	NewMessagesDAO          = mysql_dao.NewMessagesDAO
-	NewMessageReadOutboxDAO = mysql_dao.NewMessageReadOutboxDAO
+	NewMessagesDAO                  = mysql_dao.NewMessagesDAO
+	NewMessageReadOutboxDAO         = mysql_dao.NewMessageReadOutboxDAO
+	NewPostgresMessagesDAO          = postgres_dao.NewMessagesDAO
+	NewPostgresMessageReadOutboxDAO = postgres_dao.NewMessageReadOutboxDAO
 )

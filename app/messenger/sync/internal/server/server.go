@@ -25,7 +25,8 @@ var configFile = flag.String("f", "etc/sync.yaml", "the config file")
 
 type Server struct {
 	// grpcSrv *zrpc.RpcServer
-	mq *kafka.ConsumerGroup
+	mq  *kafka.ConsumerGroup
+	ctx *svc.ServiceContext
 }
 
 func New() *Server {
@@ -41,7 +42,11 @@ func (s *Server) Initialize() error {
 		return err
 	}
 
-	ctx := svc.NewServiceContext(c)
+	ctx, err := svc.NewServiceContext(c)
+	if err != nil {
+		return err
+	}
+	s.ctx = ctx
 	// s.grpcSrv = grpc.New(ctx, c.RpcServerConf)
 	s.mq = mq.New(ctx, c.SyncConsumer)
 
@@ -56,5 +61,10 @@ func (s *Server) RunLoop() {
 
 func (s *Server) Destroy() {
 	// s.grpcSrv.Stop()
-	s.mq.Stop()
+	if s.mq != nil {
+		s.mq.Stop()
+	}
+	if s.ctx != nil && s.ctx.Dao != nil {
+		s.ctx.Dao.Close()
+	}
 }

@@ -26,7 +26,8 @@ import (
 // DialogGetDialogFilterTags
 // dialog.getDialogFilterTags user_id:long = Bool;
 func (c *DialogCore) DialogGetDialogFilterTags(in *dialog.TLDialogGetDialogFilterTags) (*mtproto.Bool, error) {
-	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.DB == nil {
+	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.Postgres == nil ||
+		c.svcCtx.Dao.Postgres.Store == nil || c.svcCtx.Dao.Postgres.Store.DialogFilterTags == nil {
 		return nil, mtproto.ErrInternalServerError
 	}
 	var userID int64

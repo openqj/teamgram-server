@@ -32,11 +32,10 @@ Routine:
   Chan: 16
   Size: 100
 
-Mysql:
-  DSN: teamgram:teamgram@tcp(mysql:3306)/teamgram?charset=utf8mb4&parseTime=true
-  Active: 64
-  Idle: 64
-  IdleTimeout: 4h
+Postgres:
+  DSN: postgres://teamgram:teamgram@postgres:5432/teamgram?sslmode=disable
+  MaxConns: 64
+  MinConns: 8
 
 Cache:
   - Host: redis:6379

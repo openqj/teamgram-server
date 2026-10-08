@@ -10,10 +10,10 @@
 package svc
 
 import (
+	"errors"
+
 	kafka "github.com/teamgram/marmota/pkg/mq"
 	"github.com/teamgram/marmota/pkg/net/rpcx"
-	"github.com/teamgram/marmota/pkg/stores/sqlc"
-	"github.com/teamgram/marmota/pkg/stores/sqlx"
 	"github.com/teamgram/teamgram-server/app/messenger/msg/inbox/internal/config"
 	"github.com/teamgram/teamgram-server/app/messenger/msg/internal/dao"
 	sync_client "github.com/teamgram/teamgram-server/app/messenger/sync/client"
@@ -30,23 +30,27 @@ type ServiceContext struct {
 }
 
 func NewServiceContext(c config.Config) *ServiceContext {
-	db := sqlx.NewMySQL(&c.Mysql)
-
-	dao := &dao.Dao{
-		Mysql:        dao.NewMysqlDao(db, c.MessageSharding),
-		CachedConn:   sqlc.NewConn(db, c.Cache),
+	if c.Postgres.DSN == "" {
+		panic(errors.New("messenger/msg/inbox: Postgres.DSN is required"))
+	}
+	daoStore := &dao.Dao{
 		IDGenClient2: idgen_client.NewIDGenClient2(rpcx.GetCachedRpcClient(c.IdgenClient)),
 		UserClient:   user_client.NewUserClient(rpcx.GetCachedRpcClient(c.UserClient)),
 		ChatClient:   chat_client.NewChatClient(rpcx.GetCachedRpcClient(c.ChatClient)),
 		SyncClient:   sync_client.NewSyncMqClient(kafka.GetCachedMQClient(c.SyncClient)),
 		DialogClient: dialog_client.NewDialogClient(rpcx.GetCachedRpcClient(c.DialogClient)),
 	}
+	pg, err := dao.NewPostgres(c.Postgres)
+	if err != nil {
+		panic(err)
+	}
+	daoStore.Postgres = pg
 	if c.BotSyncClient != nil {
-		dao.BotSyncClient = sync_client.NewSyncMqClient(kafka.GetCachedMQClient(c.BotSyncClient))
+		daoStore.BotSyncClient = sync_client.NewSyncMqClient(kafka.GetCachedMQClient(c.BotSyncClient))
 	}
 
 	return &ServiceContext{
 		Config: c,
-		Dao:    dao,
+		Dao:    daoStore,
 	}
 }

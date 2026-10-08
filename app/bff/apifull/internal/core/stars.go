@@ -18,7 +18,9 @@
 package core
 
 import (
+	"encoding/json"
 	"strconv"
+	"time"
 
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/domain"
@@ -148,8 +150,75 @@ func (c *ApiFullCore) PaymentsGetStarsTransactions(in *mtproto.TLPaymentsGetStar
 }
 
 func (c *ApiFullCore) PaymentsSendStarsForm(in *mtproto.TLPaymentsSendStarsForm) (*mtproto.Payments_PaymentResult, error) {
-	_ = in
-	return nil, c.starsUnavailable()
+	uid, err := c.requireUserId()
+	if err != nil {
+		return nil, err
+	}
+	if in == nil || in.GetFormId() <= 0 || in.GetInvoice() == nil {
+		return nil, mtproto.ErrPaymentProviderInvalid
+	}
+	offer, found, err := starsTopupOfferFromInvoice(in.GetInvoice())
+	if err != nil {
+		return nil, err
+	}
+	if !found {
+		return nil, mtproto.ErrPaymentUnsupported
+	}
+	if _, _, _, err = c.configuredPaymentProvider(); err != nil {
+		return nil, err
+	}
+	fingerprint := starsPaymentFingerprint(in.GetFormId(), in.GetInvoice())
+	requestKey := starsPaymentRequestKey(uid, in.GetFormId(), fingerprint)
+	if fingerprint == "" || requestKey == "" {
+		return nil, mtproto.ErrInputConstructorInvalid
+	}
+	lockWait := 10 * time.Second
+	if c.svcCtx.Config.PaymentProviderTimeoutSeconds > 0 {
+		lockWait = time.Duration(c.svcCtx.Config.PaymentProviderTimeoutSeconds+5) * time.Second
+	}
+	release, err := domain.LockPaymentRequest(c.secretContext(), uid, requestKey, lockWait)
+	if err != nil {
+		return nil, mtproto.ErrPaymentUnsupported
+	}
+	defer release()
+	request, err := domain.BeginPaymentRequest(uid, requestKey, "external", fingerprint, offer.Currency, offer.Amount, 0, 0)
+	if err != nil {
+		return nil, err
+	}
+	if request.State == domain.PaymentStateSettled {
+		receipt, found, receiptErr := domain.LoadPaymentReceiptByRequest(uid, requestKey)
+		if receiptErr != nil {
+			return nil, receiptErr
+		}
+		if !found || c.svcCtx == nil {
+			return nil, mtproto.ErrPaymentProviderInvalid
+		}
+		var envelope paymentProviderReceiptEnvelope
+		if json.Unmarshal(receipt.Receipt, &envelope) != nil || !verifyPaymentProviderSignature(c.svcCtx.Config.PaymentProviderSigningKey, envelope.Signature, envelope.ResponseBody) {
+			return nil, mtproto.ErrPaymentProviderInvalid
+		}
+		var result paymentProviderResponse
+		if json.Unmarshal(envelope.ResponseBody, &result) != nil || !validStarsTopupProviderResult(result, uid, in.GetFormId(), requestKey, fingerprint, offer) ||
+			result.TransactionID != receipt.TransactionID || result.Currency != receipt.Currency || result.Amount != receipt.Amount {
+			return nil, mtproto.ErrPaymentProviderInvalid
+		}
+		return mtproto.MakeTLPaymentsPaymentResult(&mtproto.Payments_PaymentResult{
+			Updates: mtproto.MakeEmptyUpdates(),
+		}).To_Payments_PaymentResult(), nil
+	}
+	if request.State != domain.PaymentStatePending {
+		return nil, mtproto.ErrPaymentProviderInvalid
+	}
+	settled, _, err := c.settleStarsWithPaymentProvider(c.secretContext(), uid, requestKey, fingerprint, in, offer)
+	if err != nil {
+		return nil, err
+	}
+	if settled.State != domain.PaymentStateSettled {
+		return nil, mtproto.ErrPaymentProviderInvalid
+	}
+	return mtproto.MakeTLPaymentsPaymentResult(&mtproto.Payments_PaymentResult{
+		Updates: mtproto.MakeEmptyUpdates(),
+	}).To_Payments_PaymentResult(), nil
 }
 
 func (c *ApiFullCore) PaymentsRefundStarsCharge(in *mtproto.TLPaymentsRefundStarsCharge) (*mtproto.Updates, error) {

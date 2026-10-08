@@ -66,8 +66,8 @@ CREATE TABLE IF NOT EXISTS apifull_payment_ledger (
 CREATE TABLE IF NOT EXISTS apifull_payment_receipt (
   request_id BIGINT NOT NULL PRIMARY KEY,
   user_id BIGINT NOT NULL,
-  provider VARCHAR(32) NOT NULL,
-  transaction_id VARCHAR(191) NOT NULL,
+  provider VARCHAR(32) COLLATE utf8mb4_bin NOT NULL,
+  transaction_id VARCHAR(191) COLLATE utf8mb4_bin NOT NULL,
   currency VARCHAR(16) NOT NULL DEFAULT '',
   amount BIGINT NOT NULL DEFAULT 0,
   peer_id BIGINT NOT NULL DEFAULT 0,
@@ -78,6 +78,23 @@ CREATE TABLE IF NOT EXISTS apifull_payment_receipt (
   UNIQUE KEY uniq_apifull_payment_receipt_transaction (provider, transaction_id),
   KEY idx_apifull_payment_receipt_message (user_id, peer_id, msg_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS apifull_payment_entitlement_outbox (
+  request_id BIGINT NOT NULL PRIMARY KEY,
+  user_id BIGINT NOT NULL,
+  provider VARCHAR(32) COLLATE utf8mb4_bin NOT NULL,
+  transaction_id VARCHAR(191) COLLATE utf8mb4_bin NOT NULL,
+  months TINYINT UNSIGNED NOT NULL,
+  state VARCHAR(16) NOT NULL DEFAULT 'pending',
+  attempts INT NOT NULL DEFAULT 0,
+  next_attempt_at BIGINT NOT NULL,
+  last_error VARCHAR(255) NOT NULL DEFAULT '',
+  created_at BIGINT NOT NULL,
+  updated_at BIGINT NOT NULL,
+  UNIQUE KEY uniq_apifull_payment_entitlement_transaction (provider, transaction_id),
+  KEY idx_apifull_payment_entitlement_due (state, next_attempt_at, request_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 
 CREATE TABLE IF NOT EXISTS apifull_channel_event (
   channel_id BIGINT NOT NULL,
@@ -114,6 +131,32 @@ CREATE TABLE IF NOT EXISTS apifull_channel_message_request (
   created_at INT NOT NULL,
   PRIMARY KEY (channel_id, sender_user_id, random_id),
   KEY idx_apifull_channel_message_request_message (channel_id, message_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS apifull_channel_delivery_outbox (
+  id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  channel_id BIGINT NOT NULL,
+  pts_from INT NOT NULL,
+  pts_to INT NOT NULL,
+  sender_user_id BIGINT NOT NULL,
+  exclude_auth_key_id BIGINT NOT NULL DEFAULT 0,
+  state VARCHAR(16) NOT NULL DEFAULT 'pending',
+  payload MEDIUMBLOB NOT NULL,
+  created_at BIGINT NOT NULL,
+  UNIQUE KEY uniq_apifull_channel_delivery_event (channel_id, pts_from, pts_to),
+  KEY idx_apifull_channel_delivery_channel (channel_id, id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS apifull_channel_delivery_recipient (
+  delivery_id BIGINT NOT NULL,
+  user_id BIGINT NOT NULL,
+  state VARCHAR(16) NOT NULL DEFAULT 'pending',
+  attempts INT NOT NULL DEFAULT 0,
+  next_attempt_at BIGINT NOT NULL,
+  delivered_at BIGINT NOT NULL DEFAULT 0,
+  last_error VARCHAR(255) NOT NULL DEFAULT '',
+  PRIMARY KEY (delivery_id, user_id),
+  KEY idx_apifull_channel_delivery_due (state, next_attempt_at, delivery_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 DROP PROCEDURE IF EXISTS apifull_ensure_latest_column;

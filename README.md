@@ -13,7 +13,7 @@ Unofficial open-source [MTProto](https://core.telegram.org/mtproto) server imple
   - **Intermediate**
   - **Padded intermediate**
   - **Full**
-- **API Layer: 228**
+- **API Layer: 229**
 - **Core features**
   - **private chat**
   - **basic group**
@@ -32,7 +32,7 @@ Unofficial open-source [MTProto](https://core.telegram.org/mtproto) server imple
 
 | Component | Purpose |
 |-----------|---------|
-| [MySQL](https://www.mysql.com/) 5.7+ / 8.0 | Primary data store |
+| [PostgreSQL](https://www.postgresql.org/) 18 | Target primary data store (migration in progress) |
 | [Redis](https://redis.io/) | Cache, session, deduplication |
 | [etcd](https://etcd.io/) | Service discovery & config |
 | [Kafka](https://kafka.apache.org/) | Message & event pipeline |
@@ -50,7 +50,9 @@ For running the server from source (Go build), follow the step-by-step guides:
 - **[Manual installation (Linux)](docs/install-manual-linux.md)** — CentOS, Fedora, Ubuntu/Debian
 - **[Manual installation (macOS)](docs/install-manual-macos.md)** — Intel and Apple Silicon
 
-Requires Go 1.21+. You must install and configure dependencies (MySQL, Redis, etcd, Kafka, MinIO, FFmpeg), initialize the database and MinIO, then build and run.
+Requires Go 1.25+. New deployments use PostgreSQL 18 and the checked-in
+PostgreSQL migration runner. Service runtime wiring is being accepted in
+slices; see the roadmap for the current boundary.
 
 ---
 
@@ -67,7 +69,9 @@ cd teamgram-server
 
 ### 2. Start dependency stack
 
-This starts MySQL, Redis, etcd, Kafka, MinIO (and optional monitoring). The database and MinIO buckets are initialized automatically.
+This starts the dependency stack, including PostgreSQL 18, Redis, etcd, Kafka,
+MinIO, and optional monitoring. The `postgres-migrate` job applies the checked-
+in schema. For a database-only setup, use `docker-compose-postgres.yaml`.
 
 ```bash
 docker compose -f docker-compose-env.yaml up -d

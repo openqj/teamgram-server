@@ -12,6 +12,7 @@ package core
 import (
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/service/biz/chat/chat"
+	"github.com/teamgram/teamgram-server/app/service/biz/chat/internal/dal/dataobject"
 	"time"
 )
 
@@ -22,7 +23,12 @@ func (c *ChatCore) ChatCheckChatInvite(in *chat.TLChatCheckChatInvite) (*chat.Ch
 	if err != nil {
 		return nil, err
 	}
-	chatInviteDO, err := c.svcCtx.Dao.ChatInvitesDAO.SelectByLink(c.ctx, in.Hash)
+	var chatInviteDO *dataobject.ChatInvitesDO
+	if c.svcCtx.Dao.Postgres != nil && c.svcCtx.Dao.Postgres.Store != nil {
+		chatInviteDO, err = c.svcCtx.Dao.Postgres.Store.Invites.SelectByLink(c.ctx, in.Hash)
+	} else {
+		chatInviteDO, err = c.svcCtx.Dao.ChatInvitesDAO.SelectByLink(c.ctx, in.Hash)
+	}
 	if err != nil {
 		c.Logger.Errorf("chat.checkChatInvite - error: %v", err)
 		return nil, err
@@ -47,12 +53,16 @@ func (c *ChatCore) ChatCheckChatInvite(in *chat.TLChatCheckChatInvite) (*chat.Ch
 
 	if chatInviteDO.UsageLimit > 0 {
 		// TODO: calc
-		sz := c.svcCtx.Dao.CommonDAO.CalcSize(
-			c.ctx,
-			"chat_invite_participants",
-			map[string]interface{}{
-				"link": chatInviteDO.Link,
-			})
+		var sz int
+		if c.svcCtx.Dao.Postgres != nil && c.svcCtx.Dao.Postgres.Store != nil {
+			count, countErr := c.svcCtx.Dao.Postgres.Store.InviteParticipants.CountByLink(c.ctx, chatInviteDO.Link, false)
+			if countErr != nil {
+				return nil, countErr
+			}
+			sz = int(count)
+		} else {
+			sz = c.svcCtx.Dao.CommonDAO.CalcSize(c.ctx, "chat_invite_participants", map[string]interface{}{"link": chatInviteDO.Link})
+		}
 		if sz >= int(chatInviteDO.UsageLimit) {
 			err = mtproto.ErrInviteHashExpired
 			c.Logger.Errorf("chat.importChatInvite - error: %v", err)

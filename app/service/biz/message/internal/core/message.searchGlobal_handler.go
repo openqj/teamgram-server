@@ -13,7 +13,6 @@ import (
 	"math"
 
 	"github.com/teamgram/proto/mtproto"
-	"github.com/teamgram/teamgram-server/app/service/biz/message/internal/dal/dataobject"
 	"github.com/teamgram/teamgram-server/app/service/biz/message/message"
 )
 
@@ -32,7 +31,7 @@ func (c *MessageCore) MessageSearchGlobal(in *message.TLMessageSearchGlobal) (*m
 	if in.Limit < 0 {
 		return nil, mtproto.ErrLimitInvalid
 	}
-	if c == nil || c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.Mysql == nil {
+	if c == nil || c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.Postgres == nil || c.svcCtx.Dao.Postgres.Store == nil || c.svcCtx.Dao.Postgres.Store.Messages == nil {
 		return nil, mtproto.ErrInternalServerError
 	}
 	var (
@@ -48,17 +47,13 @@ func (c *MessageCore) MessageSearchGlobal(in *message.TLMessageSearchGlobal) (*m
 		limit = 50
 	}
 
-	_, err := c.svcCtx.Dao.MessagesDAO.SearchGlobalWithCB(
-		c.ctx,
-		in.UserId,
-		offset, "%"+in.Q+"%",
-		limit,
-		func(sz, i int, v *dataobject.MessagesDO) {
-			rValues = append(rValues, c.svcCtx.Dao.MakeMessageBox(c.ctx, in.UserId, v))
-		})
+	rows, err := c.svcCtx.Dao.SearchGlobalMessagesForSearch(c.ctx, in.UserId, offset, "%"+in.Q+"%", limit)
 	if err != nil {
 		c.Logger.Errorf("message.searchGlobal - error: %v", err)
 		return nil, err
+	}
+	for i := range rows {
+		rValues = append(rValues, c.svcCtx.Dao.MakeMessageBox(c.ctx, in.UserId, &rows[i]))
 	}
 
 	if rValues == nil {

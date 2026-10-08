@@ -48,6 +48,13 @@ func (d *Dao) MakeChatInviteExported(ctx context.Context, chatInviteDO *dataobje
 }
 
 func (d *Dao) GetLinkInviteSize(ctx context.Context, link string) int32 {
+	if d.Postgres != nil && d.Postgres.Store != nil {
+		sz, err := d.Postgres.Store.InviteParticipants.CountByLink(ctx, link, false)
+		if err != nil {
+			return 0
+		}
+		return int32(sz)
+	}
 	sz := d.CommonDAO.CalcSize(ctx, "chat_invite_participants", map[string]interface{}{
 		"link":      link,
 		"requested": 0,
@@ -57,6 +64,13 @@ func (d *Dao) GetLinkInviteSize(ctx context.Context, link string) int32 {
 }
 
 func (d *Dao) GetRequestedLinkInviteSize(ctx context.Context, link string) int32 {
+	if d.Postgres != nil && d.Postgres.Store != nil {
+		sz, err := d.Postgres.Store.InviteParticipants.CountByLink(ctx, link, true)
+		if err != nil {
+			return 0
+		}
+		return int32(sz)
+	}
 	sz := d.CommonDAO.CalcSize(ctx, "chat_invite_participants", map[string]interface{}{
 		"link":      link,
 		"requested": 1,

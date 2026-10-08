@@ -3,6 +3,7 @@ package dao
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 
 	"github.com/teamgram/marmota/pkg/net/rpcx"
@@ -60,18 +61,22 @@ func (r rpcUsers) UpdateName(ctx context.Context, userID int64, first, last stri
 	return err
 }
 
-func wireLayer229(c config.Config, auth authsession_client.AuthsessionClient) {
-	if err := layer229.UseMySQL(c.MysqlDSN); err != nil {
-		logx.Errorf("layer229 mysql open failed: %v", err)
-	} else if c.MysqlDSN != "" {
-		logx.Info("layer229 mysql open")
+func wireLayer229(c config.Config, auth authsession_client.AuthsessionClient) error {
+	dsn := c.PostgresDSN
+	if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(dsn)), "postgres") {
+		return errors.New("session: PostgresDSN is required for Layer 229")
 	}
+	if err := layer229.UsePostgres(dsn); err != nil {
+		return fmt.Errorf("session: open Layer 229 PostgreSQL store: %w", err)
+	}
+	logx.Info("layer229 postgres open")
 	layer229.SetProjectID(c.FirebaseProjectID)
 	if c.UserClient.Etcd.Key == "" && len(c.UserClient.Endpoints) == 0 && c.UserClient.Target == "" {
-		return
+		return nil
 	}
 	layer229.SetDirectory(rpcUsers{
 		users: user_client.NewUserClient(rpcx.GetCachedRpcClient(c.UserClient)),
 		auth:  auth,
 	})
+	return nil
 }

@@ -13,6 +13,7 @@ package chat_helper
 import (
 	"github.com/teamgram/teamgram-server/app/service/biz/chat/internal/config"
 	"github.com/teamgram/teamgram-server/app/service/biz/chat/internal/dal/dao/mysql_dao"
+	"github.com/teamgram/teamgram-server/app/service/biz/chat/internal/dal/dao/postgres_dao"
 	"github.com/teamgram/teamgram-server/app/service/biz/chat/internal/dal/dataobject"
 	"github.com/teamgram/teamgram-server/app/service/biz/chat/internal/server/grpc/service"
 	"github.com/teamgram/teamgram-server/app/service/biz/chat/internal/svc"
@@ -24,12 +25,15 @@ type (
 )
 
 type (
-	ChatParticipantsDAO = mysql_dao.ChatParticipantsDAO
-	ChatParticipantsDO  = dataobject.ChatParticipantsDO
+	ChatParticipantsDAO      = mysql_dao.ChatParticipantsDAO
+	ChatParticipantsDO       = dataobject.ChatParticipantsDO
+	PostgresDB               = postgres_dao.DB
+	PostgresChatParticipants = postgres_dao.ChatParticipantsDAO
 )
 
 var (
-	NewChatParticipantsDAO = mysql_dao.NewChatParticipantsDAO
+	NewChatParticipantsDAO         = mysql_dao.NewChatParticipantsDAO
+	NewPostgresChatParticipantsDAO = postgres_dao.NewChatParticipantsDAO
 )
 
 func New(c Config, plugin plugin.ChatPlugin) *service.Service {

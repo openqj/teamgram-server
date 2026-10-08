@@ -32,3 +32,19 @@ SET @add_chat_invite_approved_by := IF(
 PREPARE add_chat_invite_approved_by_stmt FROM @add_chat_invite_approved_by;
 EXECUTE add_chat_invite_approved_by_stmt;
 DEALLOCATE PREPARE add_chat_invite_approved_by_stmt;
+
+SET @has_chat_requested_index := (
+  SELECT COUNT(*)
+  FROM information_schema.statistics
+  WHERE table_schema = DATABASE()
+    AND table_name = 'chat_invite_participants'
+    AND index_name = 'idx_chat_requested'
+);
+SET @add_chat_requested_index := IF(
+  @has_chat_requested_index = 0,
+  'ALTER TABLE `chat_invite_participants` ADD KEY `idx_chat_requested` (`chat_id`, `requested`)',
+  'SELECT 1'
+);
+PREPARE add_chat_requested_index_stmt FROM @add_chat_requested_index;
+EXECUTE add_chat_requested_index_stmt;
+DEALLOCATE PREPARE add_chat_requested_index_stmt;

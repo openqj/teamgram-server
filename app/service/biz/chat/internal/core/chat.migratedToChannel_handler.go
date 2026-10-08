@@ -29,6 +29,23 @@ func (c *ChatCore) ChatMigratedToChannel(in *chat.TLChatMigratedToChannel) (*mtp
 		keys = append(keys, c.svcCtx.Dao.GetChatParticipantCacheKey(participant.ChatId, participant.UserId))
 		return nil
 	})
+	if c.svcCtx.Dao.Postgres != nil && c.svcCtx.Dao.Postgres.Store != nil {
+		tx, txErr := c.svcCtx.Dao.Postgres.Pool.Begin(c.ctx)
+		if txErr == nil {
+			defer tx.Rollback(c.ctx)
+			_, txErr = c.svcCtx.Dao.Postgres.Store.Chats.UpdateMigratedToOn(c.ctx, tx, in.Id, in.AccessHash, in.Chat.Id())
+			if txErr == nil {
+				_, txErr = c.svcCtx.Dao.Postgres.Store.Participants.UpdateStateByChatIdOn(c.ctx, tx, mtproto.ChatMemberStateMigrated, in.Chat.Id())
+			}
+			if txErr == nil {
+				txErr = tx.Commit(c.ctx)
+			}
+		}
+		if txErr != nil {
+			return nil, txErr
+		}
+		return mtproto.BoolTrue, nil
+	}
 
 	_, _, err := c.svcCtx.Dao.CachedConn.Exec(
 		c.ctx,

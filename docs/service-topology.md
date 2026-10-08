@@ -44,7 +44,7 @@ Services must be started in this order (as in `runall2.sh`):
 
 ## Infrastructure dependencies
 
-| Service     | etcd | MySQL | Redis (Cache/KV) | Kafka        | MinIO |
+| Service     | etcd | PostgreSQL | Redis (Cache/KV) | Kafka        | MinIO |
 |-------------|------|-------|------------------|--------------|-------|
 | **idgen**   | ✓    | —     | ✓ (SeqIDGen)     | —            | —     |
 | **status**  | ✓    | —     | ✓ (Status)       | —            | —     |
@@ -59,7 +59,7 @@ Services must be started in this order (as in `runall2.sh`):
 | **gnetway** | ✓    | —     | —                 | —            | —     |
 | **httpserver** | ✓  | —     | —                 | —            | —     |
 
-Default endpoints in configs: **etcd** 127.0.0.1:2379, **MySQL** 127.0.0.1:3306, **Redis** 127.0.0.1:6379, **Kafka** 127.0.0.1:9092, **MinIO** localhost:9000.
+Default endpoints in configs: **etcd** 127.0.0.1:2379, **PostgreSQL 18** 127.0.0.1:5432, **Redis** 127.0.0.1:6379, **Kafka** 127.0.0.1:9092, **MinIO** localhost:9000.
 
 ---
 
@@ -112,7 +112,7 @@ flowchart TB
 
   subgraph infra [Infrastructure]
     Etcd[etcd 2379]
-    MySQL[(MySQL 3306)]
+    PostgreSQL[(PostgreSQL 18 5432)]
     Redis[(Redis 6379)]
     Kafka[Kafka 9092]
     MinIO[MinIO 9000]
@@ -147,15 +147,15 @@ flowchart TB
   Media --> Dfs
   Dfs --> Idgen
   Dfs --> MinIO
-  AuthSession --> MySQL
+  AuthSession --> PostgreSQL
   AuthSession --> Redis
   Idgen --> Redis
   Status --> Redis
-  Biz --> MySQL
+  Biz --> PostgreSQL
   Biz --> Redis
-  Msg --> MySQL
+  Msg --> PostgreSQL
   Msg --> Redis
-  Sync --> MySQL
+  Sync --> PostgreSQL
   Sync --> Redis
   BFF --> Redis
   Session --> Redis

@@ -102,8 +102,8 @@ function isClass(value: any, name: string): boolean {
 
 function readPersistedBrowserSettings(userId: string): any | null {
   const sql = `SELECT v FROM apifull_kv WHERE k='webbrowser:${userId}:' LIMIT 1`;
-  const command = `MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysql -uroot --batch --skip-column-names teamgram -e ${JSON.stringify(sql)}`;
-  const value = execFileSync('docker', ['exec', 'mysql', 'sh', '-lc', command], { encoding: 'utf8' }).trim();
+  const command = `PGPASSWORD="$POSTGRES_PASSWORD" psql -U teamgram -d teamgram -v ON_ERROR_STOP=1 -At -q -F "$(printf '\\t')" -c ${JSON.stringify(sql)}`;
+  const value = execFileSync('docker', ['exec', 'teamgram-postgres', 'sh', '-lc', command], { encoding: 'utf8' }).trim();
   return value ? JSON.parse(value) : null;
 }
 
@@ -281,7 +281,7 @@ async function main() {
       const originalClose = Boolean(browserSettings.displayCloseButton);
       if (originalOpen !== Boolean(originalPersistedSettings?.open_external_browser)
         || originalClose !== Boolean(originalPersistedSettings?.display_close_button)) {
-        throw new Error('browser settings RPC differs from the persisted MySQL row');
+        throw new Error('browser settings RPC differs from the persisted PostgreSQL row');
       }
       const originalHash = browserSettings.hash;
       const unchanged = await getWebBrowserSettings(client, originalHash);
@@ -300,7 +300,7 @@ async function main() {
       const toggledDbState = readPersistedBrowserSettings(stored.userId);
       if (Boolean(toggledDbState?.open_external_browser) !== probeOpen
         || Boolean(toggledDbState?.display_close_button) !== probeClose) {
-        throw new Error('browser settings update was not persisted to MySQL');
+        throw new Error('browser settings update was not persisted to PostgreSQL');
       }
 
       const probeUrl = `https://probe.invalid/teamgram-${Date.now()}-${process.pid}`;
@@ -319,7 +319,7 @@ async function main() {
         const exceptionDbState = readPersistedBrowserSettings(stored.userId);
         const persistedExceptions = [...(exceptionDbState?.external || []), ...(exceptionDbState?.inapp || [])];
         if (!persistedExceptions.some((item: any) => item?.url === probeUrl)) {
-          throw new Error('browser exception is missing from MySQL');
+          throw new Error('browser exception is missing from PostgreSQL');
         }
       } finally {
         try {
@@ -346,7 +346,7 @@ async function main() {
       }
       const restoredDbState = readPersistedBrowserSettings(stored.userId);
       if (normalizeBrowserState(restoredDbState) !== normalizeBrowserState(originalPersistedSettings)) {
-        throw new Error('browser settings MySQL row did not restore the original semantic state');
+        throw new Error('browser settings PostgreSQL row did not restore the original semantic state');
       }
       console.log(JSON.stringify({
         event: 'browser_settings',

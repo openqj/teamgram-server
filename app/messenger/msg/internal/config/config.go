@@ -20,7 +20,7 @@ package config
 
 import (
 	kafka "github.com/teamgram/marmota/pkg/mq"
-	"github.com/teamgram/marmota/pkg/stores/sqlx"
+	"github.com/teamgram/teamgram-server/pkg/storage/postgres"
 	"github.com/zeromicro/go-zero/core/stores/cache"
 	"github.com/zeromicro/go-zero/core/stores/kv"
 	"github.com/zeromicro/go-zero/core/stores/redis"
@@ -29,8 +29,10 @@ import (
 
 type Config struct {
 	zrpc.RpcServerConf
+	// Postgres is the authoritative store for new deployments. Mysql remains
+	// here only while the generated message handlers move to pgx transactions.
+	Postgres         postgres.Config
 	InboxConsumer    kafka.KafkaConsumerConf
-	Mysql            sqlx.Config
 	Cache            cache.CacheConf
 	KV               kv.KvConf
 	IdgenClient      zrpc.RpcClientConf

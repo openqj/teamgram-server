@@ -10,22 +10,29 @@
 package dao
 
 import (
+	"errors"
+
 	"github.com/teamgram/marmota/pkg/stores/sqlc"
-	"github.com/teamgram/marmota/pkg/stores/sqlx"
 	"github.com/teamgram/teamgram-server/app/service/biz/dialog/internal/config"
 )
 
 // Dao dao.
 type Dao struct {
 	*Mysql
+	*Postgres
 	sqlc.CachedConn
 }
 
 // New new a dao and return.
 func New(c config.Config) (dao *Dao) {
-	db := sqlx.NewMySQL(&c.Mysql)
-	return &Dao{
-		Mysql:      newMysqlDao(db),
-		CachedConn: sqlc.NewConn(db, c.Cache),
+	if c.Postgres.DSN == "" {
+		panic(errors.New("biz/dialog: Postgres.DSN is required"))
 	}
+	dao = &Dao{}
+	pg, err := NewPostgres(c.Postgres)
+	if err != nil {
+		panic(err)
+	}
+	dao.Postgres = pg
+	return dao
 }

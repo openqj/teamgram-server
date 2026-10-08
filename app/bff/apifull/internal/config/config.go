@@ -36,7 +36,7 @@ type Config struct {
 	SyncClient                    *kafka.KafkaProducerConf
 	KV                            kv.KvConf
 	Code                          *conf.SmsVerifyCodeConfig `json:",optional"`
-	MysqlDSN                      string                    `json:",optional"`
+	PostgresDSN                   string                    `json:",optional"`
 	PaymentProviderEndpoint       string                    `json:",optional"`
 	PaymentProviderKey            string                    `json:",optional"`
 	PaymentProviderSigningKey     string                    `json:",optional"`

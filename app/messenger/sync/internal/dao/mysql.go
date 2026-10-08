@@ -16,6 +16,9 @@
 // Author: teamgramio (teamgram.io@gmail.com)
 //
 
+// Deprecated: the sync runtime uses postgres.go. This adapter remains only so
+// the historical DAL generator output can be removed in a later cleanup once
+// all downstream packages have moved to the PostgreSQL boundary.
 package dao
 
 import (

@@ -21,7 +21,7 @@ func (c *MessageCore) MessageGetPeerUserMessageId(in *message.TLMessageGetPeerUs
 		return nil, mtproto.ErrInputRequestInvalid
 	}
 
-	do, err := c.svcCtx.Dao.MessagesDAO.SelectPeerUserMessageId(
+	do, err := c.svcCtx.Dao.SelectPeerUserMessageId(
 		c.ctx,
 		in.GetPeerUserId(),
 		in.GetUserId(),

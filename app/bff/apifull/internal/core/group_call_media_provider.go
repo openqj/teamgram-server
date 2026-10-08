@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -30,11 +31,15 @@ type groupCallMediaProvider struct {
 }
 
 type groupCallMediaRequest struct {
-	Operation string `json:"operation"`
-	UserID    int64  `json:"user_id"`
-	CallID    int64  `json:"call_id"`
-	ChannelID int64  `json:"channel_id"`
-	Revoke    bool   `json:"revoke"`
+	RequestID    string `json:"request_id"`
+	Operation    string `json:"operation"`
+	UserID       int64  `json:"user_id"`
+	CallID       int64  `json:"call_id"`
+	ChannelID    int64  `json:"channel_id"`
+	Muted        bool   `json:"muted,omitempty"`
+	VideoStopped bool   `json:"video_stopped,omitempty"`
+	Params       string `json:"params,omitempty"`
+	Revoke       bool   `json:"revoke"`
 }
 
 type groupCallStreamChannelData struct {
@@ -44,13 +49,16 @@ type groupCallStreamChannelData struct {
 }
 
 type groupCallMediaResponse struct {
-	Verified  bool                         `json:"verified"`
-	UserID    int64                        `json:"user_id"`
-	CallID    int64                        `json:"call_id"`
-	ChannelID int64                        `json:"channel_id"`
-	Channels  []groupCallStreamChannelData `json:"channels"`
-	URL       string                       `json:"url"`
-	Key       string                       `json:"key"`
+	RequestID   string                       `json:"request_id"`
+	Operation   string                       `json:"operation"`
+	Verified    bool                         `json:"verified"`
+	UserID      int64                        `json:"user_id"`
+	CallID      int64                        `json:"call_id"`
+	ChannelID   int64                        `json:"channel_id"`
+	MediaSource int32                        `json:"media_source"`
+	Channels    []groupCallStreamChannelData `json:"channels"`
+	URL         string                       `json:"url"`
+	Key         string                       `json:"key"`
 }
 
 func (c *ApiFullCore) newGroupCallMediaProvider() (*groupCallMediaProvider, error) {
@@ -116,6 +124,28 @@ func (p *groupCallMediaProvider) post(ctx context.Context, payload groupCallMedi
 	return responseBody, nil
 }
 
+func requestGroupCallMedia(ctx context.Context, provider *groupCallMediaProvider, payload groupCallMediaRequest, idempotencyKey string) (groupCallMediaResponse, error) {
+	var result groupCallMediaResponse
+	if provider == nil {
+		return result, mtproto.ErrMethodNotImpl
+	}
+	var nonce [16]byte
+	if _, err := rand.Read(nonce[:]); err != nil {
+		return result, mtproto.ErrInternalServerError
+	}
+	payload.RequestID = hex.EncodeToString(nonce[:])
+	body, err := provider.post(ctx, payload, idempotencyKey)
+	if err != nil {
+		return result, err
+	}
+	if json.Unmarshal(body, &result) != nil || !result.Verified ||
+		result.RequestID != payload.RequestID || result.Operation != payload.Operation ||
+		result.UserID != payload.UserID || result.CallID != payload.CallID || result.ChannelID != payload.ChannelID {
+		return groupCallMediaResponse{}, mtproto.ErrInternalServerError
+	}
+	return result, nil
+}
+
 func groupCallMediaSignature(key string, body []byte) string {
 	mac := hmac.New(sha256.New, []byte(key))
 	_, _ = mac.Write(body)
@@ -148,7 +178,7 @@ func (c *ApiFullCore) getGroupCallStreamChannels(in *mtproto.TLPhoneGetGroupCall
 	if err != nil {
 		return nil, err
 	}
-	body, err := provider.post(c.secretContext(), groupCallMediaRequest{
+	result, err := requestGroupCallMedia(c.secretContext(), provider, groupCallMediaRequest{
 		Operation: "get_stream_channels",
 		UserID:    uid,
 		CallID:    call.ID,
@@ -157,8 +187,7 @@ func (c *ApiFullCore) getGroupCallStreamChannels(in *mtproto.TLPhoneGetGroupCall
 	if err != nil {
 		return nil, err
 	}
-	var result groupCallMediaResponse
-	if json.Unmarshal(body, &result) != nil || !result.Verified || result.UserID != uid || result.CallID != call.ID || result.ChannelID != call.ChannelID || result.Channels == nil || len(result.Channels) > 32 {
+	if result.Channels == nil || len(result.Channels) > 32 {
 		return nil, mtproto.ErrInternalServerError
 	}
 	seen := make(map[[2]int32]struct{}, len(result.Channels))
@@ -229,7 +258,7 @@ func (c *ApiFullCore) getGroupCallStreamRtmpUrl(in *mtproto.TLPhoneGetGroupCallS
 	if !revoke {
 		idempotencyKey = fmt.Sprintf("group-call-rtmp:%d:%d", call.ID, uid)
 	}
-	body, err := provider.post(c.secretContext(), groupCallMediaRequest{
+	result, err := requestGroupCallMedia(c.secretContext(), provider, groupCallMediaRequest{
 		Operation: "get_rtmp_url",
 		UserID:    uid,
 		CallID:    call.ID,
@@ -239,8 +268,7 @@ func (c *ApiFullCore) getGroupCallStreamRtmpUrl(in *mtproto.TLPhoneGetGroupCallS
 	if err != nil {
 		return nil, err
 	}
-	var result groupCallMediaResponse
-	if json.Unmarshal(body, &result) != nil || !result.Verified || result.UserID != uid || result.CallID != call.ID || result.ChannelID != channelID || !validGroupCallRTMPResult(result.URL, result.Key, rtmpHost) {
+	if !validGroupCallRTMPResult(result.URL, result.Key, rtmpHost) {
 		return nil, mtproto.ErrInternalServerError
 	}
 	return mtproto.MakeTLPhoneGroupCallStreamRtmpUrl(&mtproto.Phone_GroupCallStreamRtmpUrl{

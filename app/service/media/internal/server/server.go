@@ -25,6 +25,7 @@ var configFile = flag.String("f", "etc/media.yaml", "the config file")
 
 type Server struct {
 	grpcSrv *zrpc.RpcServer
+	svcCtx  *svc.ServiceContext
 }
 
 func New() *Server {
@@ -37,6 +38,7 @@ func (s *Server) Initialize() error {
 
 	logx.Infov(c)
 	ctx := svc.NewServiceContext(c)
+	s.svcCtx = ctx
 	s.grpcSrv = grpc.New(ctx, c.RpcServerConf)
 
 	go func() {
@@ -49,5 +51,10 @@ func (s *Server) RunLoop() {
 }
 
 func (s *Server) Destroy() {
-	s.grpcSrv.Stop()
+	if s.grpcSrv != nil {
+		s.grpcSrv.Stop()
+	}
+	if s.svcCtx != nil {
+		s.svcCtx.Close()
+	}
 }

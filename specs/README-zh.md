@@ -8,13 +8,13 @@
 
 | 文档 | 说明 |
 |------|------|
-| [架构与数据流](architecture-zh.md) | 服务拓扑、请求路径、与 MTProto/API 的对应关系（[English](architecture.md)） |
-| [协议与兼容性](protocol-and-compatibility-zh.md) | MTProto 2.0、API Layer、客户端兼容范围（[English](protocol-and-compatibility.md)） |
+| [架构与数据流](architecture-zh.md) | 现有拓扑、目标架构、消息一致性、PostgreSQL 设计与性能验收（[English](architecture.md)） |
+| [协议与兼容性](protocol-and-compatibility-zh.md) | MTProto 2.0、API Layer、客户端功能闭环与唯一方法台账（[English](protocol-and-compatibility.md)） |
 | [依赖与运行环境](dependencies-and-runtime-zh.md) | 核心依赖、版本建议、Docker 部署（[English](dependencies-and-runtime.md)） |
 | [贡献指南](contributing-zh.md) | 分支策略、PR 规范、代码风格、本地开发（[English](contributing.md)） |
 | [安全策略](security-zh.md) | 漏洞报告、支持版本、披露原则（[English](security.md)） |
-| [版本与发布](release-and-changelog-zh.md) | 版本号、CHANGELOG、发布清单（[English](release-and-changelog.md)） |
-| [路线图与目标](roadmap-zh.md) | 短期/中期目标、社区版与企业版（[English](roadmap.md)） |
+| [版本与发布](release-and-changelog-zh.md) | 版本号、CHANGELOG、生产验收与发布清单（[English](release-and-changelog.md)） |
+| [路线图与目标](roadmap-zh.md) | 实施顺序、阶段出口、短期/中期目标与版本边界（[English](roadmap.md)） |
 
 ## 快速链接
 

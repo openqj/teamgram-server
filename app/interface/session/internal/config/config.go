@@ -23,7 +23,7 @@ type Config struct {
 	BFFProxyClients   conf.BFFProxyClients
 	UserClient        zrpc.RpcClientConf `json:",optional"`
 	FirebaseProjectID string             `json:",optional"`
-	MysqlDSN          string             `json:",optional"`
+	PostgresDSN       string             `json:",optional"`
 	UseStreamGateway  bool               `json:",default=false"`
 }
 

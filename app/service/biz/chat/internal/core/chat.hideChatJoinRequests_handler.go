@@ -56,7 +56,11 @@ func (c *ChatCore) ChatHideChatJoinRequests(in *chat.TLChatHideChatJoinRequests)
 		if _, err = c.requireInviteLinkPermission(in.GetChatId(), selfID, link.GetValue()); err != nil {
 			return nil, err
 		}
-		requests, err = c.svcCtx.Dao.ChatInviteParticipantsDAO.SelectListByLink(c.ctx, linkHash, 1)
+		if c.svcCtx.Dao.Postgres != nil && c.svcCtx.Dao.Postgres.Store != nil {
+			requests, err = c.svcCtx.Dao.Postgres.Store.InviteParticipants.SelectListByLink(c.ctx, linkHash, 1)
+		} else {
+			requests, err = c.svcCtx.Dao.ChatInviteParticipantsDAO.SelectListByLink(c.ctx, linkHash, 1)
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -64,7 +68,11 @@ func (c *ChatCore) ChatHideChatJoinRequests(in *chat.TLChatHideChatJoinRequests)
 		if _, err = c.requireInvitePermission(in.GetChatId(), selfID, 0); err != nil {
 			return nil, err
 		}
-		requests, err = c.svcCtx.Dao.ChatInviteParticipantsDAO.SelectRecentRequestedList(c.ctx, in.GetChatId())
+		if c.svcCtx.Dao.Postgres != nil && c.svcCtx.Dao.Postgres.Store != nil {
+			requests, err = c.svcCtx.Dao.Postgres.Store.InviteParticipants.SelectRecentRequestedList(c.ctx, in.GetChatId())
+		} else {
+			requests, err = c.svcCtx.Dao.ChatInviteParticipantsDAO.SelectRecentRequestedList(c.ctx, in.GetChatId())
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -92,7 +100,33 @@ func (c *ChatCore) ChatHideChatJoinRequests(in *chat.TLChatHideChatJoinRequests)
 			return nil, err
 		}
 		if linkHash == "" {
-			if _, err := c.svcCtx.Dao.ChatInviteParticipantsDAO.UpdateApprovedBy(c.ctx, selfID, in.ChatId, joinId); err != nil {
+			var updateErr error
+			if c.svcCtx.Dao.Postgres != nil && c.svcCtx.Dao.Postgres.Store != nil {
+				tx, txErr := c.svcCtx.Dao.Postgres.Pool.Begin(c.ctx)
+				if txErr == nil {
+					defer tx.Rollback(c.ctx)
+					_, txErr = c.svcCtx.Dao.Postgres.Store.InviteParticipants.UpdateApprovedByOn(c.ctx, tx, selfID, in.ChatId, joinId)
+					if txErr == nil {
+						txErr = tx.Commit(c.ctx)
+					}
+				}
+				updateErr = txErr
+			} else {
+				_, updateErr = c.svcCtx.Dao.ChatInviteParticipantsDAO.UpdateApprovedBy(c.ctx, selfID, in.ChatId, joinId)
+			}
+			if updateErr != nil {
+				return nil, updateErr
+			}
+		} else if c.svcCtx.Dao.Postgres != nil && c.svcCtx.Dao.Postgres.Store != nil {
+			tx, txErr := c.svcCtx.Dao.Postgres.Pool.Begin(c.ctx)
+			if txErr == nil {
+				defer tx.Rollback(c.ctx)
+				_, txErr = c.svcCtx.Dao.Postgres.Store.InviteParticipants.UpdateApprovedByLinkOn(c.ctx, tx, selfID, in.ChatId, joinId, linkHash)
+				if txErr == nil {
+					txErr = tx.Commit(c.ctx)
+				}
+			}
+			if err = txErr; err != nil {
 				return nil, err
 			}
 		} else if _, err := c.svcCtx.Dao.ChatInviteParticipantsDAO.UpdateApprovedByLink(c.ctx, selfID, in.ChatId, joinId, linkHash); err != nil {
@@ -100,7 +134,33 @@ func (c *ChatCore) ChatHideChatJoinRequests(in *chat.TLChatHideChatJoinRequests)
 		}
 	} else {
 		if linkHash == "" {
-			if _, err := c.svcCtx.Dao.ChatInviteParticipantsDAO.Delete(c.ctx, in.ChatId, joinId); err != nil {
+			var deleteErr error
+			if c.svcCtx.Dao.Postgres != nil && c.svcCtx.Dao.Postgres.Store != nil {
+				tx, txErr := c.svcCtx.Dao.Postgres.Pool.Begin(c.ctx)
+				if txErr == nil {
+					defer tx.Rollback(c.ctx)
+					_, txErr = c.svcCtx.Dao.Postgres.Store.InviteParticipants.DeleteOn(c.ctx, tx, in.ChatId, joinId)
+					if txErr == nil {
+						txErr = tx.Commit(c.ctx)
+					}
+				}
+				deleteErr = txErr
+			} else {
+				_, deleteErr = c.svcCtx.Dao.ChatInviteParticipantsDAO.Delete(c.ctx, in.ChatId, joinId)
+			}
+			if deleteErr != nil {
+				return nil, deleteErr
+			}
+		} else if c.svcCtx.Dao.Postgres != nil && c.svcCtx.Dao.Postgres.Store != nil {
+			tx, txErr := c.svcCtx.Dao.Postgres.Pool.Begin(c.ctx)
+			if txErr == nil {
+				defer tx.Rollback(c.ctx)
+				_, txErr = c.svcCtx.Dao.Postgres.Store.InviteParticipants.DeleteByLinkOn(c.ctx, tx, in.ChatId, joinId, linkHash)
+				if txErr == nil {
+					txErr = tx.Commit(c.ctx)
+				}
+			}
+			if err = txErr; err != nil {
 				return nil, err
 			}
 		} else if _, err := c.svcCtx.Dao.ChatInviteParticipantsDAO.DeleteByLink(c.ctx, in.ChatId, joinId, linkHash); err != nil {
@@ -117,9 +177,17 @@ func (c *ChatCore) recentChatInviteRequesters(chatId int64, linkHash string) (*c
 		err         error
 	)
 	if linkHash != "" {
-		requestList, err = c.svcCtx.Dao.ChatInviteParticipantsDAO.SelectListByLink(c.ctx, linkHash, 1)
+		if c.svcCtx.Dao.Postgres != nil && c.svcCtx.Dao.Postgres.Store != nil {
+			requestList, err = c.svcCtx.Dao.Postgres.Store.InviteParticipants.SelectListByLink(c.ctx, linkHash, 1)
+		} else {
+			requestList, err = c.svcCtx.Dao.ChatInviteParticipantsDAO.SelectListByLink(c.ctx, linkHash, 1)
+		}
 	} else {
-		requestList, err = c.svcCtx.Dao.ChatInviteParticipantsDAO.SelectRecentRequestedList(c.ctx, chatId)
+		if c.svcCtx.Dao.Postgres != nil && c.svcCtx.Dao.Postgres.Store != nil {
+			requestList, err = c.svcCtx.Dao.Postgres.Store.InviteParticipants.SelectRecentRequestedList(c.ctx, chatId)
+		} else {
+			requestList, err = c.svcCtx.Dao.ChatInviteParticipantsDAO.SelectRecentRequestedList(c.ctx, chatId)
+		}
 	}
 	if err != nil {
 		return nil, err

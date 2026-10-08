@@ -28,7 +28,7 @@ const quietLogger = { debug() {}, info() {}, warn() {}, error() {} };
 
 function sql(query: string): string {
   return execFileSync('docker', [
-    'exec', 'mysql', 'mysql', '-N', '-s', '-uteamgram', '-pteamgram', '-Dteamgram', '-e', query,
+    'exec', 'teamgram-postgres', 'psql', '-v', 'ON_ERROR_STOP=1', '-At', '-q', '-F', '\t', '-U', 'teamgram', '-d', 'teamgram', '-c', query,
   ], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
 }
 
@@ -113,9 +113,17 @@ function cleanupCounts(channelId: bigint, username: string): { channel: number; 
   };
 }
 
+function creatorChannelSnapshot(): string {
+  return sql(`
+    SELECT COUNT(*), COALESCE(encode(digest(string_agg(CONCAT_WS(':', id, access_hash, username), ',' ORDER BY id), 'sha256'), 'hex'), 'empty')
+    FROM apifull_channel WHERE creator_user_id=${ownerUserId}
+  `);
+}
+
 async function main() {
   const title = `r21-username-${Date.now()}-${randomBytes(4).toString('hex')}`;
   const username = `audit${Date.now().toString(36)}${randomBytes(4).toString('hex')}`;
+  const channelsBefore = creatorChannelSnapshot();
   if (activeUsernameCount(username) !== 0) throw new Error('generated production username is already occupied');
 
   const ownerClient = makeClient(loadAuthKey(ownerUserId));
@@ -147,6 +155,14 @@ async function main() {
     const updated = await ownerClient.invoke(new Api.channels.UpdateUsername({ channel: inputChannel, username }));
     if (!boolTrue(updated)) throw new Error(`channels.updateUsername returned ${rpcName(updated)}`);
 
+    const admined = await ownerClient.invoke(new Api.channels.GetAdminedPublicChannels({}));
+    const adminedChats = updateChats(admined);
+    const listedChannel = adminedChats.find((item: any) => String(item?.id) === channelId.toString());
+    if (!matchesType(admined, 'Chats') || !matchesType(listedChannel, 'Channel')
+      || listedChannel.title !== title || listedChannel.username !== username) {
+      throw new Error(`channels.getAdminedPublicChannels returned ${rpcName(admined)} without the new public channel`);
+    }
+
     await resolverClient.connect();
     const resolver = await resolverClient.getMe();
     if (String(resolver?.id) !== resolverUserId) throw new Error('username resolver auth key user mismatch');
@@ -164,6 +180,8 @@ async function main() {
 
     evidence.create = rpcName(created);
     evidence.updateUsername = 'BooleanTrue';
+    evidence.getAdminedPublicChannels = rpcName(admined);
+    evidence.adminedPublicChannelMatches = true;
     evidence.resolve = rpcName(resolved);
     evidence.resolvedChat = rpcName(resolvedChannel);
     evidence.resolvedChannelIdMatches = true;
@@ -204,6 +222,11 @@ async function main() {
 
   ownerClient.destroy();
   resolverClient.destroy();
+  const channelsAfter = creatorChannelSnapshot();
+  evidence.ownerChannelSnapshotRestored = channelsBefore === channelsAfter;
+  if (channelsBefore !== channelsAfter) {
+    throw new Error(`owner channel rows changed after cleanup: before=${channelsBefore}, after=${channelsAfter}`);
+  }
   if (channelId > 0n) {
     const remaining = cleanupCounts(channelId, username);
     evidence.remainingRows = remaining;
@@ -216,8 +239,8 @@ async function main() {
   if (channelId === 0n) throw new Error('production probe did not create a channel');
 
   console.log(JSON.stringify({
-    backend: 'r21',
-    transport: `DC${dcId} WebSocket -> gateway -> session -> APIFull/Usernames/User -> MySQL`,
+    backend: 'r28',
+    transport: `DC${dcId} WebSocket -> gateway -> session -> APIFull/Usernames/User -> PostgreSQL`,
     ownerUserId,
     resolverUserId,
     channelId: channelId.toString(),

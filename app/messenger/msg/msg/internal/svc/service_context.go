@@ -19,11 +19,11 @@
 package svc
 
 import (
+	"errors"
+
 	kafka "github.com/teamgram/marmota/pkg/mq"
 	"github.com/teamgram/marmota/pkg/net/rpcx"
 	"github.com/teamgram/marmota/pkg/stores/kv"
-	"github.com/teamgram/marmota/pkg/stores/sqlc"
-	"github.com/teamgram/marmota/pkg/stores/sqlx"
 	inbox_client "github.com/teamgram/teamgram-server/app/messenger/msg/inbox/client"
 	"github.com/teamgram/teamgram-server/app/messenger/msg/internal/dao"
 	"github.com/teamgram/teamgram-server/app/messenger/msg/msg/internal/config"
@@ -45,22 +45,40 @@ type ServiceContext struct {
 }
 
 func NewServiceContext(c config.Config, plugin plugin.MsgPlugin) *ServiceContext {
-	db := sqlx.NewMySQL(&c.Mysql)
+	if c.Postgres.DSN == "" {
+		panic(errors.New("messenger/msg/msg: Postgres.DSN is required"))
+	}
+	daoStore := &dao.Dao{
+		IDGenClient2:       idgen_client.NewIDGenClient2(rpcx.GetCachedRpcClient(c.IdgenClient)),
+		UserClient:         user_client.NewUserClient(rpcx.GetCachedRpcClient(c.UserClient)),
+		InboxClient:        inbox_client.NewInboxMqClient(kafka.MustKafkaProducer(c.InboxClient)),
+		ChatClient:         chat_client.NewChatClient(rpcx.GetCachedRpcClient(c.ChatClient)),
+		SyncClient:         sync_client.NewSyncMqClient(kafka.GetCachedMQClient(c.SyncClient)),
+		DialogClient:       dialog_client.NewDialogClient(rpcx.GetCachedRpcClient(c.DialogClient)),
+		MessageDeDuplicate: deduplication.NewMessageDeDuplicate(kv.NewStore(c.KV)),
+	}
+	redisConf := c.Redis2
+	if redisConf.Host == "" && len(c.KV) > 0 {
+		// Older message configs expose Redis through KV only. Reuse that
+		// endpoint for idempotency rather than allowing send handlers to
+		// dereference a nil Redis client.
+		redisConf = c.KV[0].RedisConf
+		redisConf.Type = redis.NodeType
+	}
+	if redisConf.Host != "" {
+		daoStore.Redis = redis.MustNewRedis(redisConf)
+	}
+	// NewPool pings before returning, so an unavailable authoritative store
+	// stops startup instead of allowing a request path to reach MySQL.
+	pg, err := dao.NewPostgres(c.Postgres)
+	if err != nil {
+		panic(err)
+	}
+	daoStore.Postgres = pg
 	svcCtx := &ServiceContext{
 		Config:    c,
 		MsgPlugin: plugin,
-		Dao: &dao.Dao{
-			Mysql:              dao.NewMysqlDao(db, c.MessageSharding),
-			CachedConn:         sqlc.NewConn(db, c.Cache),
-			IDGenClient2:       idgen_client.NewIDGenClient2(rpcx.GetCachedRpcClient(c.IdgenClient)),
-			UserClient:         user_client.NewUserClient(rpcx.GetCachedRpcClient(c.UserClient)),
-			InboxClient:        inbox_client.NewInboxMqClient(kafka.MustKafkaProducer(c.InboxClient)),
-			ChatClient:         chat_client.NewChatClient(rpcx.GetCachedRpcClient(c.ChatClient)),
-			SyncClient:         sync_client.NewSyncMqClient(kafka.GetCachedMQClient(c.SyncClient)),
-			DialogClient:       dialog_client.NewDialogClient(rpcx.GetCachedRpcClient(c.DialogClient)),
-			MessageDeDuplicate: deduplication.NewMessageDeDuplicate(kv.NewStore(c.KV)),
-			Redis:              redis.MustNewRedis(c.Redis2),
-		},
+		Dao:       daoStore,
 	}
 
 	if plugin == nil {

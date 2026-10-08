@@ -5,12 +5,17 @@ This guide describes how to install the Teamgram server and its dependencies fro
 > English (primary) | [中文](./install-manual-linux-zh.md)  
 > For Docker deployment, see [install-docker.md](./install-docker.md).
 
+> **Database:** New deployments use PostgreSQL 18. Run the checked-in PostgreSQL
+> migrations before starting services. The application runtime is being cut
+> over service by service; do not claim full PostgreSQL readiness until the
+> roadmap acceptance gates pass.
+
 ---
 
 ## 1. Requirements
 
-- **Go**: 1.21 or later (for building teamgram-server)
-- **MySQL**: 8.x (8.0.29 recommended)
+- **Go**: 1.25 or later (for building teamgram-server)
+- **PostgreSQL**: 18
 - **Redis**: 6.x
 - **Etcd**: 3.5.x
 - **Kafka**: 2.x / 3.x (with Zookeeper)
@@ -34,44 +39,29 @@ yum install dnf -y
 dnf --version
 ```
 
-### 2.2 Install MySQL
+### 2.2 Install PostgreSQL 18
 
 **CentOS 9 / Fedora:**
 
 ```bash
-dnf install mysql-server -y
-systemctl enable --now mysqld
-```
-
-**Fedora (community MySQL):**
-
-```bash
-dnf install community-mysql-server -y
-systemctl enable --now mysqld
+dnf install postgresql18-server postgresql18 -y
+postgresql-18-setup --initdb
+systemctl enable --now postgresql-18
 ```
 
 **Ubuntu/Debian:**
 
 ```bash
 apt update
-apt install mysql-server -y
-systemctl enable --now mysql
+apt install postgresql-18 postgresql-client-18 -y
+systemctl enable --now postgresql
 ```
 
-**Configure MySQL:**
+**Create the application role and database:**
 
 ```bash
-# Optional: run security setup
-mysql_secure_installation
-
-# Log in, create database, set empty password (adjust as needed)
-mysql -uroot -p
-
-mysql> CREATE DATABASE teamgram;
-mysql> UPDATE mysql.user SET authentication_string='' WHERE user='root';
-mysql> ALTER USER 'root'@'localhost' IDENTIFIED BY '';
-mysql> FLUSH PRIVILEGES;
-mysql> exit
+sudo -u postgres psql -c "CREATE USER teamgram WITH PASSWORD 'teamgram';"
+sudo -u postgres psql -c "CREATE DATABASE teamgram OWNER teamgram;"
 ```
 
 ### 2.3 Install Redis
@@ -233,17 +223,12 @@ cd teamgram-server
 
 ### 3.2 Initialize database
 
-From the project root (SQL files are under `teamgramd/deploy/sql/`):
+From the project root, apply the PostgreSQL 18 migrations:
 
 ```bash
 # Create database (skip if already created)
-mysql -uroot -e "CREATE DATABASE IF NOT EXISTS teamgram;"
-
-# Import SQL in order
-mysql -uroot teamgram < teamgramd/deploy/sql/1_teamgram.sql
-# Import all migrate-*.sql (in order), e.g. with a loop:
-for f in teamgramd/deploy/sql/migrate-*.sql; do mysql -uroot teamgram < "$f"; done
-mysql -uroot teamgram < teamgramd/deploy/sql/z_init.sql
+DATABASE_URL='postgresql://teamgram:teamgram@127.0.0.1:5432/teamgram?sslmode=disable' \
+  ./teamgramd/deploy/postgres/apply.sh
 ```
 
 ---
@@ -264,7 +249,7 @@ dnf install go -y
 apt install golang-go -y
 ```
 
-Or install Go 1.21+ from [go.dev/dl](https://go.dev/dl/).
+Or install Go 1.25+ from [go.dev/dl](https://go.dev/dl/).
 
 ### 4.2 Build
 
@@ -280,7 +265,10 @@ Binaries are produced in `teamgramd/bin/` (idgen, status, authsession, dfs, medi
 
 ## 5. Edit Configuration
 
-Configuration files are under `teamgramd/etc/`. Set addresses to **127.0.0.1** or your actual IP/ports so they match MySQL, Redis, Etcd, Kafka, MinIO, and Pika.
+Configuration files are under `teamgramd/etc/`. Set addresses to **127.0.0.1** or your actual IP/ports so they match PostgreSQL, Redis, Etcd, Kafka, MinIO, and Pika.
+The checked-in service YAMLs are migrated one service at a time; only start a
+service with PostgreSQL after its runtime cutover is listed as accepted in the
+roadmap.
 
 **Check in particular:**
 
@@ -293,7 +281,7 @@ Configuration files are under `teamgramd/etc/`. Set addresses to **127.0.0.1** o
 
 3. **All service YAMLs**  
    - `Etcd.Hosts`: `127.0.0.1:2379`  
-   - `Mysql.Addr` / `DSN`: `127.0.0.1:3306`  
+   - `Postgres.DSN`: `postgres://teamgram:teamgram@127.0.0.1:5432/teamgram?sslmode=disable`
    - `Cache` / `Redis`: `127.0.0.1:6379`  
    - Kafka broker address: `127.0.0.1:9092`
 
@@ -314,7 +302,7 @@ SSDB:
 
 ## 6. Start Services
 
-Ensure MySQL, Redis, Etcd, Kafka (and Zookeeper), MinIO (and optionally Pika) are running, then:
+Ensure PostgreSQL, Redis, Etcd, Kafka (and Zookeeper), MinIO (and optionally Pika) are running, then:
 
 ```bash
 cd teamgramd/bin

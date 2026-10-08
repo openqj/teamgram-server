@@ -19,7 +19,7 @@
 package core
 
 import (
-	"github.com/teamgram/marmota/pkg/stores/sqlx"
+	"github.com/jackc/pgx/v5"
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/messenger/msg/inbox/inbox"
 	"github.com/teamgram/teamgram-server/app/messenger/msg/internal/dal/dataobject"
@@ -36,7 +36,7 @@ func (c *InboxCore) InboxEditMessageToInboxV2(in *inbox.TLInboxEditMessageToInbo
 			mData, _ = jsonx.Marshal(in.NewMessage.Message)
 		)
 
-		if _, err := c.svcCtx.Dao.MessagesDAO.UpdateEditMessage(c.ctx, string(mData), in.NewMessage.Message.Message, in.UserId, in.NewMessage.MessageId); err != nil {
+		if _, err := c.svcCtx.Dao.UpdateMessageEdit(c.ctx, string(mData), in.NewMessage.Message.Message, in.UserId, in.NewMessage.MessageId); err != nil {
 			c.Logger.Errorf("inbox.editMessageToInboxV2 - error: %v", err)
 			return nil, err
 		}
@@ -45,7 +45,7 @@ func (c *InboxCore) InboxEditMessageToInboxV2(in *inbox.TLInboxEditMessageToInbo
 		for _, entity := range in.DstMessage.Message.GetEntities() {
 			if entity.GetPredicateName() == mtproto.Predicate_messageEntityHashtag {
 				if entity.GetUrl() != "" {
-					_, _ = c.svcCtx.Dao.HashTagsDAO.DeleteHashTagMessageId(c.ctx, in.UserId, in.DstMessage.MessageId)
+					_, _ = c.svcCtx.Dao.DeleteHashTagMessageID(c.ctx, in.UserId, in.DstMessage.MessageId)
 					break
 				}
 			}
@@ -55,7 +55,7 @@ func (c *InboxCore) InboxEditMessageToInboxV2(in *inbox.TLInboxEditMessageToInbo
 		for _, entity := range in.NewMessage.Message.GetEntities() {
 			if entity.GetPredicateName() == mtproto.Predicate_messageEntityHashtag {
 				if entity.GetUrl() != "" {
-					_, _, _ = c.svcCtx.Dao.HashTagsDAO.InsertOrUpdate(c.ctx, &dataobject.HashTagsDO{
+					_, _, _ = c.svcCtx.Dao.InsertOrUpdateHashTag(c.ctx, &dataobject.HashTagsDO{
 						UserId:           in.UserId,
 						PeerType:         in.PeerType,
 						PeerId:           in.PeerId,
@@ -101,7 +101,7 @@ func (c *InboxCore) InboxEditMessageToInboxV2(in *inbox.TLInboxEditMessageToInbo
 			return nil, err
 		}
 
-		dstMessageDO, _ := c.svcCtx.Dao.MessagesDAO.SelectByMessageDataId(c.ctx, in.UserId, in.NewMessage.DialogMessageId)
+		dstMessageDO, _ := c.svcCtx.Dao.SelectMessageByDataID(c.ctx, in.UserId, in.NewMessage.DialogMessageId)
 		if dstMessageDO == nil {
 			return mtproto.EmptyVoid, nil
 		}
@@ -114,12 +114,17 @@ func (c *InboxCore) InboxEditMessageToInboxV2(in *inbox.TLInboxEditMessageToInbo
 			return nil, err
 		}
 
-		tR := sqlx.TxWrapper(c.ctx, c.svcCtx.Dao.DB, func(tx *sqlx.Tx, result *sqlx.StoreResult) {
+		if c.svcCtx.Dao.Postgres == nil || c.svcCtx.Dao.Postgres.Store == nil {
+			return nil, mtproto.ErrInternalServerError
+		}
+		err = c.svcCtx.Dao.Postgres.InTx(c.ctx, func(tx pgx.Tx) error {
 			// HashTagsDAO
 			for _, entity := range dstMessage.Entities {
 				if entity.GetPredicateName() == mtproto.Predicate_messageEntityHashtag {
 					if entity.GetUrl() != "" {
-						_, _ = c.svcCtx.Dao.HashTagsDAO.DeleteHashTagMessageIdTx(tx, in.UserId, dstMessage.Id)
+						if _, err := c.svcCtx.Dao.Postgres.Store.HashTags.DeleteHashTagMessageIdOn(c.ctx, tx, in.UserId, dstMessage.Id); err != nil {
+							return err
+						}
 						break
 					}
 				}
@@ -136,30 +141,31 @@ func (c *InboxCore) InboxEditMessageToInboxV2(in *inbox.TLInboxEditMessageToInbo
 			newMessage = dstMessage
 
 			mData, _ := jsonx.Marshal(newMessage)
-			_, err = c.svcCtx.Dao.MessagesDAO.UpdateEditMessageTx(tx, string(mData), newMessage.Message, in.UserId, newMessage.Id)
-			if err != nil {
+			if _, err := c.svcCtx.Dao.UpdateMessageEditOn(c.ctx, tx, string(mData), newMessage.Message, in.UserId, newMessage.Id); err != nil {
 				c.Logger.Errorf("inbox.editMessageToInboxV2 - error: %v", err)
-				result.Err = err
-				return
+				return err
 			}
 
 			// c.svcCtx.Dao.HashTagsDAO.DeleteHashTagMessageId(c.ctx, in.FromId, in.NewMessage.MessageId)
 			for _, entity := range in.NewMessage.Message.GetEntities() {
 				if entity.GetPredicateName() == mtproto.Predicate_messageEntityHashtag {
 					if entity.GetUrl() != "" {
-						_, _, _ = c.svcCtx.Dao.HashTagsDAO.InsertOrUpdateTx(tx, &dataobject.HashTagsDO{
+						if _, _, err := c.svcCtx.Dao.Postgres.Store.HashTags.InsertOrUpdateOn(c.ctx, tx, &dataobject.HashTagsDO{
 							UserId:           in.UserId,
 							PeerType:         in.PeerType,
 							PeerId:           in.PeerId,
 							HashTag:          entity.GetUrl(),
 							HashTagMessageId: newMessage.Id,
-						})
+						}); err != nil {
+							return err
+						}
 					}
 				}
 			}
+			return nil
 		})
-		if tR.Err != nil {
-			return nil, tR.Err
+		if err != nil {
+			return nil, err
 		}
 
 		var (

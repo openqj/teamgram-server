@@ -25,7 +25,7 @@ if (!/^\d+$/.test(userId)) throw new Error('MESSAGE_AUTHOR_USER_ID must be numer
 
 function sql(query: string): string {
   return execFileSync('docker', [
-    'exec', 'mysql', 'mysql', '-N', '-s', '-uteamgram', '-pteamgram', '-Dteamgram', '-e', query,
+    'exec', 'teamgram-postgres', 'psql', '-v', 'ON_ERROR_STOP=1', '-At', '-q', '-F', '\t', '-U', 'teamgram', '-d', 'teamgram', '-c', query,
   ], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
 }
 
@@ -38,24 +38,24 @@ function loadAuthKey(): string {
 }
 
 function loadFixture(): Fixture {
-  const raw = sql(`SELECT JSON_OBJECT(
+  const raw = sql(`SELECT json_build_object(
       'messageBoxId', m.user_message_box_id,
-      'channelMessageId', CAST(JSON_UNQUOTE(JSON_EXTRACT(m.message_data,'$.id')) AS UNSIGNED),
-      'channelId', CAST(m.peer_id AS CHAR),
-      'channelAccessHash', CAST(c.access_hash AS CHAR),
-      'senderUserId', CAST(m.sender_user_id AS CHAR))
+      'channelMessageId', (m.message_data::jsonb->>'id')::bigint,
+      'channelId', m.peer_id::text,
+      'channelAccessHash', c.access_hash::text,
+      'senderUserId', m.sender_user_id::text)
     FROM messages m
     JOIN channels c ON c.id=m.peer_id AND c.deleted=0
     JOIN channel_messages cm ON cm.channel_id=m.peer_id
       AND cm.dialog_message_id=m.dialog_message_id
-      AND cm.message_id=CAST(JSON_UNQUOTE(JSON_EXTRACT(m.message_data,'$.id')) AS UNSIGNED)
+      AND cm.message_id=(m.message_data::jsonb->>'id')::bigint
       AND cm.deleted=0
     WHERE m.user_id=${userId} AND m.peer_type=4 AND m.deleted=0
-      AND m.user_message_box_id<>CAST(JSON_UNQUOTE(JSON_EXTRACT(m.message_data,'$.id')) AS UNSIGNED)
+      AND m.user_message_box_id<>(m.message_data::jsonb->>'id')::bigint
       AND NOT EXISTS (SELECT 1 FROM channel_messages other
         WHERE other.channel_id=m.peer_id AND other.message_id=m.user_message_box_id AND other.deleted=0)
-      AND JSON_UNQUOTE(JSON_EXTRACT(m.message_data,'$.peer_id.predicate_name'))='peerChannel'
-      AND JSON_UNQUOTE(JSON_EXTRACT(m.message_data,'$.from_id.predicate_name'))='peerUser'
+      AND m.message_data::jsonb #>> '{peer_id,predicate_name}'='peerChannel'
+      AND m.message_data::jsonb #>> '{from_id,predicate_name}'='peerUser'
     ORDER BY m.user_message_box_id LIMIT 1`);
   if (!raw) throw new Error(`no owned production channel message found for user ${userId}`);
   const fixture = JSON.parse(raw) as Fixture;
@@ -65,15 +65,15 @@ function loadFixture(): Fixture {
   return fixture;
 }
 
-function mysqlSnapshot(fixture: Fixture): string {
-  const raw = sql(`SELECT JSON_OBJECT(
-      'message', SHA2(CONCAT_WS('|',m.user_id,m.user_message_box_id,m.dialog_message_id,m.sender_user_id,
+function postgresSnapshot(fixture: Fixture): string {
+  const raw = sql(`SELECT json_build_object(
+      'message', encode(digest(CONCAT_WS('|',m.user_id,m.user_message_box_id,m.dialog_message_id,m.sender_user_id,
         m.peer_type,m.peer_id,m.message_data,m.deleted,cm.channel_id,cm.message_id,cm.dialog_message_id,
-        cm.sender_user_id,cm.deleted),256),
-      'channel', SHA2(CONCAT_WS('|',c.id,c.access_hash,c.creator_user_id,c.title,c.deleted),256))
+        cm.sender_user_id,cm.deleted)::text, 'sha256'), 'hex'),
+      'channel', encode(digest(CONCAT_WS('|',c.id,c.access_hash,c.creator_user_id,c.title,c.deleted)::text, 'sha256'), 'hex'))
     FROM messages m
     JOIN channel_messages cm ON cm.channel_id=m.peer_id AND cm.dialog_message_id=m.dialog_message_id
-      AND cm.message_id=CAST(JSON_UNQUOTE(JSON_EXTRACT(m.message_data,'$.id')) AS UNSIGNED)
+      AND cm.message_id=(m.message_data::jsonb->>'id')::bigint
     JOIN channels c ON c.id=m.peer_id AND c.deleted=0
     WHERE m.user_id=${userId} AND m.user_message_box_id=${fixture.messageBoxId}
       AND m.peer_id=${fixture.channelId} AND m.deleted=0 LIMIT 1`);
@@ -133,7 +133,7 @@ function makeGetMessageAuthorRequest(channel: any, id: number): any {
 
 async function main() {
   const fixture = loadFixture();
-  const before = mysqlSnapshot(fixture);
+  const before = postgresSnapshot(fixture);
   const client = makeClient(loadAuthKey());
   try {
     (client as any)._borrowExportedSender = async () => undefined;
@@ -171,7 +171,7 @@ async function main() {
       throw new Error(`invalid channel access hash returned ${accessError || 'success'}, expected CHANNEL_INVALID`);
     }
 
-    const after = mysqlSnapshot(fixture);
+    const after = postgresSnapshot(fixture);
     if (before !== after) throw new Error('production message or channel rows changed during read-only probe');
     console.log(JSON.stringify({
       userId: String(me.id),
@@ -184,7 +184,7 @@ async function main() {
       resultUserId: String(result.id),
       wrongUserMessageBoxIdResultType: boxIDResultType,
       invalidAccessHashError: accessError,
-      mysqlReadbackSha256: JSON.parse(after),
+      postgresReadbackSha256: JSON.parse(after),
       writes: 0,
     }));
   } finally {

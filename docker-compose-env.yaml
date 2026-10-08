@@ -1,6 +1,6 @@
 # docker-compose-env2: 高性能组件栈（独立方案，不依赖 docker-compose-env.yaml）
 # 组件: jaeger, prometheus, grafana, elasticsearch, kibana,
-#       go-stash, filebeat, kafka, mysql, redis, etcd, minio, minio-mc, node-exporter
+#       go-stash, filebeat, kafka, postgres, redis, etcd, minio, minio-mc, node-exporter
 # 启动: docker compose -f docker-compose-env2.yaml up -d
 
 services:
@@ -78,30 +78,42 @@ services:
       - teamgram_net
 
   # --- 关系数据库 ---
-  mysql:
-    image: mysql:8.0
-    container_name: mysql
+  postgres:
+    image: postgres:18
+    container_name: teamgram-postgres
     environment:
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root}
-      MYSQL_DATABASE: ${MYSQL_DATABASE:-teamgram}
-      MYSQL_USER: ${MYSQL_USER:-teamgram}
-      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-teamgram}
+      POSTGRES_DB: ${POSTGRES_DB:-teamgram}
+      POSTGRES_USER: ${POSTGRES_USER:-teamgram}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-teamgram}
     ports:
-      - "3306:3306"
+      - "5432:5432"
     volumes:
-      - ./data/mysql:/var/lib/mysql
-      - ./teamgramd/deploy/sql:/docker-entrypoint-initdb.d/
-    command:
-      - --character-set-server=utf8mb4
-      - --collation-server=utf8mb4_unicode_ci
-      - --default-authentication-plugin=mysql_native_password
+      - ./data/postgres:/var/lib/postgresql
     restart: always
     healthcheck:
-      test: ["CMD-SHELL", "mysqladmin ping -h localhost -uroot -p\"$$MYSQL_ROOT_PASSWORD\" || exit 1"]
-      interval: 10s
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 5s
       timeout: 5s
-      retries: 5
-      start_period: 30s
+      retries: 10
+      start_period: 10s
+    networks:
+      teamgram_net:
+        aliases:
+          - postgres
+
+  postgres-migrate:
+    image: postgres:18
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-teamgram}:${POSTGRES_PASSWORD:-teamgram}@postgres:5432/${POSTGRES_DB:-teamgram}?sslmode=disable
+    volumes:
+      - ./teamgramd/deploy:/workspace/teamgramd/deploy:ro
+    entrypoint: ["/bin/bash", "-euc"]
+    command:
+      - /workspace/teamgramd/deploy/postgres/apply.sh
+    restart: "no"
     networks:
       - teamgram_net
 

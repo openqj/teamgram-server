@@ -256,7 +256,7 @@ func (d *Dao) sendMessageToOutbox(ctx context.Context, fromId int64, peer *mtpro
 				}
 				// again handle rowsAffected == 0
 				if rowsAffected == 0 {
-					_, _, err2 = d.DialogsDAO.InsertIgnore(ctx, dialogDO)
+					_, _, err2 = d.InsertIgnoreDialog(ctx, dialogDO)
 				}
 
 				return 0, 0, nil
@@ -274,7 +274,7 @@ func (d *Dao) sendMessageToOutbox(ctx context.Context, fromId int64, peer *mtpro
 		}
 
 		// dup, we'll recreate box
-		do, err := d.MessagesDAO.SelectByRandomId(ctx, d.MessagesDAO.CalcTableName(fromId), fromId, outboxMessage.RandomId)
+		do, err := d.SelectMessageByRandomID(ctx, fromId, outboxMessage.RandomId)
 		if err != nil {
 			return nil, false, err
 		}
@@ -356,7 +356,7 @@ func (d *Dao) DeleteMessages(ctx context.Context, userId int64, msgIds []int32) 
 		deletedMsgDataIdList = make([]int64, 0, len(msgIds))
 	)
 
-	msgDOList, err := d.MessagesDAO.SelectByMessageIdListWithCB(
+	msgDOList, err := d.SelectMessageByIDListWithCB(
 		ctx,
 		userId,
 		msgIds,
@@ -381,7 +381,7 @@ func (d *Dao) DeleteMessages(ctx context.Context, userId int64, msgIds []int32) 
 	}
 
 	// 会话里最后n条消息，检查是否需要修改会话信息
-	topMessageDOList, err := d.MessagesDAO.SelectDialogLastMessageList(ctx, userId, dialogId.A, dialogId.B, int32(len(msgIds)+1))
+	topMessageDOList, err := d.SelectDialogLastMessages(ctx, userId, dialogId.A, dialogId.B, int32(len(msgIds)+1))
 	if err != nil {
 		return nil, nil, err
 	} else if len(topMessageDOList) == 0 {
@@ -484,15 +484,15 @@ func (d *Dao) editOutboxMessage(ctx context.Context, fromId int64, peerType int3
 		did      = mtproto.MakeDialogId(fromId, peerType, peerId)
 	)
 
-	if _, err := d.MessagesDAO.UpdateEditMessage(ctx, string(mData), message.Message, fromId, message.Id); err != nil {
+	if _, err := d.UpdateMessageEdit(ctx, string(mData), message.Message, fromId, message.Id); err != nil {
 		return nil, err
 	}
 
-	d.HashTagsDAO.DeleteHashTagMessageId(ctx, fromId, message.Id)
+	d.DeleteHashTagMessageID(ctx, fromId, message.Id)
 	for _, entity := range message.GetEntities() {
 		if entity.GetPredicateName() == mtproto.Predicate_messageEntityHashtag {
 			if entity.GetUrl() != "" {
-				d.HashTagsDAO.InsertOrUpdate(ctx, &dataobject.HashTagsDO{
+				d.InsertOrUpdateHashTag(ctx, &dataobject.HashTagsDO{
 					UserId:           fromId,
 					PeerType:         peerType,
 					PeerId:           peerId,
@@ -558,7 +558,7 @@ func (d *Dao) DeletePhoneCallHistory(ctx context.Context, userId int64) ([]int32
 	logx.WithContext(ctx).Infof("phone: %v", dialogIdMap)
 
 	for dialogId, msgIds := range dialogIdMap {
-		_, err = d.MessagesDAO.DeleteMessagesByMessageIdList(ctx, userId, msgIds)
+		_, err = d.DeleteMessageByIDList(ctx, userId, msgIds)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -571,7 +571,7 @@ func (d *Dao) DeletePhoneCallHistory(ctx context.Context, userId int64) ([]int32
 		_, _, err = d.CachedConn.Exec(
 			ctx,
 			func(ctx context.Context, conn *sqlx.DB) (int64, int64, error) {
-				_, err2 := d.DialogsDAO.UpdateCustomMap(
+				_, err2 := d.UpdateDialogCustomMap(
 					ctx,
 					map[string]interface{}{
 						"top_message": lastMessageId,

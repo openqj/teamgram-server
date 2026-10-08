@@ -110,6 +110,9 @@ type paymentProviderResponse struct {
 	FormID            int64           `json:"form_id"`
 	ProductType       string          `json:"product_type"`
 	PremiumMonths     int32           `json:"premium_months"`
+	OfferID           int64           `json:"offer_id,omitempty"`
+	Stars             int64           `json:"stars,omitempty"`
+	StoreProduct      string          `json:"store_product,omitempty"`
 	TransactionID     string          `json:"transaction_id"`
 	Currency          string          `json:"currency"`
 	Amount            int64           `json:"amount"`
@@ -132,6 +135,11 @@ type paymentFormProviderResponse struct {
 	BeneficiaryUserID int64                         `json:"beneficiary_user_id"`
 	ProductType       string                        `json:"product_type"`
 	PremiumMonths     int32                         `json:"premium_months"`
+	OfferID           int64                         `json:"offer_id,omitempty"`
+	Stars             int64                         `json:"stars,omitempty"`
+	StoreProduct      string                        `json:"store_product,omitempty"`
+	Currency          string                        `json:"currency,omitempty"`
+	Amount            int64                         `json:"amount,omitempty"`
 	Form              *mtproto.Payments_PaymentForm `json:"form"`
 }
 
@@ -419,7 +427,127 @@ func (c *ApiFullCore) settleWithPaymentProvider(ctx context.Context, uid int64, 
 	if err != nil {
 		return domain.PaymentRequest{}, domain.PaymentReceipt{}, mtproto.ErrInternalServerError
 	}
-	return domain.SettlePaymentRequest(uid, requestKey, fingerprint, result.TransactionID, result.Currency, result.Title, result.Amount, peerID, msgID, storedReceipt, true)
+	return domain.SettlePremiumPaymentRequest(uid, requestKey, fingerprint, result.TransactionID, result.Currency, result.Title, result.Amount, peerID, msgID, storedReceipt, result.PremiumMonths)
+}
+
+func starsTopupOfferFromInvoice(invoice *mtproto.InputInvoice) (domain.StarsOffer, bool, error) {
+	if invoice == nil || invoice.GetPredicateName() != mtproto.Predicate_inputInvoiceStars {
+		return domain.StarsOffer{}, false, mtproto.ErrPaymentUnsupported
+	}
+	option := invoice.GetOption_STARSTOPUPOPTION()
+	purpose := invoice.GetPurpose()
+	if option != nil && purpose != nil {
+		return domain.StarsOffer{}, false, mtproto.ErrPaymentProviderInvalid
+	}
+	if option != nil {
+		storeProduct := ""
+		if option.GetStoreProduct() != nil {
+			storeProduct = option.GetStoreProduct().GetValue()
+		}
+		extended := option.GetExtended()
+		return domain.FindActiveStarsTopupOffer(option.GetStars(), storeProduct, option.GetCurrency(), option.GetAmount(), &extended)
+	}
+	if purpose != nil && purpose.GetPredicateName() == mtproto.Predicate_inputStorePaymentStarsTopup {
+		return domain.FindActiveStarsTopupOffer(purpose.GetStars(), "", purpose.GetCurrency(), purpose.GetAmount(), nil)
+	}
+	return domain.StarsOffer{}, false, mtproto.ErrPaymentUnsupported
+}
+
+func starsPaymentFingerprint(formID int64, invoice *mtproto.InputInvoice) string {
+	if formID <= 0 || invoice == nil {
+		return ""
+	}
+	body, err := json.Marshal(struct {
+		FormID  int64                 `json:"form_id"`
+		Invoice *mtproto.InputInvoice `json:"invoice"`
+	}{formID, invoice})
+	if err != nil {
+		return ""
+	}
+	digest := sha256.Sum256(body)
+	return hex.EncodeToString(digest[:])
+}
+
+func starsPaymentRequestKey(uid, formID int64, fingerprint string) string {
+	if uid <= 0 || formID <= 0 || fingerprint == "" {
+		return ""
+	}
+	return fmt.Sprintf("stars:%d:%d:%s", uid, formID, fingerprint)
+}
+
+func validStarsTopupProviderResult(result paymentProviderResponse, uid, formID int64, requestKey, fingerprint string, offer domain.StarsOffer) bool {
+	return result.Verified && result.UserID == uid && result.BeneficiaryUserID == uid &&
+		result.RequestKey == requestKey && result.Fingerprint == fingerprint && result.FormID == formID &&
+		result.ProductType == "stars_topup" && result.OfferID == offer.ID && result.Stars == offer.Stars &&
+		(result.StoreProduct == offer.StoreProduct) && (offer.Currency == "" || result.Currency == offer.Currency) &&
+		(offer.Amount == 0 || result.Amount == offer.Amount) && strings.TrimSpace(result.Currency) != "" &&
+		result.Amount >= 0 && strings.TrimSpace(result.TransactionID) != "" &&
+		len(bytes.TrimSpace(result.Receipt)) > 0 && !bytes.Equal(bytes.TrimSpace(result.Receipt), []byte("null"))
+}
+
+func (c *ApiFullCore) settleStarsWithPaymentProvider(ctx context.Context, uid int64, requestKey, fingerprint string, in *mtproto.TLPaymentsSendStarsForm, offer domain.StarsOffer) (domain.PaymentRequest, domain.PaymentReceipt, error) {
+	client, endpoint, providerKey, err := c.configuredPaymentProvider()
+	if err != nil {
+		return domain.PaymentRequest{}, domain.PaymentReceipt{}, err
+	}
+	payload := struct {
+		Operation         string                `json:"operation"`
+		UserID            int64                 `json:"user_id"`
+		BeneficiaryUserID int64                 `json:"beneficiary_user_id"`
+		RequiredProduct   string                `json:"required_product"`
+		RequestKey        string                `json:"request_key"`
+		Fingerprint       string                `json:"fingerprint"`
+		FormID            int64                 `json:"form_id"`
+		Invoice           *mtproto.InputInvoice `json:"invoice"`
+		OfferID           int64                 `json:"offer_id"`
+		Offer             domain.StarsOffer     `json:"offer"`
+	}{"settle_stars", uid, uid, "stars_topup", requestKey, fingerprint, in.GetFormId(), in.GetInvoice(), offer.ID, offer}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return domain.PaymentRequest{}, domain.PaymentReceipt{}, mtproto.ErrInternalServerError
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return domain.PaymentRequest{}, domain.PaymentReceipt{}, mtproto.ErrPaymentProviderInvalid
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Idempotency-Key", paymentProviderIdempotencyKey(uid, requestKey))
+	if providerKey != "" {
+		req.Header.Set("Authorization", "Bearer "+providerKey)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return domain.PaymentRequest{}, domain.PaymentReceipt{}, mtproto.ErrPaymentUnsupported
+	}
+	defer resp.Body.Close()
+	responseBody, readErr := io.ReadAll(io.LimitReader(resp.Body, (1<<20)+1))
+	if readErr != nil || len(responseBody) > 1<<20 || resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return domain.PaymentRequest{}, domain.PaymentReceipt{}, mtproto.ErrPaymentUnsupported
+	}
+	if !c.paymentProviderResponseAuthenticated(resp, responseBody) {
+		return domain.PaymentRequest{}, domain.PaymentReceipt{}, mtproto.ErrPaymentProviderInvalid
+	}
+	var result paymentProviderResponse
+	if err = json.Unmarshal(responseBody, &result); err != nil {
+		if _, rejectErr := domain.RejectPaymentRequest(uid, requestKey, fingerprint, "provider returned invalid Stars payment response"); rejectErr != nil {
+			return domain.PaymentRequest{}, domain.PaymentReceipt{}, rejectErr
+		}
+		return domain.PaymentRequest{}, domain.PaymentReceipt{}, mtproto.ErrPaymentProviderInvalid
+	}
+	if !validStarsTopupProviderResult(result, uid, in.GetFormId(), requestKey, fingerprint, offer) {
+		if _, rejectErr := domain.RejectPaymentRequest(uid, requestKey, fingerprint, "provider rejected Stars top-up"); rejectErr != nil {
+			return domain.PaymentRequest{}, domain.PaymentReceipt{}, rejectErr
+		}
+		return domain.PaymentRequest{}, domain.PaymentReceipt{}, mtproto.ErrPaymentProviderInvalid
+	}
+	storedReceipt, err := json.Marshal(paymentProviderReceiptEnvelope{
+		Signature:    resp.Header.Get("X-Teamgram-Payment-Signature"),
+		ResponseBody: append([]byte(nil), responseBody...),
+	})
+	if err != nil {
+		return domain.PaymentRequest{}, domain.PaymentReceipt{}, mtproto.ErrInternalServerError
+	}
+	return domain.SettleStarsPaymentRequest(uid, requestKey, fingerprint, result.TransactionID, result.Currency, result.Title, result.Amount, result.Stars, storedReceipt)
 }
 
 func (c *ApiFullCore) paymentFormFromProvider(ctx context.Context, uid int64, in *mtproto.TLPaymentsGetPaymentForm) (*mtproto.Payments_PaymentForm, error) {
@@ -479,6 +607,81 @@ func (c *ApiFullCore) paymentFormFromProvider(ctx context.Context, uid int64, in
 		return nil, mtproto.ErrPaymentProviderInvalid
 	}
 	return mtproto.MakeTLPaymentsPaymentForm(result.Form).To_Payments_PaymentForm(), nil
+}
+
+func paymentFormMatchesStarsOffer(offer domain.StarsOffer, form *mtproto.Payments_PaymentForm, providerCurrency string, providerAmount int64) bool {
+	if form == nil || form.GetInvoice() == nil || !normalizePaymentInvoice(form.GetInvoice()) {
+		return false
+	}
+	expectedCurrency := offer.Currency
+	if expectedCurrency == "" {
+		expectedCurrency = providerCurrency
+	}
+	if expectedCurrency != "" && form.GetInvoice().GetCurrency() != expectedCurrency {
+		return false
+	}
+	var total int64
+	for _, price := range form.GetInvoice().GetPrices() {
+		if price == nil || price.GetAmount() < 0 || total > int64(^uint64(0)>>1)-price.GetAmount() {
+			return false
+		}
+		total += price.GetAmount()
+	}
+	expectedAmount := offer.Amount
+	if expectedAmount == 0 {
+		expectedAmount = providerAmount
+	}
+	return expectedAmount == 0 || total == expectedAmount
+}
+
+func (c *ApiFullCore) paymentStarsFormFromProvider(ctx context.Context, uid int64, in *mtproto.TLPaymentsGetPaymentForm, offer domain.StarsOffer) (*mtproto.Payments_PaymentForm, error) {
+	client, endpoint, providerKey, err := c.configuredPaymentProvider()
+	if err != nil {
+		return nil, err
+	}
+	payload := struct {
+		Operation         string                `json:"operation"`
+		UserID            int64                 `json:"user_id"`
+		BeneficiaryUserID int64                 `json:"beneficiary_user_id"`
+		RequiredProduct   string                `json:"required_product"`
+		Invoice           *mtproto.InputInvoice `json:"invoice"`
+		OfferID           int64                 `json:"offer_id"`
+		Offer             domain.StarsOffer     `json:"offer"`
+	}{"get_stars_form", uid, uid, "stars_topup", in.GetInvoice(), offer.ID, offer}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return nil, mtproto.ErrInternalServerError
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return nil, mtproto.ErrPaymentProviderInvalid
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if providerKey != "" {
+		req.Header.Set("Authorization", "Bearer "+providerKey)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, mtproto.ErrPaymentUnsupported
+	}
+	defer resp.Body.Close()
+	responseBody, readErr := io.ReadAll(io.LimitReader(resp.Body, (1<<20)+1))
+	if readErr != nil || len(responseBody) > 1<<20 || resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return nil, mtproto.ErrPaymentUnsupported
+	}
+	if !c.paymentProviderResponseAuthenticated(resp, responseBody) {
+		return nil, mtproto.ErrPaymentProviderInvalid
+	}
+	var result paymentFormProviderResponse
+	if json.Unmarshal(responseBody, &result) != nil || !result.Verified || result.Form == nil ||
+		result.UserID != uid || result.BeneficiaryUserID != uid || result.ProductType != "stars_topup" ||
+		result.OfferID != offer.ID || result.Stars != offer.Stars || result.StoreProduct != offer.StoreProduct ||
+		(offer.Currency != "" && result.Currency != offer.Currency) || (offer.Amount > 0 && result.Amount != offer.Amount) || result.Amount < 0 ||
+		!paymentFormMatchesStarsOffer(offer, result.Form, result.Currency, result.Amount) || result.Form.GetFormId() <= 0 ||
+		result.Form.GetPredicateName() != mtproto.Predicate_payments_paymentFormStars {
+		return nil, mtproto.ErrPaymentProviderInvalid
+	}
+	return mtproto.MakeTLPaymentsPaymentFormStars(result.Form).To_Payments_PaymentForm(), nil
 }
 
 func (c *ApiFullCore) validateRequestedInfoWithProvider(ctx context.Context, uid int64, in *mtproto.TLPaymentsValidateRequestedInfo) (*mtproto.Payments_ValidatedRequestedInfo, error) {
@@ -549,6 +752,9 @@ func loadSavedPayInfo(uid int64) (savedPayInfo, bool, error) {
 }
 
 func requestedFromSaved(info savedPayInfo) *mtproto.PaymentRequestedInfo {
+	if info.Name == "" && info.Phone == "" && info.Email == "" {
+		return nil
+	}
 	out := &mtproto.PaymentRequestedInfo{}
 	if info.Name != "" {
 		out.Name = wrapperspb.String(info.Name)
@@ -693,6 +899,9 @@ func (c *ApiFullCore) grantPremiumForPayment(ctx context.Context, uid, formID in
 		len(bytes.TrimSpace(providerResult.Receipt)) == 0 || bytes.Equal(bytes.TrimSpace(providerResult.Receipt), []byte("null")) {
 		return mtproto.ErrPaymentProviderInvalid
 	}
+	if err := domain.EnsurePremiumGrant(request.ID, uid, receipt.Provider, receipt.TransactionID, providerResult.PremiumMonths); err != nil {
+		return err
+	}
 	if c.svcCtx.Dao == nil || c.svcCtx.Dao.UserClient == nil {
 		return mtproto.ErrPaymentUnsupported
 	}
@@ -704,12 +913,24 @@ func (c *ApiFullCore) grantPremiumForPayment(ctx context.Context, uid, formID in
 		TransactionId: receipt.TransactionID,
 	})
 	if err != nil {
+		retryPremiumGrant(request.ID, err)
 		return err
 	}
 	if result == nil || !mtproto.FromBool(result) {
-		return mtproto.ErrPaymentUnsupported
+		err = mtproto.ErrPaymentUnsupported
+		retryPremiumGrant(request.ID, err)
+		return err
+	}
+	if err = domain.CompletePremiumGrant(ctx, request.ID); err != nil {
+		return err
 	}
 	return nil
+}
+
+func retryPremiumGrant(requestID int64, cause error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_ = domain.RetryPremiumGrant(ctx, requestID, cause)
 }
 
 func (c *ApiFullCore) PaymentsGetPaymentForm(in *mtproto.TLPaymentsGetPaymentForm) (*mtproto.Payments_PaymentForm, error) {
@@ -719,6 +940,16 @@ func (c *ApiFullCore) PaymentsGetPaymentForm(in *mtproto.TLPaymentsGetPaymentFor
 	}
 	if in == nil || in.GetInvoice() == nil {
 		return nil, mtproto.ErrInvoicePayloadInvalid
+	}
+	if in.GetInvoice().GetPredicateName() == mtproto.Predicate_inputInvoiceStars {
+		offer, found, offerErr := starsTopupOfferFromInvoice(in.GetInvoice())
+		if offerErr != nil {
+			return nil, offerErr
+		}
+		if !found {
+			return nil, mtproto.ErrPaymentUnsupported
+		}
+		return c.paymentStarsFormFromProvider(c.secretContext(), uid, in, offer)
 	}
 	if !selfPremiumSubscriptionInvoice(in.GetInvoice()) {
 		return nil, mtproto.ErrPaymentUnsupported
@@ -811,6 +1042,9 @@ func (c *ApiFullCore) PaymentsSendPaymentForm(in *mtproto.TLPaymentsSendPaymentF
 	// malformed provider must not leave a pending local payment attempt.
 	if _, _, _, err = c.configuredPaymentProvider(); err != nil {
 		return nil, err
+	}
+	if err = domain.CheckPremiumGrantOutbox(c.secretContext()); err != nil {
+		return nil, mtproto.ErrPaymentUnsupported
 	}
 	fingerprint := paymentFingerprint(in)
 	if fingerprint == "" {

@@ -10,10 +10,9 @@
 package core
 
 import (
-	"context"
+	"errors"
 	"time"
 
-	"github.com/teamgram/marmota/pkg/stores/sqlx"
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/service/biz/chat/chat"
 )
@@ -47,14 +46,22 @@ func (c *ChatCore) ChatEditChatPhoto(in *chat.TLChatEditChatPhoto) (*mtproto.Mut
 		err = mtproto.ErrChatAdminRequired
 		return nil, err
 	}
+	if c.svcCtx.Dao.Postgres == nil || c.svcCtx.Dao.Postgres.Store == nil {
+		return nil, errors.New("chat.editChatPhoto: PostgreSQL store is not initialized")
+	}
 
-	_, _, err = c.svcCtx.Dao.CachedConn.Exec(
-		c.ctx,
-		func(ctx context.Context, conn *sqlx.DB) (int64, int64, error) {
-			affected, err2 := c.svcCtx.Dao.ChatsDAO.UpdatePhotoId(c.ctx, in.GetChatPhoto().GetId(), chatId)
-			return 0, affected, err2
-		},
-		c.svcCtx.Dao.GetChatCacheKey(chatId))
+	tx, err := c.svcCtx.Dao.Postgres.Pool.Begin(c.ctx)
+	if err == nil {
+		defer tx.Rollback(c.ctx)
+		_, err = c.svcCtx.Dao.Postgres.Store.Chats.UpdatePhotoIDOn(c.ctx, tx, in.GetChatPhoto().GetId(), chatId)
+		if err == nil {
+			err = tx.Commit(c.ctx)
+		}
+	}
+	if err != nil {
+		c.Logger.Errorf("chat.editChatPhoto - error: %v", err)
+		return nil, err
+	}
 
 	chat2.Chat.Version += 1
 	chat2.Chat.Date = now

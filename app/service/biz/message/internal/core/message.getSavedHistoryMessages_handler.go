@@ -31,8 +31,12 @@ func (c *MessageCore) MessageGetSavedHistoryMessages(in *message.TLMessageGetSav
 	if in == nil {
 		return nil, mtproto.ErrInputRequestInvalid
 	}
-	if c == nil || c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.Mysql == nil ||
-		c.svcCtx.Dao.MessagesDAO == nil || c.svcCtx.Dao.CommonDAO == nil {
+	if c == nil || c.svcCtx == nil || c.svcCtx.Dao == nil {
+		return nil, mtproto.ErrMethodNotImpl
+	}
+	hasPostgres := c.svcCtx.Dao.Postgres != nil && c.svcCtx.Dao.Postgres.Store != nil && c.svcCtx.Dao.Postgres.Store.Messages != nil
+	hasMysql := c.svcCtx.Dao.Mysql != nil && c.svcCtx.Dao.MessagesDAO != nil && c.svcCtx.Dao.CommonDAO != nil
+	if !hasPostgres && !hasMysql {
 		return nil, mtproto.ErrMethodNotImpl
 	}
 	if in.UserId <= 0 {
@@ -111,16 +115,23 @@ func (c *MessageCore) MessageGetSavedHistoryMessages(in *message.TLMessageGetSav
 		}
 	}
 
-	count := c.svcCtx.Dao.CommonDAO.CalcSize(
-		c.ctx,
-		c.svcCtx.Dao.MessagesDAO.CalcTableName(selfUserId),
-		map[string]interface{}{
+	var (
+		count int64
+		err   error
+	)
+	if hasPostgres {
+		count, err = c.svcCtx.Dao.CountSavedMessages(c.ctx, selfUserId, peer.PeerType, peer.PeerId)
+	} else {
+		count = int64(c.svcCtx.Dao.CommonDAO.CalcSize(c.ctx, c.svcCtx.Dao.MessagesDAO.CalcTableName(selfUserId), map[string]interface{}{
 			"user_id":         selfUserId,
 			"saved_peer_type": peer.PeerType,
 			"saved_peer_id":   peer.PeerId,
 			"deleted":         0,
-		},
-	)
+		}))
+	}
+	if err != nil {
+		return nil, err
+	}
 
 	return mtproto.MakeTLMessageBoxListSlice(&mtproto.MessageBoxList{
 		BoxList: boxList,

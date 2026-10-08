@@ -7,8 +7,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/service/biz/chat/chat"
+	"github.com/teamgram/teamgram-server/app/service/biz/chat/internal/dal/dataobject"
 )
 
 func (c *ChatCore) requireInviteCaller() (int64, error) {
@@ -61,17 +63,25 @@ func (c *ChatCore) requireInvitePermission(chatID, selfID, targetAdminID int64) 
 // should continue with the basic-chat permission path. This keeps older
 // deployments, where the APIFull tables do not exist yet, compatible.
 func (c *ChatCore) requireChannelInvitePermission(chatID, selfID, targetAdminID int64) (bool, error) {
-	if c == nil || c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.DB == nil {
+	if c == nil || c.svcCtx == nil || c.svcCtx.Dao == nil {
 		return false, nil
 	}
 
 	var channel struct {
 		CreatorID int64 `db:"creator_user_id"`
 	}
-	err := c.svcCtx.Dao.DB.QueryRowPartial(c.ctx, &channel,
-		"SELECT creator_user_id FROM apifull_channel WHERE id = ?", chatID)
+	var err error
+	if c.svcCtx.Dao.Postgres != nil && c.svcCtx.Dao.Postgres.Pool != nil {
+		err = c.svcCtx.Dao.Postgres.Pool.QueryRow(c.ctx,
+			"SELECT creator_user_id FROM apifull_channel WHERE id = $1", chatID).Scan(&channel.CreatorID)
+	} else if c.svcCtx.Dao.DB != nil {
+		err = c.svcCtx.Dao.DB.QueryRowPartial(c.ctx, &channel,
+			"SELECT creator_user_id FROM apifull_channel WHERE id = ?", chatID)
+	} else {
+		return false, nil
+	}
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) || apifullTableMissing(err) {
+		if errors.Is(err, sql.ErrNoRows) || errors.Is(err, pgx.ErrNoRows) || apifullTableMissing(err) {
 			return false, nil
 		}
 		return true, mtproto.ErrInternalServerError
@@ -88,10 +98,16 @@ func (c *ChatCore) requireChannelInvitePermission(chatID, selfID, targetAdminID 
 		AdminRights  string `db:"admin_rights"`
 		BannedRights string `db:"banned_rights"`
 	}
-	err = c.svcCtx.Dao.DB.QueryRowPartial(c.ctx, &member,
-		"SELECT admin_rights, banned_rights FROM apifull_channel_member WHERE channel_id = ? AND user_id = ?",
-		chatID, selfID)
-	if errors.Is(err, sql.ErrNoRows) {
+	if c.svcCtx.Dao.Postgres != nil && c.svcCtx.Dao.Postgres.Pool != nil {
+		err = c.svcCtx.Dao.Postgres.Pool.QueryRow(c.ctx,
+			"SELECT admin_rights, banned_rights FROM apifull_channel_member WHERE channel_id = $1 AND user_id = $2",
+			chatID, selfID).Scan(&member.AdminRights, &member.BannedRights)
+	} else {
+		err = c.svcCtx.Dao.DB.QueryRowPartial(c.ctx, &member,
+			"SELECT admin_rights, banned_rights FROM apifull_channel_member WHERE channel_id = ? AND user_id = ?",
+			chatID, selfID)
+	}
+	if errors.Is(err, sql.ErrNoRows) || errors.Is(err, pgx.ErrNoRows) {
 		return true, mtproto.ErrUserNotParticipant
 	}
 	if err != nil {
@@ -154,6 +170,12 @@ func apifullTableMissing(err error) bool {
 }
 
 func (c *ChatCore) isAPIFullChannel(chatID int64) bool {
+	if c != nil && c.svcCtx != nil && c.svcCtx.Dao != nil && c.svcCtx.Dao.Postgres != nil && c.svcCtx.Dao.Postgres.Pool != nil {
+		var marker int
+		err := c.svcCtx.Dao.Postgres.Pool.QueryRow(c.ctx,
+			"SELECT 1 FROM apifull_channel WHERE id = $1", chatID).Scan(&marker)
+		return err == nil
+	}
 	if c == nil || c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.DB == nil {
 		return false
 	}
@@ -164,7 +186,13 @@ func (c *ChatCore) isAPIFullChannel(chatID int64) bool {
 }
 
 func (c *ChatCore) requireInviteLinkPermission(chatID, selfID int64, link string) (*mtproto.MutableChat, error) {
-	invite, err := c.svcCtx.Dao.ChatInvitesDAO.SelectByLink(c.ctx, chat.GetInviteHashByLink(link))
+	var invite *dataobject.ChatInvitesDO
+	var err error
+	if c.svcCtx.Dao.Postgres != nil && c.svcCtx.Dao.Postgres.Store != nil {
+		invite, err = c.svcCtx.Dao.Postgres.Store.Invites.SelectByLink(c.ctx, chat.GetInviteHashByLink(link))
+	} else {
+		invite, err = c.svcCtx.Dao.ChatInvitesDAO.SelectByLink(c.ctx, chat.GetInviteHashByLink(link))
+	}
 	if err != nil {
 		return nil, err
 	}

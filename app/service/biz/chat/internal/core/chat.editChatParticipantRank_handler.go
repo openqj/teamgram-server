@@ -18,10 +18,9 @@
 package core
 
 import (
-	"context"
+	"errors"
 	"time"
 
-	"github.com/teamgram/marmota/pkg/stores/sqlx"
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/service/biz/chat/chat"
 )
@@ -68,15 +67,21 @@ func (c *ChatCore) ChatEditChatParticipantRank(in *chat.TLChatEditChatParticipan
 		c.Logger.Errorf("chat.editChatParticipantRank - error: %v", err)
 		return nil, err
 	}
+	if c.svcCtx.Dao.Postgres == nil || c.svcCtx.Dao.Postgres.Store == nil {
+		return nil, errors.New("chat.editChatParticipantRank: PostgreSQL store is not initialized")
+	}
 
-	_, _, err = c.svcCtx.Dao.CachedConn.Exec(
-		c.ctx,
-		func(ctx context.Context, conn *sqlx.DB) (int64, int64, error) {
-			rowsAffected, err2 := c.svcCtx.Dao.ChatParticipantsDAO.UpdateRank(ctx, in.Rank, participant.Id)
-			return 0, rowsAffected, err2
-		},
-		c.svcCtx.Dao.GetChatCacheKey(in.ChatId),
-		c.svcCtx.Dao.GetChatParticipantCacheKey(in.ChatId, in.Participant))
+	tx, err := c.svcCtx.Dao.Postgres.Pool.Begin(c.ctx)
+	if err == nil {
+		defer tx.Rollback(c.ctx)
+		_, err = c.svcCtx.Dao.Postgres.Store.Participants.UpdateRankOn(c.ctx, tx, in.Rank, participant.Id)
+		if err == nil {
+			_, err = c.svcCtx.Dao.Postgres.Store.Chats.UpdateVersionOn(c.ctx, tx, in.ChatId)
+		}
+		if err == nil {
+			err = tx.Commit(c.ctx)
+		}
+	}
 
 	if err != nil {
 		c.Logger.Errorf("chat.editChatParticipantRank - error: %v", err)

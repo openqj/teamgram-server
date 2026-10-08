@@ -26,7 +26,7 @@ const quietLogger = { debug() {}, info() {}, warn() {}, error() {} };
 
 function sql(query: string): string {
   return execFileSync('docker', [
-    'exec', 'mysql', 'mysql', '-N', '-s', '-uteamgram', '-pteamgram', '-Dteamgram', '-e', query,
+    'exec', 'teamgram-postgres', 'psql', '-v', 'ON_ERROR_STOP=1', '-At', '-q', '-F', '\t', '-U', 'teamgram', '-d', 'teamgram', '-c', query,
   ], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
 }
 
@@ -60,7 +60,7 @@ function loadSearchSample(): { id: string; query: string; expectedBucket: 'my_re
   const [id, firstName, lastName, isContact] = row.split('\t');
   if (!id || isContact === undefined) throw new Error(`no searchable production user sample found for user ${userId}`);
   const query = firstName.length >= 3 ? firstName : lastName;
-  if (query.length < 3) throw new Error('production MySQL sample does not meet contacts.search minimum query length');
+  if (query.length < 3) throw new Error('production PostgreSQL sample does not meet contacts.search minimum query length');
   return { id, query, expectedBucket: isContact === '1' ? 'my_results' : 'results' };
 }
 
@@ -144,7 +144,7 @@ async function main() {
       && String(peer.userId) === sample.id);
     const user = found.users.find((item: any) => String(item?.id) === sample.id);
     if (matchingPeers.length !== 1 || wrongBucketPeers.length !== 0 || !matchesType(user, 'User')) {
-      throw new Error('contacts.search did not return the MySQL user in its authoritative contact bucket with a hydrated User');
+      throw new Error('contacts.search did not return the PostgreSQL user in its authoritative contact bucket with a hydrated User');
     }
 
     console.log(JSON.stringify({
@@ -153,8 +153,8 @@ async function main() {
       authenticatedUserId: String(me.id),
       method: 'contacts.search',
       responseType: rpcName(found).includes('.') ? rpcName(found) : `contacts.${rpcName(found)}`,
-      productionMySqlSampleId: sample.id,
-      bucketMatchesMySqlContactList: true,
+      productionPostgreSQLSampleId: sample.id,
+      bucketMatchesPostgreSQLContactList: true,
       sample: {
         bucket: sample.expectedBucket,
         peerType: rpcName(matchingPeers[0]),

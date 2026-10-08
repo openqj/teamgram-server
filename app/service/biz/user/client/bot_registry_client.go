@@ -10,6 +10,7 @@ import (
 )
 
 type BotRegistryClient interface {
+	GetAdminedBots(context.Context, *user.BotRegistryGetAdminedBotsRequest) (*user.Vector_ImmutableUser, error)
 	SetBotInfo(context.Context, *user.BotRegistrySetBotInfoRequest) (*mtproto.Bool, error)
 }
 
@@ -19,6 +20,13 @@ type botRegistryClient struct {
 
 func NewBotRegistryClient(client zrpc.Client) BotRegistryClient {
 	return &botRegistryClient{client: client}
+}
+
+func (c *botRegistryClient) GetAdminedBots(ctx context.Context, in *user.BotRegistryGetAdminedBotsRequest) (*user.Vector_ImmutableUser, error) {
+	if md := metadata.RpcMetadataFromIncoming(ctx); md != nil {
+		ctx, _ = metadata.RpcMetadataToOutgoing(ctx, md)
+	}
+	return user.NewRPCBotRegistryClient(c.client.Conn()).GetAdminedBots(ctx, in)
 }
 
 func (c *botRegistryClient) SetBotInfo(ctx context.Context, in *user.BotRegistrySetBotInfoRequest) (*mtproto.Bool, error) {

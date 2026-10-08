@@ -19,6 +19,7 @@
 package dao
 
 import (
+	"errors"
 	"flag"
 
 	kafka "github.com/teamgram/marmota/pkg/mq"
@@ -67,8 +68,10 @@ func New(c config.Config) *Dao {
 	kvStore := kv.NewStore(c.KV)
 	var passwordStore twofa.ProofStore = twofa.NewRedisProofStore(kvStore)
 	var passwordStoreErr error
-	if c.MysqlDSN != "" {
-		passwordStore, passwordStoreErr = twofa.OpenMySQLProofStore(c.MysqlDSN)
+	if c.PostgresDSN != "" {
+		passwordStore, passwordStoreErr = twofa.OpenPostgresProofStore(c.PostgresDSN)
+	} else {
+		passwordStoreErr = errors.New("authorization: PostgresDSN is required")
 	}
 	return &Dao{
 		kv:                kvStore,

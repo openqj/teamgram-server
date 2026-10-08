@@ -27,6 +27,9 @@ func TestReportsRejectMalformedRequests(t *testing.T) {
 }
 
 func TestReportHandlersPersistAllSupportedMethods(t *testing.T) {
+	if os.Getenv("APIFULL_MYSQL_DSN") == "" {
+		t.Skip("APIFULL_MYSQL_DSN is not configured; PostgreSQL runtime tests cover production storage")
+	}
 	uid := time.Now().UnixNano()
 	core := &ApiFullCore{MD: &metadata.RpcMetadata{UserId: uid}}
 	peerUser := mtproto.MakeTLInputPeerUser(&mtproto.InputPeer{UserId: uid + 1}).To_InputPeer()

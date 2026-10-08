@@ -20,8 +20,8 @@ function makeClient(auth: string): any {
   return new TelegramClient(session, 1, '0123456789abcdef0123456789abcdef', { connection: Connection, fallbackConnection: Connection, shouldAllowHttpTransport: false, shouldForceHttpTransport: false, timeout: 20, requestRetries: 2, connectionRetries: 2, connectionRetriesToFallback: 0, retryDelay: 250, autoReconnect: false, baseLogger: quietLogger });
 }
 function chatDb(chatId: bigint | number): { type: number; reactions: string; hex: string } {
-  const sql = `SELECT available_reactions_type,available_reactions,HEX(available_reactions) FROM chats WHERE id=${chatId}`;
-  const output = execFileSync('docker', ['exec', 'mysql', 'mysql', '-N', '-s', '-uteamgram', '-pteamgram', '-Dteamgram', '-e', sql], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+  const sql = `SELECT available_reactions_type,available_reactions,encode(convert_to(available_reactions::text, 'UTF8'), 'hex') FROM chats WHERE id=${chatId}`;
+  const output = execFileSync('docker', ['exec', 'teamgram-postgres', 'psql', '-v', 'ON_ERROR_STOP=1', '-At', '-q', '-F', '\t', '-U', 'teamgram', '-d', 'teamgram', '-c', sql], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
   const [type, reactions, hex] = output.split('\t'); return { type: Number(type || 0), reactions: reactions || '', hex: hex || '' };
 }
 async function main() {

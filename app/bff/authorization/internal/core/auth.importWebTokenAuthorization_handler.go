@@ -20,6 +20,7 @@ package core
 
 import (
 	"github.com/teamgram/proto/mtproto"
+	userpb "github.com/teamgram/teamgram-server/app/service/biz/user/user"
 )
 
 // AuthImportWebTokenAuthorization
@@ -38,8 +39,24 @@ func (c *AuthorizationCore) AuthImportWebTokenAuthorization(in *mtproto.TLAuthIm
 		c.Logger.Errorf("auth.importWebTokenAuthorization - api: %v", err)
 		return nil, err
 	}
-
-	// No web-token verifier is configured. Do not create a user from an unchecked token.
-	c.Logger.Errorf("auth.importWebTokenAuthorization - verifier unavailable")
-	return nil, mtproto.ErrMethodNotImpl
+	verified, err := c.authProvider(c.ctx, authProviderRequest{
+		Operation:    "verify_web_token_authorization",
+		APIID:        in.GetApiId(),
+		APIHash:      in.GetApiHash(),
+		WebAuthToken: in.GetWebAuthToken(),
+	})
+	if err != nil {
+		return nil, err
+	}
+	if c.svcCtx.Dao.UserClient == nil {
+		return nil, mtproto.ErrMethodNotImpl
+	}
+	user, err := c.svcCtx.Dao.UserGetImmutableUser(c.ctx, &userpb.TLUserGetImmutableUser{Id: verified.UserID})
+	if err != nil {
+		return nil, err
+	}
+	if user == nil || user.GetUser() == nil || user.Deleted() || user.GetUser().GetId() != verified.UserID {
+		return nil, mtproto.ErrAccessTokenInvalid
+	}
+	return c.bindProviderUser(user)
 }

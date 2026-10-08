@@ -10,10 +10,8 @@
 package core
 
 import (
-	"context"
 	"time"
 
-	"github.com/teamgram/marmota/pkg/stores/sqlx"
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/service/biz/dialog/dialog"
 )
@@ -21,31 +19,27 @@ import (
 // DialogUpdateDialogFiltersOrder
 // dialog.updateDialogFiltersOrder user_id:long order:Vector<long> = Bool;
 func (c *DialogCore) DialogUpdateDialogFiltersOrder(in *dialog.TLDialogUpdateDialogFiltersOrder) (*mtproto.Bool, error) {
-	var (
-		err    error
-		orderV = time.Now().Unix() << 32
-	)
-
-	c.svcCtx.Dao.CachedConn.Exec(
-		c.ctx,
-		func(ctx context.Context, conn *sqlx.DB) (int64, int64, error) {
-			tR := sqlx.TxWrapper(
-				ctx,
-				conn,
-				func(tx *sqlx.Tx, result *sqlx.StoreResult) {
-					for _, id := range in.Order {
-						_, err = c.svcCtx.DialogFiltersDAO.UpdateOrder(ctx, orderV, in.UserId, id)
-						if err != nil {
-							result.Err = err
-							return
-						}
-						orderV--
-					}
-				})
-
-			return 0, 0, tR.Err
-		},
-		dialog.GetDialogFilterCacheKey(in.UserId))
+	if c == nil || c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.Postgres == nil || c.svcCtx.Dao.Postgres.Store == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
+	tx, err := c.svcCtx.Dao.Postgres.Pool.Begin(c.ctx)
+	if err == nil {
+		defer func() { _ = tx.Rollback(c.ctx) }()
+		orderV := time.Now().Unix() << 32
+		for _, id := range in.Order {
+			if _, err = c.svcCtx.Dao.Postgres.Store.DialogFilters.UpdateOrderTx(c.ctx, tx, orderV, in.UserId, id); err != nil {
+				break
+			}
+			orderV--
+		}
+		if err == nil {
+			err = tx.Commit(c.ctx)
+		}
+	}
+	if err != nil {
+		c.Logger.Errorf("dialog.updateDialogFiltersOrder - error: %v", err)
+		return nil, err
+	}
 
 	return mtproto.BoolTrue, nil
 }

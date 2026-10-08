@@ -19,7 +19,6 @@
 package core
 
 import (
-	"github.com/teamgram/marmota/pkg/stores/sqlx"
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/service/biz/dialog/dialog"
 )
@@ -27,31 +26,24 @@ import (
 // DialogSetHistoryTTL
 // dialog.setHistoryTTL user_id:long peer_type:int peer_id:long ttl_period:int = Bool;
 func (c *DialogCore) DialogSetHistoryTTL(in *dialog.TLDialogSetHistoryTTL) (*mtproto.Bool, error) {
-	result := sqlx.TxWrapper(c.ctx, c.svcCtx.Dao.DB, func(tx *sqlx.Tx, result *sqlx.StoreResult) {
-		if _, result.Err = c.svcCtx.Dao.DialogsDAO.UpdateCustomMapTx(
-			tx,
-			map[string]interface{}{
-				"ttl_period": in.TtlPeriod,
-			},
-			in.UserId,
-			in.PeerType,
-			in.PeerId); result.Err != nil {
-			return
+	if c == nil || c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.Postgres == nil || c.svcCtx.Dao.Postgres.Store == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
+	tx, err := c.svcCtx.Dao.Postgres.Pool.Begin(c.ctx)
+	if err == nil {
+		defer func() { _ = tx.Rollback(c.ctx) }()
+		values := map[string]any{"ttl_period": in.TtlPeriod}
+		_, err = c.svcCtx.Dao.Postgres.Store.Dialogs.UpdateCustomMapTx(c.ctx, tx, values, in.UserId, in.PeerType, in.PeerId)
+		if err == nil {
+			_, err = c.svcCtx.Dao.Postgres.Store.Dialogs.UpdateCustomMapTx(c.ctx, tx, values, in.PeerId, in.PeerType, in.UserId)
 		}
-		if _, result.Err = c.svcCtx.Dao.DialogsDAO.UpdateCustomMapTx(
-			tx,
-			map[string]interface{}{
-				"ttl_period": in.TtlPeriod,
-			},
-			in.PeerId,
-			in.PeerType,
-			in.UserId); result.Err != nil {
-			return
+		if err == nil {
+			err = tx.Commit(c.ctx)
 		}
-	})
-	if result.Err != nil {
-		c.Logger.Errorf("dialog.setHistoryTTL - error: %v", result.Err)
-		return nil, result.Err
+	}
+	if err != nil {
+		c.Logger.Errorf("dialog.setHistoryTTL - error: %v", err)
+		return nil, err
 	}
 
 	return mtproto.BoolTrue, nil

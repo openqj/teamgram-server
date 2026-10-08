@@ -38,9 +38,18 @@ func (c *AuthorizationCore) AuthImportBotAuthorization(in *mtproto.TLAuthImportB
 		c.Logger.Errorf("auth.importBotAuthorization - api: %v", err)
 		return nil, err
 	}
-
-	// The bot token lookup is authoritative, but this service has no trusted
-	// API credential registry. Do not bind an auth key for a syntax-only pair.
-	c.Logger.Errorf("auth.importBotAuthorization - API credential verifier unavailable")
-	return nil, mtproto.ErrMethodNotImpl
+	verified, err := c.authProvider(c.ctx, authProviderRequest{
+		Operation:    "verify_bot_authorization",
+		APIID:        in.GetApiId(),
+		APIHash:      in.GetApiHash(),
+		BotAuthToken: in.GetBotAuthToken(),
+	})
+	if err != nil {
+		return nil, err
+	}
+	user, err := c.loadBotByProviderToken(in.GetBotAuthToken(), verified.UserID)
+	if err != nil {
+		return nil, err
+	}
+	return c.bindProviderUser(user)
 }

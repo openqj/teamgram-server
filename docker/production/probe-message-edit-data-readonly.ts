@@ -25,14 +25,14 @@ const Api = requireModule(path.join(gramjsDir, 'src/lib/gramjs/tl/index.ts')).Ap
 const Connection = requireModule(path.join(gramjsDir, 'src/lib/gramjs/network/connection/TCPObfuscated.ts')).ConnectionTCPObfuscated;
 const quietLogger = { debug() {}, info() {}, warn() {}, error() {} };
 
-function mysql(query: string): string {
+function postgres(query: string): string {
   return execFileSync('docker', [
-    'exec', 'mysql', 'mysql', '-N', '-s', '-uteamgram', '-pteamgram', '-Dteamgram', '-e', query,
+    'exec', 'teamgram-postgres', 'psql', '-v', 'ON_ERROR_STOP=1', '-At', '-q', '-F', '\t', '-U', 'teamgram', '-d', 'teamgram', '-c', query,
   ], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
 }
 
 function loadAuthKey(): string {
-  const body = mysql(`
+  const body = postgres(`
     SELECT k.body FROM auth_users u
     JOIN auth_keys k USING (auth_key_id)
     JOIN auth_key_infos i USING (auth_key_id)
@@ -96,8 +96,8 @@ function makeClient(authKeyHex: string): any {
 }
 
 async function main() {
-  const rowBefore = mysql(`
-    SELECT c.id, c.access_hash, m.message_id, m.sender_user_id, SHA2(m.message, 256)
+  const rowBefore = postgres(`
+    SELECT c.id, c.access_hash, m.message_id, m.sender_user_id, encode(digest(m.message::text, 'sha256'), 'hex')
     FROM apifull_channel_message m JOIN apifull_channel c ON c.id=m.channel_id
     WHERE c.creator_user_id=${userId} ORDER BY c.id DESC, m.message_id DESC LIMIT 1
   `);
@@ -116,15 +116,15 @@ async function main() {
     ));
     const type = rpcName(response);
     if (!type.endsWith('MessageEditData')) throw new Error(`unexpected response type: ${type}`);
-    const after = mysql(`
-      SELECT c.id, c.access_hash, m.message_id, m.sender_user_id, SHA2(m.message, 256)
+    const after = postgres(`
+      SELECT c.id, c.access_hash, m.message_id, m.sender_user_id, encode(digest(m.message::text, 'sha256'), 'hex')
       FROM apifull_channel_message m JOIN apifull_channel c ON c.id=m.channel_id
       WHERE c.creator_user_id=${userId} ORDER BY c.id DESC, m.message_id DESC LIMIT 1
     `);
     if (after !== rowBefore) throw new Error('getMessageEditData changed the production message row');
     console.log(JSON.stringify({
       backend: process.env.TEAMGRAM_BACKEND_TAG || 'r25',
-      transport: `DC${dcId} WebSocket -> gateway -> session -> Messages BFF -> APIFull/MySQL`,
+      transport: `DC${dcId} WebSocket -> gateway -> session -> Messages BFF -> APIFull/PostgreSQL`,
       method: 'messages.getMessageEditData',
       responseType: type,
       caption: Boolean(response?.caption),

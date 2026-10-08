@@ -10,8 +10,7 @@
 package core
 
 import (
-	"context"
-	"github.com/teamgram/marmota/pkg/stores/sqlx"
+	"errors"
 	"github.com/teamgram/teamgram-server/app/service/biz/chat/internal/dal/dataobject"
 	"time"
 
@@ -55,54 +54,43 @@ func (c *ChatCore) ChatEditChatAdmin(in *chat.TLChatEditChatAdmin) (*mtproto.Mut
 		c.Logger.Errorf("chat.editChatAdmin - error: %v", err)
 		return nil, err
 	}
-
-	_, _, err = c.svcCtx.Dao.CachedConn.Exec(
-		c.ctx,
-		func(ctx context.Context, conn *sqlx.DB) (int64, int64, error) {
-			tR := sqlx.TxWrapper(c.ctx, c.svcCtx.Dao.DB, func(tx *sqlx.Tx, result *sqlx.StoreResult) {
-				if mtproto.FromBool(in.IsAdmin) {
-					_, result.Err = c.svcCtx.Dao.ChatParticipantsDAO.UpdateParticipantTypeTx(tx, mtproto.ChatMemberAdmin, editAdmin.Id)
-					if result.Err != nil {
-						c.Logger.Errorf("chat.editChatAdmin - error: %v", result.Err)
-						return
-					}
-
-					if editAdmin.Link == "" {
-						editAdmin.Link = chat.GenChatInviteHash()
-						c.svcCtx.Dao.ChatParticipantsDAO.UpdateLinkTx(tx, editAdmin.Link, in.ChatId, in.EditChatAdminId)
-						c.svcCtx.Dao.ChatInvitesDAO.InsertTx(tx, &dataobject.ChatInvitesDO{
-							ChatId:    in.ChatId,
-							AdminId:   in.EditChatAdminId,
-							Link:      editAdmin.Link,
-							Permanent: true,
-							Date2:     now,
-						})
-					}
-
-					editAdmin.AdminRights = mtproto.MakeDefaultChatAdminRights()
-					editAdmin.ParticipantType = mtproto.ChatMemberAdmin
-				} else {
-					_, result.Err = c.svcCtx.Dao.ChatParticipantsDAO.UpdateParticipantType(c.ctx, mtproto.ChatMemberNormal, editAdmin.Id)
-					if result.Err != nil {
-						c.Logger.Errorf("chat.editChatAdmin - error: %v", result.Err)
-						return
-					}
-					editAdmin.AdminRights = nil
-					editAdmin.ParticipantType = mtproto.ChatMemberNormal
-					editAdmin.Link = ""
-				}
-			})
-			return 0, 0, tR.Err
-		},
-		c.svcCtx.Dao.GetChatCacheKey(in.ChatId),
-		c.svcCtx.Dao.GetChatParticipantCacheKey(in.ChatId, in.EditChatAdminId))
-
-	if err != nil {
-		c.Logger.Errorf("chat.editChatAdmin - error: %v", err)
-		return nil, err
+	if c.svcCtx.Dao.Postgres == nil || c.svcCtx.Dao.Postgres.Store == nil {
+		return nil, errors.New("chat.editChatAdmin: PostgreSQL store is not initialized")
 	}
-
-	chat2.Chat.Version += 1
+	tx, txErr := c.svcCtx.Dao.Postgres.Pool.Begin(c.ctx)
+	if txErr == nil {
+		defer tx.Rollback(c.ctx)
+		if mtproto.FromBool(in.IsAdmin) {
+			_, txErr = c.svcCtx.Dao.Postgres.Store.Participants.UpdateParticipantTypeOn(c.ctx, tx, mtproto.ChatMemberAdmin, editAdmin.Id)
+			if txErr == nil && editAdmin.Link == "" {
+				editAdmin.Link = chat.GenChatInviteHash()
+				_, txErr = c.svcCtx.Dao.Postgres.Store.Participants.UpdateLinkOn(c.ctx, tx, editAdmin.Link, in.ChatId, in.EditChatAdminId)
+				if txErr == nil {
+					_, _, txErr = c.svcCtx.Dao.Postgres.Store.Invites.InsertOn(c.ctx, tx, &dataobject.ChatInvitesDO{ChatId: in.ChatId, AdminId: in.EditChatAdminId, Link: editAdmin.Link, Permanent: true, Date2: now})
+				}
+			}
+			editAdmin.AdminRights = mtproto.MakeDefaultChatAdminRights()
+			editAdmin.ParticipantType = mtproto.ChatMemberAdmin
+		} else {
+			_, txErr = c.svcCtx.Dao.Postgres.Store.Participants.UpdateParticipantTypeOn(c.ctx, tx, mtproto.ChatMemberNormal, editAdmin.Id)
+			if txErr == nil {
+				_, txErr = c.svcCtx.Dao.Postgres.Store.Participants.UpdateLinkOn(c.ctx, tx, "", in.ChatId, in.EditChatAdminId)
+			}
+			editAdmin.AdminRights = nil
+			editAdmin.ParticipantType = mtproto.ChatMemberNormal
+			editAdmin.Link = ""
+		}
+		if txErr == nil {
+			_, txErr = c.svcCtx.Dao.Postgres.Store.Chats.UpdateVersionOn(c.ctx, tx, in.ChatId)
+		}
+		if txErr == nil {
+			txErr = tx.Commit(c.ctx)
+		}
+	}
+	if txErr != nil {
+		return nil, txErr
+	}
+	chat2.Chat.Version++
 	chat2.Chat.Date = now
 	return chat2, nil
 }

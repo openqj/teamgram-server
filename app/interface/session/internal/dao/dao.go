@@ -57,7 +57,9 @@ func New(c config.Config) *Dao {
 	}
 
 	d.watchGateway(c.GatewayClient)
-	wireLayer229(c, d.AuthsessionClient)
+	if err := wireLayer229(c, d.AuthsessionClient); err != nil {
+		panic(err)
+	}
 
 	return d
 }

@@ -27,19 +27,23 @@ import (
 
 type Config struct {
 	zrpc.RpcServerConf
-	DcId                      int32   `json:",optional"`
-	KnownDcIds                []int32 `json:",optional"`
-	KV                        kv.KvConf
-	MysqlDSN                  string `json:",optional"`
-	Code                      *conf.SmsVerifyCodeConfig
-	UserClient                zrpc.RpcClientConf
-	AuthsessionClient         zrpc.RpcClientConf
-	ChatClient                zrpc.RpcClientConf
-	StatusClient              zrpc.RpcClientConf
-	MsgClient                 zrpc.RpcClientConf
-	SyncClient                *kafka.KafkaProducerConf
-	SignInServiceNotification []conf.MessageEntityConfig `json:",optional"`
-	SignInMessage             []conf.MessageEntityConfig `json:",optional"`
+	DcId                       int32   `json:",optional"`
+	KnownDcIds                 []int32 `json:",optional"`
+	KV                         kv.KvConf
+	PostgresDSN                string `json:",optional"`
+	Code                       *conf.SmsVerifyCodeConfig
+	AuthProviderEndpoint       string `json:",optional"`
+	AuthProviderKey            string `json:",optional"`
+	AuthProviderSigningKey     string `json:",optional"`
+	AuthProviderTimeoutSeconds int    `json:",optional"`
+	UserClient                 zrpc.RpcClientConf
+	AuthsessionClient          zrpc.RpcClientConf
+	ChatClient                 zrpc.RpcClientConf
+	StatusClient               zrpc.RpcClientConf
+	MsgClient                  zrpc.RpcClientConf
+	SyncClient                 *kafka.KafkaProducerConf
+	SignInServiceNotification  []conf.MessageEntityConfig `json:",optional"`
+	SignInMessage              []conf.MessageEntityConfig `json:",optional"`
 }
 
 // SupportsDc reports whether this instance knows how to serve a DC. With no

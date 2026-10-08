@@ -5,13 +5,18 @@ This guide describes how to install the Teamgram server and its dependencies fro
 > English (primary) | [中文](./install-manual-macos-zh.md)  
 > For Docker deployment, see [install-docker.md](./install-docker.md).
 
+> **Database:** New deployments use PostgreSQL 18. Run the checked-in PostgreSQL
+> migrations before starting services. The application runtime is being cut
+> over service by service; do not claim full PostgreSQL readiness until the
+> roadmap acceptance gates pass.
+
 ---
 
 ## 1. Requirements
 
 - **macOS**: 10.15 or later (11+ recommended; Apple Silicon supported)
-- **Go**: 1.21 or later
-- **MySQL**: 8.x
+- **Go**: 1.25 or later
+- **PostgreSQL**: 18
 - **Redis**: 6.x
 - **Etcd**: 3.5.x
 - **Kafka**: 2.x / 3.x (with Zookeeper; Homebrew Kafka usually includes it)
@@ -29,26 +34,19 @@ Install Homebrew if needed:
 
 ## 2. Install Dependencies
 
-### 2.1 Install MySQL
+### 2.1 Install PostgreSQL 18
 
 ```bash
-brew install mysql
-brew services start mysql
+brew install postgresql@18
+brew services start postgresql@18
 ```
 
-**Configure and create database:**
+**Create the application role and database:**
 
 ```bash
-# Set root password on first install if prompted
-mysql_secure_installation
-
-mysql -uroot -p
-
-mysql> CREATE DATABASE teamgram;
-mysql> UPDATE mysql.user SET authentication_string='' WHERE user='root';
-mysql> ALTER USER 'root'@'localhost' IDENTIFIED BY '';
-mysql> FLUSH PRIVILEGES;
-mysql> exit
+createuser -s teamgram
+psql -d postgres -c "ALTER ROLE teamgram PASSWORD 'teamgram';"
+createdb -O teamgram teamgram
 ```
 
 ### 2.2 Install Redis
@@ -174,14 +172,11 @@ cd teamgram-server
 
 ### 3.2 Initialize database
 
-From the project root (SQL files are under `teamgramd/deploy/sql/`):
+From the project root, apply the PostgreSQL 18 migrations:
 
 ```bash
-mysql -uroot -e "CREATE DATABASE IF NOT EXISTS teamgram;"
-
-mysql -uroot teamgram < teamgramd/deploy/sql/1_teamgram.sql
-for f in teamgramd/deploy/sql/migrate-*.sql; do mysql -uroot teamgram < "$f"; done
-mysql -uroot teamgram < teamgramd/deploy/sql/z_init.sql
+DATABASE_URL='postgresql://teamgram:teamgram@127.0.0.1:5432/teamgram?sslmode=disable' \
+  ./teamgramd/deploy/postgres/apply.sh
 ```
 
 ---
@@ -212,9 +207,12 @@ Configuration files are under `teamgramd/etc/`. For a local macOS setup, service
 
 3. **All YAMLs**  
    - `Etcd.Hosts`: `127.0.0.1:2379`  
-   - MySQL: `127.0.0.1:3306`  
+   - PostgreSQL: `127.0.0.1:5432`
    - Redis: `127.0.0.1:6379`  
    - Kafka: `127.0.0.1:9092`
+
+The service YAMLs are migrated one service at a time. Start a service with
+PostgreSQL only after its runtime cutover is accepted in the roadmap.
 
 Example (dfs.yaml snippet):
 
@@ -232,7 +230,7 @@ SSDB:
 
 ## 6. Start Services
 
-Ensure MySQL, Redis, Etcd, Kafka (and Zookeeper), and MinIO are running, then:
+Ensure PostgreSQL, Redis, Etcd, Kafka (and Zookeeper), and MinIO are running, then:
 
 ```bash
 cd teamgramd/bin
@@ -254,7 +252,7 @@ From `teamgramd/bin`:
 To stop dependency services (as needed):
 
 ```bash
-brew services stop mysql
+brew services stop postgresql@18
 brew services stop redis
 brew services stop etcd
 # Kafka / Zookeeper may need to be stopped manually or via brew services
@@ -264,7 +262,7 @@ brew services stop etcd
 
 ## 8. Troubleshooting
 
-- **Apple Silicon (M1/M2/M3)**: Homebrew builds for Go, MySQL, Redis, Etcd, Kafka, and MinIO support ARM; no extra setup usually needed.  
+- **Apple Silicon (M1/M2/M3)**: Homebrew builds for Go, PostgreSQL, Redis, Etcd, Kafka, and MinIO support ARM; no extra setup usually needed.
 - **Kafka path**: Use `brew --prefix kafka` to see the install path; config files are under `libexec/config/`.  
 - **MinIO data dir**: For production, use a persistent directory instead of `/tmp/minio-data`.  
 - **Pika**: If there is no macOS build, omit Pika and set SSDB to Redis in the config.  

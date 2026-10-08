@@ -8,7 +8,7 @@ type Store interface {
 	Set(key, value string) error
 }
 
-// Default follows the apifull store, including a later Use or OpenMySQL.
+// Default follows the apifull store, including a later Use or database open.
 var Default Store = live{}
 
 type live struct{}

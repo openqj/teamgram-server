@@ -381,7 +381,7 @@ func (c *MessagesCore) sendChannelMediaAlbum(in *mtproto.TLMessagesSendMultiMedi
 			RequestFingerprint: hex.EncodeToString(hash[:]),
 		}
 	}
-	updates, err := channelview.PostMediaAlbumForInputPeerWithReplyAndRandomID(c.MD.UserId, in.GetPeer(), 0, replyToMsgID, replyToTopID, groupedID, channelItems)
+	updates, err := channelview.PostMediaAlbumForInputPeerWithReplyAndRandomIDForDelivery(c.MD.UserId, in.GetPeer(), 0, replyToMsgID, replyToTopID, groupedID, channelItems, c.MD.PermAuthKeyId)
 	if err != nil {
 		return nil, err
 	}

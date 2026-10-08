@@ -10,6 +10,7 @@
 package server
 
 import (
+	"errors"
 	"flag"
 
 	"github.com/teamgram/teamgram-server/app/service/biz/chat/internal/config"
@@ -25,6 +26,7 @@ var configFile = flag.String("f", "etc/chat.yaml", "the config file")
 
 type Server struct {
 	grpcSrv *zrpc.RpcServer
+	ctx     *svc.ServiceContext
 }
 
 func New() *Server {
@@ -34,9 +36,13 @@ func New() *Server {
 func (s *Server) Initialize() error {
 	var c config.Config
 	conf.MustLoad(*configFile, &c)
+	if c.Postgres.DSN == "" {
+		return errors.New("chat: Postgres.DSN is required")
+	}
 
 	logx.Infov(c)
 	ctx := svc.NewServiceContext(c, nil)
+	s.ctx = ctx
 	s.grpcSrv = grpc.New(ctx, c.RpcServerConf)
 
 	go func() {
@@ -49,5 +55,10 @@ func (s *Server) RunLoop() {
 }
 
 func (s *Server) Destroy() {
-	s.grpcSrv.Stop()
+	if s.grpcSrv != nil {
+		s.grpcSrv.Stop()
+	}
+	if s.ctx != nil && s.ctx.Dao != nil && s.ctx.Dao.Postgres != nil {
+		s.ctx.Dao.Postgres.Close()
+	}
 }

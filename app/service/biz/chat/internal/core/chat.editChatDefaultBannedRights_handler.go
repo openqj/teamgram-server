@@ -10,11 +10,10 @@
 package core
 
 import (
-	"context"
+	"errors"
 	"math"
 	"time"
 
-	"github.com/teamgram/marmota/pkg/stores/sqlx"
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/service/biz/chat/chat"
 )
@@ -53,14 +52,18 @@ func (c *ChatCore) ChatEditChatDefaultBannedRights(in *chat.TLChatEditChatDefaul
 	if bannedRights.UntilDate == 0 {
 		bannedRights.UntilDate = math.MaxInt32
 	}
+	if c.svcCtx.Dao.Postgres == nil || c.svcCtx.Dao.Postgres.Store == nil {
+		return nil, errors.New("chat.editChatDefaultBannedRights: PostgreSQL store is not initialized")
+	}
 
-	_, _, err = c.svcCtx.Dao.CachedConn.Exec(
-		c.ctx,
-		func(ctx context.Context, conn *sqlx.DB) (int64, int64, error) {
-			affected, err2 := c.svcCtx.Dao.ChatsDAO.UpdateDefaultBannedRights(c.ctx, int64(bannedRights.ToBannedRights()), in.ChatId)
-			return 0, affected, err2
-		},
-		c.svcCtx.Dao.GetChatCacheKey(in.ChatId))
+	tx, err := c.svcCtx.Dao.Postgres.Pool.Begin(c.ctx)
+	if err == nil {
+		defer tx.Rollback(c.ctx)
+		_, err = c.svcCtx.Dao.Postgres.Store.Chats.UpdateDefaultBannedRightsOn(c.ctx, tx, int64(bannedRights.ToBannedRights()), in.ChatId)
+		if err == nil {
+			err = tx.Commit(c.ctx)
+		}
+	}
 	if err != nil {
 		c.Logger.Errorf("chat.editChatDefaultBannedRights - error: %v", err)
 		return nil, err

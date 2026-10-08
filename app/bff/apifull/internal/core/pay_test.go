@@ -18,6 +18,9 @@ import (
 func isolatedAuditDSN(t *testing.T) string {
 	t.Helper()
 	dsn := os.Getenv("APIFULL_MYSQL_DSN")
+	if dsn == "" {
+		t.Skip("APIFULL_MYSQL_DSN is not configured; PostgreSQL runtime tests cover production storage")
+	}
 	cfg, err := mysql.ParseDSN(dsn)
 	if err != nil {
 		t.Fatalf("parse APIFULL_MYSQL_DSN: %v", err)

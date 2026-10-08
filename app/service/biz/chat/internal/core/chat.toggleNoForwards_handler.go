@@ -19,8 +19,7 @@
 package core
 
 import (
-	"context"
-	"github.com/teamgram/marmota/pkg/stores/sqlx"
+	"errors"
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/service/biz/chat/chat"
 	"time"
@@ -54,14 +53,18 @@ func (c *ChatCore) ChatToggleNoForwards(in *chat.TLChatToggleNoForwards) (*mtpro
 		c.Logger.Errorf("chat.toggleNoForwards - error: %v", err)
 		return nil, err
 	}
+	if c.svcCtx.Dao.Postgres == nil || c.svcCtx.Dao.Postgres.Store == nil {
+		return nil, errors.New("chat.toggleNoForwards: PostgreSQL store is not initialized")
+	}
 
-	_, _, err = c.svcCtx.Dao.CachedConn.Exec(
-		c.ctx,
-		func(ctx context.Context, conn *sqlx.DB) (int64, int64, error) {
-			affected, err2 := c.svcCtx.Dao.ChatsDAO.UpdateNoforwards(c.ctx, mtproto.FromBool(in.Enabled), in.ChatId)
-			return 0, affected, err2
-		},
-		c.svcCtx.Dao.GetChatCacheKey(in.ChatId))
+	tx, err := c.svcCtx.Dao.Postgres.Pool.Begin(c.ctx)
+	if err == nil {
+		defer tx.Rollback(c.ctx)
+		_, err = c.svcCtx.Dao.Postgres.Store.Chats.UpdateNoforwardsOn(c.ctx, tx, mtproto.FromBool(in.Enabled), in.ChatId)
+		if err == nil {
+			err = tx.Commit(c.ctx)
+		}
+	}
 	if err != nil {
 		c.Logger.Errorf("chat.toggleNoForwards - error: %v", err)
 		return nil, err

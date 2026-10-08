@@ -10,9 +10,8 @@
 package core
 
 import (
-	"context"
+	"errors"
 
-	"github.com/teamgram/marmota/pkg/stores/sqlx"
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/service/biz/chat/chat"
 )
@@ -36,28 +35,28 @@ func (c *ChatCore) ChatDeleteChat(in *chat.TLChatDeleteChat) (*mtproto.MutableCh
 		return nil, err
 	}
 
-	keys := []string{c.svcCtx.Dao.GetChatCacheKey(in.ChatId)}
-	mChat.Walk(func(userId int64, participant *mtproto.ImmutableChatParticipant) error {
-		keys = append(keys, c.svcCtx.Dao.GetChatParticipantCacheKey(participant.ChatId, participant.UserId))
-		return nil
-	})
+	if c.svcCtx.Dao.Postgres == nil || c.svcCtx.Dao.Postgres.Store == nil {
+		return nil, errors.New("chat.deleteChat: PostgreSQL store is not initialized")
+	}
 
-	_, _, err = c.svcCtx.Dao.Exec(
-		c.ctx,
-		func(ctx context.Context, conn *sqlx.DB) (int64, int64, error) {
-			tR := sqlx.TxWrapper(c.ctx, c.svcCtx.Dao.DB, func(tx *sqlx.Tx, result *sqlx.StoreResult) {
-				// kicked
-				_, _ = c.svcCtx.Dao.ChatParticipantsDAO.UpdateStateByChatIdTx(tx, mtproto.ChatMemberStateKicked, in.ChatId)
-				_, _ = c.svcCtx.Dao.ChatsDAO.UpdateParticipantCountTx(tx, 0, in.ChatId)
-				_, _ = c.svcCtx.Dao.ChatsDAO.UpdateDeactivatedTx(tx, true, in.ChatId)
-			})
-			return 0, 0, tR.Err
-		},
-		keys...)
+	tx, err := c.svcCtx.Dao.Postgres.Pool.Begin(c.ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(c.ctx)
+	_, err = c.svcCtx.Dao.Postgres.Store.Participants.UpdateStateByChatIdOn(c.ctx, tx, mtproto.ChatMemberStateKicked, in.ChatId)
+	if err == nil {
+		_, err = c.svcCtx.Dao.Postgres.Store.Chats.UpdateParticipantCountOn(c.ctx, tx, 0, in.ChatId)
+	}
+	if err == nil {
+		_, err = c.svcCtx.Dao.Postgres.Store.Chats.UpdateDeactivatedOn(c.ctx, tx, true, in.ChatId)
+	}
+	if err == nil {
+		err = tx.Commit(c.ctx)
+	}
 	if err != nil {
 		c.Logger.Errorf("chat.deleteChat - error: %v", err)
 		return nil, err
 	}
-
 	return mChat, nil
 }

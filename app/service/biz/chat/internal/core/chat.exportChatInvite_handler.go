@@ -49,7 +49,19 @@ func (c *ChatCore) ChatExportChatInvite(in *chat.TLChatExportChatInvite) (*mtpro
 		Date2:         time.Now().Unix(),
 	}
 
-	_, _, err = c.svcCtx.Dao.ChatInvitesDAO.Insert(c.ctx, chatInviteDO)
+	if c.svcCtx.Dao.Postgres != nil && c.svcCtx.Dao.Postgres.Store != nil {
+		tx, txErr := c.svcCtx.Dao.Postgres.Pool.Begin(c.ctx)
+		if txErr == nil {
+			defer tx.Rollback(c.ctx)
+			_, _, txErr = c.svcCtx.Dao.Postgres.Store.Invites.InsertOn(c.ctx, tx, chatInviteDO)
+			if txErr == nil {
+				txErr = tx.Commit(c.ctx)
+			}
+		}
+		err = txErr
+	} else {
+		_, _, err = c.svcCtx.Dao.ChatInvitesDAO.Insert(c.ctx, chatInviteDO)
+	}
 	if err != nil {
 		c.Logger.Errorf("chat.exportChatInvite - error: %v", err)
 		return nil, err

@@ -11,8 +11,11 @@ import (
 )
 
 func (c *MsgCore) openStored() error {
-	if err := channelview.Open(c.svcCtx.Config.Mysql.DSN); err != nil {
-		c.Logger.Errorf("msg stored mysql is not open")
+	dsn := c.svcCtx.Config.Postgres.DSN
+	// Scheduled messages share the PostgreSQL authoritative store. Do not
+	// silently fall back to the transitional MySQL config in production.
+	if err := channelview.Open(dsn); err != nil {
+		c.Logger.Errorf("msg stored database is not open")
 		return mtproto.ErrInternalServerError
 	}
 	return nil
@@ -163,7 +166,7 @@ func (c *MsgCore) deleteChatHistory(in *msg.TLMsgDeleteChatHistory) (*mtproto.Bo
 		if walkErr != nil {
 			return nil
 		}
-		rows, err := c.svcCtx.Dao.MessagesDAO.SelectDialogMessageIdList(c.ctx, userId, did.A, did.B)
+		rows, err := c.svcCtx.Dao.SelectDialogMessageList(c.ctx, userId, did.A, did.B)
 		if err != nil {
 			walkErr = err
 			return nil
@@ -177,7 +180,7 @@ func (c *MsgCore) deleteChatHistory(in *msg.TLMsgDeleteChatHistory) (*mtproto.Bo
 		if len(ids) == 0 {
 			return nil
 		}
-		if _, err = c.svcCtx.Dao.MessagesDAO.DeleteMessagesByMessageIdList(c.ctx, userId, ids); err != nil {
+		if _, err = c.svcCtx.Dao.DeleteMessageByIDList(c.ctx, userId, ids); err != nil {
 			walkErr = err
 		}
 		return nil

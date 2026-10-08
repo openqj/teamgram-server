@@ -4,7 +4,7 @@
 --
 -- 主机： 127.0.0.1
 -- 生成日期： 2022-03-01 12:33:39
--- 服务器版本： 5.7.37
+-- 历史 Teamgram MySQL 导出；生产目标为 PostgreSQL 18
 -- PHP 版本： 8.1.2
 use teamgram;
 SET SQL_MODE = "NO_AUTO_VALUE_ON_ZERO";

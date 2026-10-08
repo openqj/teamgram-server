@@ -19,6 +19,7 @@
 package dao
 
 import (
+	"errors"
 	kafka "github.com/teamgram/marmota/pkg/mq"
 	"github.com/teamgram/marmota/pkg/net/rpcx"
 	"github.com/teamgram/marmota/pkg/stores/kv"
@@ -42,8 +43,10 @@ func New(c config.Config) *Dao {
 	kvStore := kv.NewStore(c.KV)
 	var passwordStore twofa.ProofStore = twofa.NewRedisProofStore(kvStore)
 	var passwordStoreErr error
-	if c.MysqlDSN != "" {
-		passwordStore, passwordStoreErr = twofa.OpenMySQLProofStore(c.MysqlDSN)
+	if c.PostgresDSN != "" {
+		passwordStore, passwordStoreErr = twofa.OpenPostgresProofStore(c.PostgresDSN)
+	} else {
+		passwordStoreErr = errors.New("qrcode: PostgresDSN is required")
 	}
 	return &Dao{
 		kv:                kvStore,

@@ -1,10 +1,12 @@
 package core
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/service/biz/updates/updates"
+	"google.golang.org/protobuf/proto"
 )
 
 func TestUpdatesGetChannelDifferenceV2RejectsInvalidRequest(t *testing.T) {
@@ -59,5 +61,56 @@ func TestPersistedChannelMessageToMTProto(t *testing.T) {
 	}
 	if got.GetEditDate() == nil || got.GetEditDate().GetValue() != int32(message.EditedAt) {
 		t.Fatalf("edit date = %v", got.GetEditDate())
+	}
+}
+
+func TestPersistedChannelMessageToMTProtoPreservesMediaThroughGRPC(t *testing.T) {
+	content, err := json.Marshal(map[string]any{
+		"media": map[string]any{
+			"predicate_name": "messageMediaContact",
+			"phone_number":   "+14155550101",
+			"first_name":     "probe",
+		},
+		"grouped_id": int64(2107779513252319232),
+	})
+	if err != nil {
+		t.Fatal("marshal content:", err)
+	}
+	message, err := persistedChannelMessageToMTProto(persistedChannelMessage{
+		ChannelID:   42,
+		MessageID:   7,
+		Sender:      9,
+		Date:        123,
+		Text:        "media",
+		ContentJSON: string(content),
+	})
+	if err != nil {
+		t.Fatal("hydrate message:", err)
+	}
+	if message.GetMedia() == nil || message.GetMedia().GetPredicateName() != mtproto.Predicate_messageMediaContact {
+		t.Fatalf("hydrated media = %v", message.GetMedia())
+	}
+	data, err := proto.Marshal(message)
+	if err != nil {
+		t.Fatal("marshal message:", err)
+	}
+	decoded := &mtproto.Message{}
+	if err = proto.Unmarshal(data, decoded); err != nil {
+		t.Fatal("unmarshal message:", err)
+	}
+	if decoded.GetMedia() == nil || decoded.GetMedia().GetPredicateName() != mtproto.Predicate_messageMediaContact {
+		t.Fatalf("round-trip media = %v", decoded.GetMedia())
+	}
+	difference := &updates.ChannelDifference{NewMessages: []*mtproto.Message{message}}
+	differenceData, err := proto.Marshal(difference)
+	if err != nil {
+		t.Fatal("marshal difference:", err)
+	}
+	decodedDifference := &updates.ChannelDifference{}
+	if err = proto.Unmarshal(differenceData, decodedDifference); err != nil {
+		t.Fatal("unmarshal difference:", err)
+	}
+	if len(decodedDifference.GetNewMessages()) != 1 || decodedDifference.GetNewMessages()[0].GetMedia() == nil || decodedDifference.GetNewMessages()[0].GetMedia().GetPredicateName() != mtproto.Predicate_messageMediaContact {
+		t.Fatalf("difference round-trip media = %v", decodedDifference.GetNewMessages())
 	}
 }

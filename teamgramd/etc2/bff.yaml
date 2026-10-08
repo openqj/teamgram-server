@@ -29,10 +29,26 @@ Telemetry:
   
 KV:
   - Host: redis:6379
-MysqlDSN: teamgram:teamgram@tcp(mysql:3306)/teamgram?charset=utf8mb4&parseTime=true
+PostgresDSN: postgres://teamgram:teamgram@postgres:5432/teamgram?sslmode=disable
 
 SearchPostsFlood:
   TotalDaily: 10
+
+PaymentProviderEndpoint: ""
+PaymentProviderKey: ""
+PaymentProviderSigningKey: ""
+PaymentProviderTimeoutSeconds: 5
+
+AuthProviderEndpoint: ""
+AuthProviderKey: ""
+AuthProviderSigningKey: ""
+AuthProviderTimeoutSeconds: 5
+
+GroupCallMediaEndpoint: ""
+GroupCallMediaAPIKey: ""
+GroupCallMediaSigningKey: ""
+GroupCallMediaRTMPHost: ""
+GroupCallMediaTimeoutSeconds: 5
 
 # The isolated stack has an explicit HTTPS RP so passkey ceremonies can be
 # exercised end to end. Keep this block out of the production config: the

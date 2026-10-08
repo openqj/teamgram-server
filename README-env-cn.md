@@ -1,6 +1,8 @@
-# 高性能组件环境使用说明（docker-compose-env2）
+# 高性能组件环境使用说明（docker-compose-env.yaml）
 
-基于 `docker-compose-env2.yaml` 的独立环境栈，不依赖 `docker-compose-env.yaml`。包含监控、日志、消息队列、存储等组件。
+基于 `docker-compose-env.yaml` 的环境栈，包含 PostgreSQL 18、监控、日志、消息队列和存储等组件。
+
+> PostgreSQL 18 是本项目唯一的生产关系数据库。项目尚未上线，不提供旧 MySQL 数据迁移路径。
 
 ## 组件列表
 
@@ -9,7 +11,7 @@
 | kafka | 消息队列（KRaft 模式，无需 Zookeeper） |
 | etcd | 配置与发现 |
 | redis | 缓存 |
-| mysql | 关系数据库（MySQL 8.0） |
+| postgres | 关系数据库（PostgreSQL 18） |
 | minio / minio-mc | 对象存储及初始化 bucket |
 | jaeger | 分布式追踪 |
 | prometheus | 指标采集 |
@@ -32,15 +34,14 @@
 
 ```bash
 cp .env.example .env
-# 编辑 .env 修改 MYSQL_*、MINIO_*、GRAFANA_* 等
+# 编辑 .env 修改 POSTGRES_*、MINIO_*、GRAFANA_* 等
 ```
 
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
-| MYSQL_ROOT_PASSWORD | root | MySQL root 密码 |
-| MYSQL_DATABASE | teamgram | 默认数据库名 |
-| MYSQL_USER | teamgram | 应用用数据库用户 |
-| MYSQL_PASSWORD | teamgram | 应用用数据库密码 |
+| POSTGRES_DB | teamgram | 默认数据库名 |
+| POSTGRES_USER | teamgram | 应用用数据库用户 |
+| POSTGRES_PASSWORD | teamgram | 应用用数据库密码 |
 | MINIO_ROOT_USER | minio | MinIO 用户名 |
 | MINIO_ROOT_PASSWORD | miniostorage | MinIO 密码 |
 | GRAFANA_ADMIN_USER | admin | Grafana 管理员用户名 |
@@ -51,16 +52,16 @@ cp .env.example .env
 
 ```bash
 # 启动所有服务（后台）
-docker compose -f docker-compose-env2.yaml up -d
+docker compose -f docker-compose-env.yaml up -d
 
 # 查看状态
-docker compose -f docker-compose-env2.yaml ps
+docker compose -f docker-compose-env.yaml ps
 
 # 停止
-docker compose -f docker-compose-env2.yaml down
+docker compose -f docker-compose-env.yaml down
 
 # 停止（数据在 ./data/ 下，不会被删除）
-docker compose -f docker-compose-env2.yaml down
+docker compose -f docker-compose-env.yaml down
 ```
 
 Compose 会自动读取当前目录下的 `.env`；若未配置 `.env`，将使用上述默认值。
@@ -77,7 +78,7 @@ Compose 会自动读取当前目录下的 `.env`；若未配置 `.env`，将使�
 | Kibana | 5601 | http://127.0.0.1:5601 |
 | MinIO API | 9000 | http://127.0.0.1:9000 |
 | MinIO Console | 9001 | http://127.0.0.1:9001 |
-| MySQL | 3306 | 127.0.0.1:3306 |
+| PostgreSQL | 5432 | 127.0.0.1:5432 |
 | Redis | 6379 | 127.0.0.1:6379 |
 | etcd | 2379 | http://127.0.0.1:2379 |
 | Kafka | 9092 | 127.0.0.1:9092 |
@@ -92,13 +93,7 @@ Compose 会自动读取当前目录下的 `.env`；若未配置 `.env`，将使�
 - **Filebeat**：`teamgramd/deploy/filebeat/filebeat.yml`
 - **Go-Stash**：`teamgramd/deploy/go-stash/config.yaml`（需按业务配置 Kafka topic 与 Elasticsearch index）
 
-若需使用项目自带 SQL 初始化 MySQL，可在 `docker-compose-env2.yaml` 的 `mysql` 服务中增加卷挂载，例如：
-
-```yaml
-volumes:
-  - ./data/mysql:/var/lib/mysql
-  - ./teamgramd/sql:/docker-entrypoint-initdb.d:ro
-```
+PostgreSQL schema 由 `postgres-migrate` 服务自动执行 `teamgramd/deploy/postgres/apply.sh`，迁移脚本幂等且会校验 checksum。
 
 ## 网络
 
@@ -115,7 +110,7 @@ volumes:
 | kafka | `./data/kafka` |
 | etcd | `./data/etcd` |
 | redis | `./data/redis` |
-| mysql | `./data/mysql` |
+| postgres | `./data/postgres` |
 | minio | `./data/minio` |
 | prometheus | `./data/prometheus` |
 | grafana | `./data/grafana` |

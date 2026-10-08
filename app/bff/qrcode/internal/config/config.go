@@ -30,7 +30,7 @@ type Config struct {
 	KnownDcIds        []int32      `json:",optional"`
 	TrustedApps       []TrustedApp `json:",optional"`
 	KV                kv.KvConf
-	MysqlDSN          string `json:",optional"`
+	PostgresDSN       string `json:",optional"`
 	UserClient        zrpc.RpcClientConf
 	AuthSessionClient zrpc.RpcClientConf
 	SyncClient        *kafka.KafkaProducerConf

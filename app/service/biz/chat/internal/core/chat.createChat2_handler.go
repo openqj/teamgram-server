@@ -32,13 +32,19 @@ func (c *ChatCore) ChatCreateChat2(in *chat.TLChatCreateChat2) (*mtproto.Mutable
 	)
 
 	// TODO:
-	if chatsDO, err = c.svcCtx.Dao.ChatsDAO.SelectLastCreator(c.ctx, creatorId); err != nil {
+	var lastChat *dataobject.ChatsDO
+	if c.svcCtx.Dao.Postgres != nil && c.svcCtx.Dao.Postgres.Store != nil {
+		lastChat, err = c.svcCtx.Dao.Postgres.Store.Chats.SelectLastCreator(c.ctx, creatorId)
+	} else {
+		lastChat, err = c.svcCtx.Dao.ChatsDAO.SelectLastCreator(c.ctx, creatorId)
+	}
+	if err != nil {
 		c.Logger.Errorf("chat.createChat2 - error: %v", err)
 		return nil, err
-	} else if chatsDO != nil {
-		if date-chatsDO.Date < createChatFlood {
-			err = mtproto.NewErrFloodWaitX(int32(date - chatsDO.Date))
-			c.Logger.Errorf("createChat error: %v. lastCreate = ", err, chatsDO.Date)
+	} else if lastChat != nil {
+		if date-lastChat.Date < createChatFlood {
+			err = mtproto.NewErrFloodWaitX(int32(date - lastChat.Date))
+			c.Logger.Errorf("createChat error: %v. lastCreate = ", err, lastChat.Date)
 			return nil, err
 		}
 	}
@@ -101,38 +107,60 @@ func (c *ChatCore) ChatCreateChat2(in *chat.TLChatCreateChat2) (*mtproto.Mutable
 		})
 	}
 
-	tR := sqlx.TxWrapper(c.ctx, c.svcCtx.Dao.DB, func(tx *sqlx.Tx, result *sqlx.StoreResult) {
-		// 1. insert chat
-		chatsDO.Id, _, err = c.svcCtx.Dao.ChatsDAO.InsertTx(tx, chatsDO)
-		if err != nil {
-			result.Err = err
-			return
+	if c.svcCtx.Dao.Postgres != nil && c.svcCtx.Dao.Postgres.Store != nil {
+		tx, txErr := c.svcCtx.Dao.Postgres.Pool.Begin(c.ctx)
+		if txErr == nil {
+			defer tx.Rollback(c.ctx)
+			chatsDO.Id, _, txErr = c.svcCtx.Dao.Postgres.Store.Chats.InsertOn(c.ctx, tx, chatsDO)
+			if txErr == nil {
+				for i := range participantDOList {
+					participantDOList[i].ChatId = chatsDO.Id
+				}
+				_, _, txErr = c.svcCtx.Dao.Postgres.Store.Participants.InsertBulkOn(c.ctx, tx, participantDOList)
+			}
+			if txErr == nil {
+				_, _, txErr = c.svcCtx.Dao.Postgres.Store.Invites.InsertOn(c.ctx, tx, &dataobject.ChatInvitesDO{
+					ChatId: chatsDO.Id, AdminId: creatorId, Link: participantDOList[0].Link,
+					Permanent: true, Date2: date,
+				})
+			}
+			if txErr == nil {
+				txErr = tx.Commit(c.ctx)
+			}
 		}
-		//chatsDO.Id = chatId
-		for i := 0; i < len(participantDOList); i++ {
-			participantDOList[i].ChatId = chatsDO.Id
+		if txErr != nil {
+			err = txErr
+			c.Logger.Errorf("chat.createChat2 - error: %v", txErr)
+			return nil, txErr
 		}
+	} else {
+		tR := sqlx.TxWrapper(c.ctx, c.svcCtx.Dao.DB, func(tx *sqlx.Tx, result *sqlx.StoreResult) {
+			// 1. insert chat
+			chatsDO.Id, _, err = c.svcCtx.Dao.ChatsDAO.InsertTx(tx, chatsDO)
+			if err != nil {
+				result.Err = err
+				return
+			}
+			for i := 0; i < len(participantDOList); i++ {
+				participantDOList[i].ChatId = chatsDO.Id
+			}
 
-		_, _, err = c.svcCtx.Dao.ChatParticipantsDAO.InsertBulkTx(tx, participantDOList)
-		if err != nil {
-			result.Err = err
-			return
-		}
+			_, _, err = c.svcCtx.Dao.ChatParticipantsDAO.InsertBulkTx(tx, participantDOList)
+			if err != nil {
+				result.Err = err
+				return
+			}
 
-		_, _, result.Err = c.svcCtx.Dao.ChatInvitesDAO.InsertTx(tx, &dataobject.ChatInvitesDO{
-			ChatId:    chatsDO.Id,
-			AdminId:   creatorId,
-			Link:      participantDOList[0].Link,
-			Permanent: true,
-			Date2:     date,
+			_, _, result.Err = c.svcCtx.Dao.ChatInvitesDAO.InsertTx(tx, &dataobject.ChatInvitesDO{
+				ChatId: chatsDO.Id, AdminId: creatorId, Link: participantDOList[0].Link,
+				Permanent: true, Date2: date,
+			})
 		})
-		return
-	})
-
-	if tR.Err != nil {
-		err = tR.Err
-		c.Logger.Errorf("chat.createChat2 - error: %v", tR.Err)
-		return nil, tR.Err
+		if tR.Err != nil {
+			err = tR.Err
+			c.Logger.Errorf("chat.createChat2 - error: %v", tR.Err)
+			return nil, tR.Err
+		}
 	}
 
 	chat2 := mtproto.MakeTLMutableChat(&mtproto.MutableChat{

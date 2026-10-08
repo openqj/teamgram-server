@@ -19,6 +19,7 @@
 package server
 
 import (
+	"errors"
 	"flag"
 
 	kafka "github.com/teamgram/marmota/pkg/mq"
@@ -36,8 +37,10 @@ import (
 var configFile = flag.String("f", "etc/msg.yaml", "the config file")
 
 type Server struct {
-	grpcSrv *zrpc.RpcServer
-	mq      *kafka.ConsumerGroup
+	grpcSrv    *zrpc.RpcServer
+	mq         *kafka.ConsumerGroup
+	closeMsg   func()
+	closeInbox func()
 }
 
 func New() *Server {
@@ -47,40 +50,41 @@ func New() *Server {
 func (s *Server) Initialize() error {
 	var c config.Config
 	conf.MustLoad(*configFile, &c)
+	if c.Postgres.DSN == "" {
+		return errors.New("msg: Postgres.DSN is required")
+	}
 
 	logx.Infov(c)
-	// ctx := svc.NewServiceContext(c)
-	// s.grpcSrv = grpc.New(ctx, c.RpcServerConf)
 
+	msgService, closeMsg := msg_helper.NewWithClose(
+		msg_helper.Config{
+			RpcServerConf:   c.RpcServerConf,
+			Postgres:        c.Postgres,
+			Cache:           c.Cache,
+			KV:              c.KV,
+			IdgenClient:     c.IdgenClient,
+			UserClient:      c.BizServiceClient,
+			ChatClient:      c.BizServiceClient,
+			SyncClient:      c.SyncClient,
+			InboxClient:     c.InboxClient,
+			DialogClient:    c.BizServiceClient,
+			MessageSharding: c.MessageSharding,
+			Redis2:          c.Redis2,
+		}, nil)
+	s.closeMsg = closeMsg
 	s.grpcSrv = zrpc.MustNewServer(c.RpcServerConf, func(grpcServer *grpc.Server) {
 		// msg_helper
-		msg.RegisterRPCMsgServer(
-			grpcServer,
-			msg_helper.New(
-				msg_helper.Config{
-					RpcServerConf:   c.RpcServerConf,
-					Mysql:           c.Mysql,
-					Cache:           c.Cache,
-					KV:              c.KV,
-					IdgenClient:     c.IdgenClient,
-					UserClient:      c.BizServiceClient,
-					ChatClient:      c.BizServiceClient,
-					SyncClient:      c.SyncClient,
-					InboxClient:     c.InboxClient,
-					DialogClient:    c.BizServiceClient,
-					MessageSharding: c.MessageSharding,
-					Redis2:          c.Redis2,
-				}, nil))
+		msg.RegisterRPCMsgServer(grpcServer, msgService)
 	})
 
 	go func() {
 		s.grpcSrv.Start()
 	}()
 
-	s.mq = inbox_helper.New(inbox_helper.Config{
+	s.mq, s.closeInbox = inbox_helper.NewWithContext(inbox_helper.Config{
 		RpcServerConf:   c.RpcServerConf,
 		InboxConsumer:   c.InboxConsumer,
-		Mysql:           c.Mysql,
+		Postgres:        c.Postgres,
 		Cache:           c.Cache,
 		KV:              c.KV,
 		IdgenClient:     c.IdgenClient,
@@ -103,5 +107,16 @@ func (s *Server) RunLoop() {
 }
 
 func (s *Server) Destroy() {
-	s.grpcSrv.Stop()
+	if s.grpcSrv != nil {
+		s.grpcSrv.Stop()
+	}
+	if s.mq != nil {
+		s.mq.Stop()
+	}
+	if s.closeMsg != nil {
+		s.closeMsg()
+	}
+	if s.closeInbox != nil {
+		s.closeInbox()
+	}
 }

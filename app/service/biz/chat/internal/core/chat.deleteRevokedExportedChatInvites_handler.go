@@ -24,7 +24,19 @@ func (c *ChatCore) ChatDeleteRevokedExportedChatInvites(in *chat.TLChatDeleteRev
 	if _, err = c.requireInvitePermission(in.ChatId, selfID, in.AdminId); err != nil {
 		return nil, err
 	}
-	_, err = c.svcCtx.Dao.ChatInvitesDAO.DeleteByRevoked(c.ctx, in.ChatId, in.AdminId)
+	if c.svcCtx.Dao.Postgres != nil && c.svcCtx.Dao.Postgres.Store != nil {
+		tx, txErr := c.svcCtx.Dao.Postgres.Pool.Begin(c.ctx)
+		if txErr == nil {
+			defer tx.Rollback(c.ctx)
+			_, txErr = c.svcCtx.Dao.Postgres.Store.Invites.DeleteByRevokedOn(c.ctx, tx, in.ChatId, in.AdminId)
+			if txErr == nil {
+				txErr = tx.Commit(c.ctx)
+			}
+		}
+		err = txErr
+	} else {
+		_, err = c.svcCtx.Dao.ChatInvitesDAO.DeleteByRevoked(c.ctx, in.ChatId, in.AdminId)
+	}
 	if err != nil {
 		c.Logger.Errorf("chat.deleteRevokedExportedChatInvites - error: %v", err)
 		return nil, err

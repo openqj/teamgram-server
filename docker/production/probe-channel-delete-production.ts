@@ -13,15 +13,15 @@ globalAny.self ??= globalThis;
 globalAny.addEventListener ??= () => {};
 globalAny.self.addEventListener ??= globalAny.addEventListener;
 
-function mysql(query: string): string {
+function postgres(query: string): string {
   return execFileSync('docker', [
-    'exec', 'mysql', 'mysql', '-N', '-s', '-uteamgram', '-pteamgram', '-Dteamgram', '-e', query,
+    'exec', 'teamgram-postgres', 'psql', '-v', 'ON_ERROR_STOP=1', '-At', '-q', '-F', '\t', '-U', 'teamgram', '-d', 'teamgram', '-c', query,
   ], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
 }
 
 function requiredValue(query: string, name: string): string {
-  const value = mysql(query);
-  if (!value) throw new Error(`${name} is absent from production MySQL`);
+  const value = postgres(query);
+  if (!value) throw new Error(`${name} is absent from production PostgreSQL`);
   return value;
 }
 
@@ -78,17 +78,19 @@ function hasMessage(value: any, expected: string, seen = new Set<any>()): boolea
   return (Array.isArray(value) ? value : Object.values(value)).some((item) => hasMessage(item, expected, seen));
 }
 
-async function waitForPersistedMessage(channelId: bigint, text: string): Promise<{ messageId: number; events: number }> {
+async function waitForPersistedMessage(channelId: bigint, text: string): Promise<{ messageId: number; events: number; requestRows: number }> {
   for (let attempt = 0; attempt < 20; attempt += 1) {
-    const row = mysql(`
-      SELECT m.message_id, (SELECT COUNT(*) FROM apifull_channel_event e WHERE e.channel_id=m.channel_id)
+    const row = postgres(`
+      SELECT m.message_id,
+        (SELECT COUNT(*) FROM apifull_channel_event e WHERE e.channel_id=m.channel_id),
+        (SELECT COUNT(*) FROM apifull_channel_message_request r WHERE r.channel_id=m.channel_id AND r.message_id=m.message_id)
       FROM apifull_channel_message m
       WHERE m.channel_id=${channelId} AND m.message='${text}'
       ORDER BY m.message_id DESC LIMIT 1
     `);
     if (row) {
-      const [messageId, events] = row.split('\t').map(Number);
-      if (events > 0) return { messageId, events };
+      const [messageId, events, requestRows] = row.split('\t').map(Number);
+      if (events > 0 && requestRows > 0) return { messageId, events, requestRows };
     }
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
@@ -96,7 +98,7 @@ async function waitForPersistedMessage(channelId: bigint, text: string): Promise
 }
 
 function channelRows(title: string): string {
-  return mysql(`
+  return postgres(`
     SELECT id, access_hash FROM apifull_channel
     WHERE creator_user_id=${userId} AND title='${title}'
     ORDER BY id DESC LIMIT 1
@@ -108,6 +110,7 @@ function rowCounts(channelId: bigint): Record<string, number> {
     channel: `SELECT COUNT(*) FROM apifull_channel WHERE id=${channelId}`,
     members: `SELECT COUNT(*) FROM apifull_channel_member WHERE channel_id=${channelId}`,
     messages: `SELECT COUNT(*) FROM apifull_channel_message WHERE channel_id=${channelId}`,
+    requests: `SELECT COUNT(*) FROM apifull_channel_message_request WHERE channel_id=${channelId}`,
     sequence: `SELECT COUNT(*) FROM apifull_channel_message_seq WHERE channel_id=${channelId}`,
     events: `SELECT COUNT(*) FROM apifull_channel_event WHERE channel_id=${channelId}`,
     hidden: `SELECT COUNT(*) FROM apifull_channel_message_hidden WHERE channel_id=${channelId}`,
@@ -115,7 +118,7 @@ function rowCounts(channelId: bigint): Record<string, number> {
     readState: `SELECT COUNT(*) FROM apifull_channel_read_state WHERE channel_id=${channelId}`,
     adminLog: `SELECT COUNT(*) FROM apifull_channel_admin_log WHERE channel_id=${channelId}`,
   };
-  return Object.fromEntries(Object.entries(checks).map(([name, query]) => [name, Number(mysql(query))]));
+  return Object.fromEntries(Object.entries(checks).map(([name, query]) => [name, Number(postgres(query))]));
 }
 
 async function main() {
@@ -158,18 +161,31 @@ async function main() {
 
     const input = new Api.InputChannel({ channelId, accessHash });
     const peer = new Api.InputPeerChannel({ channelId, accessHash });
+    const randomId = BigInt(Date.now()) * 1000n + BigInt(randomBytes(2).readUInt16BE(0));
     const sent = await client.invoke(new Api.messages.SendMessage({
       peer,
       message: messageText,
-      randomId: BigInt(Date.now()) * 1000n + BigInt(randomBytes(2).readUInt16BE(0)),
+      randomId,
     }));
     if (!rpcName(sent).toLowerCase().includes('updates')) {
       throw new Error(`channel send returned ${rpcName(sent)}`);
     }
     const persisted = await waitForPersistedMessage(channelId, messageText);
+    if (persisted.requestRows !== 1) throw new Error('first send did not persist exactly one random_id mapping');
+    const replay = await client.invoke(new Api.messages.SendMessage({ peer, message: messageText, randomId }));
+    if (!rpcName(replay).toLowerCase().includes('updates')) {
+      throw new Error(`channel retry returned ${rpcName(replay)}`);
+    }
+    const replayed = await waitForPersistedMessage(channelId, messageText);
+    if (replayed.messageId !== persisted.messageId || replayed.events !== persisted.events || replayed.requestRows !== 1) {
+      throw new Error(`channel retry duplicated persisted state: first=${JSON.stringify(persisted)} retry=${JSON.stringify(replayed)}`);
+    }
     evidence.send = rpcName(sent);
     evidence.messageId = persisted.messageId;
     evidence.eventsBeforeDelete = persisted.events;
+    evidence.retry = rpcName(replay);
+    evidence.retryReusedMessageId = replayed.messageId;
+    evidence.requestRowsBeforeDelete = replayed.requestRows;
 
     const difference = await client.invoke(new Api.updates.GetChannelDifference({
       force: true,
@@ -207,7 +223,7 @@ async function main() {
 
   if (channelId > 0n) {
     try {
-      if (Number(mysql(`SELECT COUNT(*) FROM apifull_channel WHERE id=${channelId}`)) > 0) {
+      if (Number(postgres(`SELECT COUNT(*) FROM apifull_channel WHERE id=${channelId}`)) > 0) {
         await client.invoke(new Api.channels.DeleteChannel({
           channel: new Api.InputChannel({ channelId, accessHash }),
         }));

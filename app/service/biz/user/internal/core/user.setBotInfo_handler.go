@@ -1,15 +1,11 @@
 package core
 
 import (
-	"context"
-	"errors"
 	"strings"
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/teamgram/marmota/pkg/stores/sqlx"
 	"github.com/teamgram/proto/mtproto"
-	"github.com/teamgram/teamgram-server/app/service/biz/user/internal/dao"
 	"github.com/teamgram/teamgram-server/app/service/biz/user/user"
 )
 
@@ -17,7 +13,9 @@ func (c *UserCore) UserSetBotInfo(in *user.BotRegistrySetBotInfoRequest) (*mtpro
 	if in == nil || in.GetBotId() <= 0 {
 		return nil, mtproto.ErrInputRequestInvalid
 	}
-	if c == nil || c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.DB == nil {
+	if c == nil || c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.Postgres == nil ||
+		c.svcCtx.Dao.Postgres.Pool == nil || c.svcCtx.Dao.Postgres.Store == nil ||
+		c.svcCtx.Dao.Postgres.Store.Users == nil || c.svcCtx.Dao.Postgres.Store.Bots == nil {
 		return nil, mtproto.ErrMethodNotImpl
 	}
 	if c.MD == nil || c.MD.GetUserId() <= 0 {
@@ -36,51 +34,43 @@ func (c *UserCore) UserSetBotInfo(in *user.BotRegistrySetBotInfoRequest) (*mtpro
 		return nil, mtproto.ErrInputRequestInvalid
 	}
 
-	_, _, err := c.svcCtx.Dao.CachedConn.Exec(c.ctx, func(ctx context.Context, conn *sqlx.DB) (int64, int64, error) {
-		result := sqlx.TxWrapper(ctx, conn, func(tx *sqlx.Tx, storeResult *sqlx.StoreResult) {
-			var bot struct {
-				BotID    int64 `db:"bot_id"`
-				UserType int32 `db:"user_type"`
-				Deleted  bool  `db:"deleted"`
-			}
-			storeResult.Err = tx.QueryRowPartial(&bot, `SELECT b.bot_id, u.user_type, u.deleted
-				FROM bots b JOIN users u ON u.id=b.bot_id WHERE b.bot_id=? FOR UPDATE`, in.GetBotId())
-			if errors.Is(storeResult.Err, sqlx.ErrNotFound) {
-				storeResult.Err = mtproto.ErrBotInvalid
-				return
-			}
-			if storeResult.Err != nil {
-				return
-			}
-			if bot.BotID != in.GetBotId() || bot.UserType != user.UserTypeBot || bot.Deleted {
-				storeResult.Err = mtproto.ErrBotInvalid
-				return
-			}
-
-			sets := make([]string, 0, 2)
-			args := make([]any, 0, 3)
-			if in.GetName() != nil {
-				sets = append(sets, "first_name=?")
-				args = append(args, in.GetName().GetValue())
-			}
-			if in.GetAbout() != nil {
-				sets = append(sets, "about=?")
-				args = append(args, in.GetAbout().GetValue())
-			}
-			if len(sets) > 0 {
-				args = append(args, in.GetBotId())
-				_, storeResult.Err = tx.Exec("UPDATE users SET "+strings.Join(sets, ",")+" WHERE id=?", args...)
-				if storeResult.Err != nil {
-					return
-				}
-			}
-			if in.GetDescription() != nil {
-				_, storeResult.Err = tx.Exec("UPDATE bots SET description=? WHERE bot_id=?", in.GetDescription().GetValue(), in.GetBotId())
-			}
-		})
-		return 0, 1, result.Err
-	}, dao.GenCacheUserDataCacheKey(in.GetBotId()))
+	tx, err := c.svcCtx.Dao.Postgres.Pool.Begin(c.ctx)
 	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback(c.ctx) }()
+	bot, err := c.svcCtx.Dao.Postgres.Store.Bots.Select(c.ctx, in.GetBotId())
+	if err != nil {
+		return nil, err
+	}
+	if bot == nil || bot.BotId != in.GetBotId() {
+		return nil, mtproto.ErrBotInvalid
+	}
+	userDO, err := c.svcCtx.Dao.Postgres.Store.Users.SelectByIDOn(c.ctx, tx, in.GetBotId())
+	if err != nil {
+		return nil, err
+	}
+	if userDO == nil || userDO.UserType != user.UserTypeBot || userDO.Deleted {
+		return nil, mtproto.ErrBotInvalid
+	}
+	userChanges := make(map[string]any, 2)
+	if in.GetName() != nil {
+		userChanges["first_name"] = in.GetName().GetValue()
+	}
+	if in.GetAbout() != nil {
+		userChanges["about"] = in.GetAbout().GetValue()
+	}
+	if len(userChanges) > 0 {
+		if _, err = c.svcCtx.Dao.Postgres.Store.Users.UpdateTx(c.ctx, tx, userChanges, in.GetBotId()); err != nil {
+			return nil, err
+		}
+	}
+	if in.GetDescription() != nil {
+		if _, err = c.svcCtx.Dao.Postgres.Store.Bots.UpdateTx(c.ctx, tx, map[string]any{"description": in.GetDescription().GetValue()}, in.GetBotId()); err != nil {
+			return nil, err
+		}
+	}
+	if err = tx.Commit(c.ctx); err != nil {
 		return nil, err
 	}
 	return mtproto.BoolTrue, nil

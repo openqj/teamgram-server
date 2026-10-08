@@ -61,11 +61,19 @@ type PaymentReceipt struct {
 	CreatedAt     int64
 }
 
+type PremiumGrant struct {
+	RequestID     int64
+	UserID        int64
+	Provider      string
+	TransactionID string
+	Months        int32
+}
+
 // LockPaymentRequest serializes provider calls for one idempotency key across
 // APIFull instances. MySQL releases the named lock when its connection closes.
 func LockPaymentRequest(ctx context.Context, userID int64, requestKey string, wait time.Duration) (func(), error) {
 	if db == nil {
-		return nil, errors.New("domain mysql is not open")
+		return nil, errors.New("domain PostgreSQL is not open")
 	}
 	if userID <= 0 || strings.TrimSpace(requestKey) == "" {
 		return nil, ErrInvalidPaymentRequest
@@ -106,7 +114,7 @@ func LockPaymentRequest(ctx context.Context, userID int64, requestKey string, wa
 
 func BeginPaymentRequest(userID int64, requestKey, provider, fingerprint, currency string, amount, peerID int64, msgID int32) (PaymentRequest, error) {
 	if db == nil {
-		return PaymentRequest{}, errors.New("domain mysql is not open")
+		return PaymentRequest{}, errors.New("domain PostgreSQL is not open")
 	}
 	if userID <= 0 || strings.TrimSpace(requestKey) == "" || strings.TrimSpace(provider) == "" || strings.TrimSpace(fingerprint) == "" || amount < 0 || peerID < 0 || msgID < 0 {
 		return PaymentRequest{}, ErrInvalidPaymentRequest
@@ -154,7 +162,7 @@ func BeginPaymentRequest(userID int64, requestKey, provider, fingerprint, curren
 
 func RejectPaymentRequest(userID int64, requestKey, fingerprint, reason string) (PaymentRequest, error) {
 	if db == nil {
-		return PaymentRequest{}, errors.New("domain mysql is not open")
+		return PaymentRequest{}, errors.New("domain PostgreSQL is not open")
 	}
 	if userID <= 0 || strings.TrimSpace(requestKey) == "" || strings.TrimSpace(fingerprint) == "" {
 		return PaymentRequest{}, ErrInvalidPaymentRequest
@@ -202,13 +210,31 @@ func RejectPaymentRequest(userID int64, requestKey, fingerprint, reason string) 
 // SettlePaymentRequest records a provider-verified payment atomically. A false
 // verified flag is rejected before any state or receipt is written.
 func SettlePaymentRequest(userID int64, requestKey, fingerprint, transactionID, currency, title string, amount, peerID int64, msgID int32, receipt []byte, verified bool) (PaymentRequest, PaymentReceipt, error) {
+	return settlePaymentRequest(userID, requestKey, fingerprint, transactionID, currency, title, amount, peerID, msgID, receipt, verified, 0, 0)
+}
+
+func SettlePremiumPaymentRequest(userID int64, requestKey, fingerprint, transactionID, currency, title string, amount, peerID int64, msgID int32, receipt []byte, months int32) (PaymentRequest, PaymentReceipt, error) {
+	if months < 1 || months > 36 {
+		return PaymentRequest{}, PaymentReceipt{}, ErrInvalidPaymentRequest
+	}
+	return settlePaymentRequest(userID, requestKey, fingerprint, transactionID, currency, title, amount, peerID, msgID, receipt, true, months, 0)
+}
+
+func SettleStarsPaymentRequest(userID int64, requestKey, fingerprint, transactionID, currency, title string, amount, stars int64, receipt []byte) (PaymentRequest, PaymentReceipt, error) {
+	if stars <= 0 {
+		return PaymentRequest{}, PaymentReceipt{}, ErrInvalidStarsTransaction
+	}
+	return settlePaymentRequest(userID, requestKey, fingerprint, transactionID, currency, title, amount, 0, 0, receipt, true, 0, stars)
+}
+
+func settlePaymentRequest(userID int64, requestKey, fingerprint, transactionID, currency, title string, amount, peerID int64, msgID int32, receipt []byte, verified bool, premiumMonths int32, stars int64) (PaymentRequest, PaymentReceipt, error) {
 	if db == nil {
-		return PaymentRequest{}, PaymentReceipt{}, errors.New("domain mysql is not open")
+		return PaymentRequest{}, PaymentReceipt{}, errors.New("domain PostgreSQL is not open")
 	}
 	if !verified {
 		return PaymentRequest{}, PaymentReceipt{}, ErrPaymentUnverified
 	}
-	if userID <= 0 || strings.TrimSpace(requestKey) == "" || strings.TrimSpace(fingerprint) == "" || strings.TrimSpace(transactionID) == "" || len(receipt) == 0 || amount < 0 || peerID < 0 || msgID < 0 {
+	if userID <= 0 || strings.TrimSpace(requestKey) == "" || strings.TrimSpace(fingerprint) == "" || strings.TrimSpace(transactionID) == "" || len(receipt) == 0 || amount < 0 || peerID < 0 || msgID < 0 || stars < 0 {
 		return PaymentRequest{}, PaymentReceipt{}, ErrInvalidPaymentRequest
 	}
 	tx, err := db.Begin()
@@ -240,6 +266,16 @@ func SettlePaymentRequest(userID int64, requestKey, fingerprint, transactionID, 
 		if receiptRow.TransactionID != transactionID || !equalHash(receiptRow.Receipt, receipt) {
 			return PaymentRequest{}, PaymentReceipt{}, ErrPaymentRequestConflict
 		}
+		if premiumMonths > 0 {
+			if err = insertPremiumGrantTx(tx, request.ID, userID, request.Provider, transactionID, premiumMonths); err != nil {
+				return PaymentRequest{}, PaymentReceipt{}, err
+			}
+		}
+		if stars > 0 {
+			if err = insertStarsGrantTx(tx, userID, request.Provider, transactionID, stars); err != nil {
+				return PaymentRequest{}, PaymentReceipt{}, err
+			}
+		}
 		if err = tx.Commit(); err != nil {
 			return PaymentRequest{}, PaymentReceipt{}, err
 		}
@@ -258,6 +294,11 @@ func SettlePaymentRequest(userID int64, requestKey, fingerprint, transactionID, 
 		}
 		receiptRow, receiptErr := loadPaymentReceiptTx(tx, request.ID)
 		if receiptErr == nil && receiptRow.TransactionID == transactionID && equalHash(receiptRow.Receipt, receipt) {
+			if stars > 0 {
+				if err = insertStarsGrantTx(tx, userID, request.Provider, transactionID, stars); err != nil {
+					return PaymentRequest{}, PaymentReceipt{}, err
+				}
+			}
 			if err = tx.Commit(); err != nil {
 				return PaymentRequest{}, PaymentReceipt{}, err
 			}
@@ -276,6 +317,16 @@ func SettlePaymentRequest(userID int64, requestKey, fingerprint, transactionID, 
 		VALUES (?,?,?,?,?,?,?,?,?)`, request.ID, request.UserID, PaymentStateSettled, request.Provider, transactionID, currency, amount, hex.EncodeToString(hash[:]), now); err != nil {
 		return PaymentRequest{}, PaymentReceipt{}, err
 	}
+	if premiumMonths > 0 {
+		if err = insertPremiumGrantTx(tx, request.ID, userID, request.Provider, transactionID, premiumMonths); err != nil {
+			return PaymentRequest{}, PaymentReceipt{}, err
+		}
+	}
+	if stars > 0 {
+		if err = insertStarsGrantTx(tx, userID, request.Provider, transactionID, stars); err != nil {
+			return PaymentRequest{}, PaymentReceipt{}, err
+		}
+	}
 	request.State, request.TransactionID, request.UpdatedAt = PaymentStateSettled, transactionID, now
 	receiptRow := PaymentReceipt{RequestID: request.ID, UserID: request.UserID, Provider: request.Provider, TransactionID: transactionID, Currency: currency, Amount: amount, PeerID: peerID, MsgID: msgID, Title: title, Receipt: append([]byte(nil), receipt...), CreatedAt: now}
 	if err = tx.Commit(); err != nil {
@@ -284,9 +335,189 @@ func SettlePaymentRequest(userID int64, requestKey, fingerprint, transactionID, 
 	return request, receiptRow, nil
 }
 
+func insertStarsGrantTx(tx *sql.Tx, userID int64, provider, transactionID string, stars int64) error {
+	if userID <= 0 || strings.TrimSpace(provider) == "" || strings.TrimSpace(transactionID) == "" || stars <= 0 {
+		return ErrInvalidStarsTransaction
+	}
+	digest := sha256.Sum256([]byte(provider + "\x00" + transactionID))
+	idem := "payment:" + hex.EncodeToString(digest[:])
+	var existing int64
+	err := tx.QueryRow(`SELECT amount FROM apifull_star_tx WHERE user_id=? AND idem=? FOR UPDATE`, userID, idem).Scan(&existing)
+	if err == nil {
+		if existing != stars {
+			return ErrStarsIdempotencyConflict
+		}
+		return nil
+	}
+	if err != sql.ErrNoRows {
+		return err
+	}
+	if _, err = tx.Exec(`INSERT INTO apifull_stars (user_id, balance) VALUES (?,0)
+		ON DUPLICATE KEY UPDATE user_id=VALUES(user_id)`, userID); err != nil {
+		return err
+	}
+	balance, err := balanceForUpdate(tx, userID)
+	if err != nil {
+		return err
+	}
+	if err = validateStarsDelta(balance, stars); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(`INSERT INTO apifull_star_tx (user_id, amount, idem) VALUES (?,?,?)`, userID, stars, idem); err != nil {
+		if isDuplicateKey(err) {
+			if readErr := tx.QueryRow(`SELECT amount FROM apifull_star_tx WHERE user_id=? AND idem=? FOR UPDATE`, userID, idem).Scan(&existing); readErr != nil {
+				return readErr
+			}
+			if existing == stars {
+				return nil
+			}
+			return ErrStarsIdempotencyConflict
+		}
+		return err
+	}
+	_, err = tx.Exec(`UPDATE apifull_stars SET balance=balance+? WHERE user_id=?`, stars, userID)
+	return err
+}
+
+func EnsurePremiumGrant(requestID, userID int64, provider, transactionID string, months int32) error {
+	if db == nil {
+		return errors.New("domain PostgreSQL is not open")
+	}
+	if requestID <= 0 || userID <= 0 || strings.TrimSpace(provider) == "" || len(provider) > 32 || strings.TrimSpace(transactionID) == "" || len(transactionID) > 191 || months < 1 || months > 36 {
+		return ErrInvalidPaymentRequest
+	}
+	now := time.Now().Unix()
+	_, err := db.Exec(`INSERT IGNORE INTO apifull_payment_entitlement_outbox
+		(request_id, user_id, provider, transaction_id, months, state, attempts, next_attempt_at, created_at, updated_at)
+		VALUES (?,?,?,?,?,'pending',0,?,?,?)`, requestID, userID, provider, transactionID, months, now, now, now)
+	if err != nil {
+		return err
+	}
+	var existing PremiumGrant
+	err = db.QueryRow(`SELECT request_id, user_id, provider, transaction_id, months FROM apifull_payment_entitlement_outbox WHERE request_id=?`, requestID).
+		Scan(&existing.RequestID, &existing.UserID, &existing.Provider, &existing.TransactionID, &existing.Months)
+	if err != nil {
+		return err
+	}
+	if existing.UserID != userID || existing.Provider != provider || existing.TransactionID != transactionID || existing.Months != months {
+		return ErrPaymentTransactionConflict
+	}
+	return nil
+}
+
+func insertPremiumGrantTx(tx *sql.Tx, requestID, userID int64, provider, transactionID string, months int32) error {
+	if requestID <= 0 || userID <= 0 || strings.TrimSpace(provider) == "" || len(provider) > 32 || strings.TrimSpace(transactionID) == "" || len(transactionID) > 191 || months < 1 || months > 36 {
+		return ErrInvalidPaymentRequest
+	}
+	_, err := tx.Exec(`INSERT INTO apifull_payment_entitlement_outbox
+		(request_id, user_id, provider, transaction_id, months, state, attempts, next_attempt_at, created_at, updated_at)
+		VALUES (?,?,?,?,?,'pending',0,?,?,?)`, requestID, userID, provider, transactionID, months, time.Now().Unix(), time.Now().Unix(), time.Now().Unix())
+	if err != nil && isDuplicateKey(err) {
+		var existing PremiumGrant
+		err = tx.QueryRow(`SELECT request_id, user_id, provider, transaction_id, months FROM apifull_payment_entitlement_outbox WHERE request_id=? FOR UPDATE`, requestID).
+			Scan(&existing.RequestID, &existing.UserID, &existing.Provider, &existing.TransactionID, &existing.Months)
+		if err == nil && (existing.UserID != userID || existing.Provider != provider || existing.TransactionID != transactionID || existing.Months != months) {
+			return ErrPaymentTransactionConflict
+		}
+	}
+	return err
+}
+
+func LockPremiumGrantReconciler(ctx context.Context) (func(), bool, error) {
+	if db == nil {
+		return nil, false, errors.New("domain PostgreSQL is not open")
+	}
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return nil, false, err
+	}
+	var acquired sql.NullInt64
+	if err = conn.QueryRowContext(ctx, `SELECT GET_LOCK('apifull_premium_grant_reconciler', 0)`).Scan(&acquired); err != nil {
+		_ = conn.Close()
+		return nil, false, err
+	}
+	if !acquired.Valid || acquired.Int64 != 1 {
+		_ = conn.Close()
+		return nil, false, nil
+	}
+	return func() {
+		releaseCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		var released sql.NullInt64
+		_ = conn.QueryRowContext(releaseCtx, `SELECT RELEASE_LOCK('apifull_premium_grant_reconciler')`).Scan(&released)
+		_ = conn.Close()
+	}, true, nil
+}
+
+func CheckPremiumGrantOutbox(ctx context.Context) error {
+	if db == nil {
+		return errors.New("domain PostgreSQL is not open")
+	}
+	rows, err := db.QueryContext(ctx, `SELECT request_id FROM apifull_payment_entitlement_outbox LIMIT 0`)
+	if err != nil {
+		return err
+	}
+	return rows.Close()
+}
+
+func ListDuePremiumGrants(ctx context.Context, limit int) ([]PremiumGrant, error) {
+	if db == nil {
+		return nil, errors.New("domain PostgreSQL is not open")
+	}
+	if limit < 1 || limit > 500 {
+		limit = 100
+	}
+	rows, err := db.QueryContext(ctx, `SELECT request_id, user_id, provider, transaction_id, months
+		FROM apifull_payment_entitlement_outbox WHERE state='pending' AND next_attempt_at<=?
+		ORDER BY created_at, request_id LIMIT ?`, time.Now().Unix(), limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	grants := make([]PremiumGrant, 0)
+	for rows.Next() {
+		var grant PremiumGrant
+		if err = rows.Scan(&grant.RequestID, &grant.UserID, &grant.Provider, &grant.TransactionID, &grant.Months); err != nil {
+			return nil, err
+		}
+		grants = append(grants, grant)
+	}
+	return grants, rows.Err()
+}
+
+func CompletePremiumGrant(ctx context.Context, requestID int64) error {
+	if db == nil {
+		return errors.New("domain PostgreSQL is not open")
+	}
+	_, err := db.ExecContext(ctx, `UPDATE apifull_payment_entitlement_outbox SET state='complete', last_error='', updated_at=? WHERE request_id=?`, time.Now().Unix(), requestID)
+	return err
+}
+
+func RetryPremiumGrant(ctx context.Context, requestID int64, cause error) error {
+	if db == nil {
+		return errors.New("domain PostgreSQL is not open")
+	}
+	if requestID <= 0 {
+		return ErrInvalidPaymentRequest
+	}
+	message := "grant failed"
+	if cause != nil {
+		message = cause.Error()
+	}
+	if len(message) > 255 {
+		message = message[:255]
+	}
+	_, err := db.ExecContext(ctx, `UPDATE apifull_payment_entitlement_outbox
+		SET next_attempt_at=UNIX_TIMESTAMP()+LEAST(900, CAST(POW(2, LEAST(attempts+1, 10)) AS UNSIGNED)),
+			attempts=attempts+1,
+			last_error=?, updated_at=UNIX_TIMESTAMP()
+		WHERE request_id=? AND state='pending'`, message, requestID)
+	return err
+}
+
 func LoadPaymentRequest(userID int64, requestKey string) (PaymentRequest, bool, error) {
 	if db == nil {
-		return PaymentRequest{}, false, errors.New("domain mysql is not open")
+		return PaymentRequest{}, false, errors.New("domain PostgreSQL is not open")
 	}
 	if userID <= 0 || strings.TrimSpace(requestKey) == "" {
 		return PaymentRequest{}, false, ErrInvalidPaymentRequest
@@ -318,7 +549,7 @@ func LoadPaymentReceiptByRequest(userID int64, requestKey string) (PaymentReceip
 
 func LoadPaymentReceiptByMessage(userID, peerID int64, msgID int32) (PaymentReceipt, bool, error) {
 	if db == nil {
-		return PaymentReceipt{}, false, errors.New("domain mysql is not open")
+		return PaymentReceipt{}, false, errors.New("domain PostgreSQL is not open")
 	}
 	if userID <= 0 || peerID <= 0 || msgID <= 0 {
 		return PaymentReceipt{}, false, ErrInvalidPaymentRequest

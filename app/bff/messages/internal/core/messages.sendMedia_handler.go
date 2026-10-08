@@ -107,7 +107,7 @@ func (c *MessagesCore) MessagesSendMedia(in *mtproto.TLMessagesSendMedia) (*mtpr
 			return nil, mtproto.ErrInternalServerError
 		}
 		requestHash := sha256.Sum256(requestData)
-		updates, postErr := channelview.PostMediaForInputPeerWithReplyAndRandomID(
+		updates, postErr := channelview.PostMediaForInputPeerWithReplyAndRandomIDForDelivery(
 			c.MD.UserId,
 			in.GetPeer(),
 			in.GetMessage(),
@@ -119,6 +119,7 @@ func (c *MessagesCore) MessagesSendMedia(in *mtproto.TLMessagesSendMedia) (*mtpr
 			in.GetEntities(),
 			in.GetReplyMarkup(),
 			hex.EncodeToString(requestHash[:]),
+			c.MD.PermAuthKeyId,
 		)
 		if postErr != nil {
 			return nil, postErr

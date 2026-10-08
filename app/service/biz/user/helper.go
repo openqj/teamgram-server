@@ -12,6 +12,7 @@ package user_helper
 
 import (
 	"github.com/teamgram/teamgram-server/app/service/biz/user/internal/config"
+	"github.com/teamgram/teamgram-server/app/service/biz/user/internal/dal/dao/postgres_dao"
 	"github.com/teamgram/teamgram-server/app/service/biz/user/internal/dao"
 	"github.com/teamgram/teamgram-server/app/service/biz/user/internal/server/grpc/service"
 	"github.com/teamgram/teamgram-server/app/service/biz/user/internal/svc"
@@ -20,10 +21,13 @@ import (
 type (
 	Dao           = dao.Dao
 	CacheUserData = dao.CacheUserData
+	PostgresDB    = postgres_dao.DB
+	PostgresStore = postgres_dao.Store
 )
 
 var (
 	GenCacheUserDataCacheKey = dao.GenCacheUserDataCacheKey
+	NewPostgresStore         = postgres_dao.NewStore
 )
 
 type (

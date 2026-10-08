@@ -28,7 +28,7 @@ type ContactSnapshot = { id: number; lastSeenAt?: number; expires?: number };
 
 function sql(query: string): string {
   return execFileSync('docker', [
-    'exec', 'mysql', 'mysql', '-N', '-s', '-uteamgram', '-pteamgram', '-Dteamgram', '-e', query,
+    'exec', 'teamgram-postgres', 'psql', '-v', 'ON_ERROR_STOP=1', '-At', '-q', '-F', '\t', '-U', 'teamgram', '-d', 'teamgram', '-c', query,
   ], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
 }
 
@@ -191,10 +191,10 @@ async function main() {
     if (JSON.stringify(before) !== JSON.stringify(after)) throw new Error('contact or presence rows changed during read-only probe');
     console.log(JSON.stringify({
       backend: process.env.TEAMGRAM_BACKEND_TAG || 'r24',
-      transport: `DC${dcId} WebSocket -> gateway -> session -> Contacts BFF -> User service -> MySQL`,
+      transport: `DC${dcId} WebSocket -> gateway -> session -> Contacts BFF -> User service -> PostgreSQL`,
       authenticatedUserId: userId,
       methods: {
-        'contacts.getContactIDs': { type: 'Vector<int>', rows: contactIds.length, matchesMySql: true, hashMatchEmpty: true },
+        'contacts.getContactIDs': { type: 'Vector<int>', rows: contactIds.length, matchesPostgreSQL: true, hashMatchEmpty: true },
         'contacts.getStatuses': {
           type: 'Vector<ContactStatus>',
           rows: statuses.length,

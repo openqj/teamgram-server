@@ -7,7 +7,7 @@ import (
 	"math"
 	"time"
 
-	mysql "github.com/go-sql-driver/mysql"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 const (
@@ -82,7 +82,7 @@ type SecretDeviceKey struct {
 // older epoch is rejected so an old device cannot overwrite a newer key.
 func SaveSecretDeviceKey(key SecretDeviceKey) error {
 	if db == nil {
-		return errors.New("domain mysql is not open")
+		return errors.New("domain PostgreSQL is not open")
 	}
 	// Auth key ids are signed int64 values on the wire; zero is the only
 	// missing-device sentinel.
@@ -160,7 +160,7 @@ func saveSecretDeviceKeyTx(tx *sql.Tx, key SecretDeviceKey) (bool, error) {
 // idempotent; reusing a chat id for different handshake data is rejected.
 func CreateSecretChat(chat SecretChat) (SecretChat, bool, error) {
 	if db == nil {
-		return SecretChat{}, false, errors.New("domain mysql is not open")
+		return SecretChat{}, false, errors.New("domain PostgreSQL is not open")
 	}
 	if chat.ID == 0 || chat.AccessHash == 0 || chat.AdminID <= 0 || chat.ParticipantID <= 0 || chat.AdminID == chat.ParticipantID || len(chat.GA) == 0 {
 		return SecretChat{}, false, ErrSecretChatConflict
@@ -294,7 +294,7 @@ func acceptSecretChatOnDevice(chatID int32, accessHash, userID, deviceID int64, 
 
 func AuthorizeSecretChat(chatID int32, accessHash, userID int64, requireActive bool) (SecretChat, error) {
 	if db == nil {
-		return SecretChat{}, errors.New("domain mysql is not open")
+		return SecretChat{}, errors.New("domain PostgreSQL is not open")
 	}
 	chat, found, err := loadSecretChatDB(db, chatID)
 	if err != nil {
@@ -317,7 +317,7 @@ func AuthorizeSecretChat(chatID int32, accessHash, userID int64, requireActive b
 
 func DiscardSecretChat(chatID int32, userID int64, deleteHistory bool) (SecretChat, int64, error) {
 	if db == nil {
-		return SecretChat{}, 0, errors.New("domain mysql is not open")
+		return SecretChat{}, 0, errors.New("domain PostgreSQL is not open")
 	}
 	tx, err := db.Begin()
 	if err != nil {
@@ -429,7 +429,7 @@ func SaveSecretMessage(chatID int32, accessHash, senderID, randomID int64, data 
 
 func ConfirmSecretQueue(userID int64, maxQTS int32) ([]int64, error) {
 	if db == nil {
-		return nil, errors.New("domain mysql is not open")
+		return nil, errors.New("domain PostgreSQL is not open")
 	}
 	if userID <= 0 || maxQTS <= 0 {
 		return nil, ErrSecretQTSInvalid
@@ -510,7 +510,7 @@ func ReadSecretHistory(chatID int32, accessHash, userID int64, maxDate int32) (S
 
 func lockSecretChat(chatID int32, accessHash, userID int64) (*sql.Tx, SecretChat, error) {
 	if db == nil {
-		return nil, SecretChat{}, errors.New("domain mysql is not open")
+		return nil, SecretChat{}, errors.New("domain PostgreSQL is not open")
 	}
 	tx, err := db.Begin()
 	if err != nil {
@@ -613,6 +613,6 @@ func equalSecretFile(a, b *SecretFile) bool {
 }
 
 func duplicateKey(err error) bool {
-	var mysqlErr *mysql.MySQLError
-	return errors.As(err, &mysqlErr) && mysqlErr.Number == 1062
+	var postgresErr *pgconn.PgError
+	return errors.As(err, &postgresErr) && postgresErr.Code == "23505"
 }

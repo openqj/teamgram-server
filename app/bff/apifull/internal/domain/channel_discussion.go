@@ -16,7 +16,7 @@ var (
 // and can therefore use as a channel discussion group.
 func ListDiscussionGroups(userID int64) ([]Channel, error) {
 	if db == nil {
-		return nil, errors.New("domain mysql is not open")
+		return nil, errors.New("domain PostgreSQL is not open")
 	}
 	if userID <= 0 {
 		return nil, ErrInvalidChannelMember
@@ -62,7 +62,7 @@ func ListDiscussionGroups(userID int64) ([]Channel, error) {
 // groupID == 0 clears an existing link.
 func SetDiscussionGroup(actorID, broadcastID, groupID int64) error {
 	if db == nil {
-		return errors.New("domain mysql is not open")
+		return errors.New("domain PostgreSQL is not open")
 	}
 	if actorID <= 0 || broadcastID <= 0 || broadcastID == groupID || groupID < 0 {
 		return ErrDiscussionChannelInvalid
@@ -136,7 +136,7 @@ func SetDiscussionGroup(actorID, broadcastID, groupID int64) error {
 // DiscussionGroupID returns the linked discussion group for a channel.
 func DiscussionGroupID(channelID int64) (int64, error) {
 	if db == nil {
-		return 0, errors.New("domain mysql is not open")
+		return 0, errors.New("domain PostgreSQL is not open")
 	}
 	var id sql.NullInt64
 	err := db.QueryRow(`SELECT discussion_group_id FROM apifull_channel WHERE id=?`, channelID).Scan(&id)
@@ -157,7 +157,7 @@ func DiscussionGroupID(channelID int64) (int64, error) {
 // resolving comments for a broadcast channel.
 func ChannelMessageReplies(userID, channelID int64, rootID, offsetID, offsetDate, addOffset, minID, maxID, limit int32) ([]ChannelMessage, int32, error) {
 	if db == nil {
-		return nil, 0, errors.New("domain mysql is not open")
+		return nil, 0, errors.New("domain PostgreSQL is not open")
 	}
 	if rootID <= 0 || limit <= 0 {
 		return nil, 0, ErrInvalidMessageID

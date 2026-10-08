@@ -32,7 +32,7 @@ func (c *MessageCore) MessageSearch(in *message.TLMessageSearch) (*mtproto.Messa
 	if in.Limit < 0 {
 		return nil, mtproto.ErrLimitInvalid
 	}
-	if c == nil || c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.Mysql == nil {
+	if c == nil || c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.Postgres == nil || c.svcCtx.Dao.Postgres.Store == nil || c.svcCtx.Dao.Postgres.Store.Messages == nil {
 		return nil, mtproto.ErrInternalServerError
 	}
 	var (
@@ -54,7 +54,7 @@ func (c *MessageCore) MessageSearch(in *message.TLMessageSearch) (*mtproto.Messa
 	switch in.PeerType {
 	case mtproto.PEER_SELF, mtproto.PEER_USER, mtproto.PEER_CHAT:
 		if q[0] == '#' {
-			idList, err := c.svcCtx.Dao.HashTagsDAO.SelectPeerHashTagList(
+			idList, err := c.svcCtx.Dao.SelectPeerHashTagList(
 				c.ctx,
 				in.UserId,
 				in.PeerType,
@@ -65,30 +65,22 @@ func (c *MessageCore) MessageSearch(in *message.TLMessageSearch) (*mtproto.Messa
 			}
 
 			if len(idList) > 0 {
-				if _, err = c.svcCtx.Dao.MessagesDAO.SelectByMessageIdListWithCB(
-					c.ctx,
-					in.UserId,
-					idList,
-					func(sz, i int, v *dataobject.MessagesDO) {
-						boxList = append(boxList, c.svcCtx.Dao.MakeMessageBox(c.ctx, in.UserId, v))
-					}); err != nil {
+				var rows []dataobject.MessagesDO
+				if rows, err = c.svcCtx.Dao.SelectByMessageIDListForSearch(c.ctx, in.UserId, idList); err != nil {
 					return nil, err
+				}
+				for i := range rows {
+					boxList = append(boxList, c.svcCtx.Dao.MakeMessageBox(c.ctx, in.UserId, &rows[i]))
 				}
 			}
 		} else {
 			dialogId := mtproto.MakeDialogId(in.UserId, in.PeerType, in.PeerId)
-			if _, err = c.svcCtx.Dao.MessagesDAO.SearchWithCB(
-				c.ctx,
-				in.UserId,
-				dialogId.A,
-				dialogId.B,
-				offset,
-				"%"+q+"%",
-				limit,
-				func(sz, i int, v *dataobject.MessagesDO) {
-					boxList = append(boxList, c.svcCtx.Dao.MakeMessageBox(c.ctx, in.UserId, v))
-				}); err != nil {
+			var rows []dataobject.MessagesDO
+			if rows, err = c.svcCtx.Dao.SearchMessagesForSearch(c.ctx, in.UserId, dialogId.A, dialogId.B, offset, "%"+q+"%", limit); err != nil {
 				return nil, err
+			}
+			for i := range rows {
+				boxList = append(boxList, c.svcCtx.Dao.MakeMessageBox(c.ctx, in.UserId, &rows[i]))
 			}
 		}
 	case mtproto.PEER_CHANNEL:

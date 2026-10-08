@@ -11,7 +11,33 @@
 package authsession_helper
 
 import (
+	"github.com/teamgram/teamgram-server/app/service/authsession/internal/dal/dao/postgres_dao"
+	"github.com/teamgram/teamgram-server/app/service/authsession/internal/dal/dataobject"
 	"github.com/teamgram/teamgram-server/app/service/authsession/internal/server"
+)
+
+// PostgreSQL DAOs are exposed here so service consumers can adopt the
+// independent pgx persistence boundary without importing internal packages.
+type (
+	PostgresDB              = postgres_dao.DB
+	PostgresStore           = postgres_dao.Store
+	PostgresAuthsDAO        = postgres_dao.AuthsDAO
+	PostgresAuthKeysDAO     = postgres_dao.AuthKeysDAO
+	PostgresAuthUsersDAO    = postgres_dao.AuthUsersDAO
+	PostgresAuthKeyInfosDAO = postgres_dao.AuthKeyInfosDAO
+
+	AuthsDO        = dataobject.AuthsDO
+	AuthKeysDO     = dataobject.AuthKeysDO
+	AuthUsersDO    = dataobject.AuthUsersDO
+	AuthKeyInfosDO = dataobject.AuthKeyInfosDO
+)
+
+var (
+	NewPostgresStore           = postgres_dao.NewStore
+	NewPostgresAuthsDAO        = postgres_dao.NewAuthsDAO
+	NewPostgresAuthKeysDAO     = postgres_dao.NewAuthKeysDAO
+	NewPostgresAuthUsersDAO    = postgres_dao.NewAuthUsersDAO
+	NewPostgresAuthKeyInfosDAO = postgres_dao.NewAuthKeyInfosDAO
 )
 
 var (

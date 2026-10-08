@@ -36,8 +36,12 @@ func mapDomain(err error) error {
 }
 
 func messageOf(row domain.ChannelMessage, views int32) *mtproto.Message {
+	return messageOfForUser(row, views, row.Sender)
+}
+
+func messageOfForUser(row domain.ChannelMessage, views int32, userID int64) *mtproto.Message {
 	msg := &mtproto.Message{
-		Out:         true,
+		Out:         userID <= 0 || row.Sender == userID,
 		Id:          row.MessageID,
 		FromId:      mtproto.MakePeerUser(row.Sender),
 		PeerId:      mtproto.MakePeerChannel(row.ChannelID),
@@ -74,9 +78,13 @@ func messageOf(row domain.ChannelMessage, views int32) *mtproto.Message {
 }
 
 func updatesNew(rows []domain.ChannelMessage) *mtproto.Updates {
+	return updatesNewForUser(rows, 0)
+}
+
+func updatesNewForUser(rows []domain.ChannelMessage, userID int64) *mtproto.Updates {
 	ups := make([]*mtproto.Update, 0, len(rows))
 	for _, row := range rows {
-		msg := messageOf(row, 0)
+		msg := messageOfForUser(row, 0, userID)
 		ups = append(ups, mtproto.MakeTLUpdateNewChannelMessage(&mtproto.Update{
 			Message_MESSAGE: msg,
 			Pts_INT32:       row.Pts,
@@ -254,6 +262,10 @@ func PostForInputPeerWithReply(userID int64, peer *mtproto.InputPeer, text strin
 }
 
 func PostForInputPeerWithReplyAndRandomID(userID int64, peer *mtproto.InputPeer, text string, when int64, replyToMsgID, replyToTopID int32, randomID int64) (*mtproto.Updates, error) {
+	return PostForInputPeerWithReplyAndRandomIDForDelivery(userID, peer, text, when, replyToMsgID, replyToTopID, randomID, 0)
+}
+
+func PostForInputPeerWithReplyAndRandomIDForDelivery(userID int64, peer *mtproto.InputPeer, text string, when int64, replyToMsgID, replyToTopID int32, randomID, excludeAuthKeyID int64) (*mtproto.Updates, error) {
 	channelID, err := ValidateInputPeer(userID, peer)
 	if err != nil {
 		return nil, err
@@ -279,6 +291,10 @@ func PostForInputPeerWithReplyAndRandomID(userID int64, peer *mtproto.InputPeer,
 }
 
 func PostMediaForInputPeerWithReplyAndRandomID(userID int64, peer *mtproto.InputPeer, text string, when int64, replyToMsgID, replyToTopID int32, randomID int64, media *mtproto.MessageMedia, entities []*mtproto.MessageEntity, replyMarkup *mtproto.ReplyMarkup, requestFingerprint string) (*mtproto.Updates, error) {
+	return PostMediaForInputPeerWithReplyAndRandomIDForDelivery(userID, peer, text, when, replyToMsgID, replyToTopID, randomID, media, entities, replyMarkup, requestFingerprint, 0)
+}
+
+func PostMediaForInputPeerWithReplyAndRandomIDForDelivery(userID int64, peer *mtproto.InputPeer, text string, when int64, replyToMsgID, replyToTopID int32, randomID int64, media *mtproto.MessageMedia, entities []*mtproto.MessageEntity, replyMarkup *mtproto.ReplyMarkup, requestFingerprint string, excludeAuthKeyID int64) (*mtproto.Updates, error) {
 	if when != 0 {
 		return nil, mtproto.ErrMethodNotImpl
 	}
@@ -296,11 +312,11 @@ func PostMediaForInputPeerWithReplyAndRandomID(userID int64, peer *mtproto.Input
 			targetID = linkedID
 		}
 	}
-	row, err := domain.InsertChannelMessageWithContentAndRandomID(targetID, userID, time.Now().Unix(), text, replyToMsgID, replyToTopID, randomID, domain.ChannelMessageContent{
+	row, err := domain.InsertChannelMessageWithContentAndRandomIDForDelivery(targetID, userID, time.Now().Unix(), text, replyToMsgID, replyToTopID, randomID, domain.ChannelMessageContent{
 		Media:       media,
 		Entities:    entities,
 		ReplyMarkup: replyMarkup,
-	}, requestFingerprint)
+	}, requestFingerprint, excludeAuthKeyID)
 	if err != nil {
 		return nil, mapDomain(err)
 	}
@@ -323,6 +339,10 @@ type ChannelMediaAlbumItem struct {
 // ID and complete random-id list in content_json for history and difference
 // hydration.
 func PostMediaAlbumForInputPeerWithReplyAndRandomID(userID int64, peer *mtproto.InputPeer, when int64, replyToMsgID, replyToTopID int32, groupedID int64, items []ChannelMediaAlbumItem) (*mtproto.Updates, error) {
+	return PostMediaAlbumForInputPeerWithReplyAndRandomIDForDelivery(userID, peer, when, replyToMsgID, replyToTopID, groupedID, items, 0)
+}
+
+func PostMediaAlbumForInputPeerWithReplyAndRandomIDForDelivery(userID int64, peer *mtproto.InputPeer, when int64, replyToMsgID, replyToTopID int32, groupedID int64, items []ChannelMediaAlbumItem, excludeAuthKeyID int64) (*mtproto.Updates, error) {
 	if when != 0 || groupedID <= 0 || len(items) == 0 {
 		return nil, mtproto.ErrInputRequestInvalid
 	}
@@ -366,7 +386,7 @@ func PostMediaAlbumForInputPeerWithReplyAndRandomID(userID int64, peer *mtproto.
 	for i := range inputs {
 		inputs[i].Content.AlbumRandomIDs = append([]int64(nil), albumRandomIDs...)
 	}
-	rows, err := domain.InsertChannelMessagesBatch(targetID, userID, time.Now().Unix(), inputs)
+	rows, err := domain.InsertChannelMessagesBatchForDelivery(targetID, userID, time.Now().Unix(), inputs, excludeAuthKeyID)
 	if err != nil {
 		return nil, mapDomain(err)
 	}
@@ -524,7 +544,7 @@ func MessagesBox(userID, channelID int64, ids []int32) (*mtproto.Messages_Messag
 // A missing message or an anonymous post is represented by author ID zero.
 func ChannelMessageAuthor(userID int64, input *mtproto.InputChannel, id int32) (int64, error) {
 	if !domain.Ready() {
-		return 0, errors.New("domain mysql is not open")
+		return 0, errors.New("domain PostgreSQL is not open")
 	}
 	if input == nil || (input.GetPredicateName() != mtproto.Predicate_inputChannel &&
 		input.GetPredicateName() != mtproto.Predicate_inputChannelFromMessage) || input.GetChannelId() <= 0 {
@@ -714,7 +734,7 @@ func Texts(userID, channelID int64, ids []int32) ([]string, error) {
 }
 
 func messageBox(ch domain.Channel, userID int64, rows []domain.ChannelMessage) (*mtproto.Messages_Messages, error) {
-	msgs, err := messagesOf(rows)
+	msgs, err := messagesOfForUser(rows, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -727,6 +747,10 @@ func messageBox(ch domain.Channel, userID int64, rows []domain.ChannelMessage) (
 }
 
 func messagesOf(rows []domain.ChannelMessage) ([]*mtproto.Message, error) {
+	return messagesOfForUser(rows, 0)
+}
+
+func messagesOfForUser(rows []domain.ChannelMessage, userID int64) ([]*mtproto.Message, error) {
 	msgs := make([]*mtproto.Message, 0, len(rows))
 	if len(rows) == 0 {
 		return msgs, nil
@@ -744,7 +768,7 @@ func messagesOf(rows []domain.ChannelMessage) ([]*mtproto.Message, error) {
 		if !ok {
 			return nil, mtproto.ErrMessageIdInvalid
 		}
-		msgs = append(msgs, messageOf(row, views))
+		msgs = append(msgs, messageOfForUser(row, views, userID))
 	}
 	return msgs, nil
 }
@@ -754,17 +778,17 @@ var (
 	openErr  error
 )
 
-// Open connects this process to the same MySQL the BFF reads.
+// Open connects this process to the same PostgreSQL 18 store the BFF reads.
 // A failed first attempt stays failed until the process restarts.
 func Open(dsn string) error {
 	if domain.Ready() {
 		return nil
 	}
 	if dsn == "" {
-		return errors.New("domain mysql is not open")
+		return errors.New("domain PostgreSQL is not open")
 	}
 	openOnce.Do(func() {
-		openErr = domain.Open(dsn)
+		openErr = domain.OpenPostgres(dsn)
 	})
 	return openErr
 }

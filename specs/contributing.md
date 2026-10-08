@@ -28,12 +28,12 @@ This document covers branching, PR rules, code style, commit messages, and local
 
 ### Build
 
-- **Go**: 1.21+.
+- **Go**: 1.25+.
 - From repo root: `make`; binaries go to `teamgramd/bin/`.
 
 ### Dependencies
 
-- MySQL, Redis, etcd, Kafka, MinIO (and FFmpeg if needed). Optional: `docker compose -f docker-compose-env.yaml up -d`.
+- PostgreSQL 18 is the sole production database. Teamgram's generated MySQL DAOs may remain only behind the migration boundary and in isolated legacy tests; production configs must not provide a MySQL DSN. Redis, etcd, Kafka, MinIO (and FFmpeg if needed) are also required. Optional: `docker compose -f docker-compose-env.yaml up -d`.
 - **Database**: Create DB `teamgram`, run all scripts under `teamgramd/deploy/sql/` in order (see main README).
 - **MinIO**: Buckets `documents`, `encryptedfiles`, `photos`, `videos` (auto-created when using docker-compose-env).
 

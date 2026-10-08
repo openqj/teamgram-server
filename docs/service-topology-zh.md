@@ -44,7 +44,7 @@
 
 ## 基础设施依赖
 
-| 服务        | etcd | MySQL | Redis (Cache/KV) | Kafka        | MinIO |
+| 服务        | etcd | PostgreSQL | Redis (Cache/KV) | Kafka        | MinIO |
 |-------------|------|-------|------------------|--------------|-------|
 | **idgen**   | ✓    | —     | ✓ (SeqIDGen)     | —            | —     |
 | **status**  | ✓    | —     | ✓ (Status)       | —            | —     |
@@ -59,7 +59,7 @@
 | **gnetway** | ✓    | —     | —                 | —            | —     |
 | **httpserver** | ✓  | —     | —                 | —            | —     |
 
-配置中默认端点：**etcd** 127.0.0.1:2379、**MySQL** 127.0.0.1:3306、**Redis** 127.0.0.1:6379、**Kafka** 127.0.0.1:9092、**MinIO** localhost:9000。
+配置中默认端点：**etcd** 127.0.0.1:2379、**PostgreSQL 18** 127.0.0.1:5432、**Redis** 127.0.0.1:6379、**Kafka** 127.0.0.1:9092、**MinIO** localhost:9000。
 
 ---
 
@@ -112,7 +112,7 @@ flowchart TB
 
   subgraph infra [基础设施]
     Etcd[etcd 2379]
-    MySQL[(MySQL 3306)]
+    PostgreSQL[(PostgreSQL 18 5432)]
     Redis[(Redis 6379)]
     Kafka[Kafka 9092]
     MinIO[MinIO 9000]
@@ -147,15 +147,15 @@ flowchart TB
   Media --> Dfs
   Dfs --> Idgen
   Dfs --> MinIO
-  AuthSession --> MySQL
+  AuthSession --> PostgreSQL
   AuthSession --> Redis
   Idgen --> Redis
   Status --> Redis
-  Biz --> MySQL
+  Biz --> PostgreSQL
   Biz --> Redis
-  Msg --> MySQL
+  Msg --> PostgreSQL
   Msg --> Redis
-  Sync --> MySQL
+  Sync --> PostgreSQL
   Sync --> Redis
   BFF --> Redis
   Session --> Redis

@@ -12,7 +12,7 @@ globalAny.addEventListener ??= () => {};
 globalAny.self.addEventListener ??= globalAny.addEventListener;
 
 function sql(query: string): string {
-  return execFileSync('docker', ['exec', 'mysql', 'mysql', '-N', '-s', '-uteamgram', '-pteamgram', '-Dteamgram', '-e', query], {
+  return execFileSync('docker', ['exec', 'teamgram-postgres', 'psql', '-v', 'ON_ERROR_STOP=1', '-At', '-q', '-F', '\t', '-U', 'teamgram', '-d', 'teamgram', '-c', query], {
     encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'],
   }).trim();
 }
@@ -26,7 +26,7 @@ function loadAuthKey(): string {
 }
 
 function settingsSnapshot(): { value: any; hash: string } {
-  const value = sql(`SELECT JSON_OBJECT(
+  const value = sql(`SELECT json_build_object(
     'archive_and_mute_new_noncontact_peers',archive_and_mute_new_noncontact_peers,
     'keep_archived_unmuted',keep_archived_unmuted,
     'keep_archived_folders',keep_archived_folders,
@@ -99,12 +99,12 @@ async function main() {
     const gifts = settings?.disallowedGifts;
     if (before.value.disallowed_gifts === null ? gifts !== undefined
       : JSON.stringify(gifts) !== JSON.stringify(JSON.parse(before.value.disallowed_gifts))) {
-      throw new Error('disallowedGifts mismatch against production MySQL');
+      throw new Error('disallowedGifts mismatch against production PostgreSQL');
     }
 
     const after = settingsSnapshot();
     if (before.hash !== after.hash) throw new Error('global privacy settings changed during read-only probe');
-    console.log(JSON.stringify({ userId, result: rpcName(settings), fieldsChecked: mappings.length + 2, settings: before.value, mysqlSha256: after.hash, writes: 0 }));
+    console.log(JSON.stringify({ userId, result: rpcName(settings), fieldsChecked: mappings.length + 2, settings: before.value, postgresSha256: after.hash, writes: 0 }));
   } finally {
     client.destroy();
   }

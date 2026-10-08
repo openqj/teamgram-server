@@ -36,7 +36,7 @@ type Dao struct {
 }
 
 func New(c config.Config) *Dao {
-	secretUpdates, err := NewSecretUpdatesReader(c.MysqlDSN)
+	secretUpdates, err := NewSecretUpdatesReader(c.PostgresDSN)
 	if err != nil {
 		secretUpdates = &unavailableSecretUpdatesReader{err: err}
 	}

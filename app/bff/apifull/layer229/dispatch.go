@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"strconv"
 	"sync"
 
@@ -22,9 +23,8 @@ var (
 	configuredDSN string
 )
 
-// UseMySQL opens the apifull tables from the process config.
-// These methods run in the session process, which does not share the bff Dao,
-// so that process opens MySQL from its own config. An empty DSN is ignored.
+// UseMySQL is retained for isolated legacy tests only. Production callers must
+// use UsePostgres so the session process shares the PostgreSQL 18 domain store.
 func UseMySQL(dsn string) error {
 	if dsn == "" || domain.Ready() {
 		return nil
@@ -33,16 +33,29 @@ func UseMySQL(dsn string) error {
 	return domain.Open(dsn)
 }
 
+// UsePostgres opens the Layer 229 domain store in the session process. The
+// session process does not share the BFF DAO, so it owns its own PG handle.
+func UsePostgres(dsn string) error {
+	if dsn == "" {
+		return errors.New("layer229: PostgresDSN is required")
+	}
+	if domain.Ready() {
+		return nil
+	}
+	configuredDSN = dsn
+	return domain.OpenPostgres(dsn)
+}
+
 func ensure() error {
 	openOnce.Do(func() {
 		if domain.Ready() {
 			return
 		}
-		dsn := configuredDSN
-		if dsn == "" {
-			dsn = domain.DefaultDSN
+		if configuredDSN == "" {
+			openErr = errors.New("layer229: PostgresDSN is required")
+			return
 		}
-		openErr = domain.Open(dsn)
+		openErr = domain.OpenPostgres(configuredDSN)
 	})
 	return openErr
 }

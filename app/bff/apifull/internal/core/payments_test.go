@@ -142,6 +142,10 @@ func TestPaymentInfoMethodsUsePersistence(t *testing.T) {
 	if err != nil || cleared != mtproto.BoolTrue || spy.values[payInfoKey(uid)] != "" || spy.values[payCredKey(uid)] != "0" {
 		t.Fatalf("clear saved info: result=%v err=%v values=%v", cleared, err, spy.values)
 	}
+	empty, err := c.PaymentsGetSavedInfo(&mtproto.TLPaymentsGetSavedInfo{})
+	if err != nil || empty == nil || empty.GetHasSavedCredentials() || empty.GetSavedInfo() != nil {
+		t.Fatalf("empty saved info: result=%+v err=%v", empty, err)
+	}
 }
 
 func TestPaymentInfoMethodsValidateMalformedRequests(t *testing.T) {

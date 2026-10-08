@@ -5,12 +5,15 @@
 > [English (primary)](./install-manual-linux.md) | 中文  
 > 若使用 Docker 部署，请参阅 [install-docker.md](./install-docker.md)。
 
+> **数据库：** 新部署使用 PostgreSQL 18。启动服务前先执行仓库内 PostgreSQL
+> 迁移。应用运行时仍按服务逐步切换，路线图验收门槛全部通过前不能宣称全量就绪。
+
 ---
 
 ## 一、环境要求
 
-- **Go**：1.21 及以上（用于编译 teamgram-server）
-- **MySQL**：8.x（推荐 8.0.29）
+- **Go**：1.25 及以上（用于编译 teamgram-server）
+- **PostgreSQL**：18
 - **Redis**：6.x
 - **Etcd**：3.5.x
 - **Kafka**：2.x / 3.x（需配合 Zookeeper）
@@ -34,44 +37,29 @@ yum install dnf -y
 dnf --version
 ```
 
-### 2.2 安装 MySQL
+### 2.2 安装 PostgreSQL 18
 
 **CentOS 9 / Fedora：**
 
 ```bash
-dnf install mysql-server -y
-systemctl enable --now mysqld
-```
-
-**Fedora（社区版 MySQL）：**
-
-```bash
-dnf install community-mysql-server -y
-systemctl enable --now mysqld
+dnf install postgresql18-server postgresql18 -y
+postgresql-18-setup --initdb
+systemctl enable --now postgresql-18
 ```
 
 **Ubuntu/Debian：**
 
 ```bash
 apt update
-apt install mysql-server -y
-systemctl enable --now mysql
+apt install postgresql-18 postgresql-client-18 -y
+systemctl enable --now postgresql
 ```
 
-**配置 MySQL：**
+**创建应用角色和数据库：**
 
 ```bash
-# 安全初始化（可选）
-mysql_secure_installation
-
-# 登录并创建数据库、配置空密码（按需修改）
-mysql -uroot -p
-
-mysql> CREATE DATABASE teamgram;
-mysql> UPDATE mysql.user SET authentication_string='' WHERE user='root';
-mysql> ALTER USER 'root'@'localhost' IDENTIFIED BY '';
-mysql> FLUSH PRIVILEGES;
-mysql> exit
+sudo -u postgres psql -c "CREATE USER teamgram WITH PASSWORD 'teamgram';"
+sudo -u postgres psql -c "CREATE DATABASE teamgram OWNER teamgram;"
 ```
 
 ### 2.3 安装 Redis
@@ -233,17 +221,12 @@ cd teamgram-server
 
 ### 3.2 初始化数据库
 
-在项目根目录下执行（SQL 位于 `teamgramd/deploy/sql/`）：
+在项目根目录下执行 PostgreSQL 18 迁移：
 
 ```bash
 # 创建数据库（若已创建可跳过）
-mysql -uroot -e "CREATE DATABASE IF NOT EXISTS teamgram;"
-
-# 导入 SQL（按顺序）
-mysql -uroot teamgram < teamgramd/deploy/sql/1_teamgram.sql
-# ... 按时间顺序导入所有 migrate-*.sql，或使用循环：
-for f in teamgramd/deploy/sql/migrate-*.sql; do mysql -uroot teamgram < "$f"; done
-mysql -uroot teamgram < teamgramd/deploy/sql/z_init.sql
+DATABASE_URL='postgresql://teamgram:teamgram@127.0.0.1:5432/teamgram?sslmode=disable' \
+  ./teamgramd/deploy/postgres/apply.sh
 ```
 
 ---
@@ -264,7 +247,7 @@ dnf install go -y
 apt install golang-go -y
 ```
 
-或从 [Go 官网](https://go.dev/dl/) 安装 1.21+ 版本。
+或从 [Go 官网](https://go.dev/dl/) 安装 1.25+ 版本。
 
 ### 4.2 编译
 
@@ -280,7 +263,8 @@ make
 
 ## 五、修改配置文件
 
-配置文件在 `teamgramd/etc/` 下，需根据本机环境修改为 **127.0.0.1** 或实际 IP/端口，保证与 MySQL、Redis、Etcd、Kafka、MinIO、Pika 一致。
+配置文件在 `teamgramd/etc/` 下，需根据本机环境修改为 **127.0.0.1** 或实际 IP/端口，保证与 PostgreSQL、Redis、Etcd、Kafka、MinIO、Pika 一致。
+仓库内服务 YAML 按服务逐步迁移；只有路线图标记该服务通过验收后，才可使用 PostgreSQL 启动该服务。
 
 **重点检查：**
 
@@ -293,7 +277,7 @@ make
 
 3. **各服务 YAML**  
    - `Etcd.Hosts`：`127.0.0.1:2379`  
-   - `Mysql.Addr` / `DSN`：`127.0.0.1:3306`  
+   - `Postgres.DSN`：`postgres://teamgram:teamgram@127.0.0.1:5432/teamgram?sslmode=disable`
    - `Cache` / `Redis`：`127.0.0.1:6379`  
    - Kafka 相关配置中的 broker 地址：`127.0.0.1:9092`
 
@@ -314,7 +298,7 @@ SSDB:
 
 ## 六、启动服务
 
-确保 MySQL、Redis、Etcd、Kafka（及 Zookeeper）、MinIO（及可选 Pika）均已启动后：
+确保 PostgreSQL、Redis、Etcd、Kafka（及 Zookeeper）、MinIO（及可选 Pika）均已启动后：
 
 ```bash
 cd teamgramd/bin

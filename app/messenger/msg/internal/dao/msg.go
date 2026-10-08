@@ -78,12 +78,12 @@ func (d *Dao) DeleteByMessageIdList(ctx context.Context, userId int64, idList []
 	if len(idList) == 0 {
 		return 0, nil
 	}
-	return d.MessagesDAO.DeleteMessagesByMessageIdList(ctx, userId, idList)
+	return d.DeleteMessageByIDList(ctx, userId, idList)
 }
 
 func (d *Dao) GetLastMessageAndIdListByDialog(ctx context.Context, userId int64, peer *mtproto.PeerUtil) (lastMessage *mtproto.Message, idList []int32) {
 	dialogId := mtproto.MakeDialogId(userId, peer.PeerType, peer.PeerId)
-	d.MessagesDAO.SelectDialogMessageIdListWithCB(
+	d.SelectDialogMessageListWithCB(
 		ctx,
 		userId,
 		dialogId.A,
@@ -136,7 +136,7 @@ func (d *Dao) GetMessageIdListByDialog(ctx context.Context, userId int64, peer *
 		idList   []int32
 	)
 
-	d.MessagesDAO.SelectDialogMessageIdListWithCB(
+	d.SelectDialogMessageListWithCB(
 		ctx,
 		userId,
 		dialogId.A,

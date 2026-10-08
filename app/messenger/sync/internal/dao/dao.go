@@ -14,7 +14,6 @@ import (
 
 	kafka "github.com/teamgram/marmota/pkg/mq"
 	"github.com/teamgram/marmota/pkg/net/rpcx"
-	"github.com/teamgram/marmota/pkg/stores/sqlx"
 	sync_client "github.com/teamgram/teamgram-server/app/messenger/sync/client"
 	"github.com/teamgram/teamgram-server/app/messenger/sync/internal/config"
 	chat_client "github.com/teamgram/teamgram-server/app/service/biz/chat/client"
@@ -25,7 +24,7 @@ import (
 )
 
 type Dao struct {
-	*Mysql
+	*Postgres
 	kv               kv.Store
 	conf             *config.Config
 	mu               sync.RWMutex
@@ -37,10 +36,13 @@ type Dao struct {
 	PushClient sync_client.SyncClient
 }
 
-func New(c config.Config) *Dao {
-	db := sqlx.NewMySQL(&c.Mysql)
+func New(c config.Config) (*Dao, error) {
+	pg, err := newPostgresDao(c)
+	if err != nil {
+		return nil, err
+	}
 	d := &Dao{
-		Mysql:            newMysqlDao(db),
+		Postgres:         pg,
 		kv:               kv.NewStore(c.KV),
 		conf:             &c,
 		sessionServers:   make(map[string]SessionPusher),
@@ -54,5 +56,5 @@ func New(c config.Config) *Dao {
 	}
 
 	go d.watch(c.SessionClient)
-	return d
+	return d, nil
 }

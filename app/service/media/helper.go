@@ -12,6 +12,7 @@ package media_helper
 
 import (
 	"github.com/teamgram/teamgram-server/app/service/media/internal/config"
+	"github.com/teamgram/teamgram-server/app/service/media/internal/dal/dao/postgres_dao"
 	"github.com/teamgram/teamgram-server/app/service/media/internal/dal/dataobject"
 	"github.com/teamgram/teamgram-server/app/service/media/internal/dao"
 	"github.com/teamgram/teamgram-server/app/service/media/internal/server/grpc/service"
@@ -19,7 +20,9 @@ import (
 )
 
 type (
-	Dao = dao.Dao
+	Dao           = dao.Dao
+	PostgresDB    = postgres_dao.DB
+	PostgresStore = postgres_dao.Store
 )
 
 type (
@@ -30,6 +33,7 @@ var (
 	GenCacheDocumentKey   = dao.GenCacheDocumentKey
 	ParseCacheDocumentKey = dao.ParseCacheDocumentKey
 	GetPhotoSize          = dao.GetPhotoSize
+	NewPostgresStore      = postgres_dao.NewStore
 )
 
 type (

@@ -16,8 +16,13 @@ globalAny.self.addEventListener ??= globalAny.addEventListener;
 
 function sql(query: string): string {
   return execFileSync('docker', [
-    'exec', 'mysql', 'mysql', '-N', '-s', '-uteamgram', '-pteamgram', '-Dteamgram', '-e', query,
+    'exec', 'teamgram-postgres', 'psql', '-v', 'ON_ERROR_STOP=1', '-At', '-q', '-F', '\t', '-U', 'teamgram', '-d', 'teamgram', '-c', query,
   ], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+}
+
+function contentSettingValue(): string {
+  return sql(`SELECT COALESCE((SELECT value FROM user_settings
+    WHERE user_id=${userId} AND key2='sensitive_enabled' AND deleted=0 LIMIT 1), '<absent>')`);
 }
 
 function loadAuthKey(): string {
@@ -134,6 +139,7 @@ function ensureType(value: any, suffix: string, method: string): void {
 }
 
 async function main() {
+  const sensitiveEnabledBefore = contentSettingValue();
   const before = {
     wallpaper: kvHash(`wallpaper:${userId}`),
     theme: kvHash(`theme:${userId}`),
@@ -148,6 +154,10 @@ async function main() {
 
     const contentSettings = await client.invoke(new Api.account.GetContentSettings());
     ensureType(contentSettings, 'contentSettings', 'account.getContentSettings');
+    const sensitiveEnabled = sensitiveEnabledBefore === 'true';
+    if (Boolean(contentSettings.sensitiveEnabled) !== sensitiveEnabled || !contentSettings.sensitiveCanChange) {
+      throw new Error(`content settings do not match production user setting: enabled=${contentSettings.sensitiveEnabled} canChange=${contentSettings.sensitiveCanChange} stored=${sensitiveEnabledBefore}`);
+    }
 
     const wallpapers = await client.invoke(new Api.account.GetWallPapers({ hash: 0n }));
     ensureType(wallpapers, 'wallpapers', 'account.getWallPapers');
@@ -173,6 +183,9 @@ async function main() {
       wallpaper: kvHash(`wallpaper:${userId}`),
       theme: kvHash(`theme:${userId}`),
     };
+    if (contentSettingValue() !== sensitiveEnabledBefore) {
+      throw new Error('account.getContentSettings changed the persisted user setting');
+    }
     if (before.wallpaper !== after.wallpaper || before.theme !== after.theme) {
       throw new Error('account look KV changed during read-only probe');
     }
@@ -182,6 +195,9 @@ async function main() {
     console.log(JSON.stringify({
       userId: String(me.id),
       contentSettingsType: rpcName(contentSettings),
+      sensitiveEnabled: contentSettings.sensitiveEnabled,
+      sensitiveCanChange: contentSettings.sensitiveCanChange,
+      sensitiveEnabledStoredValue: sensitiveEnabledBefore,
       wallpaperType: rpcName(wallpapers),
       wallpaperHash: String(wallpapers.hash),
       wallpaperCount: wallpaperItems.length,

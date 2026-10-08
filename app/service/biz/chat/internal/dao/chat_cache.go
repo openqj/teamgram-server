@@ -45,6 +45,43 @@ func (d *Dao) GetChatParticipantCacheKey(chatId, chatParticipantId int64) string
 }
 
 func (d *Dao) getChatData(ctx context.Context, chatId int64) (*ChatCacheData, error) {
+	// PostgreSQL is the authoritative store for new deployments. Keep this
+	// read path independent of the legacy CachedConn/MySQL DAO so every chat
+	// handler can resolve a mutable chat when MySQL is intentionally absent.
+	if d.Postgres != nil && d.Postgres.Store != nil {
+		do, err := d.Postgres.Store.Chats.Select(ctx, chatId)
+		if err != nil {
+			return nil, err
+		}
+		if do == nil {
+			return nil, mtproto.ErrChatIdInvalid
+		}
+		participants, err := d.Postgres.Store.Participants.SelectList(ctx, chatId)
+		if err != nil {
+			return nil, err
+		}
+		cacheData := &ChatCacheData{
+			ChatData:              d.MakeImmutableChatByDO(do),
+			ChatParticipantIdList: make([]int64, 0, len(participants)),
+			BotIdList:             make([]int64, 0),
+		}
+		for i := range participants {
+			p := &participants[i]
+			cacheData.ChatParticipantIdList = append(cacheData.ChatParticipantIdList, p.UserId)
+			if p.State == 0 && p.IsBot {
+				cacheData.BotIdList = append(cacheData.BotIdList, p.UserId)
+			}
+		}
+		if do.PhotoId != 0 && d.MediaClient != nil {
+			cacheData.ChatData.Photo, _ = d.MediaClient.MediaGetPhoto(ctx, &media.TLMediaGetPhoto{PhotoId: do.PhotoId})
+		}
+		if d.Plugin != nil {
+			cacheData.ChatData.CallActive, cacheData.ChatData.CallNotEmpty = d.Plugin.GetChatCallActiveAndNotEmpty(ctx, 0, chatId)
+			cacheData.ChatData.Call = d.Plugin.GetChatGroupCall(ctx, 0, chatId)
+		}
+		return cacheData, nil
+	}
+
 	var (
 		chatData = &ChatCacheData{}
 	)
@@ -106,6 +143,18 @@ func (d *Dao) getChatData(ctx context.Context, chatId int64) (*ChatCacheData, er
 }
 
 func (d *Dao) getChatParticipantListByIdList(ctx context.Context, chatId int64, idList []int64) []*mtproto.ImmutableChatParticipant {
+	if d.Postgres != nil && d.Postgres.Store != nil {
+		participantList := make([]*mtproto.ImmutableChatParticipant, 0, len(idList))
+		for _, userID := range idList {
+			do, err := d.Postgres.Store.Participants.SelectByParticipantId(ctx, chatId, userID)
+			if err != nil || do == nil {
+				continue
+			}
+			participantList = append(participantList, d.MakeImmutableChatParticipant(do))
+		}
+		return participantList
+	}
+
 	participantList := make([]*mtproto.ImmutableChatParticipant, len(idList))
 
 	mr.ForEach(

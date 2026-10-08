@@ -19,11 +19,11 @@
 package core
 
 import (
-	"context"
-	"github.com/teamgram/marmota/pkg/stores/sqlx"
+	"errors"
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/service/biz/chat/chat"
 	"github.com/zeromicro/go-zero/core/jsonx"
+	"time"
 )
 
 // ChatSetChatAvailableReactions
@@ -64,19 +64,25 @@ func (c *ChatCore) ChatSetChatAvailableReactions(in *chat.TLChatSetChatAvailable
 			availableReactions = string(availableReactionsData)
 		}
 	}
+	if c.svcCtx.Dao.Postgres == nil || c.svcCtx.Dao.Postgres.Store == nil {
+		return nil, errors.New("chat.setChatAvailableReactions: PostgreSQL store is not initialized")
+	}
 
-	_, _, err = c.svcCtx.Dao.CachedConn.Exec(
-		c.ctx,
-		func(ctx context.Context, conn *sqlx.DB) (int64, int64, error) {
-			affected, err2 := c.svcCtx.Dao.ChatsDAO.UpdateAvailableReactions(c.ctx, in.AvailableReactionsType, availableReactions, in.ChatId)
-			return 0, affected, err2
-		},
-		c.svcCtx.Dao.GetChatCacheKey(in.ChatId))
+	tx, err := c.svcCtx.Dao.Postgres.Pool.Begin(c.ctx)
+	if err == nil {
+		defer tx.Rollback(c.ctx)
+		_, err = c.svcCtx.Dao.Postgres.Store.Chats.UpdateAvailableReactionsOn(c.ctx, tx, in.AvailableReactionsType, availableReactions, in.ChatId)
+		if err == nil {
+			err = tx.Commit(c.ctx)
+		}
+	}
 	if err != nil {
 		c.Logger.Errorf("chat.setChatAvailableReactions - error: %v")
 		return nil, err
 	}
 
 	chat2.Chat.AvailableReactions = in.AvailableReactions
+	chat2.Chat.Version++
+	chat2.Chat.Date = time.Now().Unix()
 	return chat2, nil
 }

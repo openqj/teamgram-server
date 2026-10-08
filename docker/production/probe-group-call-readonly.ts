@@ -13,15 +13,15 @@ globalAny.self ??= globalThis;
 globalAny.addEventListener ??= () => {};
 globalAny.self.addEventListener ??= globalAny.addEventListener;
 
-function mysql(query: string): string {
+function postgres(query: string): string {
   return execFileSync('docker', [
-    'exec', 'mysql', 'mysql', '-N', '-s', '-uteamgram', '-pteamgram', '-Dteamgram', '-e', query,
+    'exec', 'teamgram-postgres', 'psql', '-v', 'ON_ERROR_STOP=1', '-At', '-q', '-F', '\t', '-U', 'teamgram', '-d', 'teamgram', '-c', query,
   ], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
 }
 
 function requiredValue(query: string, name: string): string {
-  const value = mysql(query);
-  if (!value) throw new Error(`${name} is absent from production MySQL`);
+  const value = postgres(query);
+  if (!value) throw new Error(`${name} is absent from production PostgreSQL`);
   return value;
 }
 
@@ -76,7 +76,7 @@ async function main() {
     LIMIT 1
   `, 'active production auth key');
   const [rawCallId, rawAccessHash, rawParticipantCount, rawParticipantsHash] = requiredValue(`
-    SELECT id, access_hash, JSON_LENGTH(participants), SHA2(participants, 256)
+    SELECT id, access_hash, jsonb_array_length(participants::jsonb), encode(digest(participants::text, 'sha256'), 'hex')
     FROM apifull_group_call
     WHERE creator_user_id=${userId} AND channel_id=0
     ORDER BY id
@@ -85,6 +85,12 @@ async function main() {
   const callId = BigInt(rawCallId);
   const accessHash = BigInt(rawAccessHash);
   const participantCount = Number(rawParticipantCount);
+  const mediaSources = postgres(`
+    SELECT media_source
+    FROM apifull_group_call_participant
+    WHERE call_id=${callId} AND media_source IS NOT NULL AND media_source > 0
+    ORDER BY media_source
+  `).split('\n').filter(Boolean).map(Number);
   if (!Number.isSafeInteger(participantCount) || participantCount < 1) {
     throw new Error('production group call has no valid persisted participants');
   }
@@ -130,15 +136,15 @@ async function main() {
     }
     const checkedSources = await client.invoke(new Api.phone.CheckGroupCall({
       call: inputCall,
-      sources: [userId, userId + 1],
+      sources: mediaSources.length > 0 ? [mediaSources[0], mediaSources[0] + 1] : [1, 2],
     }));
     if (!Array.isArray(checkedSources)
-      || checkedSources.length !== 1
-      || Number(checkedSources[0]) !== userId) {
+      || checkedSources.length !== (mediaSources.length > 0 ? 1 : 0)
+      || (mediaSources.length > 0 && Number(checkedSources[0]) !== mediaSources[0])) {
       throw new Error(`group call source check mismatch: ${JSON.stringify(checkedSources)}`);
     }
     const callStateAfter = requiredValue(`
-      SELECT id, access_hash, JSON_LENGTH(participants), SHA2(participants, 256)
+      SELECT id, access_hash, jsonb_array_length(participants::jsonb), encode(digest(participants::text, 'sha256'), 'hex')
       FROM apifull_group_call
       WHERE id=${callId} AND creator_user_id=${userId}
       LIMIT 1
@@ -149,12 +155,12 @@ async function main() {
     }
     console.log(JSON.stringify({
       userId: String(me.id),
-      transport: `DC${dcId} WebSocket -> gateway -> session -> BFF -> MySQL`,
+      transport: `DC${dcId} WebSocket -> gateway -> session -> BFF -> PostgreSQL`,
       resultType: actualName,
       callType: rpcName(call),
       callId: String(call.id),
       participants: participants.length,
-      mysqlParticipants: participantCount,
+      postgresParticipants: participantCount,
       selfParticipant: true,
       getGroupParticipants: {
         type: rosterType,
@@ -163,7 +169,11 @@ async function main() {
         participants: rosterParticipants.length,
         selfParticipant: true,
       },
-      checkGroupCall: { sourcesRequested: 2, sourcesPresent: checkedSources.length, matchedSelfSource: true },
+      checkGroupCall: {
+        sourcesRequested: mediaSources.length > 0 ? [mediaSources[0], mediaSources[0] + 1] : [1, 2],
+        sourcesPresent: checkedSources.length,
+        matchedPersistedSource: mediaSources.length > 0,
+      },
       persistedCallUnchanged: true,
       writes: 0,
     }));

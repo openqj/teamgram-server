@@ -27,6 +27,11 @@ import (
 
 type Dao struct {
 	*Mysql
+	// Postgres is the authoritative persistence boundary for new deployments.
+	// The generated handler surface is still being converted transaction by
+	// transaction; keeping this explicit prevents new code from reaching for
+	// the legacy MySQL wrapper.
+	*Postgres
 	sqlc.CachedConn
 	idgen_client.IDGenClient2
 	user_client.UserClient

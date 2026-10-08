@@ -24,3 +24,15 @@ type (
 func New(c Config, plugin plugin.MsgPlugin) *service.Service {
 	return service.New(svc.NewServiceContext(c, plugin))
 }
+
+// NewWithClose constructs a message service and returns a lifecycle callback
+// for the PostgreSQL pool owned by its service context.
+func NewWithClose(c Config, plugin plugin.MsgPlugin) (*service.Service, func()) {
+	ctx := svc.NewServiceContext(c, plugin)
+	closeContext := func() {
+		if ctx.Dao != nil && ctx.Dao.Postgres != nil {
+			ctx.Dao.Postgres.Close()
+		}
+	}
+	return service.New(ctx), closeContext
+}

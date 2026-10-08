@@ -33,7 +33,7 @@ var (
 // caller so protocol retries do not create duplicate moderation work.
 func SaveReport(actorID int64, kind, targetType string, targetID int64, dedupeKey string, payload []byte) error {
 	if db == nil {
-		return errors.New("domain mysql is not open")
+		return errors.New("domain PostgreSQL is not open")
 	}
 	if actorID <= 0 || strings.TrimSpace(kind) == "" || strings.TrimSpace(targetType) == "" || targetID < 0 || strings.TrimSpace(dedupeKey) == "" || len(payload) == 0 {
 		return ErrInvalidReport
@@ -57,7 +57,7 @@ func SaveReport(actorID int64, kind, targetType string, targetID int64, dedupeKe
 func LoadReportByDedupe(dedupeKey string) (Report, bool, error) {
 	var out Report
 	if db == nil {
-		return out, false, errors.New("domain mysql is not open")
+		return out, false, errors.New("domain PostgreSQL is not open")
 	}
 	if len(dedupeKey) != sha256.Size*2 {
 		return out, false, ErrInvalidReport

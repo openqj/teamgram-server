@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import { createRequire } from 'node:module';
@@ -12,11 +11,13 @@ globalAny.addEventListener ??= () => {};
 globalAny.self.addEventListener ??= globalAny.addEventListener;
 
 function sql(query: string): string {
-  return execFileSync('docker', ['exec', 'redis', 'redis-cli', 'GET', query], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+  return execFileSync('docker', [
+    'exec', 'teamgram-postgres', 'psql', '-v', 'ON_ERROR_STOP=1', '-At', '-q', '-F', '\t', '-U', 'teamgram', '-d', 'teamgram', '-c', query,
+  ], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
 }
 
 function loadAuthKey(): string {
-  const body = execFileSync('docker', ['exec', 'mysql', 'mysql', '-N', '-s', '-uteamgram', '-pteamgram', '-Dteamgram', '-e', `SELECT k.body FROM auth_users u JOIN auth_keys k USING(auth_key_id) JOIN auth_key_infos i USING(auth_key_id) WHERE u.user_id=${userId} AND u.state=0 AND u.deleted=0 AND k.deleted=0 AND i.deleted=0 AND i.auth_key_type=0 ORDER BY u.date_active DESC,u.id DESC LIMIT 1`], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+  const body = execFileSync('docker', ['exec', 'teamgram-postgres', 'psql', '-v', 'ON_ERROR_STOP=1', '-At', '-q', '-F', '\t', '-U', 'teamgram', '-d', 'teamgram', '-c', `SELECT k.body FROM auth_users u JOIN auth_keys k USING(auth_key_id) JOIN auth_key_infos i USING(auth_key_id) WHERE u.user_id=${userId} AND u.state=0 AND u.deleted=0 AND k.deleted=0 AND i.deleted=0 AND i.auth_key_type=0 ORDER BY u.date_active DESC,u.id DESC LIMIT 1`], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
   if (!body) throw new Error(`no active production auth key found for user ${userId}`);
   return Buffer.from(body, 'base64').toString('hex');
 }
@@ -41,8 +42,9 @@ function makeClient(authKeyHex: string): any {
 function snapshot(): Record<string, { present: boolean; hash: string }> {
   const out: Record<string, { present: boolean; hash: string }> = {};
   for (const slot of ['low', 'medium', 'high']) {
-    const value = sql(`auto_download:${userId}:${slot}`);
-    out[slot] = { present: value.length > 0, hash: createHash('sha256').update(value).digest('hex') };
+    const row = sql(`SELECT COUNT(*), COALESCE(MAX(encode(digest(v::text, 'sha256'), 'hex')), '') FROM apifull_kv WHERE k='auto_download:${userId}:${slot}'`);
+    const [count, hash] = row.split('\t');
+    out[slot] = { present: Number(count) === 1, hash: hash || '' };
   }
   return out;
 }

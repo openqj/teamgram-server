@@ -10,10 +10,9 @@
 package core
 
 import (
-	"context"
+	"errors"
 	"time"
 
-	"github.com/teamgram/marmota/pkg/stores/sqlx"
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/service/biz/chat/chat"
 )
@@ -88,46 +87,37 @@ func (c *ChatCore) ChatDeleteChatUser(in *chat.TLChatDeleteChatUser) (*mtproto.M
 		}
 	}
 
-	_, _, err = c.svcCtx.Dao.CachedConn.Exec(
-		c.ctx,
-		func(ctx context.Context, conn *sqlx.DB) (int64, int64, error) {
-			// deletedUser.Dialog.TopMessage
-			tR := sqlx.TxWrapper(c.ctx, c.svcCtx.Dao.DB, func(tx *sqlx.Tx, result *sqlx.StoreResult) {
-				if kicked {
-					_, result.Err = c.svcCtx.Dao.ChatParticipantsDAO.UpdateKickedTx(tx, now, deletedUser.Id)
-					if result.Err != nil {
-						c.Logger.Errorf("chat.deleteChatUser - error: %v", err)
-						return
-					}
-					deletedUser.State = mtproto.ChatMemberStateKicked
-				} else {
-					_, result.Err = c.svcCtx.Dao.ChatParticipantsDAO.UpdateLeftTx(tx, now, deletedUser.Id)
-					if result.Err != nil {
-						c.Logger.Errorf("chat.deleteChatUser - error: %v", err)
-						return
-					}
-					deletedUser.State = mtproto.ChatMemberStateLeft
-				}
-				chat2.Chat.ParticipantsCount -= 1
-				chat2.Chat.Date = now
-				chat2.Chat.Version += 1
-				_, result.Err = c.svcCtx.Dao.ChatsDAO.UpdateParticipantCountTx(tx, chat2.Chat.ParticipantsCount, chat2.Chat.Id)
-				if result.Err != nil {
-					c.Logger.Errorf("chat.deleteChatUser - error: %v", err)
-					return
-				}
+	if c.svcCtx.Dao.Postgres == nil || c.svcCtx.Dao.Postgres.Store == nil {
+		return nil, errors.New("chat.deleteChatUser: PostgreSQL store is not initialized")
+	}
 
-				_, result.Err = c.svcCtx.Dao.ChatInviteParticipantsDAO.DeleteTx(tx, chat2.Chat.Id, deleteUserId)
-			})
-			return 0, 0, tR.Err
-		},
-		c.svcCtx.Dao.GetChatCacheKey(chat2.Id()),
-		c.svcCtx.Dao.GetChatParticipantCacheKey(chat2.Id(), deleteUserId))
-
+	tx, err := c.svcCtx.Dao.Postgres.Pool.Begin(c.ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(c.ctx)
+	if kicked {
+		_, err = c.svcCtx.Dao.Postgres.Store.Participants.UpdateKickedOn(c.ctx, tx, now, deletedUser.Id)
+		deletedUser.State = mtproto.ChatMemberStateKicked
+	} else {
+		_, err = c.svcCtx.Dao.Postgres.Store.Participants.UpdateLeftOn(c.ctx, tx, now, deletedUser.Id)
+		deletedUser.State = mtproto.ChatMemberStateLeft
+	}
+	if err == nil {
+		chat2.Chat.ParticipantsCount--
+		chat2.Chat.Date = now
+		chat2.Chat.Version++
+		_, err = c.svcCtx.Dao.Postgres.Store.Chats.UpdateParticipantCountOn(c.ctx, tx, chat2.Chat.ParticipantsCount, chat2.Chat.Id)
+	}
+	if err == nil {
+		_, err = c.svcCtx.Dao.Postgres.Store.InviteParticipants.DeleteOn(c.ctx, tx, chat2.Chat.Id, deleteUserId)
+	}
+	if err == nil {
+		err = tx.Commit(c.ctx)
+	}
 	if err != nil {
 		c.Logger.Errorf("chat.deleteChatUser - error: %v", err)
 		return nil, err
 	}
-
 	return chat2, nil
 }

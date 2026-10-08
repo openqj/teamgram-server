@@ -149,13 +149,16 @@ func (c *ChatCore) ChatGetChatInviteImporters(in *chat.TLChatGetChatInviteImport
 	}
 
 	if q != "" {
-		_, err := c.svcCtx.Dao.ChatInviteParticipantsDAO.SelectListByQueryWithCB(
-			c.ctx,
-			in.GetChatId(),
-			link,
-			requested,
-			q,
-			func(_ int, _ int, v *dataobject.ChatInviteParticipantsDO) { appendImporter(v) })
+		if c.svcCtx.Dao.Postgres != nil && c.svcCtx.Dao.Postgres.Store != nil {
+			var rows []dataobject.ChatInviteParticipantsDO
+			rows, err = c.svcCtx.Dao.Postgres.Store.InviteParticipants.SelectListByQuery(c.ctx, in.GetChatId(), link, requested, q)
+			for i := range rows {
+				appendImporter(&rows[i])
+			}
+		} else {
+			_, err = c.svcCtx.Dao.ChatInviteParticipantsDAO.SelectListByQueryWithCB(c.ctx, in.GetChatId(), link, requested, q,
+				func(_ int, _ int, v *dataobject.ChatInviteParticipantsDO) { appendImporter(v) })
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -163,10 +166,16 @@ func (c *ChatCore) ChatGetChatInviteImporters(in *chat.TLChatGetChatInviteImport
 			rInvites = []*mtproto.ChatInviteImporter{}
 		}
 	} else if requested == 1 && link == "" {
-		_, err := c.svcCtx.Dao.ChatInviteParticipantsDAO.SelectRecentRequestedListWithCB(
-			c.ctx,
-			in.GetChatId(),
-			func(_ int, _ int, v *dataobject.ChatInviteParticipantsDO) { appendImporter(v) })
+		if c.svcCtx.Dao.Postgres != nil && c.svcCtx.Dao.Postgres.Store != nil {
+			var rows []dataobject.ChatInviteParticipantsDO
+			rows, err = c.svcCtx.Dao.Postgres.Store.InviteParticipants.SelectRecentRequestedList(c.ctx, in.GetChatId())
+			for i := range rows {
+				appendImporter(&rows[i])
+			}
+		} else {
+			_, err = c.svcCtx.Dao.ChatInviteParticipantsDAO.SelectRecentRequestedListWithCB(c.ctx, in.GetChatId(),
+				func(_ int, _ int, v *dataobject.ChatInviteParticipantsDO) { appendImporter(v) })
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -174,11 +183,16 @@ func (c *ChatCore) ChatGetChatInviteImporters(in *chat.TLChatGetChatInviteImport
 			rInvites = []*mtproto.ChatInviteImporter{}
 		}
 	} else {
-		_, err := c.svcCtx.Dao.ChatInviteParticipantsDAO.SelectListByLinkWithCB(
-			c.ctx,
-			link,
-			requested,
-			func(_ int, _ int, v *dataobject.ChatInviteParticipantsDO) { appendImporter(v) })
+		if c.svcCtx.Dao.Postgres != nil && c.svcCtx.Dao.Postgres.Store != nil {
+			var rows []dataobject.ChatInviteParticipantsDO
+			rows, err = c.svcCtx.Dao.Postgres.Store.InviteParticipants.SelectListByLink(c.ctx, link, requested)
+			for i := range rows {
+				appendImporter(&rows[i])
+			}
+		} else {
+			_, err = c.svcCtx.Dao.ChatInviteParticipantsDAO.SelectListByLinkWithCB(c.ctx, link, requested,
+				func(_ int, _ int, v *dataobject.ChatInviteParticipantsDO) { appendImporter(v) })
+		}
 		if err != nil {
 			return nil, err
 		}

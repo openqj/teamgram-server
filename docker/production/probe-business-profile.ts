@@ -67,16 +67,16 @@ function intro(api: any) {
 function clear(id: number, name: string) { return new RawRequest(id, int32(0), name); }
 function setMainProfileTab(api: any) { return new RawRequest(0x5dee78b0, new api.ProfileTabPosts().getBytes(), 'account.setMainProfileTab'); }
 function mainTab(): number {
-  const output = execFileSync('docker', ['exec', 'mysql', 'mysql', '-N', '-s', '-uteamgram', '-pteamgram', '-Dteamgram', '-e', `SELECT main_tab FROM users WHERE id=${userId}`], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+  const output = execFileSync('docker', ['exec', 'teamgram-postgres', 'psql', '-v', 'ON_ERROR_STOP=1', '-At', '-q', '-F', '\t', '-U', 'teamgram', '-d', 'teamgram', '-c', `SELECT main_tab FROM users WHERE id=${userId}`], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
   return Number(output.trim());
 }
 function restoreMainTab(value: number) {
-  execFileSync('docker', ['exec', 'mysql', 'mysql', '-N', '-s', '-uteamgram', '-pteamgram', '-Dteamgram', '-e', `UPDATE users SET main_tab=${value} WHERE id=${userId}`], { stdio: ['ignore', 'ignore', 'ignore'] });
+  execFileSync('docker', ['exec', 'teamgram-postgres', 'psql', '-v', 'ON_ERROR_STOP=1', '-At', '-q', '-F', '\t', '-U', 'teamgram', '-d', 'teamgram', '-c', `UPDATE users SET main_tab=${value} WHERE id=${userId}`], { stdio: ['ignore', 'ignore', 'ignore'] });
 }
 function presence(): Record<string, boolean> {
   const keys = [`bhours:${userId}`, `bloc:${userId}`, `greet:${userId}`, `greet:away:${userId}`, `bintro:${userId}`];
   const sql = `SELECT k,CHAR_LENGTH(v) FROM apifull_kv WHERE k IN (${keys.map((key) => `'${key}'`).join(',')})`;
-  const output = execFileSync('docker', ['exec', 'mysql', 'mysql', '-N', '-s', '-uteamgram', '-pteamgram', '-Dteamgram', '-e', sql], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+  const output = execFileSync('docker', ['exec', 'teamgram-postgres', 'psql', '-v', 'ON_ERROR_STOP=1', '-At', '-q', '-F', '\t', '-U', 'teamgram', '-d', 'teamgram', '-c', sql], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
   const values = new Map(output.split(/\r?\n/).filter(Boolean).map((line) => { const [key, length] = line.split('\t'); return [key, Number(length) > 0] as const; }));
   return { workHours: values.get(keys[0]) === true, location: values.get(keys[1]) === true, greeting: values.get(keys[2]) === true, away: values.get(keys[3]) === true, intro: values.get(keys[4]) === true };
 }

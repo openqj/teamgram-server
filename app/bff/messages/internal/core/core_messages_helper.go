@@ -9,7 +9,6 @@ package core
 import (
 	"context"
 	"math/rand"
-	"time"
 
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/messenger/sync/sync"
@@ -60,10 +59,9 @@ func (c *MessagesCore) doClearDraft(ctx context.Context, userId int64, authKeyId
 }
 
 func (c *MessagesCore) makeMediaByInputMedia(media *mtproto.InputMedia) (messageMedia *mtproto.MessageMedia, err error) {
-	var (
-		now = int32(time.Now().Unix())
-	)
-
+	if media == nil {
+		return nil, mtproto.ErrMediaInvalid
+	}
 	switch media.PredicateName {
 	case mtproto.Predicate_inputMediaEmpty:
 		// inputMediaEmpty#9664f57f = InputMedia;
@@ -88,6 +86,9 @@ func (c *MessagesCore) makeMediaByInputMedia(media *mtproto.InputMedia) (message
 			c.Logger.Errorf("UploadPhoto error: %v, by %s", err, media)
 			return
 		}
+		if photo == nil || photo.GetPredicateName() != mtproto.Predicate_photo {
+			return nil, mtproto.ErrMediaInvalid
+		}
 
 		messageMedia = mtproto.MakeTLMessageMediaPhoto(&mtproto.MessageMedia{
 			Spoiler:         media.Spoiler,
@@ -100,22 +101,24 @@ func (c *MessagesCore) makeMediaByInputMedia(media *mtproto.InputMedia) (message
 		//	ttl_seconds:flags.0?int = InputMedia;
 
 		mediaPhoto := media.To_InputMediaPhoto()
-		sizeList, _ := c.svcCtx.Dao.MediaClient.MediaGetPhotoSizeList(c.ctx, &mediapb.TLMediaGetPhotoSizeList{
-			SizeId: mediaPhoto.GetId_INPUTPHOTO().GetId(),
+		inputPhoto := mediaPhoto.GetId_INPUTPHOTO()
+		if inputPhoto == nil || inputPhoto.GetId() <= 0 || inputPhoto.GetAccessHash() == 0 {
+			return nil, mtproto.ErrPhotoInvalid
+		}
+		photo, err := c.svcCtx.Dao.MediaClient.MediaGetPhoto(c.ctx, &mediapb.TLMediaGetPhoto{
+			PhotoId: inputPhoto.GetId(),
 		})
-
-		photo := mtproto.MakeTLPhoto(&mtproto.Photo{
-			Id:          mediaPhoto.GetId_INPUTPHOTO().GetId(),
-			HasStickers: false,
-			AccessHash:  mediaPhoto.GetId_INPUTPHOTO().GetAccessHash(),
-			Date:        now,
-			Sizes:       sizeList.Sizes,
-			DcId:        sizeList.DcId,
-		})
+		if err != nil {
+			return nil, err
+		}
+		if photo == nil || photo.GetPredicateName() != mtproto.Predicate_photo ||
+			photo.GetId() != inputPhoto.GetId() || photo.GetAccessHash() != inputPhoto.GetAccessHash() {
+			return nil, mtproto.ErrPhotoInvalid
+		}
 
 		messageMedia = mtproto.MakeTLMessageMediaPhoto(&mtproto.MessageMedia{
 			Spoiler:         mediaPhoto.GetSpoiler(),
-			Photo_FLAGPHOTO: photo.To_Photo(),
+			Photo_FLAGPHOTO: photo,
 			TtlSeconds:      mediaPhoto.GetTtlSeconds(),
 		}).To_MessageMedia()
 	case mtproto.Predicate_inputMediaGeoPoint:
@@ -165,8 +168,10 @@ func (c *MessagesCore) makeMediaByInputMedia(media *mtproto.InputMedia) (message
 			Media:   media,
 		})
 		if err2 != nil {
-			err = mtproto.ErrMediaInvalid
-			return
+			return nil, err2
+		}
+		if documentMedia == nil || documentMedia.GetPredicateName() != mtproto.Predicate_messageMediaDocument || documentMedia.GetDocument() == nil {
+			return nil, mtproto.ErrMediaInvalid
 		}
 		messageMedia = documentMedia
 	case mtproto.Predicate_inputMediaDocument:
@@ -183,9 +188,12 @@ func (c *MessagesCore) makeMediaByInputMedia(media *mtproto.InputMedia) (message
 			return nil, mtproto.ErrDocumentInvalid
 		}
 
-		document3, _ := c.svcCtx.Dao.MediaClient.MediaGetDocument(c.ctx, &mediapb.TLMediaGetDocument{
+		document3, err := c.svcCtx.Dao.MediaClient.MediaGetDocument(c.ctx, &mediapb.TLMediaGetDocument{
 			Id: id.GetId(),
 		})
+		if err != nil {
+			return nil, err
+		}
 		if document3 == nil ||
 			document3.GetPredicateName() != mtproto.Predicate_document ||
 			document3.GetId() != id.GetId() ||
@@ -221,22 +229,21 @@ func (c *MessagesCore) makeMediaByInputMedia(media *mtproto.InputMedia) (message
 		}).To_MessageMedia()
 	case mtproto.Predicate_inputMediaPhotoExternal:
 		// inputMediaPhotoExternal#e5bbfe1a flags:# url:string ttl_seconds:flags.0?int = InputMedia;
-
-		messageMedia = mtproto.MakeTLMessageMediaUnsupported(nil).To_MessageMedia()
+		return nil, mtproto.ErrMethodNotImpl
 	case mtproto.Predicate_inputMediaDocumentExternal:
 		// TODO(@benqi): MessageMedia???
 		// inputMediaDocumentExternal#fb52dc99 flags:# url:string ttl_seconds:flags.0?int = InputMedia;
-		messageMedia = mtproto.MakeTLMessageMediaUnsupported(nil).To_MessageMedia()
+		return nil, mtproto.ErrMethodNotImpl
 	case mtproto.Predicate_inputMediaGame:
 		// inputMediaGame#d33f43f3 id:InputGame = InputMedia;
 
 		// TODO(@benqi): Not impl inputMediaGame
-		messageMedia = mtproto.MakeTLMessageMediaUnsupported(nil).To_MessageMedia()
+		return nil, mtproto.ErrMethodNotImpl
 	case mtproto.Predicate_inputMediaInvoice:
 		// inputMediaInvoice#d9799874 flags:# title:string description:string photo:flags.0?InputWebDocument invoice:Invoice payload:bytes provider:string provider_data:DataJSON start_param:flags.1?string = InputMedia;
 
 		// TODO(@benqi): Not impl inputMediaGame
-		messageMedia = mtproto.MakeTLMessageMediaUnsupported(nil).To_MessageMedia()
+		return nil, mtproto.ErrMethodNotImpl
 	case mtproto.Predicate_inputMediaGeoLive:
 		// inputMediaGeoLive#971fa843 flags:# stopped:flags.0?true geo_point:InputGeoPoint heading:flags.2?int period:flags.1?int proximity_notification_radius:flags.3?int = InputMedia;
 
@@ -314,20 +321,16 @@ func (c *MessagesCore) makeMediaByInputMedia(media *mtproto.InputMedia) (message
 		}
 	case mtproto.Predicate_inputMediaStory:
 		// inputMediaStory#89fdd778 peer:InputPeer id:int = InputMedia;
-
-		messageMedia = mtproto.MakeTLMessageMediaUnsupported(nil).To_MessageMedia()
+		return nil, mtproto.ErrMethodNotImpl
 	case mtproto.Predicate_inputMediaWebPage:
 		// inputMediaWebPage#c21b8849 flags:# force_large_media:flags.0?true force_small_media:flags.1?true optional:flags.2?true url:string = InputMedia;
-
-		messageMedia = mtproto.MakeTLMessageMediaUnsupported(nil).To_MessageMedia()
+		return nil, mtproto.ErrMethodNotImpl
 	case mtproto.Predicate_inputMediaPaidMedia:
 		// inputMediaPaidMedia#c4103386 flags:# stars_amount:long extended_media:Vector<InputMedia> payload:flags.0?string = InputMedia;
-
-		messageMedia = mtproto.MakeTLMessageMediaUnsupported(nil).To_MessageMedia()
+		return nil, mtproto.ErrMethodNotImpl
 	case mtproto.Predicate_inputMediaTodo:
 		// inputMediaTodo#9fc55fde todo:TodoList = InputMedia;
-
-		messageMedia = mtproto.MakeTLMessageMediaUnsupported(nil).To_MessageMedia()
+		return nil, mtproto.ErrMethodNotImpl
 	default:
 		err = mtproto.ErrMediaInvalid
 	}

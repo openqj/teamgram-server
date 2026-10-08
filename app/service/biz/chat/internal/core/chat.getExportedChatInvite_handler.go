@@ -12,6 +12,7 @@ package core
 import (
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/service/biz/chat/chat"
+	"github.com/teamgram/teamgram-server/app/service/biz/chat/internal/dal/dataobject"
 )
 
 // ChatGetExportedChatInvite
@@ -25,7 +26,12 @@ func (c *ChatCore) ChatGetExportedChatInvite(in *chat.TLChatGetExportedChatInvit
 		link = chat.GetInviteHashByLink(in.Link)
 	)
 
-	chatInviteDO, err := c.svcCtx.Dao.ChatInvitesDAO.SelectByLink(c.ctx, link)
+	var chatInviteDO *dataobject.ChatInvitesDO
+	if c.svcCtx.Dao.Postgres != nil && c.svcCtx.Dao.Postgres.Store != nil {
+		chatInviteDO, err = c.svcCtx.Dao.Postgres.Store.Invites.SelectByLink(c.ctx, link)
+	} else {
+		chatInviteDO, err = c.svcCtx.Dao.ChatInvitesDAO.SelectByLink(c.ctx, link)
+	}
 	if err != nil {
 		c.Logger.Errorf("chat.getExportedChatInvite - error: %v", err)
 		return nil, err

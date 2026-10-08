@@ -36,7 +36,7 @@ func (m *Dao) GetVideoSizeListList(ctx context.Context, idList []int64) (sizes m
 		return
 	}
 
-	_, _ = m.VideoSizesDAO.SelectListByVideoSizeIdListWithCB(
+	_, _ = m.videoSizesStore().SelectListByVideoSizeIdListWithCB(
 		ctx,
 		idList,
 		func(sz, i int, v *dataobject.VideoSizesDO) {
@@ -59,7 +59,7 @@ func (m *Dao) GetVideoSizeListList(ctx context.Context, idList []int64) (sizes m
 func (m *Dao) GetVideoSizeList(ctx context.Context, sizeId int64) (sizes []*mtproto.VideoSize) {
 	sizes = make([]*mtproto.VideoSize, 0, 2)
 
-	_, _ = m.VideoSizesDAO.SelectListByVideoSizeIdWithCB(
+	_, _ = m.videoSizesStore().SelectListByVideoSizeIdWithCB(
 		ctx,
 		sizeId,
 		func(sz, i int, v *dataobject.VideoSizesDO) {
@@ -149,7 +149,7 @@ func (m *Dao) SaveVideoSizeV2(ctx context.Context, szId int64, szList []*mtproto
 				FilePath:     fmt.Sprintf("%s/%d.dat", sz.Type, szId),
 			}
 		}
-		if _, _, err := m.VideoSizesDAO.Insert(ctx, szDO); err != nil {
+		if _, _, err := m.videoSizesStore().Insert(ctx, szDO); err != nil {
 			return err
 		}
 	}

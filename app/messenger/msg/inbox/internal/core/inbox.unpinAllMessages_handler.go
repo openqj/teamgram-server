@@ -38,7 +38,7 @@ func (c *InboxCore) InboxUnpinAllMessages(in *inbox.TLInboxUnpinAllMessages) (*m
 	switch peer.PeerType {
 	case mtproto.PEER_USER:
 		dialogId := mtproto.MakeDialogId(peer.PeerId, peer.PeerType, in.UserId)
-		_, _ = c.svcCtx.Dao.MessagesDAO.SelectPinnedListWithCB(
+		_, _ = c.svcCtx.Dao.SelectPinnedMessages(
 			c.ctx,
 			peer.PeerId,
 			dialogId.A,
@@ -70,7 +70,7 @@ func (c *InboxCore) InboxUnpinAllMessages(in *inbox.TLInboxUnpinAllMessages) (*m
 	case mtproto.PEER_CHAT:
 		// TODO: 性能优化
 		dialogId := mtproto.MakeDialogId(0, peer.PeerType, in.PeerId)
-		_, _ = c.svcCtx.Dao.ChatParticipantsDAO.SelectListWithCB(
+		_, _ = c.svcCtx.Dao.SelectChatParticipants(
 			c.ctx,
 			peer.PeerId,
 			func(sz, i int, v *dataobject.ChatParticipantsDO) {
@@ -81,7 +81,7 @@ func (c *InboxCore) InboxUnpinAllMessages(in *inbox.TLInboxUnpinAllMessages) (*m
 					return
 				}
 
-				_, _ = c.svcCtx.Dao.MessagesDAO.SelectPinnedListWithCB(
+				_, _ = c.svcCtx.Dao.SelectPinnedMessages(
 					c.ctx,
 					v.UserId,
 					dialogId.A,

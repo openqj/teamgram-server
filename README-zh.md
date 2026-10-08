@@ -13,7 +13,7 @@
   - **Intermediate**
   - **Padded intermediate**
   - **Full**
-- **API Layer: 228**
+- **API Layer: 229**
 - **Core features**
   - **private chat**
   - **basic group**
@@ -32,7 +32,7 @@
 
 | 组件 | 用途 |
 |------|------|
-| [MySQL](https://www.mysql.com/) 5.7+ / 8.0 | 主数据存储 |
+| [PostgreSQL](https://www.postgresql.org/) 18 | 主数据存储目标（迁移中） |
 | [Redis](https://redis.io/) | 缓存、会话、去重 |
 | [etcd](https://etcd.io/) | 服务发现与配置 |
 | [Kafka](https://kafka.apache.org/) | 消息与事件管道 |
@@ -59,7 +59,7 @@
 - **[手动安装（Linux）](docs/install-manual-linux-zh.md)** — CentOS、Fedora、Ubuntu/Debian
 - **[手动安装（macOS）](docs/install-manual-macos-zh.md)** — Intel 与 Apple Silicon
 
-需要 Go 1.21+。需自行安装并配置依赖（MySQL、Redis、etcd、Kafka、MinIO、FFmpeg），初始化数据库与 MinIO，再编译并运行。
+需要 Go 1.25+。新部署使用 PostgreSQL 18 和仓库内迁移 runner；各服务运行时按切片完成接线，当前边界见路线图。
 
 ---
 
@@ -76,7 +76,9 @@ cd teamgram-server
 
 ### 2. 启动依赖栈
 
-将启动 MySQL、Redis、etcd、Kafka、MinIO 及可选监控组件。数据库与 MinIO 桶会自动完成初始化。
+将启动包含 PostgreSQL 18、Redis、etcd、Kafka、MinIO 及可选监控组件的依赖栈。
+`postgres-migrate` 任务会应用仓库内 schema。仅需数据库时可使用
+`docker-compose-postgres.yaml`。
 
 ```bash
 docker compose -f docker-compose-env.yaml up -d

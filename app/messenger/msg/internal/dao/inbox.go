@@ -272,7 +272,7 @@ func (d *Dao) sendMessageToInbox(ctx context.Context, fromId int64, peer *mtprot
 	_, _, _ = d.CachedConn.Exec(
 		ctx,
 		func(ctx context.Context, conn *sqlx.DB) (int64, int64, error) {
-			lastInsertId, rowsAffected, err := d.DialogsDAO.InsertOrUpdate(ctx, dialogDO)
+			lastInsertId, rowsAffected, err := d.InsertOrUpdateDialog(ctx, dialogDO)
 			logx.WithContext(ctx).Infof("lastInsertId:%d, rowsAffected: %d, result: %v, do: %v", lastInsertId, rowsAffected, err, dialogDO)
 			return 0, 0, err
 		},
@@ -428,7 +428,7 @@ func (d *Dao) DeleteInboxMessages(ctx context.Context, deleteUserId int64, peer 
 			msgIds = append(msgIds, msgDOList[i].UserMessageBoxId)
 		}
 
-		dlgDO, _ := d.DialogsDAO.SelectDialog(ctx, userId, msgDOList[0].PeerType, mtproto.GetPeerIdByDialogId(userId, dialogId))
+		dlgDO, _ := d.SelectDialog(ctx, userId, msgDOList[0].PeerType, mtproto.GetPeerIdByDialogId(userId, dialogId))
 		if dlgDO != nil {
 			topMessage := dlgDO.TopMessage
 			for i := 0; i < len(msgDOList); i++ {
@@ -451,7 +451,7 @@ func (d *Dao) DeleteInboxMessages(ctx context.Context, deleteUserId int64, peer 
 		}
 
 		// tR := sqlx.TxWrapper(ctx, d.DB, func(tx *sqlx.Tx, result *sqlx.StoreResult) {
-		_, err2 := d.MessagesDAO.DeleteMessagesByMessageIdList(ctx, userId, msgIds)
+		_, err2 := d.DeleteMessageByIDList(ctx, userId, msgIds)
 		if err2 != nil {
 			// return
 		}
@@ -459,7 +459,7 @@ func (d *Dao) DeleteInboxMessages(ctx context.Context, deleteUserId int64, peer 
 			d.CachedConn.Exec(
 				ctx,
 				func(ctx context.Context, conn *sqlx.DB) (int64, int64, error) {
-					_, err2 = d.DialogsDAO.UpdateCustomMap(
+					_, err2 = d.UpdateDialogCustomMap(
 						ctx,
 						map[string]interface{}{
 							"top_message":  dlgDO.TopMessage,
@@ -507,7 +507,7 @@ func (d *Dao) EditUserInboxMessage(ctx context.Context, fromId, peerId int64, me
 	message.PeerId = peerMessage.PeerId
 	message.ReplyTo = peerMessage.ReplyTo
 	mData, _ := jsonx.Marshal(message)
-	if _, err = d.MessagesDAO.UpdateEditMessage(ctx, string(mData), message.Message, peerId, message.Id); err != nil {
+	if _, err = d.UpdateMessageEdit(ctx, string(mData), message.Message, peerId, message.Id); err != nil {
 		return
 	}
 
@@ -552,7 +552,7 @@ func (d *Dao) EditChatInboxMessage(ctx context.Context, fromId int64, peerChatId
 	}
 
 	mData, _ := jsonx.Marshal(message)
-	if _, err = d.MessagesDAO.UpdateEditMessage(ctx, string(mData), message.Message, toId, message.Id); err != nil {
+	if _, err = d.UpdateMessageEdit(ctx, string(mData), message.Message, toId, message.Id); err != nil {
 		return
 	}
 

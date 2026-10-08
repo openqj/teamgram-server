@@ -33,7 +33,7 @@ import (
 func (c *InboxCore) InboxUpdateHistoryReaded(in *inbox.TLInboxUpdateHistoryReaded) (*mtproto.Void, error) {
 	switch in.PeerType {
 	case mtproto.PEER_USER:
-		replyId, err := c.svcCtx.Dao.MessagesDAO.SelectPeerUserMessage(
+		replyId, err := c.svcCtx.Dao.SelectPeerUserMessage(
 			c.ctx,
 			in.PeerId,
 			in.FromId,
@@ -80,7 +80,7 @@ func (c *InboxCore) InboxUpdateHistoryReaded(in *inbox.TLInboxUpdateHistoryReade
 			Updates: mtproto.MakeUpdatesByUpdates(updateReadHistoryOutbox),
 		})
 	case mtproto.PEER_CHAT:
-		replyId, err := c.svcCtx.Dao.MessagesDAO.SelectPeerUserMessage(
+		replyId, err := c.svcCtx.Dao.SelectPeerUserMessage(
 			c.ctx,
 			in.Sender,
 			in.FromId,
@@ -95,7 +95,7 @@ func (c *InboxCore) InboxUpdateHistoryReaded(in *inbox.TLInboxUpdateHistoryReade
 		}
 		c.Logger.Infof("inbox.updateHistoryReaded: %v", replyId)
 
-		_, _ = c.svcCtx.Dao.DialogsDAO.SelectPeerDialogListWithCB(
+		_, _ = c.svcCtx.Dao.SelectPeerDialogListWithCB(
 			c.ctx,
 			replyId.UserId,
 			[]int64{mtproto.MakePeerDialogId(in.PeerType, in.PeerId)},
