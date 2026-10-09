@@ -17,6 +17,9 @@ import (
 // AuthsessionGetPermAuthKeyId
 // authsession.getPermAuthKeyId auth_key_id:long= Int64;
 func (c *AuthsessionCore) AuthsessionGetPermAuthKeyId(in *authsession.TLAuthsessionGetPermAuthKeyId) (*mtproto.Int64, error) {
+	if in == nil || in.GetAuthKeyId() == 0 {
+		return nil, mtproto.ErrAuthKeyInvalid
+	}
 	var (
 		inKeyId = in.GetAuthKeyId()
 	)

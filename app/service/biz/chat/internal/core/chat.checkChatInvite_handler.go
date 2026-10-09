@@ -10,25 +10,26 @@
 package core
 
 import (
+	"time"
+
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/service/biz/chat/chat"
 	"github.com/teamgram/teamgram-server/app/service/biz/chat/internal/dal/dataobject"
-	"time"
 )
 
 // ChatCheckChatInvite
 // chat.checkChatInvite self_id:long hash:string = ChatInvite;
 func (c *ChatCore) ChatCheckChatInvite(in *chat.TLChatCheckChatInvite) (*chat.ChatInviteExt, error) {
+	if c == nil || c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.Postgres == nil ||
+		c.svcCtx.Dao.Postgres.Store == nil || c.svcCtx.Dao.Postgres.Store.Invites == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
 	selfID, err := c.requireInviteSelf(in.SelfId)
 	if err != nil {
 		return nil, err
 	}
 	var chatInviteDO *dataobject.ChatInvitesDO
-	if c.svcCtx.Dao.Postgres != nil && c.svcCtx.Dao.Postgres.Store != nil {
-		chatInviteDO, err = c.svcCtx.Dao.Postgres.Store.Invites.SelectByLink(c.ctx, in.Hash)
-	} else {
-		chatInviteDO, err = c.svcCtx.Dao.ChatInvitesDAO.SelectByLink(c.ctx, in.Hash)
-	}
+	chatInviteDO, err = c.svcCtx.Dao.Postgres.Store.Invites.SelectByLink(c.ctx, in.Hash)
 	if err != nil {
 		c.Logger.Errorf("chat.checkChatInvite - error: %v", err)
 		return nil, err
@@ -54,15 +55,11 @@ func (c *ChatCore) ChatCheckChatInvite(in *chat.TLChatCheckChatInvite) (*chat.Ch
 	if chatInviteDO.UsageLimit > 0 {
 		// TODO: calc
 		var sz int
-		if c.svcCtx.Dao.Postgres != nil && c.svcCtx.Dao.Postgres.Store != nil {
-			count, countErr := c.svcCtx.Dao.Postgres.Store.InviteParticipants.CountByLink(c.ctx, chatInviteDO.Link, false)
-			if countErr != nil {
-				return nil, countErr
-			}
-			sz = int(count)
-		} else {
-			sz = c.svcCtx.Dao.CommonDAO.CalcSize(c.ctx, "chat_invite_participants", map[string]interface{}{"link": chatInviteDO.Link})
+		count, countErr := c.svcCtx.Dao.Postgres.Store.InviteParticipants.CountByLink(c.ctx, chatInviteDO.Link, false)
+		if countErr != nil {
+			return nil, countErr
 		}
+		sz = int(count)
 		if sz >= int(chatInviteDO.UsageLimit) {
 			err = mtproto.ErrInviteHashExpired
 			c.Logger.Errorf("chat.importChatInvite - error: %v", err)

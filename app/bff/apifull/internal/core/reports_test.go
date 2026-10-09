@@ -1,16 +1,14 @@
 package core
 
 import (
-	"database/sql"
 	"errors"
-	"os"
 	"testing"
 	"time"
 
-	_ "github.com/go-sql-driver/mysql"
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/proto/mtproto/rpc/metadata"
 	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/domain"
+	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/persist"
 )
 
 func TestReportsRejectMalformedRequests(t *testing.T) {
@@ -27,10 +25,17 @@ func TestReportsRejectMalformedRequests(t *testing.T) {
 }
 
 func TestReportHandlersPersistAllSupportedMethods(t *testing.T) {
-	if os.Getenv("APIFULL_MYSQL_DSN") == "" {
-		t.Skip("APIFULL_MYSQL_DSN is not configured; PostgreSQL runtime tests cover production storage")
+	db, err := persist.OpenPostgresDB(isolatedAuditDSN(t))
+	if err != nil {
+		t.Fatalf("open report cleanup database: %v", err)
 	}
 	uid := time.Now().UnixNano()
+	t.Cleanup(func() {
+		if _, err := db.Exec(`DELETE FROM apifull_report WHERE actor_user_id=$1`, uid); err != nil {
+			t.Errorf("clean report fixture: %v", err)
+		}
+		_ = db.Close()
+	})
 	core := &ApiFullCore{MD: &metadata.RpcMetadata{UserId: uid}}
 	peerUser := mtproto.MakeTLInputPeerUser(&mtproto.InputPeer{UserId: uid + 1}).To_InputPeer()
 	peerChat := mtproto.MakeTLInputPeerChat(&mtproto.InputPeer{ChatId: uid + 2}).To_InputPeer()
@@ -39,6 +44,11 @@ func TestReportHandlersPersistAllSupportedMethods(t *testing.T) {
 
 	if got, err := core.AccountReportPeer(&mtproto.TLAccountReportPeer{Peer: peerUser, Reason: reason}); got == nil || err != nil {
 		t.Fatalf("account.reportPeer = (%v, %v)", got, err)
+	}
+	// Telegram retries must acknowledge the same report without creating a
+	// second moderation intake row.
+	if got, err := core.AccountReportPeer(&mtproto.TLAccountReportPeer{Peer: peerUser, Reason: reason}); got == nil || err != nil {
+		t.Fatalf("account.reportPeer retry = (%v, %v)", got, err)
 	}
 	if got, err := core.AccountReportProfilePhoto(&mtproto.TLAccountReportProfilePhoto{Peer: peerUser, PhotoId: mtproto.MakeTLInputPhoto(&mtproto.InputPhoto{Id: uid + 4}).To_InputPhoto(), Reason: reason}); got == nil || err != nil {
 		t.Fatalf("account.reportProfilePhoto = (%v, %v)", got, err)
@@ -68,21 +78,19 @@ func TestReportHandlersPersistAllSupportedMethods(t *testing.T) {
 		t.Fatalf("stories.report = (%v, %v)", got, err)
 	}
 
-	dsn := os.Getenv("APIFULL_MYSQL_DSN")
-	db, err := sql.Open("mysql", dsn)
-	if err != nil {
-		t.Fatalf("open report cleanup database: %v", err)
-	}
-	t.Cleanup(func() {
-		_, _ = db.Exec(`DELETE FROM apifull_report WHERE actor_user_id=?`, uid)
-		_ = db.Close()
-	})
 	var count int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM apifull_report WHERE actor_user_id=?`, uid).Scan(&count); err != nil {
+	if err := db.QueryRow(`SELECT COUNT(*) FROM apifull_report WHERE actor_user_id=$1`, uid).Scan(&count); err != nil {
 		t.Fatalf("count persisted reports: %v", err)
 	}
 	if count != 10 {
 		t.Fatalf("persisted report count = %d, want 10", count)
+	}
+	var peerCount int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM apifull_report WHERE actor_user_id=$1 AND kind=$2`, uid, "account.reportPeer").Scan(&peerCount); err != nil {
+		t.Fatalf("count persisted account reports: %v", err)
+	}
+	if peerCount != 1 {
+		t.Fatalf("persisted account.reportPeer count = %d, want 1 after retry", peerCount)
 	}
 	if !domain.Ready() {
 		t.Fatal("domain should remain ready after report writes")

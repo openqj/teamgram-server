@@ -20,14 +20,12 @@ package core
 
 import (
 	"errors"
-	"strconv"
 	"testing"
 	"time"
 
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/proto/mtproto/rpc/metadata"
 	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/domain"
-	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/persist"
 	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
@@ -38,11 +36,6 @@ func TestForumTopicsCreateGetDelete(t *testing.T) {
 		_ = domain.DeleteChannel(1, 7)
 		_ = domain.DeleteChannel(1, 9)
 	})
-	for _, k := range []string{"forum:seq", "forum:1", "forum:channel:7", "forum:channel:9", "forum:channel:9:settings"} {
-		if err := persist.Default.Set(k, ""); err != nil {
-			t.Fatal(err)
-		}
-	}
 	if err := domain.SaveChannel(domain.Channel{ID: 7, AccessHash: 7007, Creator: 1, Title: "forum-peer", Megagroup: true}); err != nil {
 		t.Fatal(err)
 	}
@@ -217,7 +210,7 @@ func TestForumTopicsCreateGetDelete(t *testing.T) {
 		viewUpdate.GetUpdates()[0].GetPredicateName() != mtproto.Predicate_updateChannelViewForumAsMessages {
 		t.Fatalf("view-as-messages update: %+v %v", viewUpdate, err)
 	}
-	settings, err := loadForumSettings("channel:9")
+	settings, err := domain.LoadForumChannelSettings(9)
 	if err != nil || !settings.Enabled || !settings.Tabs || !settings.ViewAsMessages {
 		t.Fatalf("forum settings: %+v %v", settings, err)
 	}
@@ -251,12 +244,6 @@ func TestForumTopicsCreateGetDelete(t *testing.T) {
 func TestForumProdTopicTitle(t *testing.T) {
 	_ = domain.DeleteChannel(1, 3)
 	t.Cleanup(func() { _ = domain.DeleteChannel(1, 3) })
-	if err := persist.Default.Set("forum:1", ""); err != nil {
-		t.Fatal(err)
-	}
-	if err := persist.Default.Set("forum:channel:3", ""); err != nil {
-		t.Fatal(err)
-	}
 	if err := domain.SaveChannel(domain.Channel{ID: 3, AccessHash: 3003, Creator: 1, Title: "forum-prod", Megagroup: true}); err != nil {
 		t.Fatal(err)
 	}
@@ -268,9 +255,9 @@ func TestForumProdTopicTitle(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	raw, err := persist.Default.Get("forum:1")
-	if err != nil || raw != "prod-topic" {
-		t.Fatalf("store: %q %v", raw, err)
+	title, err := domain.ForumUserTitle(1)
+	if err != nil || title != "prod-topic" {
+		t.Fatalf("user title: %q %v", title, err)
 	}
 	got, err := c.MessagesGetForumTopics(&mtproto.TLMessagesGetForumTopics{Peer: peer})
 	if err != nil || got == nil || len(got.Topics) == 0 || got.Topics[0].GetTitle() != "prod-topic" {
@@ -278,15 +265,9 @@ func TestForumProdTopicTitle(t *testing.T) {
 	}
 }
 
-func TestForumMySQL(t *testing.T) {
+func TestForumChannelTitlePersistsPostgres(t *testing.T) {
 	_ = domain.DeleteChannel(12, 12)
 	t.Cleanup(func() { _ = domain.DeleteChannel(12, 12) })
-	if err := persist.Default.Set("forum:12", ""); err != nil {
-		t.Fatal(err)
-	}
-	if err := persist.Default.Set("forum:channel:12", ""); err != nil {
-		t.Fatal(err)
-	}
 	if err := domain.SaveChannel(domain.Channel{ID: 12, AccessHash: 12012, Creator: 12, Title: "forum-mysql", Megagroup: true}); err != nil {
 		t.Fatal(err)
 	}
@@ -305,9 +286,9 @@ func TestForumMySQL(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	raw, err := persist.Default.Get("forum:12")
-	if err != nil || raw != "mysql-topic" {
-		t.Fatalf("store: %q %v", raw, err)
+	title, err := domain.ForumUserTitle(12)
+	if err != nil || title != "mysql-topic" {
+		t.Fatalf("user title: %q %v", title, err)
 	}
 	got, err := c.ChannelsGetForumTopics(&mtproto.TLChannelsGetForumTopics{Channel: ch})
 	if err != nil || got == nil || len(got.Topics) == 0 || got.Topics[0].GetTitle() != "mysql-topic" {
@@ -339,12 +320,6 @@ func TestForumChannelAuthorization(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	key := "channel:" + strconv.FormatInt(channelID, 10)
-	for _, storageKey := range []string{forumStoreKey(key), forumStoreKey(key) + ":settings", forumUserKey(owner), forumUserKey(member), forumUserKey(admin)} {
-		if err := persist.Default.Set(storageKey, ""); err != nil {
-			t.Fatal(err)
-		}
-	}
 	coreFor := func(userID int64) *ApiFullCore {
 		return &ApiFullCore{MD: &metadata.RpcMetadata{UserId: userID}}
 	}

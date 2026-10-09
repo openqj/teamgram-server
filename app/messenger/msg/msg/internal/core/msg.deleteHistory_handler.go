@@ -29,6 +29,24 @@ import (
 // MsgDeleteHistory
 // msg.deleteHistory user_id:long auth_key_id:long peer_type:int peer_id:long just_clear:Bool revoke:Bool = messages.AffectedHistory;
 func (c *MsgCore) MsgDeleteHistory(in *msg.TLMsgDeleteHistory) (*mtproto.Messages_AffectedHistory, error) {
+	if in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if c.svcCtx.Dao.Postgres != nil {
+		peerType, peerID := in.PeerType, in.PeerId
+		if peerType == mtproto.PEER_SELF {
+			peerType, peerID = mtproto.PEER_USER, in.UserId
+		}
+		updates, pts, err := c.svcCtx.Dao.DeleteHistoryState(c.ctx, in.UserId, mtproto.MakePeerUtil(peerType, peerID), in.MaxId, in.JustClear, in.Revoke)
+		if err != nil {
+			return nil, err
+		}
+		var count int32
+		for _, update := range updates {
+			count += update.PtsCount
+		}
+		return mtproto.MakeTLMessagesAffectedHistory(&mtproto.Messages_AffectedHistory{Pts: pts, PtsCount: count}).To_Messages_AffectedHistory(), nil
+	}
 	var (
 		rValue *mtproto.Messages_AffectedHistory
 		err    error

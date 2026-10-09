@@ -17,6 +17,9 @@ import (
 // AuthsessionGetLangCode
 // authsession.getLangCode auth_key_id:long = String;
 func (c *AuthsessionCore) AuthsessionGetLangCode(in *authsession.TLAuthsessionGetLangCode) (*mtproto.String, error) {
+	if in == nil || in.GetAuthKeyId() == 0 {
+		return nil, mtproto.ErrAuthKeyInvalid
+	}
 	var (
 		inKeyId = in.GetAuthKeyId()
 	)

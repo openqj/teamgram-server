@@ -42,6 +42,7 @@ type (
 )
 
 var (
+	VerifyPostgresSchema       = postgres_dao.VerifySchema
 	NewDialogsDAO              = mysql_dao.NewDialogsDAO
 	NewSavedDialogsDAO         = mysql_dao.NewSavedDialogsDAO
 	NewPostgresDialogsDAO      = postgres_dao.NewDialogsDAO

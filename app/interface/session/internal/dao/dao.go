@@ -11,6 +11,8 @@ package dao
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"sync"
 
 	"github.com/teamgram/marmota/pkg/cache"
@@ -39,7 +41,23 @@ type Dao struct {
 	*RpcShardingManager
 }
 
-func New(c config.Config) *Dao {
+func (d *Dao) Close() error {
+	if d == nil {
+		return nil
+	}
+	if d.streamingGateway != nil {
+		d.streamingGateway.Close()
+	}
+	return layer229.Close()
+}
+
+// New constructs the session DAO and opens the process-owned Layer 229
+// PostgreSQL store. Startup must fail before serving RPCs when the DSN is
+// missing or the database cannot be reached.
+func New(c config.Config) (*Dao, error) {
+	if strings.TrimSpace(c.PostgresDSN) == "" {
+		return nil, errors.New("session: PostgresDSN is required")
+	}
 	myServerId := ip.FigureOutListenOn(c.ListenOn)
 	d := &Dao{
 		cache:              cache.NewLRUCache(1024 * 1024 * 1024),
@@ -58,10 +76,10 @@ func New(c config.Config) *Dao {
 
 	d.watchGateway(c.GatewayClient)
 	if err := wireLayer229(c, d.AuthsessionClient); err != nil {
-		panic(err)
+		return nil, err
 	}
 
-	return d
+	return d, nil
 }
 
 func (d *Dao) InvokeContext(ctx context.Context, rpcMetaData *metadata.RpcMetadata, object mtproto.TLObject) (mtproto.TLObject, error) {

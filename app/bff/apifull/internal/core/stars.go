@@ -18,14 +18,30 @@
 package core
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
+	"io"
+	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/domain"
 	"google.golang.org/protobuf/types/known/wrapperspb"
 )
+
+type starsRefundProviderResponse struct {
+	Verified            bool            `json:"verified"`
+	CallerUserID        int64           `json:"caller_user_id"`
+	UserID              int64           `json:"user_id"`
+	ChargeID            string          `json:"charge_id"`
+	Provider            string          `json:"provider"`
+	Stars               int64           `json:"stars"`
+	RefundTransactionID string          `json:"refund_transaction_id"`
+	Receipt             json.RawMessage `json:"receipt"`
+}
 
 // RPCStarsServer: Layer 229 methods previously returned ERR_ENTERPRISE_IS_BLOCKED.
 
@@ -222,8 +238,99 @@ func (c *ApiFullCore) PaymentsSendStarsForm(in *mtproto.TLPaymentsSendStarsForm)
 }
 
 func (c *ApiFullCore) PaymentsRefundStarsCharge(in *mtproto.TLPaymentsRefundStarsCharge) (*mtproto.Updates, error) {
-	_ = in
-	return nil, c.starsUnavailable()
+	callerID, err := c.requireUserId()
+	if err != nil {
+		return nil, err
+	}
+	if in == nil || in.GetUserId() == nil || strings.TrimSpace(in.GetChargeId()) == "" {
+		return nil, mtproto.ErrInputConstructorInvalid
+	}
+	target := in.GetUserId()
+	var userID int64
+	switch target.GetPredicateName() {
+	case mtproto.Predicate_inputUserSelf:
+		userID = callerID
+	case mtproto.Predicate_inputUser:
+		if target.GetUserId() <= 0 || target.GetAccessHash() == 0 {
+			return nil, mtproto.ErrUserIdInvalid
+		}
+		userID = target.GetUserId()
+	default:
+		return nil, mtproto.ErrUserIdInvalid
+	}
+	chargeID := strings.TrimSpace(in.GetChargeId())
+	charge, found, err := domain.LoadStarsCharge(userID, chargeID)
+	if err != nil {
+		if errors.Is(err, domain.ErrStarsChargeInvalid) {
+			return nil, mtproto.ErrPaymentChargeInvalid
+		}
+		return nil, starsDomainError(err)
+	}
+	if !found {
+		return nil, mtproto.ErrPaymentChargeInvalid
+	}
+	// A committed refund is idempotent and does not call the provider again.
+	if refund, refundFound, refundErr := domain.LoadStarsRefund(userID, chargeID); refundErr != nil {
+		return nil, starsDomainError(refundErr)
+	} else if refundFound {
+		if refund.State != domain.StarsRefundStateComplete || refund.Provider != charge.Provider || refund.Stars != charge.Stars {
+			return nil, mtproto.ErrPaymentChargeInvalid
+		}
+		return mtproto.MakeEmptyUpdates(), nil
+	}
+
+	client, endpoint, providerKey, err := c.configuredPaymentProvider()
+	if err != nil {
+		return nil, err
+	}
+	payload := struct {
+		Operation      string `json:"operation"`
+		CallerUserID   int64  `json:"caller_user_id"`
+		UserID         int64  `json:"user_id"`
+		UserAccessHash int64  `json:"user_access_hash,omitempty"`
+		ChargeID       string `json:"charge_id"`
+		Provider       string `json:"provider"`
+		TransactionID  string `json:"transaction_id"`
+		Stars          int64  `json:"stars"`
+	}{"refund_stars_charge", callerID, userID, target.GetAccessHash(), chargeID, charge.Provider, charge.TransactionID, charge.Stars}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return nil, mtproto.ErrInternalServerError
+	}
+	req, err := http.NewRequestWithContext(c.secretContext(), http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return nil, mtproto.ErrPaymentProviderInvalid
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Idempotency-Key", paymentProviderIdempotencyKey(callerID, "refund:"+charge.Provider+":"+chargeID))
+	if providerKey != "" {
+		req.Header.Set("Authorization", "Bearer "+providerKey)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, mtproto.ErrPaymentUnsupported
+	}
+	defer resp.Body.Close()
+	responseBody, readErr := io.ReadAll(io.LimitReader(resp.Body, (1<<20)+1))
+	if readErr != nil || len(responseBody) > 1<<20 || resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return nil, mtproto.ErrPaymentUnsupported
+	}
+	if !c.paymentProviderResponseAuthenticated(resp, responseBody) {
+		return nil, mtproto.ErrPaymentProviderInvalid
+	}
+	var result starsRefundProviderResponse
+	if err = json.Unmarshal(responseBody, &result); err != nil || !result.Verified || result.CallerUserID != callerID || result.UserID != userID ||
+		result.ChargeID != chargeID || result.Provider != charge.Provider || result.Stars != charge.Stars || strings.TrimSpace(result.RefundTransactionID) == "" ||
+		len(bytes.TrimSpace(result.Receipt)) == 0 || bytes.Equal(bytes.TrimSpace(result.Receipt), []byte("null")) {
+		return nil, mtproto.ErrPaymentProviderInvalid
+	}
+	if _, err = domain.CommitStarsRefund(userID, chargeID, result.Provider, result.RefundTransactionID, result.Stars, responseBody); err != nil {
+		if errors.Is(err, domain.ErrStarsChargeNotFound) || errors.Is(err, domain.ErrStarsChargeInvalid) || errors.Is(err, domain.ErrStarsRefundConflict) {
+			return nil, mtproto.ErrPaymentChargeInvalid
+		}
+		return nil, starsDomainError(err)
+	}
+	return mtproto.MakeEmptyUpdates(), nil
 }
 
 func (c *ApiFullCore) PaymentsGetStarsRevenueStats(in *mtproto.TLPaymentsGetStarsRevenueStats) (*mtproto.Payments_StarsRevenueStats, error) {

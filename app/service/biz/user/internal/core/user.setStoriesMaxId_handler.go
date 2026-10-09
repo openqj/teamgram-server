@@ -26,10 +26,13 @@ import (
 // UserSetStoriesMaxId
 // user.setStoriesMaxId user_id:long id:int = Bool;
 func (c *UserCore) UserSetStoriesMaxId(in *user.TLUserSetStoriesMaxId) (*mtproto.Bool, error) {
-	rB := c.svcCtx.Dao.UpdateStoriesMaxId(
+	err := c.svcCtx.Dao.UpdateStoriesMaxId(
 		c.ctx,
 		in.GetUserId(),
 		in.GetId())
 
-	return mtproto.ToBool(rB), nil
+	if err != nil {
+		return nil, err
+	}
+	return mtproto.BoolTrue, nil
 }

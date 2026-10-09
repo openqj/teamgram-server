@@ -50,6 +50,10 @@ type AuthSessionDAO interface {
 	UnbindAuthUser(context.Context, int64, int64) error
 }
 
+type TempAuthKeyDropper interface {
+	DropTempAuthKeys(context.Context, int64, []int64) error
+}
+
 // These forwarding methods preserve the generated handler surface while the
 // concrete DAO is selected at runtime.
 func (s *ServiceContext) GetCacheAuthData(ctx context.Context, keyID int64) (*dao.CacheAuthData, error) {

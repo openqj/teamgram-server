@@ -32,6 +32,10 @@ func (c *ChatCore) requireInviteSelf(selfID int64) (int64, error) {
 }
 
 func (c *ChatCore) requireInvitePermission(chatID, selfID, targetAdminID int64) (*mtproto.MutableChat, error) {
+	if c == nil || c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.Postgres == nil ||
+		c.svcCtx.Dao.Postgres.Pool == nil || c.svcCtx.Dao.Postgres.Store == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
 	// APIFull channels share the invite tables with basic chats, but their
 	// membership and administrator rights live in the APIFull tables. Resolve
 	// that model first so a channel id cannot accidentally be treated as a chat
@@ -74,11 +78,8 @@ func (c *ChatCore) requireChannelInvitePermission(chatID, selfID, targetAdminID 
 	if c.svcCtx.Dao.Postgres != nil && c.svcCtx.Dao.Postgres.Pool != nil {
 		err = c.svcCtx.Dao.Postgres.Pool.QueryRow(c.ctx,
 			"SELECT creator_user_id FROM apifull_channel WHERE id = $1", chatID).Scan(&channel.CreatorID)
-	} else if c.svcCtx.Dao.DB != nil {
-		err = c.svcCtx.Dao.DB.QueryRowPartial(c.ctx, &channel,
-			"SELECT creator_user_id FROM apifull_channel WHERE id = ?", chatID)
 	} else {
-		return false, nil
+		return true, mtproto.ErrInternalServerError
 	}
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) || errors.Is(err, pgx.ErrNoRows) || apifullTableMissing(err) {
@@ -102,10 +103,6 @@ func (c *ChatCore) requireChannelInvitePermission(chatID, selfID, targetAdminID 
 		err = c.svcCtx.Dao.Postgres.Pool.QueryRow(c.ctx,
 			"SELECT admin_rights, banned_rights FROM apifull_channel_member WHERE channel_id = $1 AND user_id = $2",
 			chatID, selfID).Scan(&member.AdminRights, &member.BannedRights)
-	} else {
-		err = c.svcCtx.Dao.DB.QueryRowPartial(c.ctx, &member,
-			"SELECT admin_rights, banned_rights FROM apifull_channel_member WHERE channel_id = ? AND user_id = ?",
-			chatID, selfID)
 	}
 	if errors.Is(err, sql.ErrNoRows) || errors.Is(err, pgx.ErrNoRows) {
 		return true, mtproto.ErrUserNotParticipant
@@ -165,6 +162,7 @@ func (r channelInviteBannedRights) Active(now int64) bool {
 func apifullTableMissing(err error) bool {
 	message := strings.ToLower(err.Error())
 	return strings.Contains(message, "doesn't exist") ||
+		strings.Contains(message, "does not exist") ||
 		strings.Contains(message, "no such table") ||
 		strings.Contains(message, "unknown table")
 }
@@ -176,23 +174,23 @@ func (c *ChatCore) isAPIFullChannel(chatID int64) bool {
 			"SELECT 1 FROM apifull_channel WHERE id = $1", chatID).Scan(&marker)
 		return err == nil
 	}
-	if c == nil || c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.DB == nil {
+	if c == nil || c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.Postgres == nil || c.svcCtx.Dao.Postgres.Pool == nil {
 		return false
 	}
 	var marker int
-	err := c.svcCtx.Dao.DB.QueryRowPartial(c.ctx, &marker,
-		"SELECT 1 FROM apifull_channel WHERE id = ?", chatID)
+	err := c.svcCtx.Dao.Postgres.Pool.QueryRow(c.ctx,
+		"SELECT 1 FROM apifull_channel WHERE id = $1", chatID).Scan(&marker)
 	return err == nil
 }
 
 func (c *ChatCore) requireInviteLinkPermission(chatID, selfID int64, link string) (*mtproto.MutableChat, error) {
 	var invite *dataobject.ChatInvitesDO
 	var err error
-	if c.svcCtx.Dao.Postgres != nil && c.svcCtx.Dao.Postgres.Store != nil {
-		invite, err = c.svcCtx.Dao.Postgres.Store.Invites.SelectByLink(c.ctx, chat.GetInviteHashByLink(link))
-	} else {
-		invite, err = c.svcCtx.Dao.ChatInvitesDAO.SelectByLink(c.ctx, chat.GetInviteHashByLink(link))
+	if c == nil || c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.Postgres == nil ||
+		c.svcCtx.Dao.Postgres.Store == nil || c.svcCtx.Dao.Postgres.Store.Invites == nil {
+		return nil, mtproto.ErrInternalServerError
 	}
+	invite, err = c.svcCtx.Dao.Postgres.Store.Invites.SelectByLink(c.ctx, chat.GetInviteHashByLink(link))
 	if err != nil {
 		return nil, err
 	}

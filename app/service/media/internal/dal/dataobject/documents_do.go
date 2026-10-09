@@ -20,6 +20,7 @@ type DocumentsDO struct {
 	UploadedFileName string `db:"uploaded_file_name" json:"uploaded_file_name"`
 	Ext              string `db:"ext" json:"ext"`
 	MimeType         string `db:"mime_type" json:"mime_type"`
+	Sha256           []byte `db:"sha256" json:"sha256"`
 	ThumbId          int64  `db:"thumb_id" json:"thumb_id"`
 	VideoThumbId     int64  `db:"video_thumb_id" json:"video_thumb_id"`
 	Version          int32  `db:"version" json:"version"`

@@ -387,7 +387,8 @@ func SaveSecretMessage(chatID int32, accessHash, senderID, randomID int64, data 
 	}
 
 	recipientID := secretPeer(chat, senderID)
-	if _, err = tx.Exec(`INSERT IGNORE INTO apifull_secret_user_state (user_id, last_qts, confirmed_qts) VALUES (?,0,0)`, recipientID); err != nil {
+	if _, err = tx.Exec(`INSERT INTO apifull_secret_user_state (user_id, last_qts, confirmed_qts) VALUES ($1,0,0)
+		ON CONFLICT (user_id) DO NOTHING`, recipientID); err != nil {
 		return SecretMessage{}, false, err
 	}
 	var lastQTS int32
@@ -411,7 +412,7 @@ func SaveSecretMessage(chatID int32, accessHash, senderID, randomID int64, data 
 		 file_id, file_access_hash, file_size, file_dc_id, file_key_fingerprint, acknowledged_at, read_at)
 		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,0)`,
 		message.ChatID, message.SenderID, message.RecipientID, message.RandomID, message.QTS, message.Date,
-		message.Data, boolInt(message.Service), fileID, fileAccessHash, fileSize, fileDCID, fileFingerprint)
+		message.Data, message.Service, fileID, fileAccessHash, fileSize, fileDCID, fileFingerprint)
 	if err != nil {
 		if duplicateKey(err) {
 			return SecretMessage{}, false, ErrSecretMessageConflict
@@ -569,7 +570,7 @@ func loadSecretChatTx(tx *sql.Tx, chatID int32, forUpdate bool) (SecretChat, boo
 
 func loadSecretMessageTx(tx *sql.Tx, senderID, randomID int64) (SecretMessage, bool, error) {
 	var message SecretMessage
-	var service int
+	var service bool
 	var fileID, fileAccessHash, fileSize sql.NullInt64
 	var fileDCID, fileFingerprint sql.NullInt32
 	err := tx.QueryRow(`SELECT chat_id, sender_user_id, recipient_user_id, random_id, qts, date,
@@ -583,7 +584,7 @@ func loadSecretMessageTx(tx *sql.Tx, senderID, randomID int64) (SecretMessage, b
 	if err != nil {
 		return SecretMessage{}, false, err
 	}
-	message.Service = service != 0
+	message.Service = service
 	if fileID.Valid {
 		message.File = &SecretFile{ID: fileID.Int64, AccessHash: fileAccessHash.Int64, Size: fileSize.Int64,
 			DCID: fileDCID.Int32, KeyFingerprint: fileFingerprint.Int32}

@@ -20,6 +20,7 @@ package core
 
 import (
 	"github.com/teamgram/proto/mtproto"
+	"github.com/teamgram/teamgram-server/app/service/authsession/authsession"
 )
 
 // AuthDropTempAuthKeys
@@ -34,9 +35,18 @@ func (c *AuthorizationCore) AuthDropTempAuthKeys(in *mtproto.TLAuthDropTempAuthK
 	if in == nil {
 		return nil, mtproto.ErrInputRequestInvalid
 	}
-	// AuthsessionClient has no temporary-key store or drop RPC. Do not report
-	// success or claim that the permanent key is invalid.
-	_ = in.GetExceptAuthKeys()
-	c.Logger.Errorf("auth.dropTempAuthKeys - temporary-key store unavailable")
-	return nil, mtproto.ErrMethodNotImpl
+	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.AuthsessionClient == nil {
+		c.Logger.Errorf("auth.dropTempAuthKeys - authsession provider unavailable")
+		return nil, mtproto.ErrMethodNotImpl
+	}
+	ok, err := c.svcCtx.Dao.AuthsessionClient.AuthsessionDropTempAuthKeys(c.ctx, &authsession.TLAuthsessionDropTempAuthKeys{ExceptAuthKeys: in.GetExceptAuthKeys()})
+	if err != nil {
+		c.Logger.Errorf("auth.dropTempAuthKeys - error: %v", err)
+		return nil, err
+	}
+	if ok == nil || ok.GetPredicateName() != mtproto.Predicate_boolTrue {
+		c.Logger.Errorf("auth.dropTempAuthKeys - authsession returned no success result")
+		return nil, mtproto.ErrInternalServerError
+	}
+	return ok, nil
 }

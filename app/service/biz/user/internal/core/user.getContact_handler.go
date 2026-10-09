@@ -17,7 +17,10 @@ import (
 // UserGetContact
 // user.getContact user_id:long id:long = ContactData;
 func (c *UserCore) UserGetContact(in *user.TLUserGetContact) (*mtproto.ContactData, error) {
-	contact := c.svcCtx.Dao.GetUserContact(c.ctx, in.GetUserId(), in.GetId())
+	contact, err := c.svcCtx.Dao.GetUserContact(c.ctx, in.GetUserId(), in.GetId())
+	if err != nil {
+		return nil, err
+	}
 	if contact == nil {
 		err := mtproto.ErrContactIdInvalid
 		c.Logger.Errorf("user.getContact - error: %v", err)

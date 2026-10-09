@@ -24,4 +24,8 @@ import (
 
 type Config struct {
 	zrpc.RpcServerConf
+	// PostgresDSN points at the deployment-owned PostgreSQL 18 APIFull store.
+	// The configuration service persists user-scoped suggestion dismissals in
+	// the shared APIFull KV table.
+	PostgresDSN string `json:",optional"`
 }

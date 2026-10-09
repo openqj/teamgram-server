@@ -6,11 +6,11 @@ import (
 	"testing"
 	"time"
 
-	_ "github.com/go-sql-driver/mysql"
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/proto/mtproto/rpc/metadata"
 	"github.com/teamgram/teamgram-server/app/bff/apifull/channelview"
 	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/domain"
+	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/persist"
 )
 
 func exportMessageLinkCore(userID int64) *ApiFullCore {
@@ -21,9 +21,9 @@ func exportMessageLinkCore(userID int64) *ApiFullCore {
 
 func openExportMessageLinkAuditDB(t *testing.T) *sql.DB {
 	t.Helper()
-	db, err := sql.Open("mysql", isolatedAuditDSN(t))
+	db, err := persist.OpenPostgresDB(isolatedAuditDSN(t))
 	if err != nil {
-		t.Fatal("open isolated audit MySQL:", err)
+		t.Fatal("open PostgreSQL fixture connection:", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
 	return db

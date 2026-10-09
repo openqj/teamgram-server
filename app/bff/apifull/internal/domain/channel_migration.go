@@ -81,9 +81,9 @@ func ImportMigratedChannel(in MigratedChannel) error {
 		}
 		if _, err = tx.Exec(`INSERT INTO apifull_channel_member
 			(channel_id, user_id, invited_by_user_id, joined_at, admin_rights, admin_rank)
-			VALUES (?,?,?,?,?,?)
-			ON DUPLICATE KEY UPDATE invited_by_user_id=VALUES(invited_by_user_id), joined_at=VALUES(joined_at),
-				admin_rights=VALUES(admin_rights), admin_rank=VALUES(admin_rank), banned_rights='', banned_by_user_id=0, banned_at=0`,
+			VALUES ($1,$2,$3,$4,$5,$6)
+			ON CONFLICT (channel_id, user_id) DO UPDATE SET invited_by_user_id=EXCLUDED.invited_by_user_id, joined_at=EXCLUDED.joined_at,
+				admin_rights=EXCLUDED.admin_rights, admin_rank=EXCLUDED.admin_rank, banned_rights='', banned_by_user_id=0, banned_at=0`,
 			in.ChannelID, member.UserID, member.InvitedBy, member.JoinedAt, rights, member.Rank); err != nil {
 			return err
 		}

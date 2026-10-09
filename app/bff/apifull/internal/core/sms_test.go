@@ -14,19 +14,19 @@ func TestSmsjobsJoinUserId(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = persist.Default.Set("sms:1:joined", "") })
-	if got, err := c.SmsjobsJoin(&mtproto.TLSmsjobsJoin{}); got != nil || err != mtproto.ErrMethodNotImpl {
-		t.Fatalf("join=(%#v, %v), want METHOD_NOT_IMPL", got, err)
+	if got, err := c.SmsjobsJoin(&mtproto.TLSmsjobsJoin{}); err != nil || got != mtproto.BoolTrue {
+		t.Fatalf("join=(%#v, %v), want postgres BOOL_TRUE", got, err)
 	}
 }
 
-func TestSmsJoinMySQL(t *testing.T) {
+func TestSmsJoinPostgresDoesNotUseLegacyStore(t *testing.T) {
 	c := &ApiFullCore{MD: &metadata.RpcMetadata{UserId: 17}}
 	if err := persist.Default.Set("sms:17:joined", ""); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = persist.Default.Set("sms:17:joined", "") })
-	if got, err := c.SmsjobsJoin(&mtproto.TLSmsjobsJoin{}); got != nil || err != mtproto.ErrMethodNotImpl {
-		t.Fatalf("join=(%#v, %v), want METHOD_NOT_IMPL", got, err)
+	if got, err := c.SmsjobsJoin(&mtproto.TLSmsjobsJoin{}); err != nil || got != mtproto.BoolTrue {
+		t.Fatalf("join=(%#v, %v), want postgres BOOL_TRUE", got, err)
 	}
 	got, err := persist.Default.Get("sms:17:joined")
 	if err != nil {

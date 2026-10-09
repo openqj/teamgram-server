@@ -31,6 +31,15 @@ import (
 // InboxUpdateHistoryReaded
 // inbox.updateHistoryReaded from_id:long peer_type:int peer_id:long max_id:int = Void;
 func (c *InboxCore) InboxUpdateHistoryReaded(in *inbox.TLInboxUpdateHistoryReaded) (*mtproto.Void, error) {
+	if in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if c.svcCtx.Dao.Postgres != nil {
+		if err := c.updateLegacyInboxReadHistory(in); err != nil {
+			return nil, err
+		}
+		return mtproto.EmptyVoid, nil
+	}
 	switch in.PeerType {
 	case mtproto.PEER_USER:
 		replyId, err := c.svcCtx.Dao.SelectPeerUserMessage(

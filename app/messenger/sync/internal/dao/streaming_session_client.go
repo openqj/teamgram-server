@@ -9,14 +9,18 @@ package dao
 import (
 	"context"
 	"fmt"
+	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/interface/session/session"
 
 	"github.com/zeromicro/go-zero/core/logx"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	grpcStatus "google.golang.org/grpc/status"
 )
 
 const (
@@ -28,15 +32,18 @@ const (
 // StreamingSession implements the same push interface as Session but uses
 // bidirectional gRPC streaming instead of unary RPCs.
 type StreamingSession struct {
-	serverId    string
-	conn        *grpc.ClientConn
-	stream      grpc.BidiStreamingClient[session.SessionStreamRequest, session.SessionStreamResponse]
-	sendCh      chan *session.SessionStreamRequest
-	ctx         context.Context
-	cancel      context.CancelFunc
-	closed      atomic.Int32
-	unavailable atomic.Bool
-	reqCounter  atomic.Int64
+	serverId     string
+	conn         *grpc.ClientConn
+	stream       grpc.BidiStreamingClient[session.SessionStreamRequest, session.SessionStreamResponse]
+	sendCh       chan *session.SessionStreamRequest
+	ctx          context.Context
+	cancel       context.CancelFunc
+	closed       atomic.Int32
+	unavailable  atomic.Bool
+	reqCounter   atomic.Int64
+	streamCancel context.CancelFunc
+	pendingMu    sync.Mutex
+	pending      map[string]chan error
 }
 
 func NewStreamingSession(addr string) (*StreamingSession, error) {
@@ -51,21 +58,25 @@ func NewStreamingSession(addr string) (*StreamingSession, error) {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
+	streamCtx, streamCancel := context.WithCancel(ctx)
 	client := session.NewRPCSessionStreamClient(conn)
-	stream, err := client.SessionDataStream(ctx)
+	stream, err := client.SessionDataStream(streamCtx)
 	if err != nil {
+		streamCancel()
 		cancel()
 		conn.Close()
 		return nil, fmt.Errorf("open stream to session %s: %w", addr, err)
 	}
 
 	ss := &StreamingSession{
-		serverId: addr,
-		conn:     conn,
-		stream:   stream,
-		sendCh:   make(chan *session.SessionStreamRequest, syncStreamSendBufSize),
-		ctx:      ctx,
-		cancel:   cancel,
+		serverId:     addr,
+		conn:         conn,
+		stream:       stream,
+		sendCh:       make(chan *session.SessionStreamRequest, syncStreamSendBufSize),
+		ctx:          ctx,
+		cancel:       cancel,
+		streamCancel: streamCancel,
+		pending:      make(map[string]chan error),
 	}
 
 	go ss.sendLoop()
@@ -76,29 +87,103 @@ func NewStreamingSession(addr string) (*StreamingSession, error) {
 }
 
 func (ss *StreamingSession) sendLoop() {
-	for req := range ss.sendCh {
-		if ss.closed.Load() != 0 {
+	for {
+		select {
+		case <-ss.ctx.Done():
 			return
-		}
-		if err := ss.stream.Send(req); err != nil {
-			logx.Errorf("StreamingSession sendLoop(%s) error: %v", ss.serverId, err)
-			ss.unavailable.Store(true)
-			return
+		case req := <-ss.sendCh:
+			if err := ss.stream.Send(req); err != nil {
+				ss.failStream(err)
+				return
+			}
 		}
 	}
 }
 
 func (ss *StreamingSession) recvLoop() {
 	for {
-		_, err := ss.stream.Recv()
+		response, err := ss.stream.Recv()
 		if err != nil {
-			if ss.closed.Load() == 0 {
-				logx.Errorf("StreamingSession recvLoop(%s) error: %v", ss.serverId, err)
-				ss.unavailable.Store(true)
-			}
+			ss.failStream(err)
 			return
 		}
-		// fire-and-forget: acks are ignored
+		if remote := response.GetError(); remote != nil {
+			err = grpcStatus.Error(codes.Code(remote.GetCode()), remote.GetMessage())
+		} else if !response.GetAck().GetSuccess() {
+			err = fmt.Errorf("streaming session(%s) rejected push", ss.serverId)
+		}
+		ss.pendingMu.Lock()
+		result := ss.pending[response.GetRequestId()]
+		delete(ss.pending, response.GetRequestId())
+		ss.pendingMu.Unlock()
+		if result != nil {
+			result <- err
+		}
+	}
+}
+
+func (ss *StreamingSession) failStream(err error) {
+	ss.unavailable.Store(true)
+	ss.streamCancel()
+	ss.pendingMu.Lock()
+	for key, result := range ss.pending {
+		result <- err
+		delete(ss.pending, key)
+	}
+	ss.pendingMu.Unlock()
+}
+
+func (ss *StreamingSession) push(ctx context.Context, req *session.SessionStreamRequest) error {
+	if ss.closed.Load() != 0 {
+		return fmt.Errorf("streaming session(%s) closed", ss.serverId)
+	}
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	stop := context.AfterFunc(ss.ctx, cancel)
+	defer stop()
+	if ss.unavailable.Load() {
+		client := session.NewRPCSessionClient(ss.conn)
+		var reply *mtproto.Bool
+		var err error
+		switch in := req.GetPayload().(type) {
+		case *session.SessionStreamRequest_PushUpdates:
+			reply, err = client.SessionPushUpdatesData(ctx, in.PushUpdates)
+		case *session.SessionStreamRequest_PushSessionUpdates:
+			reply, err = client.SessionPushSessionUpdatesData(ctx, in.PushSessionUpdates)
+		case *session.SessionStreamRequest_PushRpcResult:
+			reply, err = client.SessionPushRpcResultData(ctx, in.PushRpcResult)
+		}
+		if err != nil {
+			return err
+		}
+		if !mtproto.FromBool(reply) {
+			return fmt.Errorf("session(%s) rejected push", ss.serverId)
+		}
+		return nil
+	}
+	result := make(chan error, 1)
+	ss.pendingMu.Lock()
+	if ss.unavailable.Load() {
+		ss.pendingMu.Unlock()
+		return fmt.Errorf("streaming session(%s) unavailable", ss.serverId)
+	}
+	ss.pending[req.GetRequestId()] = result
+	ss.pendingMu.Unlock()
+	defer func() {
+		ss.pendingMu.Lock()
+		delete(ss.pending, req.GetRequestId())
+		ss.pendingMu.Unlock()
+	}()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case ss.sendCh <- req:
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case err := <-result:
+		return err
 	}
 }
 
@@ -107,63 +192,39 @@ func (ss *StreamingSession) nextRequestId() string {
 }
 
 func (ss *StreamingSession) PushUpdates(ctx context.Context, msg *session.TLSessionPushUpdatesData) error {
-	if ss.unavailable.Load() {
-		return fmt.Errorf("streaming session(%s) unavailable", ss.serverId)
-	}
 
 	req := &session.SessionStreamRequest{
 		RequestId: ss.nextRequestId(),
 		Payload:   &session.SessionStreamRequest_PushUpdates{PushUpdates: msg},
 	}
 
-	select {
-	case ss.sendCh <- req:
-		return nil
-	default:
-		return fmt.Errorf("streaming session(%s) sendCh full", ss.serverId)
-	}
+	return ss.push(ctx, req)
 }
 
 func (ss *StreamingSession) PushSessionUpdates(ctx context.Context, msg *session.TLSessionPushSessionUpdatesData) error {
-	if ss.unavailable.Load() {
-		return fmt.Errorf("streaming session(%s) unavailable", ss.serverId)
-	}
 
 	req := &session.SessionStreamRequest{
 		RequestId: ss.nextRequestId(),
 		Payload:   &session.SessionStreamRequest_PushSessionUpdates{PushSessionUpdates: msg},
 	}
 
-	select {
-	case ss.sendCh <- req:
-		return nil
-	default:
-		return fmt.Errorf("streaming session(%s) sendCh full", ss.serverId)
-	}
+	return ss.push(ctx, req)
 }
 
 func (ss *StreamingSession) PushRpcResult(ctx context.Context, msg *session.TLSessionPushRpcResultData) error {
-	if ss.unavailable.Load() {
-		return fmt.Errorf("streaming session(%s) unavailable", ss.serverId)
-	}
 
 	req := &session.SessionStreamRequest{
 		RequestId: ss.nextRequestId(),
 		Payload:   &session.SessionStreamRequest_PushRpcResult{PushRpcResult: msg},
 	}
 
-	select {
-	case ss.sendCh <- req:
-		return nil
-	default:
-		return fmt.Errorf("streaming session(%s) sendCh full", ss.serverId)
-	}
+	return ss.push(ctx, req)
 }
 
 func (ss *StreamingSession) Close() error {
 	if ss.closed.CompareAndSwap(0, 1) {
 		ss.cancel()
-		close(ss.sendCh)
+		ss.failStream(context.Canceled)
 		ss.conn.Close()
 	}
 	return nil

@@ -162,35 +162,34 @@ func emojiStatusGroups(userID int64) ([]*mtproto.EmojiGroup, error) {
 }
 
 func (c *ApiFullCore) MessagesGetEmojiGroups(in *mtproto.TLMessagesGetEmojiGroups) (*mtproto.Messages_EmojiGroups, error) {
-	uid, err := c.requireUserId()
-	if err != nil {
+	if _, err := c.requireUserId(); err != nil {
 		return nil, err
 	}
 	var hash int32
 	if in != nil {
 		hash = in.GetHash()
 	}
-	groups, err := stickerEmojiGroups(uid)
+	rows, err := persist.LoadEmojiGroups(stickerRequestContext(c), "generic")
 	if err != nil {
-		return nil, err
+		return nil, customEmojiProviderError(c, err)
 	}
+	groups := emojiGroupRecords(rows)
 	return replyEmojiGroups(hash, groups), nil
 }
 
 func (c *ApiFullCore) MessagesGetEmojiStatusGroups(in *mtproto.TLMessagesGetEmojiStatusGroups) (*mtproto.Messages_EmojiGroups, error) {
-	uid, err := c.requireUserId()
-	if err != nil {
+	if _, err := c.requireUserId(); err != nil {
 		return nil, err
 	}
 	var hash int32
 	if in != nil {
 		hash = in.GetHash()
 	}
-	groups, err := emojiStatusGroups(uid)
+	rows, err := persist.LoadEmojiGroups(stickerRequestContext(c), "status")
 	if err != nil {
-		return nil, err
+		return nil, customEmojiProviderError(c, err)
 	}
-	return replyEmojiGroups(hash, groups), nil
+	return replyEmojiGroups(hash, emojiGroupRecords(rows)), nil
 }
 
 func (c *ApiFullCore) MessagesGetEmojiProfilePhotoGroups(in *mtproto.TLMessagesGetEmojiProfilePhotoGroups) (*mtproto.Messages_EmojiGroups, error) {
@@ -201,21 +200,34 @@ func (c *ApiFullCore) MessagesGetEmojiProfilePhotoGroups(in *mtproto.TLMessagesG
 	if in != nil {
 		hash = in.GetHash()
 	}
-	return replyEmojiGroups(hash, nil), nil
+	rows, err := persist.LoadEmojiGroups(stickerRequestContext(c), "profile")
+	if err != nil {
+		return nil, customEmojiProviderError(c, err)
+	}
+	return replyEmojiGroups(hash, emojiGroupRecords(rows)), nil
 }
 
 func (c *ApiFullCore) MessagesGetEmojiStickerGroups(in *mtproto.TLMessagesGetEmojiStickerGroups) (*mtproto.Messages_EmojiGroups, error) {
-	uid, err := c.requireUserId()
-	if err != nil {
+	if _, err := c.requireUserId(); err != nil {
 		return nil, err
 	}
 	var hash int32
 	if in != nil {
 		hash = in.GetHash()
 	}
-	groups, err := stickerEmojiGroups(uid)
+	rows, err := persist.LoadEmojiGroups(stickerRequestContext(c), "sticker")
 	if err != nil {
-		return nil, err
+		return nil, customEmojiProviderError(c, err)
 	}
-	return replyEmojiGroups(hash, groups), nil
+	return replyEmojiGroups(hash, emojiGroupRecords(rows)), nil
+}
+
+func emojiGroupRecords(rows []persist.EmojiGroupRecord) []*mtproto.EmojiGroup {
+	out := make([]*mtproto.EmojiGroup, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, mtproto.MakeTLEmojiGroup(&mtproto.EmojiGroup{
+			Title: row.Title, IconEmojiId: row.IconEmojiID, Emoticons: append([]string(nil), row.Emoticons...),
+		}).To_EmojiGroup())
+	}
+	return out
 }

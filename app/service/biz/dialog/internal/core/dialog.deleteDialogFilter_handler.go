@@ -10,9 +10,6 @@
 package core
 
 import (
-	"context"
-
-	"github.com/teamgram/marmota/pkg/stores/sqlx"
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/service/biz/dialog/dialog"
 )
@@ -20,13 +17,11 @@ import (
 // DialogDeleteDialogFilter
 // dialog.deleteDialogFilter user_id:long id:int = Bool;
 func (c *DialogCore) DialogDeleteDialogFilter(in *dialog.TLDialogDeleteDialogFilter) (*mtproto.Bool, error) {
-	_, _, err := c.svcCtx.Dao.CachedConn.Exec(
-		c.ctx,
-		func(ctx context.Context, conn *sqlx.DB) (int64, int64, error) {
-			_, err := c.svcCtx.Dao.DialogFiltersDAO.Clear(ctx, in.UserId, in.Id)
-			return 0, 0, err
-		},
-		dialog.GetDialogFilterCacheKey(in.UserId))
+	if c == nil || c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.Postgres == nil ||
+		c.svcCtx.Dao.Postgres.Store == nil || c.svcCtx.Dao.Postgres.Store.DialogFilters == nil {
+		return nil, mtproto.ErrMethodNotImpl
+	}
+	_, err := c.svcCtx.Dao.Postgres.Store.DialogFilters.Clear(c.ctx, in.UserId, in.Id)
 	if err != nil {
 		c.Logger.Errorf("dialog.deleteDialogFilter - delete filter error: %v", err)
 		return nil, err

@@ -16,6 +16,7 @@ import (
 	sync_client "github.com/teamgram/teamgram-server/app/messenger/sync/client"
 	syncpb "github.com/teamgram/teamgram-server/app/messenger/sync/sync"
 	"github.com/zeromicro/go-zero/core/logx"
+	"google.golang.org/protobuf/proto"
 )
 
 type storedChannelSyncClient struct {
@@ -91,9 +92,9 @@ func TestStoredChannelDeliveryValidatesInputPeer(t *testing.T) {
 	if err != nil || retried == nil || len(retried.GetUpdates()) != 1 || retried.GetUpdates()[0].GetMessage_MESSAGE().GetId() != messageID {
 		t.Fatalf("channel retry did not reuse message id %d: updates=%+v err=%v", messageID, retried, err)
 	}
-	conflicting := *request
+	conflicting := proto.Clone(request).(*mtproto.TLMessagesSendMessage)
 	conflicting.Message = "different text"
-	if _, err = ownerCore.MessagesSendMessage(&conflicting); !errors.Is(err, mtproto.ErrRandomIdDuplicate) {
+	if _, err = ownerCore.MessagesSendMessage(conflicting); !errors.Is(err, mtproto.ErrRandomIdDuplicate) {
 		t.Fatalf("reused random id with changed text: got %v, want RANDOM_ID_DUPLICATE", err)
 	}
 

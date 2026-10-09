@@ -38,7 +38,6 @@ type Config struct {
 	zrpc.RpcServerConf
 	Provider          ProviderConfig `json:",optional"`
 	PostgresDSN       string         `json:",optional"`
-	MysqlDSN          string         `json:",optional"` // legacy test-only alias
 	DcId              int32          `json:",optional"`
 	UserClient        zrpc.RpcClientConf
 	AuthSessionClient zrpc.RpcClientConf

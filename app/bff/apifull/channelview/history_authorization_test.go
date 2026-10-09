@@ -1,7 +1,6 @@
 package channelview
 
 import (
-	"database/sql"
 	"errors"
 	"os"
 	"testing"
@@ -9,25 +8,26 @@ import (
 
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/domain"
+	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/persist"
 )
 
 func TestHistoryAndEditDataCheckInputPeerAuthorization(t *testing.T) {
-	dsn := os.Getenv("APIFULL_MYSQL_DSN")
+	dsn := os.Getenv("APIFULL_POSTGRES_DSN")
 	if dsn == "" {
-		t.Skip("APIFULL_MYSQL_DSN is not configured; PostgreSQL runtime tests cover production storage")
+		t.Skip("APIFULL_POSTGRES_DSN is not configured")
 	}
-	if err := domain.Open(dsn); err != nil {
+	if err := domain.OpenPostgresReadOnly(dsn); err != nil {
 		t.Fatal(err)
 	}
-	cleanupDB, err := sql.Open("mysql", dsn)
+	t.Cleanup(func() { _ = domain.Close() })
+	cleanupDB, err := persist.OpenPostgresDB(dsn)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = cleanupDB.Close() })
 
 	channelID := time.Now().UnixNano()
-	legacyChannelID := channelID + 1
-	const owner, member, outsider int64 = 91001, 91002, 91003
+	owner, member, outsider := channelID+1, channelID+2, channelID+3
 	t.Cleanup(func() {
 		for _, query := range []string{
 			`DELETE FROM apifull_channel_message_hidden WHERE channel_id=?`,
@@ -40,18 +40,6 @@ func TestHistoryAndEditDataCheckInputPeerAuthorization(t *testing.T) {
 			if _, err := cleanupDB.Exec(query, channelID); err != nil {
 				t.Errorf("cleanup channel fixture: %v", err)
 			}
-		}
-		for _, query := range []string{
-			`DELETE FROM channel_messages WHERE channel_id=?`,
-			`DELETE FROM channel_participants WHERE channel_id=?`,
-			`DELETE FROM channels WHERE id=?`,
-		} {
-			if _, err := cleanupDB.Exec(query, legacyChannelID); err != nil {
-				t.Errorf("cleanup legacy channel fixture: %v", err)
-			}
-		}
-		if _, err := cleanupDB.Exec(`DELETE FROM apifull_channel WHERE id=?`, legacyChannelID); err != nil {
-			t.Errorf("cleanup colliding APIFull channel fixture: %v", err)
 		}
 	})
 	if err := domain.SaveChannel(domain.Channel{
@@ -76,43 +64,14 @@ func TestHistoryAndEditDataCheckInputPeerAuthorization(t *testing.T) {
 		t.Fatalf("bad APIFull channel access hash: got %v", err)
 	}
 
-	legacyAccessHash := channelID + 2
-	if _, err := cleanupDB.Exec(`INSERT INTO channels (id, creator_user_id, access_hash, title, broadcast, megagroup, date)
-		VALUES (?, ?, ?, ?, 1, 0, ?)`, legacyChannelID, owner, legacyAccessHash, "legacy-author-test", time.Now().Unix()); err != nil {
-		t.Fatal(err)
+	if _, _, err := domain.ChannelMessageAuthor(outsider, channelID, channelID, 1); !errors.Is(err, domain.ErrNotChannelMember) {
+		t.Fatalf("channel author outsider: got %v, want ErrNotChannelMember", err)
 	}
-	if _, err := cleanupDB.Exec(`INSERT INTO channel_participants (channel_id, user_id, participant_type, joined_at, state)
-		VALUES (?, ?, 0, ?, 0)`, legacyChannelID, member, time.Now().Unix()); err != nil {
-		t.Fatal(err)
+	if _, _, err := domain.ChannelMessageAuthor(member, channelID, channelID+1, 1); !errors.Is(err, domain.ErrChannelMissing) {
+		t.Fatalf("channel author wrong access hash: got %v, want ErrChannelMissing", err)
 	}
-	if _, err := cleanupDB.Exec(`INSERT INTO channel_messages
-		(channel_id, message_id, dialog_message_id, sender_user_id, message_data, message, date2)
-		VALUES (?, 1, ?, ?, ?, 'legacy', ?), (?, 2, ?, ?, ?, 'anonymous', ?)`,
-		legacyChannelID, legacyChannelID, outsider, `{"from_id":{"predicate_name":"peerUser","user_id":91003}}`, time.Now().Unix(),
-		legacyChannelID, legacyChannelID+1, outsider, `{"from_id":{"predicate_name":"peerChannel","channel_id":77}}`, time.Now().Unix()); err != nil {
-		t.Fatal(err)
-	}
-	if author, found, err := domain.ChannelMessageAuthor(member, legacyChannelID, legacyAccessHash, 1); err != nil || !found || author != outsider {
-		t.Fatalf("legacy channel author: author=%d found=%t err=%v, want %d", author, found, err, outsider)
-	}
-	if author, found, err := domain.ChannelMessageAuthor(member, legacyChannelID, legacyAccessHash, 2); err != nil || !found || author != 0 {
-		t.Fatalf("anonymous legacy channel author: author=%d found=%t err=%v, want an empty author", author, found, err)
-	}
-	if _, _, err := domain.ChannelMessageAuthor(outsider, legacyChannelID, legacyAccessHash, 1); !errors.Is(err, domain.ErrNotChannelMember) {
-		t.Fatalf("legacy channel outsider: got %v, want ErrNotChannelMember", err)
-	}
-	if _, _, err := domain.ChannelMessageAuthor(member, legacyChannelID, legacyAccessHash+1, 1); !errors.Is(err, domain.ErrChannelMissing) {
-		t.Fatalf("legacy channel wrong access hash: got %v, want ErrChannelMissing", err)
-	}
-	if err := domain.SaveChannel(domain.Channel{
-		ID: legacyChannelID, AccessHash: legacyAccessHash + 1, Creator: owner, Title: "colliding-apifull-author-test",
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := ChannelMessageAuthor(member, mtproto.MakeTLInputChannel(&mtproto.InputChannel{
-		ChannelId: legacyChannelID, AccessHash: legacyAccessHash + 1,
-	}).To_InputChannel(), 1); !errors.Is(err, mtproto.ErrChannelInvalid) {
-		t.Fatalf("legacy ID collision with APIFull channel: got %v, want CHANNEL_INVALID", err)
+	if _, found, err := domain.ChannelMessageAuthor(member, channelID, channelID, 2); err != nil || found {
+		t.Fatalf("missing channel message author: found=%v err=%v", found, err)
 	}
 
 	input := mtproto.MakeTLInputPeerChannel(&mtproto.InputPeer{

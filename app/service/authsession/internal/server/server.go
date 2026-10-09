@@ -34,9 +34,9 @@ func New() *Server {
 
 func (s *Server) Initialize() error {
 	var c config.Config
-	conf.MustLoad(*configFile, &c)
+	conf.MustLoad(*configFile, &c, conf.UseEnv())
 
-	logx.Infov(c)
+	logx.Infof("authsession config loaded")
 	ctx, err := svc.NewServiceContext(c)
 	if err != nil {
 		return err

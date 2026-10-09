@@ -19,9 +19,7 @@
 package core
 
 import (
-	"encoding/json"
 	"fmt"
-	"sort"
 
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/persist"
@@ -34,27 +32,15 @@ const (
 	inlineGameScorePrefix = "game:inline:"
 )
 
-func loadGameScores(key string) (map[int64]int32, error) {
-	raw, err := persist.Default.Get(key)
-	if err != nil {
-		return nil, err
+func gameScoreScope(prefix string) string {
+	if prefix == inlineGameScorePrefix {
+		return "inline"
 	}
-	users := map[int64]int32{}
-	if raw == "" {
-		return users, nil
-	}
-	if err = json.Unmarshal([]byte(raw), &users); err != nil {
-		return nil, err
-	}
-	return users, nil
+	return "peer"
 }
 
-func saveGameScores(key string, users map[int64]int32) error {
-	b, err := json.Marshal(users)
-	if err != nil {
-		return err
-	}
-	return persist.Default.Set(key, string(b))
+func loadGameScores(prefix, key string) ([]persist.GameScore, error) {
+	return persist.LoadGameScores(gameScoreScope(prefix), key)
 }
 
 func gamePeerKey(peer *mtproto.InputPeer, msgID int32) string {
@@ -82,46 +68,30 @@ func putGameScore(prefix, key string, userID int64, score int32, force bool) err
 	if score < 0 {
 		return mtproto.ErrScoreInvalid
 	}
-	storeKey := prefix + key
-	users, err := loadGameScores(storeKey)
+	updated, err := persist.StoreGameScore(gameScoreScope(prefix), key, userID, score, force)
 	if err != nil {
 		return err
 	}
-	if prev, ok := users[userID]; ok && !force && score <= prev {
+	if !updated {
 		return mtproto.ErrBotScoreNotModified
 	}
-	users[userID] = score
-	return saveGameScores(storeKey, users)
+	return nil
 }
 
 func listGameScores(prefix, key string) (*mtproto.Messages_HighScores, error) {
-	board, err := loadGameScores(prefix + key)
+	board, err := loadGameScores(prefix, key)
 	if err != nil {
 		return nil, err
 	}
-	type pair struct {
-		userID int64
-		score  int32
-	}
-	var pairs []pair
-	for userID, score := range board {
-		pairs = append(pairs, pair{userID: userID, score: score})
-	}
-	sort.Slice(pairs, func(i, j int) bool {
-		if pairs[i].score != pairs[j].score {
-			return pairs[i].score > pairs[j].score
-		}
-		return pairs[i].userID < pairs[j].userID
-	})
-	scores := make([]*mtproto.HighScore, 0, len(pairs))
-	users := make([]*mtproto.User, 0, len(pairs))
-	for i, p := range pairs {
+	scores := make([]*mtproto.HighScore, 0, len(board))
+	users := make([]*mtproto.User, 0, len(board))
+	for i, p := range board {
 		scores = append(scores, mtproto.MakeTLHighScore(&mtproto.HighScore{
 			Pos:    int32(i + 1),
-			UserId: p.userID,
-			Score:  p.score,
+			UserId: p.UserID,
+			Score:  p.Score,
 		}).To_HighScore())
-		users = append(users, mtproto.MakeTLUser(&mtproto.User{Id: p.userID}).To_User())
+		users = append(users, mtproto.MakeTLUser(&mtproto.User{Id: p.UserID}).To_User())
 	}
 	return mtproto.MakeTLMessagesHighScores(&mtproto.Messages_HighScores{
 		Scores: scores,

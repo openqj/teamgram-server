@@ -19,15 +19,12 @@
 package core
 
 import (
-	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/domain"
-	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/persist"
 	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
@@ -165,9 +162,6 @@ func (c *ApiFullCore) MessagesCreateForumTopic(in *mtproto.TLMessagesCreateForum
 	if err != nil {
 		return nil, err
 	}
-	if err := persist.Default.Set(forumUserKey(uid), in.GetTitle()); err != nil {
-		return nil, err
-	}
 	if err := forumPut(key, uid, in.GetTitle()); err != nil {
 		return nil, err
 	}
@@ -204,11 +198,10 @@ func (c *ApiFullCore) ChannelsToggleForum(in *mtproto.TLChannelsToggleForum) (*m
 	if in == nil {
 		return nil, mtproto.ErrChannelInvalid
 	}
-	key, err := c.forumChannelKey(uid, in.GetChannel(), true)
-	if err != nil {
+	if _, err := c.forumChannelKey(uid, in.GetChannel(), true); err != nil {
 		return nil, err
 	}
-	if err := updateForumSettings(key, func(settings *forumChannelSettings) {
+	if err := domain.UpdateForumChannelSettings(in.GetChannel().GetChannelId(), func(settings *domain.ForumChannelSettings) {
 		settings.Enabled = mtproto.FromBool(in.GetEnabled())
 		settings.Tabs = mtproto.FromBool(in.GetTabs())
 	}); err != nil {
@@ -225,12 +218,11 @@ func (c *ApiFullCore) ChannelsToggleViewForumAsMessages(in *mtproto.TLChannelsTo
 	if in == nil {
 		return nil, mtproto.ErrChannelInvalid
 	}
-	key, err := c.forumChannelKey(uid, in.GetChannel(), true)
-	if err != nil {
+	if _, err := c.forumChannelKey(uid, in.GetChannel(), true); err != nil {
 		return nil, err
 	}
 	enabled := mtproto.FromBool(in.GetEnabled())
-	if err := updateForumSettings(key, func(settings *forumChannelSettings) {
+	if err := domain.UpdateForumChannelSettings(in.GetChannel().GetChannelId(), func(settings *domain.ForumChannelSettings) {
 		settings.ViewAsMessages = enabled
 	}); err != nil {
 		return nil, err
@@ -253,9 +245,6 @@ func (c *ApiFullCore) ChannelsCreateForumTopic(in *mtproto.TLChannelsCreateForum
 	}
 	key, err := c.forumChannelKey(uid, in.GetChannel(), true)
 	if err != nil {
-		return nil, err
-	}
-	if err := persist.Default.Set(forumUserKey(uid), in.GetTitle()); err != nil {
 		return nil, err
 	}
 	if err := forumPut(key, uid, in.GetTitle()); err != nil {
@@ -406,34 +395,9 @@ func (c *ApiFullCore) ChannelsReorderPinnedForumTopics(in *mtproto.TLChannelsReo
 	return updates, nil
 }
 
-// Forum topics are JSON blobs under forum:. persist.Default is MySQL in tests.
-
-const forumKeyPrefix = "forum:"
-
-type forumTopicJSON struct {
-	Id          int32  `json:"id"`
-	Title       string `json:"title"`
-	My          bool   `json:"my"`
-	Closed      bool   `json:"closed"`
-	Pinned      bool   `json:"pinned"`
-	Hidden      bool   `json:"hidden"`
-	Date        int32  `json:"date"`
-	CreatorID   int64  `json:"creatorId"`
-	IconEmojiID int64  `json:"iconEmojiId"`
-	TopMessage  int32  `json:"topMessage"`
-}
-
-func forumUserKey(uid int64) string {
-	return fmt.Sprintf("%s%d", forumKeyPrefix, uid)
-}
-
-func forumStoreKey(key string) string {
-	return forumKeyPrefix + key
-}
-
-// forumWithUserTitle fills an empty list from the title stored at forum:<userId>.
+// forumWithUserTitle fills an empty list from the caller's most recent topic title.
 func forumWithUserTitle(uid int64, key string, topics []*mtproto.ForumTopic) ([]*mtproto.ForumTopic, error) {
-	title, err := persist.Default.Get(forumUserKey(uid))
+	title, err := domain.ForumUserTitle(uid)
 	if err != nil || title == "" {
 		return topics, err
 	}
@@ -447,7 +411,7 @@ func forumWithUserTitle(uid int64, key string, topics []*mtproto.ForumTopic) ([]
 		if err != nil {
 			return nil, err
 		}
-		return []*mtproto.ForumTopic{forumTopicFromJSON(peer, forumTopicJSON{Title: title, My: true, CreatorID: uid}, uid)}, nil
+		return []*mtproto.ForumTopic{forumTopicFromDomain(peer, domain.ForumTopic{Title: title, CreatorID: uid}, uid)}, nil
 	}
 	for _, t := range topics {
 		if t != nil && t.GetTitle() == "" {
@@ -458,11 +422,7 @@ func forumWithUserTitle(uid int64, key string, topics []*mtproto.ForumTopic) ([]
 }
 
 func forumClearUserTitleIfEmpty(uid int64, key string) error {
-	left, err := loadForumTopics(key)
-	if err != nil || len(left) > 0 {
-		return err
-	}
-	return persist.Default.Set(forumUserKey(uid), "")
+	return domain.ClearForumUserTitleIfNoTopics(uid, key)
 }
 
 func forumPeerKey(peer *mtproto.InputPeer) (string, error) {
@@ -542,61 +502,15 @@ func (c *ApiFullCore) forumChannelKey(userID int64, input *mtproto.InputChannel,
 	return fmt.Sprintf("channel:%d", channel.ID), nil
 }
 
-func loadForumTopics(key string) ([]forumTopicJSON, error) {
-	raw, err := persist.Default.Get(forumStoreKey(key))
-	if err != nil || raw == "" {
-		return nil, err
-	}
-	var stored []forumTopicJSON
-	if err := json.Unmarshal([]byte(raw), &stored); err != nil {
-		return nil, err
-	}
-	return stored, nil
-}
-
-func saveForumTopics(key string, topics []forumTopicJSON) error {
-	b, err := json.Marshal(topics)
-	if err != nil {
-		return err
-	}
-	return persist.Default.Set(forumStoreKey(key), string(b))
-}
-
-func nextForumSeq() (int32, error) {
-	raw, err := persist.Default.Get(forumKeyPrefix + "seq")
-	if err != nil {
-		return 0, err
-	}
-	var seq int32
-	if raw != "" {
-		if err := json.Unmarshal([]byte(raw), &seq); err != nil {
-			return 0, err
-		}
-	}
-	seq++
-	b, err := json.Marshal(seq)
-	if err != nil {
-		return 0, err
-	}
-	if err := persist.Default.Set(forumKeyPrefix+"seq", string(b)); err != nil {
-		return 0, err
-	}
-	return seq, nil
-}
-
-func forumTopicFromJSON(peer *mtproto.Peer, v forumTopicJSON, userID int64) *mtproto.ForumTopic {
+func forumTopicFromDomain(peer *mtproto.Peer, v domain.ForumTopic, userID int64) *mtproto.ForumTopic {
 	creatorID := v.CreatorID
 	if creatorID == 0 {
 		creatorID = userID
 	}
-	my := v.My
-	if v.CreatorID != 0 {
-		my = v.CreatorID == userID
-	}
 	return mtproto.MakeTLForumTopic(&mtproto.ForumTopic{
-		Id:          v.Id,
+		Id:          v.ID,
 		Title:       v.Title,
-		My:          my,
+		My:          creatorID == userID,
 		Closed:      v.Closed,
 		Pinned:      v.Pinned,
 		Hidden:      v.Hidden,
@@ -611,27 +525,11 @@ func forumTopicFromJSON(peer *mtproto.Peer, v forumTopicJSON, userID int64) *mtp
 }
 
 func forumPut(key string, userID int64, title string) error {
-	topics, err := loadForumTopics(key)
-	if err != nil {
-		return err
-	}
-	seq, err := nextForumSeq()
-	if err != nil {
-		return err
-	}
-	topics = append(topics, forumTopicJSON{
-		Id:         seq,
-		Title:      title,
-		My:         true,
-		Date:       int32(time.Now().Unix()),
-		CreatorID:  userID,
-		TopMessage: seq,
-	})
-	return saveForumTopics(key, topics)
+	return domain.CreateForumTopic(key, userID, title)
 }
 
 func forumList(key string, userID int64, q string, limit int32, ids []int32, byID bool) ([]*mtproto.ForumTopic, error) {
-	topics, err := loadForumTopics(key)
+	topics, err := domain.ListForumTopics(key)
 	if err != nil {
 		return nil, err
 	}
@@ -646,14 +544,14 @@ func forumList(key string, userID int64, q string, limit int32, ids []int32, byI
 	out := make([]*mtproto.ForumTopic, 0)
 	for _, t := range topics {
 		if byID {
-			if _, ok := want[t.Id]; !ok {
+			if _, ok := want[t.ID]; !ok {
 				continue
 			}
 		}
 		if q != "" && !strings.Contains(t.Title, q) {
 			continue
 		}
-		out = append(out, forumTopicFromJSON(peer, t, userID))
+		out = append(out, forumTopicFromDomain(peer, t, userID))
 		if limit > 0 && int32(len(out)) >= limit {
 			break
 		}
@@ -661,28 +559,12 @@ func forumList(key string, userID int64, q string, limit int32, ids []int32, byI
 	return out, nil
 }
 
-func forumUpdateTopic(key string, id int32, update func(*forumTopicJSON) error) error {
-	if id == 0 {
-		return mtproto.ErrTopicIdInvalid
-	}
-	topics, err := loadForumTopics(key)
-	if err != nil {
-		return err
-	}
-	for i := range topics {
-		if topics[i].Id != id {
-			continue
-		}
-		if err := update(&topics[i]); err != nil {
-			return err
-		}
-		return saveForumTopics(key, topics)
-	}
-	return mtproto.ErrTopicIdInvalid
+func forumUpdateTopic(key string, id int32, update func(*domain.ForumTopic) error) error {
+	return domain.UpdateForumTopic(key, id, update)
 }
 
 func forumEditTopic(key string, id int32, title *wrapperspb.StringValue, iconEmojiID *wrapperspb.Int64Value, closed, hidden *mtproto.Bool) error {
-	return forumUpdateTopic(key, id, func(topic *forumTopicJSON) error {
+	return forumUpdateTopic(key, id, func(topic *domain.ForumTopic) error {
 		if title != nil {
 			if title.GetValue() == "" {
 				return mtproto.ErrTopicTitleEmpty
@@ -703,85 +585,18 @@ func forumEditTopic(key string, id int32, title *wrapperspb.StringValue, iconEmo
 }
 
 func forumSetPinned(key string, id int32, pinned bool) error {
-	return forumUpdateTopic(key, id, func(topic *forumTopicJSON) error {
+	return forumUpdateTopic(key, id, func(topic *domain.ForumTopic) error {
 		topic.Pinned = pinned
 		return nil
 	})
 }
 
 func forumReorder(key string, order []int32) error {
-	topics, err := loadForumTopics(key)
-	if err != nil {
-		return err
-	}
-	byID := make(map[int32]forumTopicJSON, len(topics))
-	for _, topic := range topics {
-		byID[topic.Id] = topic
-	}
-	reordered := make([]forumTopicJSON, 0, len(topics))
-	seen := make(map[int32]struct{}, len(order))
-	for _, id := range order {
-		topic, ok := byID[id]
-		if !ok {
-			return mtproto.ErrTopicIdInvalid
-		}
-		if _, duplicate := seen[id]; duplicate {
-			continue
-		}
-		seen[id] = struct{}{}
-		reordered = append(reordered, topic)
-	}
-	for _, topic := range topics {
-		if _, ordered := seen[topic.Id]; !ordered {
-			reordered = append(reordered, topic)
-		}
-	}
-	return saveForumTopics(key, reordered)
-}
-
-type forumChannelSettings struct {
-	Enabled        bool `json:"enabled"`
-	Tabs           bool `json:"tabs"`
-	ViewAsMessages bool `json:"viewAsMessages"`
-}
-
-func loadForumSettings(key string) (forumChannelSettings, error) {
-	raw, err := persist.Default.Get(forumStoreKey(key) + ":settings")
-	if err != nil || raw == "" {
-		return forumChannelSettings{}, err
-	}
-	var settings forumChannelSettings
-	if err := json.Unmarshal([]byte(raw), &settings); err != nil {
-		return forumChannelSettings{}, err
-	}
-	return settings, nil
-}
-
-func updateForumSettings(key string, update func(*forumChannelSettings)) error {
-	settings, err := loadForumSettings(key)
-	if err != nil {
-		return err
-	}
-	update(&settings)
-	b, err := json.Marshal(settings)
-	if err != nil {
-		return err
-	}
-	return persist.Default.Set(forumStoreKey(key)+":settings", string(b))
+	return domain.ReorderForumTopics(key, order)
 }
 
 func forumDelete(key string, id int32) (bool, error) {
-	topics, err := loadForumTopics(key)
-	if err != nil {
-		return false, err
-	}
-	for i, t := range topics {
-		if t.Id == id {
-			topics = append(topics[:i], topics[i+1:]...)
-			return true, saveForumTopics(key, topics)
-		}
-	}
-	return false, nil
+	return domain.DeleteForumTopic(key, id)
 }
 
 func forumTopicsReply(topics []*mtproto.ForumTopic) *mtproto.Messages_ForumTopics {

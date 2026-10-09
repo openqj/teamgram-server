@@ -35,3 +35,9 @@ func NewServiceContext(c config.Config, plugin plugin.MessagePlugin) *ServiceCon
 		Dao:    dao.New(c, plugin),
 	}
 }
+
+func (s *ServiceContext) Close() {
+	if s != nil && s.Dao != nil && s.Dao.Postgres != nil {
+		s.Dao.Postgres.Close()
+	}
+}

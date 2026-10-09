@@ -7,21 +7,29 @@ import (
 	"github.com/teamgram/proto/mtproto/rpc/metadata"
 )
 
-func TestLangpackUnavailableFailsClosed(t *testing.T) {
+func TestLangpackRejectsUnsupportedPack(t *testing.T) {
 	c := &ApiFullCore{MD: &metadata.RpcMetadata{UserId: 81013}}
 	checks := []func() (any, error){
-		func() (any, error) { return c.LangpackGetLangPack(&mtproto.TLLangpackGetLangPack{LangCode: "en"}) },
 		func() (any, error) {
-			return c.LangpackGetStrings(&mtproto.TLLangpackGetStrings{LangCode: "en", Keys: []string{"settings"}})
+			return c.LangpackGetLangPack(&mtproto.TLLangpackGetLangPack{LangPack: "unsupported", LangCode: "en"})
 		},
-		func() (any, error) { return c.LangpackGetDifference(&mtproto.TLLangpackGetDifference{LangCode: "en"}) },
-		func() (any, error) { return c.LangpackGetLanguages(&mtproto.TLLangpackGetLanguages{}) },
-		func() (any, error) { return c.LangpackGetLanguage(&mtproto.TLLangpackGetLanguage{LangCode: "en"}) },
+		func() (any, error) {
+			return c.LangpackGetStrings(&mtproto.TLLangpackGetStrings{LangPack: "unsupported", LangCode: "en", Keys: []string{"settings"}})
+		},
+		func() (any, error) {
+			return c.LangpackGetDifference(&mtproto.TLLangpackGetDifference{LangPack: "unsupported", LangCode: "en"})
+		},
+		func() (any, error) {
+			return c.LangpackGetLanguages(&mtproto.TLLangpackGetLanguages{LangPack: "unsupported"})
+		},
+		func() (any, error) {
+			return c.LangpackGetLanguage(&mtproto.TLLangpackGetLanguage{LangPack: "unsupported", LangCode: "en"})
+		},
 	}
 	for i, check := range checks {
 		got, err := check()
-		if !nilRPCResult(got) || !sameRPCErrorCode(err, mtproto.ErrMethodNotImpl) {
-			t.Fatalf("check %d=(%#v,%v), want METHOD_NOT_IMPL", i, got, err)
+		if !nilRPCResult(got) || !sameRPCErrorCode(err, mtproto.ErrLangPackInvalid) {
+			t.Fatalf("check %d=(%#v,%v), want LANG_PACK_INVALID", i, got, err)
 		}
 	}
 }

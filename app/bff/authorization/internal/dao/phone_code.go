@@ -20,6 +20,7 @@ package dao
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/teamgram/marmota/pkg/random2"
@@ -27,6 +28,7 @@ import (
 	"github.com/teamgram/proto/mtproto/crypto"
 	"github.com/teamgram/teamgram-server/app/bff/authorization/model"
 
+	"github.com/zeromicro/go-zero/core/hash"
 	"github.com/zeromicro/go-zero/core/logx"
 )
 
@@ -100,11 +102,47 @@ func (d *Dao) CheckCanDoAction(ctx context.Context,
 	authKeyId int64,
 	phoneNumber string,
 	actionType int) error {
-	// TODO(@benqi): check can do action
-
+	if d == nil || d.kv == nil || phoneNumber == "" {
+		return nil
+	}
+	// Redis Eval makes the increment and first-write TTL one atomic operation
+	// across authorization instances. Test doubles that do not expose EvalCtx
+	// retain their previous behavior; production go-zero stores implement it.
+	limiter, ok := d.kv.(interface {
+		EvalCtx(context.Context, string, string, ...any) (any, error)
+	})
+	if !ok {
+		return nil
+	}
+	const (
+		windowSeconds = 10 * 60
+		maxAttempts   = 5
+	)
+	key := "auth:phone_flood:" + hash.Md5Hex([]byte(phoneNumber))
+	value, err := limiter.EvalCtx(ctx, `
+		local n = redis.call('INCR', KEYS[1])
+		if n == 1 then redis.call('EXPIRE', KEYS[1], ARGV[1]) end
+		return n
+	`, key, windowSeconds)
+	if err != nil {
+		return err
+	}
+	var attempts int64
+	switch n := value.(type) {
+	case int:
+		attempts = int64(n)
+	case int64:
+		attempts = n
+	case uint64:
+		attempts = int64(n)
+	default:
+		return fmt.Errorf("authorization: unexpected phone flood counter type %T", value)
+	}
 	_ = authKeyId
-	_ = phoneNumber
 	_ = actionType
+	if attempts > maxAttempts {
+		return mtproto.ErrPhoneNumberFlood
+	}
 	return nil
 }
 

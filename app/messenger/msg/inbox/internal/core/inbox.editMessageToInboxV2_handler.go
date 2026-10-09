@@ -31,6 +31,15 @@ import (
 // InboxEditMessageToInboxV2
 // inbox.editMessageToInboxV2 flags:# user_id:long out:flags.0?true from_id:long fromAuthKeyId:long peer_type:int peer_id:long box:MessageBox users:flags.1?Vector<User> chats:flags.2?Vector<Chat> = Void;
 func (c *InboxCore) InboxEditMessageToInboxV2(in *inbox.TLInboxEditMessageToInboxV2) (*mtproto.Void, error) {
+	if in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if c.svcCtx.Dao.Postgres != nil {
+		if err := c.svcCtx.Dao.EditInboxMessageState(c.ctx, in); err != nil {
+			return nil, err
+		}
+		return mtproto.EmptyVoid, nil
+	}
 	if in.Out {
 		var (
 			mData, _ = jsonx.Marshal(in.NewMessage.Message)

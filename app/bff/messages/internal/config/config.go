@@ -30,6 +30,7 @@ type SearchPostsFloodConfig struct {
 
 type Config struct {
 	zrpc.RpcServerConf
+	PostgresDSN string `json:",optional"`
 
 	UserClient       zrpc.RpcClientConf
 	ChatClient       zrpc.RpcClientConf

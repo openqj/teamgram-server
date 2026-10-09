@@ -38,15 +38,17 @@ func (s *secretUpdatesReaderStub) GetDifference(_ context.Context, _ int64, qts,
 
 type updatesClientStub struct {
 	updatesclient.UpdatesClient
-	state *mtproto.Updates_State
-	diff  *updates.Difference
+	state   *mtproto.Updates_State
+	diff    *updates.Difference
+	request *updates.TLUpdatesGetDifferenceV2
 }
 
 func (s *updatesClientStub) UpdatesGetStateV2(context.Context, *updates.TLUpdatesGetStateV2) (*mtproto.Updates_State, error) {
 	return s.state, nil
 }
 
-func (s *updatesClientStub) UpdatesGetDifferenceV2(context.Context, *updates.TLUpdatesGetDifferenceV2) (*updates.Difference, error) {
+func (s *updatesClientStub) UpdatesGetDifferenceV2(_ context.Context, in *updates.TLUpdatesGetDifferenceV2) (*updates.Difference, error) {
+	s.request = in
 	return s.diff, nil
 }
 
@@ -177,5 +179,21 @@ func TestUpdatesGetDifferenceRejectsFutureQTSBeforeBackendCalls(t *testing.T) {
 	}
 	if auth.calls != 0 {
 		t.Fatalf("auth backend called %d times", auth.calls)
+	}
+}
+
+func TestUpdatesGetDifferencePreservesLimitFlagsAndEmptyState(t *testing.T) {
+	backend := &updatesClientStub{diff: updates.MakeTLDifferenceEmpty(&updates.Difference{
+		State: mtproto.MakeTLUpdatesState(&mtproto.Updates_State{Pts: 12, Date: 40, Seq: 2}).To_Updates_State(),
+	}).To_Difference()}
+	core := secretUpdatesCore(&secretUpdatesReaderStub{}, backend, &authsessionClientStub{})
+	got, err := core.UpdatesGetDifference(&mtproto.TLUpdatesGetDifference{
+		Pts: 12, Date: 40, PtsLimit: wrapperspb.Int32(1), PtsTotalLimit: wrapperspb.Int32(3),
+	})
+	if err != nil || got.GetPredicateName() != mtproto.Predicate_updates_differenceEmpty || got.GetDate() != 40 || got.GetSeq() != 2 {
+		t.Fatalf("empty state=%v err=%v", got, err)
+	}
+	if backend.request.GetPtsLimit().GetValue() != 1 || backend.request.GetPtsTotalLimit().GetValue() != 3 {
+		t.Fatalf("limit flags lost: %v", backend.request)
 	}
 }

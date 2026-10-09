@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/persist"
 )
 
 // Relay is the configured TURN endpoint returned inside phoneCall connections.
@@ -94,6 +95,18 @@ func RelayConfigured() bool {
 
 var db *sql.DB
 
+// Close releases the process-owned PostgreSQL handle. It is called during
+// session shutdown after the RPC server has stopped accepting requests.
+func Close() error {
+	storeErr := persist.ClosePostgres()
+	if db == nil {
+		return storeErr
+	}
+	err := db.Close()
+	db = nil
+	return errors.Join(err, storeErr)
+}
+
 // Open is the single APIFull storage entry point. The independent deployment
 // uses PostgreSQL 18 exclusively; callers that still pass a MySQL DSN fail
 // fast instead of silently selecting a legacy backend.
@@ -130,6 +143,262 @@ func migratePostgres(conn *sql.DB) error {
 	if err := migrateDialect(tx, true); err != nil {
 		return err
 	}
+	if _, err := tx.Exec(`CREATE TABLE IF NOT EXISTS apifull_payment_saved_info (
+		user_id BIGINT PRIMARY KEY,
+		name TEXT NOT NULL DEFAULT '',
+		phone TEXT NOT NULL DEFAULT '',
+		email TEXT NOT NULL DEFAULT '',
+		credentials_saved BOOLEAN NOT NULL DEFAULT FALSE,
+		updated_at BIGINT NOT NULL
+	)`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`CREATE TABLE IF NOT EXISTS apifull_ai_compose_tone (
+		user_id BIGINT NOT NULL,
+		id BIGINT NOT NULL,
+		title TEXT NOT NULL DEFAULT '',
+		prompt TEXT NOT NULL DEFAULT '',
+		tone TEXT NOT NULL DEFAULT '',
+		slug TEXT NOT NULL DEFAULT '',
+		emoji_id BIGINT NOT NULL DEFAULT 0,
+		access_hash BIGINT NOT NULL,
+		creator BOOLEAN NOT NULL DEFAULT TRUE,
+		saved BOOLEAN NOT NULL DEFAULT FALSE,
+		display_author BOOLEAN NOT NULL DEFAULT FALSE,
+		created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+		updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+		PRIMARY KEY (user_id, id)
+	)`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`CREATE INDEX IF NOT EXISTS idx_apifull_ai_compose_tone_user_saved
+		ON apifull_ai_compose_tone (user_id, saved, id)`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`CREATE TABLE IF NOT EXISTS apifull_community (
+		community_id BIGINT PRIMARY KEY,
+		owner_user_id BIGINT NOT NULL,
+		title TEXT NOT NULL,
+		about TEXT NOT NULL DEFAULT '',
+		hidden BOOLEAN NOT NULL DEFAULT FALSE,
+		created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+	)`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`CREATE INDEX IF NOT EXISTS idx_apifull_community_owner
+		ON apifull_community (owner_user_id, community_id)`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`CREATE TABLE IF NOT EXISTS apifull_community_peer (
+		community_id BIGINT NOT NULL,
+		peer_type SMALLINT NOT NULL,
+		peer_id BIGINT NOT NULL,
+		access_hash BIGINT NOT NULL DEFAULT 0,
+		visible BOOLEAN,
+		approved BOOLEAN NOT NULL DEFAULT TRUE,
+		requested_by BIGINT NOT NULL DEFAULT 0,
+		requested_at BIGINT NOT NULL DEFAULT 0,
+		banned BOOLEAN NOT NULL DEFAULT FALSE,
+		can_view_history BOOLEAN NOT NULL DEFAULT FALSE,
+		PRIMARY KEY (community_id, peer_type, peer_id)
+	)`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`CREATE INDEX IF NOT EXISTS idx_apifull_community_peer_pending
+		ON apifull_community_peer (community_id, approved, requested_at, peer_id)`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`CREATE TABLE IF NOT EXISTS apifull_community_dialog_state (
+		user_id BIGINT NOT NULL,
+		community_id BIGINT NOT NULL,
+		collapsed BOOLEAN NOT NULL DEFAULT FALSE,
+		updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+		PRIMARY KEY (user_id, community_id)
+	)`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`CREATE TABLE IF NOT EXISTS apifull_boost_target (
+		scope TEXT NOT NULL,
+		peer_type SMALLINT NOT NULL,
+		peer_id BIGINT NOT NULL,
+		owner_user_id BIGINT NOT NULL DEFAULT 0,
+		boosts INTEGER NOT NULL DEFAULT 0 CHECK (boosts >= 0),
+		blocked_boosts INTEGER NOT NULL DEFAULT 0 CHECK (blocked_boosts >= 0),
+		updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		PRIMARY KEY (scope, peer_type, peer_id)
+	)`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`CREATE TABLE IF NOT EXISTS apifull_boost_slot (
+		user_id BIGINT NOT NULL,
+		slot INTEGER NOT NULL CHECK (slot > 0),
+		scope TEXT,
+		peer_type SMALLINT,
+		peer_id BIGINT,
+		gift BOOLEAN NOT NULL DEFAULT FALSE,
+		giveaway BOOLEAN NOT NULL DEFAULT FALSE,
+		unclaimed BOOLEAN NOT NULL DEFAULT FALSE,
+		boost_date INTEGER NOT NULL DEFAULT 0,
+		expires INTEGER NOT NULL DEFAULT 0,
+		cooldown_until INTEGER NOT NULL DEFAULT 0,
+		used_gift_slug TEXT NOT NULL DEFAULT '',
+		multiplier INTEGER NOT NULL DEFAULT 1,
+		stars BIGINT NOT NULL DEFAULT 0,
+		updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		PRIMARY KEY (user_id, slot),
+		CHECK ((scope IS NULL AND peer_type IS NULL AND peer_id IS NULL)
+			OR (scope IS NOT NULL AND peer_type IS NOT NULL AND peer_id IS NOT NULL))
+	)`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`CREATE INDEX IF NOT EXISTS idx_apifull_boost_slot_target
+		ON apifull_boost_slot (scope, peer_type, peer_id, user_id, slot)`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`CREATE TABLE IF NOT EXISTS apifull_bot_menu_button (
+		owner_user_id BIGINT NOT NULL,
+		bot_user_id BIGINT NOT NULL,
+		button JSONB NOT NULL DEFAULT '{}'::jsonb,
+		updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		PRIMARY KEY (owner_user_id, bot_user_id)
+	)`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`CREATE INDEX IF NOT EXISTS idx_apifull_bot_menu_button_bot
+		ON apifull_bot_menu_button (bot_user_id, owner_user_id)`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`CREATE TABLE IF NOT EXISTS apifull_connected_bot (
+		owner_user_id BIGINT NOT NULL,
+		bot_user_id BIGINT NOT NULL,
+		can_reply BOOLEAN NOT NULL DEFAULT FALSE,
+		rights JSONB NOT NULL DEFAULT '{}'::jsonb,
+		recipients_bot JSONB NOT NULL DEFAULT '{}'::jsonb,
+		recipients JSONB,
+		updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		PRIMARY KEY (owner_user_id, bot_user_id)
+	)`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`CREATE INDEX IF NOT EXISTS idx_apifull_connected_bot_bot
+		ON apifull_connected_bot (bot_user_id, owner_user_id)`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`CREATE TABLE IF NOT EXISTS apifull_connected_bot_peer (
+		owner_user_id BIGINT NOT NULL,
+		peer_type SMALLINT NOT NULL CHECK (peer_type IN (0, 1, 2)),
+		peer_id BIGINT NOT NULL,
+		paused BOOLEAN NOT NULL DEFAULT FALSE,
+		disabled BOOLEAN NOT NULL DEFAULT FALSE,
+		updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		PRIMARY KEY (owner_user_id, peer_type, peer_id)
+	)`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`CREATE TABLE IF NOT EXISTS apifull_bot_default_admin_rights (
+		bot_user_id BIGINT PRIMARY KEY,
+		group_admin_rights JSONB NOT NULL DEFAULT '{}'::jsonb,
+		broadcast_admin_rights JSONB NOT NULL DEFAULT '{}'::jsonb,
+		updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+	)`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`CREATE TABLE IF NOT EXISTS apifull_channel_sticker_set (
+		channel_id BIGINT PRIMARY KEY,
+		sticker_set_id BIGINT NOT NULL DEFAULT 0 REFERENCES apifull_sticker_set(id) ON DELETE CASCADE,
+		updated_by_user_id BIGINT NOT NULL,
+		updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+	)`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`CREATE TABLE IF NOT EXISTS apifull_channel_emoji_sticker_set (
+		channel_id BIGINT PRIMARY KEY,
+		sticker_set_id BIGINT NOT NULL REFERENCES apifull_sticker_set(id) ON DELETE CASCADE,
+		updated_by_user_id BIGINT NOT NULL,
+		updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+	)`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`CREATE TABLE IF NOT EXISTS apifull_sms_job_member (
+		user_id BIGINT PRIMARY KEY,
+		joined BOOLEAN NOT NULL DEFAULT FALSE,
+		allow_international BOOLEAN NOT NULL DEFAULT FALSE,
+		recent_sent INTEGER NOT NULL DEFAULT 0 CHECK (recent_sent >= 0),
+		recent_since BIGINT NOT NULL DEFAULT 0,
+		total_sent INTEGER NOT NULL DEFAULT 0 CHECK (total_sent >= 0),
+		total_since BIGINT NOT NULL DEFAULT 0,
+		last_gift_slug TEXT,
+		updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+	)`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`CREATE TABLE IF NOT EXISTS apifull_sms_job (
+		job_id TEXT PRIMARY KEY,
+		user_id BIGINT NOT NULL,
+		phone_number TEXT NOT NULL,
+		text TEXT NOT NULL,
+		state TEXT NOT NULL DEFAULT 'pending',
+		error_text TEXT,
+		assigned_at BIGINT NOT NULL DEFAULT 0,
+		finished_at BIGINT NOT NULL DEFAULT 0,
+		created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		CHECK (state IN ('pending', 'finished'))
+	)`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`CREATE INDEX IF NOT EXISTS idx_apifull_sms_job_user_state
+		ON apifull_sms_job (user_id, state, created_at, job_id)`); err != nil {
+		return err
+	}
+	for _, stmt := range []string{
+		`CREATE TABLE IF NOT EXISTS apifull_forum_topic (
+			peer_key TEXT NOT NULL,
+			topic_id INTEGER GENERATED BY DEFAULT AS IDENTITY,
+			title TEXT NOT NULL,
+			closed BOOLEAN NOT NULL DEFAULT FALSE,
+			pinned BOOLEAN NOT NULL DEFAULT FALSE,
+			hidden BOOLEAN NOT NULL DEFAULT FALSE,
+			topic_date INTEGER NOT NULL DEFAULT 0,
+			creator_user_id BIGINT NOT NULL,
+			icon_emoji_id BIGINT NOT NULL DEFAULT 0,
+			top_message INTEGER NOT NULL DEFAULT 0,
+			position BIGINT NOT NULL,
+			PRIMARY KEY (peer_key, topic_id)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_apifull_forum_topic_order
+			ON apifull_forum_topic (peer_key, position, topic_id)`,
+		`CREATE TABLE IF NOT EXISTS apifull_forum_user_title (
+			user_id BIGINT PRIMARY KEY,
+			title TEXT NOT NULL DEFAULT ''
+		)`,
+		`CREATE TABLE IF NOT EXISTS apifull_forum_channel_settings (
+			channel_id BIGINT PRIMARY KEY,
+			enabled BOOLEAN NOT NULL DEFAULT FALSE,
+			tabs BOOLEAN NOT NULL DEFAULT FALSE,
+			view_as_messages BOOLEAN NOT NULL DEFAULT FALSE,
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`CREATE TABLE IF NOT EXISTS apifull_stars_refund (
+			id BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+			user_id BIGINT NOT NULL,
+			charge_id VARCHAR(191) NOT NULL,
+			provider VARCHAR(32) NOT NULL,
+			stars BIGINT NOT NULL CHECK (stars > 0),
+			refund_transaction_id VARCHAR(191) NOT NULL,
+			state VARCHAR(16) NOT NULL CHECK (state IN ('complete')),
+			receipt BYTEA NOT NULL,
+			created_at BIGINT NOT NULL,
+			updated_at BIGINT NOT NULL,
+			CONSTRAINT uniq_apifull_stars_refund_charge UNIQUE (user_id, charge_id),
+			CONSTRAINT uniq_apifull_stars_refund_transaction UNIQUE (provider, refund_transaction_id)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_apifull_stars_refund_user
+			ON apifull_stars_refund (user_id, id)`,
+	} {
+		if _, err := tx.Exec(stmt); err != nil {
+			return err
+		}
+	}
 	return tx.Commit()
 }
 
@@ -151,6 +420,7 @@ func migrateDialect(conn sqlExecer, postgres bool) error {
 			signatures_enabled TINYINT NOT NULL DEFAULT 0,
 			signature_profiles_enabled TINYINT NOT NULL DEFAULT 0,
 			antispam TINYINT NOT NULL DEFAULT 0,
+			autotranslation TINYINT NOT NULL DEFAULT 0,
 			hidden_prehistory TINYINT NOT NULL DEFAULT 0,
 			participants_hidden TINYINT NOT NULL DEFAULT 0,
 			slowmode_seconds INT NOT NULL DEFAULT 0,
@@ -441,6 +711,7 @@ func migrateDialect(conn sqlExecer, postgres bool) error {
 			reply_to_msg_id INT NOT NULL DEFAULT 0,
 			reply_to_top_id INT NOT NULL DEFAULT 0,
 			content_json MEDIUMTEXT NULL,
+			pinned TINYINT NOT NULL DEFAULT 0,
 				PRIMARY KEY (channel_id, message_id)
 			) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 		`CREATE TABLE IF NOT EXISTS apifull_channel_message_request (
@@ -597,6 +868,29 @@ func migrateDialect(conn sqlExecer, postgres bool) error {
 		}
 	}
 	if postgres {
+		// Chatlist state and public invite slugs are PostgreSQL-owned records.
+		// Keep the state document and its slug index separate so invite lookup
+		// never requires reading another user's private state blob.
+		for _, stmt := range []string{
+			`CREATE TABLE IF NOT EXISTS apifull_chatlist_state (
+				user_id BIGINT PRIMARY KEY,
+				state JSONB NOT NULL DEFAULT '{}'::jsonb,
+				updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+			)`,
+			`CREATE TABLE IF NOT EXISTS apifull_chatlist_invite (
+				slug TEXT PRIMARY KEY,
+				owner_user_id BIGINT NOT NULL,
+				filter_id INTEGER NOT NULL,
+				title TEXT NOT NULL DEFAULT '',
+				peers JSONB NOT NULL DEFAULT '[]'::jsonb,
+				created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+			)`,
+			`CREATE INDEX IF NOT EXISTS apifull_chatlist_invite_owner_idx ON apifull_chatlist_invite (owner_user_id, slug)`,
+		} {
+			if _, err := conn.Exec(stmt); err != nil {
+				return err
+			}
+		}
 		return nil
 	}
 	if _, err := conn.Exec(`ALTER TABLE apifull_channel_message ADD COLUMN pinned TINYINT NOT NULL DEFAULT 0`); err != nil && !duplicateColumn(err) {
@@ -613,6 +907,7 @@ func migrateDialect(conn sqlExecer, postgres bool) error {
 		`ALTER TABLE apifull_channel ADD COLUMN signatures_enabled TINYINT NOT NULL DEFAULT 0`,
 		`ALTER TABLE apifull_channel ADD COLUMN signature_profiles_enabled TINYINT NOT NULL DEFAULT 0`,
 		`ALTER TABLE apifull_channel ADD COLUMN antispam TINYINT NOT NULL DEFAULT 0`,
+		`ALTER TABLE apifull_channel ADD COLUMN autotranslation TINYINT NOT NULL DEFAULT 0`,
 		`ALTER TABLE apifull_channel ADD COLUMN hidden_prehistory TINYINT NOT NULL DEFAULT 0`,
 		`ALTER TABLE apifull_channel ADD COLUMN participants_hidden TINYINT NOT NULL DEFAULT 0`,
 		`ALTER TABLE apifull_channel ADD COLUMN slowmode_seconds INT NOT NULL DEFAULT 0`,
@@ -675,6 +970,16 @@ func duplicateColumn(err error) bool {
 	return errors.As(err, &pe) && pe.Code == "42701"
 }
 
+// undefinedTable reports a missing optional legacy projection. APIFull owns
+// the PostgreSQL channel tables, while installations that still expose the
+// transitional channel service may also have the legacy tables. A missing
+// legacy table must select the APIFull path instead of turning a valid request
+// into an internal database error.
+func undefinedTable(err error) bool {
+	var pe *pgconn.PgError
+	return errors.As(err, &pe) && pe.Code == "42P01"
+}
+
 func duplicateIndex(err error) bool {
 	var pe *pgconn.PgError
 	return errors.As(err, &pe) && pe.Code == "42P07"
@@ -707,6 +1012,7 @@ type Channel struct {
 	Signatures               bool
 	SignatureProfiles        bool
 	Antispam                 bool
+	Autotranslation          bool
 	HiddenPrehistory         bool
 	ParticipantsHidden       bool
 	SlowmodeSeconds          int32
@@ -737,6 +1043,7 @@ type ChannelSettings struct {
 	Signatures         *bool
 	SignatureProfiles  *bool
 	Antispam           *bool
+	Autotranslation    *bool
 	HiddenPrehistory   *bool
 	ParticipantsHidden *bool
 	SlowmodeSeconds    *int32
@@ -749,17 +1056,18 @@ func SaveChannel(ch Channel) error {
 	if ch.CreatedAt == 0 {
 		ch.CreatedAt = time.Now().Unix()
 	}
-	_, err := db.Exec(`INSERT INTO apifull_channel
-		(id, access_hash, migrated_from_chat_id, creator_user_id, title, about, broadcast, megagroup, signatures_enabled, signature_profiles_enabled, antispam,
+	_, err := execPostgresMutation(`INSERT INTO apifull_channel
+		(id, access_hash, migrated_from_chat_id, creator_user_id, title, about, broadcast, megagroup, signatures_enabled, signature_profiles_enabled, antispam, autotranslation,
 		hidden_prehistory, participants_hidden, slowmode_seconds, location_lat, location_long, location_address, username, created_at)
-		VALUES (?,?,NULL,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-		ON DUPLICATE KEY UPDATE title=VALUES(title), about=VALUES(about), username=VALUES(username),
-			broadcast=VALUES(broadcast), megagroup=VALUES(megagroup), signatures_enabled=VALUES(signatures_enabled),
-			signature_profiles_enabled=VALUES(signature_profiles_enabled), antispam=VALUES(antispam), hidden_prehistory=VALUES(hidden_prehistory),
-			participants_hidden=VALUES(participants_hidden), slowmode_seconds=VALUES(slowmode_seconds),
-			location_lat=VALUES(location_lat), location_long=VALUES(location_long), location_address=VALUES(location_address)`,
+		VALUES ($1,$2,NULL,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
+		ON CONFLICT (id) DO UPDATE SET title=EXCLUDED.title, about=EXCLUDED.about, username=EXCLUDED.username,
+			broadcast=EXCLUDED.broadcast, megagroup=EXCLUDED.megagroup, signatures_enabled=EXCLUDED.signatures_enabled,
+			signature_profiles_enabled=EXCLUDED.signature_profiles_enabled, antispam=EXCLUDED.antispam, autotranslation=EXCLUDED.autotranslation,
+			hidden_prehistory=EXCLUDED.hidden_prehistory,
+			participants_hidden=EXCLUDED.participants_hidden, slowmode_seconds=EXCLUDED.slowmode_seconds,
+			location_lat=EXCLUDED.location_lat, location_long=EXCLUDED.location_long, location_address=EXCLUDED.location_address`,
 		ch.ID, ch.AccessHash, ch.Creator, ch.Title, ch.About, boolInt(ch.Broadcast), boolInt(ch.Megagroup),
-		boolInt(ch.Signatures), boolInt(ch.SignatureProfiles), boolInt(ch.Antispam), boolInt(ch.HiddenPrehistory), boolInt(ch.ParticipantsHidden),
+		boolInt(ch.Signatures), boolInt(ch.SignatureProfiles), boolInt(ch.Antispam), boolInt(ch.Autotranslation), boolInt(ch.HiddenPrehistory), boolInt(ch.ParticipantsHidden),
 		ch.SlowmodeSeconds, ch.LocationLat, ch.LocationLong, ch.LocationAddress, ch.Username, ch.CreatedAt)
 	return err
 }
@@ -769,17 +1077,17 @@ func LoadChannel(id int64) (Channel, bool, error) {
 	if db == nil {
 		return ch, false, errors.New("domain PostgreSQL is not open")
 	}
-	var broadcast, megagroup, signatures, signatureProfiles, antispam, hiddenPrehistory, participantsHidden int
+	var broadcast, megagroup, signatures, signatureProfiles, antispam, autotranslation, hiddenPrehistory, participantsHidden int
 	var color, profileColor sql.NullInt32
 	var backgroundEmojiID, profileBackgroundEmojiID sql.NullInt64
 	var locationLat, locationLong sql.NullFloat64
 	err := db.QueryRow(`SELECT id, access_hash, COALESCE(migrated_from_chat_id, 0), creator_user_id, title, about, broadcast, megagroup, signatures_enabled,
-		signature_profiles_enabled, antispam, hidden_prehistory, participants_hidden, slowmode_seconds, color, background_emoji_id,
+		signature_profiles_enabled, antispam, autotranslation, hidden_prehistory, participants_hidden, slowmode_seconds, color, background_emoji_id,
 		profile_color, profile_background_emoji_id, photo_id, photo_dc_id, photo_has_video,
 		location_lat, location_long, location_address, username, COALESCE(discussion_group_id, 0), created_at
 		FROM apifull_channel WHERE id=?`, id).Scan(
 		&ch.ID, &ch.AccessHash, &ch.MigratedFromChatID, &ch.Creator, &ch.Title, &ch.About, &broadcast, &megagroup, &signatures, &signatureProfiles,
-		&antispam, &hiddenPrehistory, &participantsHidden, &ch.SlowmodeSeconds, &color, &backgroundEmojiID, &profileColor,
+		&antispam, &autotranslation, &hiddenPrehistory, &participantsHidden, &ch.SlowmodeSeconds, &color, &backgroundEmojiID, &profileColor,
 		&profileBackgroundEmojiID, &ch.PhotoID, &ch.PhotoDCID, &ch.PhotoHasVideo,
 		&locationLat, &locationLong, &ch.LocationAddress, &ch.Username, &ch.DiscussionGroupID, &ch.CreatedAt)
 	if err == sql.ErrNoRows {
@@ -793,6 +1101,7 @@ func LoadChannel(id int64) (Channel, bool, error) {
 	ch.Signatures = signatures != 0
 	ch.SignatureProfiles = signatureProfiles != 0
 	ch.Antispam = antispam != 0
+	ch.Autotranslation = autotranslation != 0
 	ch.HiddenPrehistory = hiddenPrehistory != 0
 	ch.ParticipantsHidden = participantsHidden != 0
 	if color.Valid {
@@ -924,30 +1233,34 @@ func UpdateChannelSettings(userID, channelID int64, settings ChannelSettings) er
 	sets := []string{}
 	args := []any{}
 	if settings.Signatures != nil {
-		sets = append(sets, "signatures_enabled=?")
+		sets = append(sets, "signatures_enabled=$"+strconv.Itoa(len(args)+1))
 		args = append(args, boolInt(*settings.Signatures))
 	}
 	if settings.SignatureProfiles != nil {
-		sets = append(sets, "signature_profiles_enabled=?")
+		sets = append(sets, "signature_profiles_enabled=$"+strconv.Itoa(len(args)+1))
 		args = append(args, boolInt(*settings.SignatureProfiles))
 	}
 	if settings.Antispam != nil {
-		sets = append(sets, "antispam=?")
+		sets = append(sets, "antispam=$"+strconv.Itoa(len(args)+1))
 		args = append(args, boolInt(*settings.Antispam))
 	}
+	if settings.Autotranslation != nil {
+		sets = append(sets, "autotranslation=$"+strconv.Itoa(len(args)+1))
+		args = append(args, boolInt(*settings.Autotranslation))
+	}
 	if settings.HiddenPrehistory != nil {
-		sets = append(sets, "hidden_prehistory=?")
+		sets = append(sets, "hidden_prehistory=$"+strconv.Itoa(len(args)+1))
 		args = append(args, boolInt(*settings.HiddenPrehistory))
 	}
 	if settings.ParticipantsHidden != nil {
-		sets = append(sets, "participants_hidden=?")
+		sets = append(sets, "participants_hidden=$"+strconv.Itoa(len(args)+1))
 		args = append(args, boolInt(*settings.ParticipantsHidden))
 	}
 	if settings.SlowmodeSeconds != nil {
 		if *settings.SlowmodeSeconds < 0 {
 			return errors.New("invalid channel slowmode seconds")
 		}
-		sets = append(sets, "slowmode_seconds=?")
+		sets = append(sets, "slowmode_seconds=$"+strconv.Itoa(len(args)+1))
 		args = append(args, *settings.SlowmodeSeconds)
 	}
 	if len(sets) == 0 {
@@ -962,7 +1275,7 @@ func UpdateChannelSettings(userID, channelID int64, settings ChannelSettings) er
 		return err
 	}
 	args = append(args, channelID)
-	if _, err = tx.Exec(`UPDATE apifull_channel SET `+strings.Join(sets, ",")+` WHERE id=?`, args...); err != nil {
+	if _, err = tx.Exec(`UPDATE apifull_channel SET `+strings.Join(sets, ",")+` WHERE id=$`+strconv.Itoa(len(args)), args...); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -992,7 +1305,7 @@ func UpdateChannelUsername(channelID int64, username string) error {
 	if db == nil {
 		return errors.New("domain PostgreSQL is not open")
 	}
-	result, err := db.Exec(`UPDATE apifull_channel SET username=? WHERE id=?`, username, channelID)
+	result, err := execPostgresMutation(`UPDATE apifull_channel SET username=$1 WHERE id=$2`, username, channelID)
 	if err != nil {
 		return err
 	}
@@ -1054,6 +1367,11 @@ func DeleteChannel(userID, channelID int64) error {
 		return err
 	}
 	for _, stmt := range []string{
+		`DELETE FROM apifull_community_dialog_state WHERE community_id=?`,
+		`DELETE FROM apifull_community_peer WHERE community_id=?`,
+		`DELETE FROM apifull_community WHERE community_id=?`,
+		`UPDATE apifull_boost_slot SET scope=NULL, peer_type=NULL, peer_id=NULL, updated_at=CURRENT_TIMESTAMP WHERE scope='premium' AND peer_type=4 AND peer_id=?`,
+		`DELETE FROM apifull_boost_target WHERE peer_type=? AND peer_id=?`,
 		`UPDATE apifull_channel SET discussion_group_id=NULL WHERE discussion_group_id=?`,
 		`DELETE FROM apifull_channel_delivery_recipient WHERE delivery_id IN (SELECT id FROM apifull_channel_delivery_outbox WHERE channel_id=?)`,
 		`DELETE FROM apifull_channel_delivery_outbox WHERE channel_id=?`,
@@ -1064,6 +1382,8 @@ func DeleteChannel(userID, channelID int64) error {
 		`DELETE FROM apifull_channel_message WHERE channel_id=?`,
 		`DELETE FROM apifull_channel_message_seq WHERE channel_id=?`,
 		`DELETE FROM apifull_channel_read_state WHERE channel_id=?`,
+		`DELETE FROM apifull_forum_topic WHERE peer_key=?`,
+		`DELETE FROM apifull_forum_channel_settings WHERE channel_id=?`,
 		`DELETE FROM apifull_channel_admin_log WHERE channel_id=?`,
 		// chat_invites is shared with basic chats. This row has already been
 		// established as an APIFull channel under the creator lock above.
@@ -1078,6 +1398,18 @@ func DeleteChannel(userID, channelID int64) error {
 		`DELETE FROM apifull_group_call WHERE channel_id=?`,
 		`DELETE FROM apifull_channel WHERE id=?`,
 	} {
+		if stmt == `DELETE FROM apifull_boost_target WHERE peer_type=? AND peer_id=?` {
+			if _, err = tx.Exec(stmt, 4, channelID); err != nil {
+				return err
+			}
+			continue
+		}
+		if stmt == `DELETE FROM apifull_forum_topic WHERE peer_key=?` {
+			if _, err = tx.Exec(stmt, "channel:"+strconv.FormatInt(channelID, 10)); err != nil {
+				return err
+			}
+			continue
+		}
 		if _, err = tx.Exec(stmt, channelID); err != nil {
 			return err
 		}
@@ -1087,7 +1419,7 @@ func DeleteChannel(userID, channelID int64) error {
 
 func lockChannelOwner(tx *sql.Tx, channelID, userID int64) error {
 	var creator int64
-	err := tx.QueryRow(`SELECT creator_user_id FROM apifull_channel WHERE id=? FOR UPDATE`, channelID).Scan(&creator)
+	err := tx.QueryRow(`SELECT creator_user_id FROM apifull_channel WHERE id=$1 FOR UPDATE`, channelID).Scan(&creator)
 	if err == sql.ErrNoRows {
 		return ErrChannelMissing
 	}
@@ -1247,16 +1579,16 @@ func SaveCall(call Call) error {
 	if call.CreatedAt == 0 {
 		call.CreatedAt = time.Now().Unix()
 	}
-	_, err := db.Exec(`INSERT INTO apifull_call
+	_, err := execPostgresMutation(`INSERT INTO apifull_call
 		(id, access_hash, admin_id, participant_id, state, video, ga_hash, gb, ga, protocol,
 		 key_fingerprint, received_at, accepted_at, confirmed_at, discarded_at, discarded_by, duration, reason, created_at)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-		ON DUPLICATE KEY UPDATE state=VALUES(state), participant_id=VALUES(participant_id),
-			video=VALUES(video), ga_hash=VALUES(ga_hash), gb=VALUES(gb), ga=VALUES(ga),
-			protocol=VALUES(protocol), key_fingerprint=VALUES(key_fingerprint),
-			received_at=VALUES(received_at), accepted_at=VALUES(accepted_at),
-			confirmed_at=VALUES(confirmed_at), discarded_at=VALUES(discarded_at),
-			discarded_by=VALUES(discarded_by), duration=VALUES(duration), reason=VALUES(reason)`,
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
+		ON CONFLICT (id) DO UPDATE SET state=EXCLUDED.state, participant_id=EXCLUDED.participant_id,
+			video=EXCLUDED.video, ga_hash=EXCLUDED.ga_hash, gb=EXCLUDED.gb, ga=EXCLUDED.ga,
+			protocol=EXCLUDED.protocol, key_fingerprint=EXCLUDED.key_fingerprint,
+			received_at=EXCLUDED.received_at, accepted_at=EXCLUDED.accepted_at,
+			confirmed_at=EXCLUDED.confirmed_at, discarded_at=EXCLUDED.discarded_at,
+			discarded_by=EXCLUDED.discarded_by, duration=EXCLUDED.duration, reason=EXCLUDED.reason`,
 		call.ID, call.AccessHash, call.AdminID, call.ParticipantID, call.State, boolInt(call.Video),
 		call.GAHash, call.GB, call.GA, nullableString(call.Protocol), call.KeyFingerprint,
 		call.ReceivedAt, call.AcceptedAt, call.ConfirmedAt, call.DiscardedAt, call.DiscardedBy,
@@ -1490,11 +1822,11 @@ func UpsertStarsOffer(kind string, stars int64, storeProduct, currency string, a
 	if (kind != "topup" && kind != "gift") || stars <= 0 || amount < 0 || (storeProduct == "" && currency == "") {
 		return ErrInvalidStarsTransaction
 	}
-	_, err := db.Exec(`INSERT INTO apifull_stars_offer
+	_, err := execPostgresMutation(`INSERT INTO apifull_stars_offer
 		(kind, stars, store_product, currency, amount, extended, active)
-		VALUES (?,?,?,?,?,?,1)
-		ON DUPLICATE KEY UPDATE extended=VALUES(extended), active=1`,
-		kind, stars, storeProduct, currency, amount, extended)
+		VALUES ($1,$2,$3,$4,$5,$6,1)
+		ON CONFLICT (kind, stars, store_product, currency, amount) DO UPDATE SET extended=EXCLUDED.extended, active=1`,
+		kind, stars, storeProduct, currency, amount, boolInt(extended))
 	return err
 }
 
@@ -1508,7 +1840,7 @@ func ListStarsOffers(kind string) ([]StarsOffer, error) {
 		return nil, ErrInvalidStarsTransaction
 	}
 	rows, err := db.Query(`SELECT id, kind, stars, store_product, currency, amount, extended
-		FROM apifull_stars_offer WHERE kind=? AND active=1 ORDER BY id`, kind)
+		FROM apifull_stars_offer WHERE kind=$1 AND active=1 ORDER BY id`, kind)
 	if err != nil {
 		return nil, err
 	}
@@ -1534,7 +1866,7 @@ func FindActiveStarsTopupOffer(stars int64, storeProduct, currency string, amoun
 		return StarsOffer{}, false, ErrInvalidStarsTransaction
 	}
 	rows, err := db.Query(`SELECT id, kind, stars, store_product, currency, amount, extended
-		FROM apifull_stars_offer WHERE kind='topup' AND active=1 AND stars=? ORDER BY id`, stars)
+		FROM apifull_stars_offer WHERE kind='topup' AND active=1 AND stars=$1 ORDER BY id`, stars)
 	if err != nil {
 		return StarsOffer{}, false, err
 	}
@@ -1576,56 +1908,46 @@ func ApplyStars(userID, delta int64, idem string) (int64, error) {
 		return 0, err
 	}
 	defer func() { _ = tx.Rollback() }()
+	bal, err := applyStarsTx(tx, userID, delta, idem)
+	if err != nil {
+		return bal, err
+	}
+	if err = tx.Commit(); err != nil {
+		return 0, err
+	}
+	return bal, nil
+}
 
+func applyStarsTx(tx *sql.Tx, userID, delta int64, idem string) (int64, error) {
+	// Lock the balance before checking the ledger. A retry that waited for a
+	// concurrent debit must see that debit's idempotency record before checking
+	// the remaining balance. Every Stars writer uses this same lock order.
+	if _, err := tx.Exec(`INSERT INTO apifull_stars (user_id, balance) VALUES ($1,0)
+		ON CONFLICT (user_id) DO NOTHING`, userID); err != nil {
+		return 0, err
+	}
+	var bal int64
+	if err := tx.QueryRow(`SELECT balance FROM apifull_stars WHERE user_id=$1 FOR UPDATE`, userID).Scan(&bal); err != nil {
+		return 0, err
+	}
 	var existing int64
-	err = tx.QueryRow(`SELECT amount FROM apifull_star_tx WHERE user_id=? AND idem=? FOR UPDATE`, userID, idem).Scan(&existing)
+	err := tx.QueryRow(`SELECT amount FROM apifull_star_tx WHERE user_id=$1 AND idem=$2`, userID, idem).Scan(&existing)
 	if err == nil {
 		if existing != delta {
-			return 0, ErrStarsIdempotencyConflict
+			return bal, ErrStarsIdempotencyConflict
 		}
-		bal, err := balanceTx(tx, userID)
-		if err != nil {
-			return 0, err
-		}
-		return bal, tx.Commit()
+		return bal, nil
 	}
 	if err != sql.ErrNoRows {
-		return 0, err
-	}
-	// Materialize the row before locking it. This makes concurrent credits and
-	// debits serialize on one user balance instead of both reading the same
-	// stale value.
-	if _, err = tx.Exec(`INSERT INTO apifull_stars (user_id, balance) VALUES (?,0)
-		ON DUPLICATE KEY UPDATE user_id=VALUES(user_id)`, userID); err != nil {
-		return 0, err
-	}
-	bal, err := balanceForUpdate(tx, userID)
-	if err != nil {
 		return 0, err
 	}
 	if err = validateStarsDelta(bal, delta); err != nil {
 		return bal, err
 	}
-	if _, err = tx.Exec(`INSERT INTO apifull_star_tx (user_id, amount, idem) VALUES (?,?,?)`, userID, delta, idem); err != nil {
-		if isDuplicateKey(err) {
-			if readErr := tx.QueryRow(`SELECT amount FROM apifull_star_tx WHERE user_id=? AND idem=? FOR UPDATE`, userID, idem).Scan(&existing); readErr != nil {
-				return 0, readErr
-			}
-			if existing != delta {
-				return 0, ErrStarsIdempotencyConflict
-			}
-			bal, readErr := balanceForUpdate(tx, userID)
-			if readErr != nil {
-				return 0, readErr
-			}
-			return bal, tx.Commit()
-		}
+	if _, err = tx.Exec(`INSERT INTO apifull_star_tx (user_id, amount, idem) VALUES ($1,$2,$3)`, userID, delta, idem); err != nil {
 		return 0, err
 	}
-	if _, err = tx.Exec(`UPDATE apifull_stars SET balance=balance+? WHERE user_id=?`, delta, userID); err != nil {
-		return 0, err
-	}
-	if err = tx.Commit(); err != nil {
+	if _, err = tx.Exec(`UPDATE apifull_stars SET balance=balance+$1 WHERE user_id=$2`, delta, userID); err != nil {
 		return 0, err
 	}
 	return bal + delta, nil
@@ -1673,7 +1995,7 @@ func ListStarsTransactions(userID int64, inbound, outbound, ascending bool, offs
 	if ascending {
 		order = "ASC"
 	}
-	where := "user_id=?"
+	where := "user_id=$1"
 	args := []any{userID}
 	if inbound && !outbound {
 		where += " AND amount>0"
@@ -1681,7 +2003,7 @@ func ListStarsTransactions(userID int64, inbound, outbound, ascending bool, offs
 		where += " AND amount<0"
 	}
 	args = append(args, limit, offset)
-	rows, err := db.Query(`SELECT id, amount, idem FROM apifull_star_tx WHERE `+where+` ORDER BY id `+order+` LIMIT ? OFFSET ?`, args...)
+	rows, err := db.Query(`SELECT id, amount, idem FROM apifull_star_tx WHERE `+where+` ORDER BY id `+order+` LIMIT $2 OFFSET $3`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -1705,7 +2027,7 @@ func GetStarsTransaction(userID int64, id string) (StarsTransaction, bool, error
 		return StarsTransaction{}, false, ErrInvalidStarsTransaction
 	}
 	var item StarsTransaction
-	err := db.QueryRow(`SELECT id, amount, idem FROM apifull_star_tx WHERE user_id=? AND idem=?`, userID, id).
+	err := db.QueryRow(`SELECT id, amount, idem FROM apifull_star_tx WHERE user_id=$1 AND idem=$2`, userID, id).
 		Scan(&item.ID, &item.Amount, &item.Idem)
 	if err == sql.ErrNoRows {
 		return StarsTransaction{}, false, nil
@@ -1733,16 +2055,7 @@ type rower interface {
 
 func balanceTx(q rower, userID int64) (int64, error) {
 	var bal int64
-	err := q.QueryRow(`SELECT balance FROM apifull_stars WHERE user_id=?`, userID).Scan(&bal)
-	if err == sql.ErrNoRows {
-		return 0, nil
-	}
-	return bal, err
-}
-
-func balanceForUpdate(tx *sql.Tx, userID int64) (int64, error) {
-	var bal int64
-	err := tx.QueryRow(`SELECT balance FROM apifull_stars WHERE user_id=? FOR UPDATE`, userID).Scan(&bal)
+	err := q.QueryRow(`SELECT balance FROM apifull_stars WHERE user_id=$1`, userID).Scan(&bal)
 	if err == sql.ErrNoRows {
 		return 0, nil
 	}
@@ -1759,9 +2072,15 @@ func SaveGift(from, to int64, slug string, stars int64) error {
 	if from <= 0 || to <= 0 || strings.TrimSpace(slug) == "" || stars < 0 {
 		return ErrGiftNotFound
 	}
-	_, err := db.Exec(`INSERT INTO apifull_gift (from_user, to_user, slug, stars, saved) VALUES (?,?,?,?,1)`,
-		from, to, slug, stars)
-	return err
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err = tx.Exec(`INSERT INTO apifull_gift (from_user, to_user, slug, stars, saved) VALUES ($1,$2,$3,$4,1)`, from, to, slug, stars); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // FindGiftBySlug resolves an issued gift from the durable catalog. It is
@@ -1778,7 +2097,7 @@ func FindGiftBySlug(slug string) (Gift, bool, error) {
 	var gift Gift
 	var saved int
 	err := db.QueryRow(`SELECT id, from_user, to_user, slug, stars, saved
-		FROM apifull_gift WHERE slug=? ORDER BY id LIMIT 1`, slug).
+		FROM apifull_gift WHERE slug=$1 ORDER BY id LIMIT 1`, slug).
 		Scan(&gift.ID, &gift.From, &gift.To, &gift.Slug, &gift.Stars, &saved)
 	if err == sql.ErrNoRows {
 		return Gift{}, false, nil
@@ -1805,10 +2124,10 @@ func TransferGift(from, to, giftID int64, slug string) error {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	query := `SELECT id FROM apifull_gift WHERE id=? AND to_user=? AND saved=1 FOR UPDATE`
+	query := `SELECT id FROM apifull_gift WHERE id=$1 AND to_user=$2 AND saved=1 FOR UPDATE`
 	args := []any{giftID, from}
 	if giftID <= 0 {
-		query = `SELECT id FROM apifull_gift WHERE slug=? AND to_user=? AND saved=1 ORDER BY id LIMIT 1 FOR UPDATE`
+		query = `SELECT id FROM apifull_gift WHERE slug=$1 AND to_user=$2 AND saved=1 ORDER BY id LIMIT 1 FOR UPDATE`
 		args = []any{strings.TrimSpace(slug), from}
 	}
 	var id int64
@@ -1818,7 +2137,7 @@ func TransferGift(from, to, giftID int64, slug string) error {
 		}
 		return err
 	}
-	if _, err = tx.Exec(`UPDATE apifull_gift SET to_user=? WHERE id=? AND to_user=?`, to, id, from); err != nil {
+	if _, err = tx.Exec(`UPDATE apifull_gift SET to_user=$1 WHERE id=$2 AND to_user=$3`, to, id, from); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -1839,10 +2158,10 @@ func ConvertGift(to int64, from *int64, slug string) error {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	query := `SELECT id, stars, saved FROM apifull_gift WHERE to_user=? AND slug=? ORDER BY id LIMIT 1 FOR UPDATE`
+	query := `SELECT id, stars, saved FROM apifull_gift WHERE to_user=$1 AND slug=$2 ORDER BY id LIMIT 1 FOR UPDATE`
 	args := []any{to, slug}
 	if from != nil {
-		query = `SELECT id, stars, saved FROM apifull_gift WHERE to_user=? AND from_user=? AND slug=? ORDER BY id LIMIT 1 FOR UPDATE`
+		query = `SELECT id, stars, saved FROM apifull_gift WHERE to_user=$1 AND from_user=$2 AND slug=$3 ORDER BY id LIMIT 1 FOR UPDATE`
 		args = []any{to, *from, slug}
 	}
 	var giftID, stars int64
@@ -1856,7 +2175,10 @@ func ConvertGift(to int64, from *int64, slug string) error {
 	idem := "gift:convert:" + strconv.FormatInt(giftID, 10)
 	if saved == 0 {
 		var existing int64
-		if err = tx.QueryRow(`SELECT amount FROM apifull_star_tx WHERE user_id=? AND idem=? FOR UPDATE`, to, idem).Scan(&existing); err == nil {
+		if err = tx.QueryRow(`SELECT amount FROM apifull_star_tx WHERE user_id=$1 AND idem=$2`, to, idem).Scan(&existing); err == nil {
+			if existing != stars {
+				return ErrStarsIdempotencyConflict
+			}
 			return tx.Commit()
 		}
 		if err != sql.ErrNoRows {
@@ -1867,33 +2189,10 @@ func ConvertGift(to int64, from *int64, slug string) error {
 	if stars <= 0 {
 		return ErrGiftNotConvertible
 	}
-	if _, err = tx.Exec(`INSERT INTO apifull_stars (user_id, balance) VALUES (?,0)
-		ON DUPLICATE KEY UPDATE user_id=VALUES(user_id)`, to); err != nil {
+	if _, err = applyStarsTx(tx, to, stars, idem); err != nil {
 		return err
 	}
-	balance, err := balanceForUpdate(tx, to)
-	if err != nil {
-		return err
-	}
-	if err = validateStarsDelta(balance, stars); err != nil {
-		return err
-	}
-	var existing int64
-	if err = tx.QueryRow(`SELECT amount FROM apifull_star_tx WHERE user_id=? AND idem=? FOR UPDATE`, to, idem).Scan(&existing); err == nil {
-		return tx.Commit()
-	} else if err != sql.ErrNoRows {
-		return err
-	}
-	if _, err = tx.Exec(`INSERT INTO apifull_star_tx (user_id, amount, idem) VALUES (?,?,?)`, to, stars, idem); err != nil {
-		if isDuplicateKey(err) {
-			return tx.Commit()
-		}
-		return err
-	}
-	if _, err = tx.Exec(`UPDATE apifull_stars SET balance=balance+? WHERE user_id=?`, stars, to); err != nil {
-		return err
-	}
-	if _, err = tx.Exec(`UPDATE apifull_gift SET saved=0 WHERE id=?`, giftID); err != nil {
+	if _, err = tx.Exec(`UPDATE apifull_gift SET saved=0 WHERE id=$1`, giftID); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -1909,24 +2208,28 @@ func SetGiftSaved(to int64, from *int64, slug string, saved bool) error {
 	if slug == "" {
 		return ErrGiftNotFound
 	}
-	query := `SELECT id FROM apifull_gift WHERE to_user=? AND slug=? ORDER BY id LIMIT 1`
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	query := `SELECT id FROM apifull_gift WHERE to_user=$1 AND slug=$2 ORDER BY id LIMIT 1 FOR UPDATE`
 	args := []any{to, slug}
 	if from != nil {
-		query = `SELECT id FROM apifull_gift WHERE to_user=? AND from_user=? AND slug=? ORDER BY id LIMIT 1`
+		query = `SELECT id FROM apifull_gift WHERE to_user=$1 AND from_user=$2 AND slug=$3 ORDER BY id LIMIT 1 FOR UPDATE`
 		args = []any{to, *from, slug}
 	}
 	var id int64
-	if err := db.QueryRow(query, args...).Scan(&id); err != nil {
+	if err := tx.QueryRow(query, args...).Scan(&id); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrGiftNotFound
 		}
 		return err
 	}
-	_, err := db.Exec(`UPDATE apifull_gift SET saved=? WHERE id=?`, saved, id)
-	if err != nil {
+	if _, err = tx.Exec(`UPDATE apifull_gift SET saved=$1 WHERE id=$2 AND to_user=$3`, boolInt(saved), id, to); err != nil {
 		return err
 	}
-	return nil
+	return tx.Commit()
 }
 
 // GiftCatalogSlugs returns the gift identifiers that have been issued into
@@ -1989,7 +2292,7 @@ func listGifts(to int64, savedOnly bool) ([]Gift, error) {
 	if to <= 0 {
 		return nil, ErrGiftNotFound
 	}
-	query := `SELECT id, from_user, to_user, slug, stars, saved FROM apifull_gift WHERE to_user=?`
+	query := `SELECT id, from_user, to_user, slug, stars, saved FROM apifull_gift WHERE to_user=$1`
 	if savedOnly {
 		query += ` AND saved=1`
 	}
@@ -2029,8 +2332,8 @@ func ClaimUsername(name, kind string, owner int64) error {
 		return errors.New("domain PostgreSQL is not open")
 	}
 	name = strings.ToLower(name)
-	_, err := db.Exec(`INSERT INTO apifull_username (username, owner_user_id, kind) VALUES (?,?,?)
-		ON DUPLICATE KEY UPDATE owner_user_id=VALUES(owner_user_id), kind=VALUES(kind)`, name, owner, kind)
+	_, err := execPostgresMutation(`INSERT INTO apifull_username (username, owner_user_id, kind) VALUES ($1,$2,$3)
+		ON CONFLICT (username) DO UPDATE SET owner_user_id=EXCLUDED.owner_user_id, kind=EXCLUDED.kind`, name, owner, kind)
 	return err
 }
 
@@ -2067,12 +2370,12 @@ func SaveGroupCallInvite(callID, creatorID int64, token string, canSelfUnmute bo
 		return errors.New("invalid group call invite")
 	}
 	digest := sha256.Sum256([]byte(token))
-	_, err := db.Exec(`INSERT INTO apifull_group_call_invite
+	_, err := execPostgresMutation(`INSERT INTO apifull_group_call_invite
 		(call_id, creator_user_id, token_hash, can_self_unmute, revoked_at, created_at)
-		VALUES (?,?,?,?,0,?)
-		ON DUPLICATE KEY UPDATE creator_user_id=VALUES(creator_user_id),
-		token_hash=VALUES(token_hash), can_self_unmute=VALUES(can_self_unmute),
-		revoked_at=0, created_at=VALUES(created_at)`,
+		VALUES ($1,$2,$3,$4,0,$5)
+		ON CONFLICT (call_id) DO UPDATE SET creator_user_id=EXCLUDED.creator_user_id,
+		token_hash=EXCLUDED.token_hash, can_self_unmute=EXCLUDED.can_self_unmute,
+		revoked_at=0, created_at=EXCLUDED.created_at`,
 		callID, creatorID, digest[:], boolInt(canSelfUnmute), time.Now().Unix())
 	return err
 }
@@ -2115,8 +2418,8 @@ func RevokeGroupCallInvite(callID, creatorID int64) error {
 	if callID <= 0 || creatorID <= 0 {
 		return errors.New("invalid group call invite")
 	}
-	_, err := db.Exec(`UPDATE apifull_group_call_invite
-		SET revoked_at=? WHERE call_id=? AND creator_user_id=?`, time.Now().Unix(), callID, creatorID)
+	_, err := execPostgresMutation(`UPDATE apifull_group_call_invite
+		SET revoked_at=$1 WHERE call_id=$2 AND creator_user_id=$3`, time.Now().Unix(), callID, creatorID)
 	return err
 }
 
@@ -2131,10 +2434,10 @@ func SaveConferenceCallControl(callID int64, publicKey, block []byte, params str
 	if callID <= 0 || len(publicKey) == 0 || len(publicKey) > 256 || len(block) == 0 {
 		return errors.New("invalid conference control block")
 	}
-	_, err := db.Exec(`INSERT INTO apifull_group_call_conference
-		(call_id, public_key, block, params, updated_at) VALUES (?,?,?,?,?)
-		ON DUPLICATE KEY UPDATE public_key=VALUES(public_key), block=VALUES(block),
-		params=VALUES(params), updated_at=VALUES(updated_at)`, callID, publicKey, block, params, time.Now().Unix())
+	_, err := execPostgresMutation(`INSERT INTO apifull_group_call_conference
+		(call_id, public_key, block, params, updated_at) VALUES ($1,$2,$3,$4,$5)
+		ON CONFLICT (call_id) DO UPDATE SET public_key=EXCLUDED.public_key, block=EXCLUDED.block,
+		params=EXCLUDED.params, updated_at=EXCLUDED.updated_at`, callID, publicKey, block, params, time.Now().Unix())
 	return err
 }
 
@@ -2148,23 +2451,14 @@ func UpdateConferenceCallBlock(callID int64, block []byte) error {
 	if callID <= 0 || len(block) == 0 || len(block) > 1<<20 {
 		return errors.New("invalid conference broadcast block")
 	}
-	result, err := db.Exec(`UPDATE apifull_group_call_conference SET block=?, updated_at=? WHERE call_id=?`, block, time.Now().Unix(), callID)
+	result, err := execPostgresMutation(`UPDATE apifull_group_call_conference SET block=$1, updated_at=$2 WHERE call_id=$3`, block, time.Now().Unix(), callID)
 	if err != nil {
 		return err
 	}
 	if affected, rowsErr := result.RowsAffected(); rowsErr != nil {
 		return rowsErr
 	} else if affected == 0 {
-		// MySQL reports zero changed rows when the same block is replayed.
-		// Confirm the conference row exists before treating it as missing so
-		// retries remain idempotent while a genuinely unknown call still fails.
-		var exists int
-		if lookupErr := db.QueryRow(`SELECT 1 FROM apifull_group_call_conference WHERE call_id=?`, callID).Scan(&exists); lookupErr != nil {
-			if lookupErr == sql.ErrNoRows {
-				return sql.ErrNoRows
-			}
-			return lookupErr
-		}
+		return sql.ErrNoRows
 	}
 	return nil
 }
@@ -2197,13 +2491,13 @@ func saveGroupCallWithMetadata(id, access, creator, channelID int64, title, part
 	if scheduleDate != nil {
 		schedule = *scheduleDate
 	}
-	_, err := db.Exec(`INSERT INTO apifull_group_call
+	_, err := execPostgresMutation(`INSERT INTO apifull_group_call
 		(id, access_hash, creator_user_id, channel_id, title, rtmp_stream, conference, schedule_date, participants, created_at)
-		VALUES (?,?,?,?,?,?,?,?,?,?)
-		ON DUPLICATE KEY UPDATE access_hash=VALUES(access_hash), creator_user_id=VALUES(creator_user_id),
-		channel_id=VALUES(channel_id), title=VALUES(title), rtmp_stream=VALUES(rtmp_stream),
-		conference=VALUES(conference),
-		schedule_date=VALUES(schedule_date), participants=VALUES(participants)`,
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+		ON CONFLICT (id) DO UPDATE SET access_hash=EXCLUDED.access_hash, creator_user_id=EXCLUDED.creator_user_id,
+		channel_id=EXCLUDED.channel_id, title=EXCLUDED.title, rtmp_stream=EXCLUDED.rtmp_stream,
+		conference=EXCLUDED.conference,
+		schedule_date=EXCLUDED.schedule_date, participants=EXCLUDED.participants`,
 		id, access, creator, channelID, title, boolInt(rtmpStream), boolInt(conference), schedule, participants, time.Now().Unix())
 	return err
 }
@@ -2257,7 +2551,7 @@ func UpdateGroupCallParticipants(id int64, participants string) (bool, error) {
 	if db == nil {
 		return false, errors.New("domain PostgreSQL is not open")
 	}
-	result, err := db.Exec(`UPDATE apifull_group_call SET participants=? WHERE id=?`, participants, id)
+	result, err := execPostgresMutation(`UPDATE apifull_group_call SET participants=$1 WHERE id=$2`, participants, id)
 	if err != nil {
 		return false, err
 	}
@@ -2272,7 +2566,7 @@ func UpdateGroupCallTitle(id int64, title string) (bool, error) {
 	if db == nil {
 		return false, errors.New("domain PostgreSQL is not open")
 	}
-	result, err := db.Exec(`UPDATE apifull_group_call SET title=? WHERE id=?`, title, id)
+	result, err := execPostgresMutation(`UPDATE apifull_group_call SET title=$1 WHERE id=$2`, title, id)
 	if err != nil {
 		return false, err
 	}
@@ -2337,15 +2631,15 @@ func SaveGroupCallSettings(settings GroupCallSettings) error {
 	if settings.SendPaidMessagesStars != nil {
 		paid = *settings.SendPaidMessagesStars
 	}
-	_, err := db.Exec(`INSERT INTO apifull_group_call_settings
+	_, err := execPostgresMutation(`INSERT INTO apifull_group_call_settings
 		(call_id, join_muted, messages_enabled, send_paid_messages_stars, record_active, record_video,
 		record_title, record_video_portrait, scheduled_started, updated_at)
-		VALUES (?,?,?,?,?,?,?,?,?,?)
-		ON DUPLICATE KEY UPDATE join_muted=VALUES(join_muted), messages_enabled=VALUES(messages_enabled),
-		send_paid_messages_stars=VALUES(send_paid_messages_stars), record_active=VALUES(record_active),
-		record_video=VALUES(record_video), record_title=VALUES(record_title),
-		record_video_portrait=VALUES(record_video_portrait), scheduled_started=VALUES(scheduled_started),
-		updated_at=VALUES(updated_at)`, settings.CallID, boolInt(settings.JoinMuted), boolInt(settings.MessagesEnabled),
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+		ON CONFLICT (call_id) DO UPDATE SET join_muted=EXCLUDED.join_muted, messages_enabled=EXCLUDED.messages_enabled,
+		send_paid_messages_stars=EXCLUDED.send_paid_messages_stars, record_active=EXCLUDED.record_active,
+		record_video=EXCLUDED.record_video, record_title=EXCLUDED.record_title,
+		record_video_portrait=EXCLUDED.record_video_portrait, scheduled_started=EXCLUDED.scheduled_started,
+		updated_at=EXCLUDED.updated_at`, settings.CallID, boolInt(settings.JoinMuted), boolInt(settings.MessagesEnabled),
 		paid, boolInt(settings.RecordActive), boolInt(settings.RecordVideo), settings.RecordTitle,
 		boolInt(settings.RecordVideoPortrait), boolInt(settings.ScheduledStarted), time.Now().Unix())
 	return err
@@ -2412,14 +2706,14 @@ func SaveGroupCallParticipant(state GroupCallParticipantState) error {
 	if state.Volume != nil {
 		volume = *state.Volume
 	}
-	_, err := db.Exec(`INSERT INTO apifull_group_call_participant
+	_, err := execPostgresMutation(`INSERT INTO apifull_group_call_participant
 		(call_id, user_id, muted, volume, raise_hand, video_stopped, video_paused, presentation_paused,
-		presentation_active, presentation_params, join_params, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
-		ON DUPLICATE KEY UPDATE muted=VALUES(muted), volume=VALUES(volume), raise_hand=VALUES(raise_hand),
-		video_stopped=VALUES(video_stopped), video_paused=VALUES(video_paused),
-		presentation_paused=VALUES(presentation_paused), presentation_active=VALUES(presentation_active),
-		presentation_params=VALUES(presentation_params),
-		join_params=VALUES(join_params), updated_at=VALUES(updated_at)`, state.CallID, state.UserID, boolInt(state.Muted), volume,
+		presentation_active, presentation_params, join_params, updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+		ON CONFLICT (call_id, user_id) DO UPDATE SET muted=EXCLUDED.muted, volume=EXCLUDED.volume, raise_hand=EXCLUDED.raise_hand,
+		video_stopped=EXCLUDED.video_stopped, video_paused=EXCLUDED.video_paused,
+		presentation_paused=EXCLUDED.presentation_paused, presentation_active=EXCLUDED.presentation_active,
+		presentation_params=EXCLUDED.presentation_params,
+		join_params=EXCLUDED.join_params, updated_at=EXCLUDED.updated_at`, state.CallID, state.UserID, boolInt(state.Muted), volume,
 		boolInt(state.RaiseHand), boolInt(state.VideoStopped), boolInt(state.VideoPaused),
 		boolInt(state.PresentationPaused), boolInt(state.PresentationActive), state.PresentationParams, state.JoinParams, time.Now().Unix())
 	return err
@@ -2429,7 +2723,7 @@ func DeleteGroupCallParticipant(callID, userID int64) error {
 	if db == nil {
 		return errors.New("domain PostgreSQL is not open")
 	}
-	_, err := db.Exec(`DELETE FROM apifull_group_call_participant WHERE call_id=? AND user_id=?`, callID, userID)
+	_, err := execPostgresMutation(`DELETE FROM apifull_group_call_participant WHERE call_id=$1 AND user_id=$2`, callID, userID)
 	return err
 }
 
@@ -2560,18 +2854,18 @@ func GroupCallHasMediaParticipants(callID int64) (bool, error) {
 	if callID <= 0 {
 		return false, errors.New("invalid group call id")
 	}
-	var found int
+	var found bool
 	err := db.QueryRow(`SELECT EXISTS(SELECT 1 FROM apifull_group_call_participant
-		WHERE call_id=? AND media_source IS NOT NULL AND media_source>0)`, callID).Scan(&found)
-	return found != 0, err
+		WHERE call_id=$1 AND media_source IS NOT NULL AND media_source>0)`, callID).Scan(&found)
+	return found, err
 }
 
 func SaveGroupCallSubscription(callID, userID int64, subscribed bool) error {
 	if db == nil {
 		return errors.New("domain PostgreSQL is not open")
 	}
-	_, err := db.Exec(`INSERT INTO apifull_group_call_subscription (call_id, user_id, subscribed, updated_at)
-		VALUES (?,?,?,?) ON DUPLICATE KEY UPDATE subscribed=VALUES(subscribed), updated_at=VALUES(updated_at)`,
+	_, err := execPostgresMutation(`INSERT INTO apifull_group_call_subscription (call_id, user_id, subscribed, updated_at)
+		VALUES ($1,$2,$3,$4) ON CONFLICT (call_id, user_id) DO UPDATE SET subscribed=EXCLUDED.subscribed, updated_at=EXCLUDED.updated_at`,
 		callID, userID, boolInt(subscribed), time.Now().Unix())
 	return err
 }
@@ -2595,8 +2889,8 @@ func SaveGroupCallSendAs(callID, userID int64, sendAs string) error {
 	if db == nil {
 		return errors.New("domain PostgreSQL is not open")
 	}
-	_, err := db.Exec(`INSERT INTO apifull_group_call_send_as (call_id, user_id, send_as, updated_at)
-		VALUES (?,?,?,?) ON DUPLICATE KEY UPDATE send_as=VALUES(send_as), updated_at=VALUES(updated_at)`,
+	_, err := execPostgresMutation(`INSERT INTO apifull_group_call_send_as (call_id, user_id, send_as, updated_at)
+		VALUES ($1,$2,$3,$4) ON CONFLICT (call_id, user_id) DO UPDATE SET send_as=EXCLUDED.send_as, updated_at=EXCLUDED.updated_at`,
 		callID, userID, sendAs, time.Now().Unix())
 	return err
 }
@@ -2657,14 +2951,11 @@ func CreateGroupCallMessage(callID, senderID, randomID int64, message, sendAs st
 		paid = *paidStars
 	}
 	now := time.Now().Unix()
-	result, err := db.Exec(`INSERT INTO apifull_group_call_message
+	var id int64
+	err := db.QueryRow(`INSERT INTO apifull_group_call_message
 		(call_id, sender_user_id, random_id, message, send_as, paid_stars, date)
-		VALUES (?,?,?,?,?,?,?)`, callID, senderID, randomID, message, sendAs, paid, now)
+		VALUES (?,?,?,?,?,?,?) RETURNING id`, callID, senderID, randomID, message, sendAs, paid, now).Scan(&id)
 	if err == nil {
-		id, idErr := result.LastInsertId()
-		if idErr != nil {
-			return GroupCallMessage{}, false, idErr
-		}
 		return GroupCallMessage{ID: id, CallID: callID, SenderID: senderID, RandomID: randomID,
 			Message: message, SendAs: sendAs, PaidStars: paidStars, Date: now}, true, nil
 	}
@@ -2708,12 +2999,17 @@ func DeleteGroupCallMessages(callID int64, ids []int32) ([]int32, error) {
 	if db == nil {
 		return nil, errors.New("domain PostgreSQL is not open")
 	}
+	tx, err := db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback() }()
 	deleted := make([]int32, 0, len(ids))
 	for _, id := range ids {
 		if id <= 0 {
 			continue
 		}
-		result, err := db.Exec(`UPDATE apifull_group_call_message SET deleted=1 WHERE call_id=? AND id=? AND deleted=0`, callID, id)
+		result, err := tx.Exec(`UPDATE apifull_group_call_message SET deleted=1 WHERE call_id=$1 AND id=$2 AND deleted=0`, callID, id)
 		if err != nil {
 			return nil, err
 		}
@@ -2725,7 +3021,7 @@ func DeleteGroupCallMessages(callID int64, ids []int32) ([]int32, error) {
 			deleted = append(deleted, id)
 		}
 	}
-	return deleted, nil
+	return deleted, tx.Commit()
 }
 
 func DeleteGroupCallParticipantMessages(callID, senderID int64) ([]int32, error) {

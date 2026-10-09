@@ -23,6 +23,11 @@ type BotsDAO struct{ db DB }
 
 func NewBotsDAO(db DB) *BotsDAO { return &BotsDAO{db: db} }
 
+func (d *BotsDAO) InsertRegistryTx(ctx context.Context, tx DB, botID, creatorUserID, managerBotID int64, token string) error {
+	_, err := tx.Exec(ctx, `INSERT INTO bots(bot_id,creator_user_id,manager_bot_id,token) VALUES($1,$2,$3,$4)`, botID, creatorUserID, managerBotID, token)
+	return err
+}
+
 func scanBot(row interface{ Scan(...any) error }) (*dataobject.BotsDO, error) {
 	do := new(dataobject.BotsDO)
 	err := row.Scan(&do.Id, &do.BotId, &do.BotType, &do.CreatorUserId, &do.ManagerBotId,
@@ -73,6 +78,10 @@ func (d *BotsDAO) Select(ctx context.Context, botID int64) (*dataobject.BotsDO, 
 	return scanBot(d.db.QueryRow(ctx, `SELECT `+botColumns+` FROM bots WHERE bot_id = $1`, botID))
 }
 
+func (d *BotsDAO) SelectForUpdateTx(ctx context.Context, tx DB, botID int64) (*dataobject.BotsDO, error) {
+	return scanBot(tx.QueryRow(ctx, `SELECT `+botColumns+` FROM bots WHERE bot_id = $1 FOR UPDATE`, botID))
+}
+
 func (d *BotsDAO) SelectByToken(ctx context.Context, token string) (int64, error) {
 	var botID int64
 	err := d.db.QueryRow(ctx, `SELECT bot_id FROM bots WHERE token = $1`, token).Scan(&botID)
@@ -80,6 +89,24 @@ func (d *BotsDAO) SelectByToken(ctx context.Context, token string) (int64, error
 		return 0, nil
 	}
 	return botID, err
+}
+
+func (d *BotsDAO) SelectBotIdsByCreatorUserId(ctx context.Context, creatorUserID int64) ([]int64, error) {
+	rows, err := d.db.Query(ctx, `SELECT bot_id FROM bots WHERE creator_user_id = $1 ORDER BY bot_id`, creatorUserID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	ids := make([]int64, 0)
+	for rows.Next() {
+		var botID int64
+		if err := rows.Scan(&botID); err != nil {
+			return nil, err
+		}
+		ids = append(ids, botID)
+	}
+	return ids, rows.Err()
 }
 
 func (d *BotsDAO) SelectByIdList(ctx context.Context, ids []int32) ([]dataobject.BotsDO, error) {

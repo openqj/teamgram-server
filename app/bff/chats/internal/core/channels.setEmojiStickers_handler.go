@@ -19,10 +19,8 @@
 package core
 
 import (
-	"strconv"
-
 	"github.com/teamgram/proto/mtproto"
-	"github.com/teamgram/teamgram-server/app/bff/apifull/persist"
+	"github.com/teamgram/teamgram-server/app/bff/apifull/state"
 )
 
 // ChannelsSetEmojiStickers
@@ -44,8 +42,7 @@ func (c *ChatsCore) ChannelsSetEmojiStickers(in *mtproto.TLChannelsSetEmojiStick
 		return nil, err
 	}
 
-	key := "chat-emoji:" + strconv.FormatInt(channelId, 10)
-	if err = persist.Default.Set(key, stickerSetValue(in.GetStickerset())); err != nil {
+	if err = state.SetChannelEmojiStickerSet(c.ctx, c.MD.UserId, channelId, in.GetStickerset()); err != nil {
 		c.Logger.Errorf("channels.setEmojiStickers - error: %v", err)
 		return nil, err
 	}

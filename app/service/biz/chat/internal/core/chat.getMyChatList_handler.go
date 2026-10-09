@@ -23,29 +23,17 @@ func (c *ChatCore) ChatGetMyChatList(in *chat.TLChatGetMyChatList) (*chat.Vector
 
 	//
 	if mtproto.FromBool(in.IsCreator) {
-		if c.svcCtx.Dao.Postgres != nil && c.svcCtx.Dao.Postgres.Store != nil {
-			ids, err := c.svcCtx.Dao.Postgres.Store.Participants.SelectMyAdminList(c.ctx, in.UserId)
-			if err != nil {
-				return nil, err
-			}
-			for _, id := range ids {
-				mChat, err := c.svcCtx.Dao.GetMutableChat(c.ctx, id, in.UserId)
+		_, err := c.svcCtx.Dao.SelectMyAdminListWithCB(c.ctx, in.UserId,
+			func(sz, i int, v int64) {
+				mChat, err := c.svcCtx.Dao.GetMutableChat(c.ctx, v, in.UserId)
 				if err != nil {
 					c.Logger.Errorf("chat.getMyChatList - error: %v", err)
 				} else if mChat != nil {
 					chatList = append(chatList, mChat)
 				}
-			}
-		} else {
-			c.svcCtx.Dao.ChatParticipantsDAO.SelectMyAdminListWithCB(c.ctx, in.UserId,
-				func(sz, i int, v int64) {
-					chat, err := c.svcCtx.Dao.GetMutableChat(c.ctx, v, in.UserId)
-					if err != nil {
-						c.Logger.Errorf("chat.getMyChatList - error: %v", err)
-					} else if chat != nil {
-						chatList = append(chatList, chat)
-					}
-				})
+			})
+		if err != nil {
+			return nil, err
 		}
 	} else {
 		// TODO(@benqi):

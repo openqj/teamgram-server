@@ -367,24 +367,24 @@ func groupParticipantViews(ids []int64, self, callID int64) ([]*mtproto.GroupCal
 	return parts, users, nil
 }
 
-func loadCreateForCall(callID, creatorID int64) (mtproto.TLPhoneCreateGroupCall, bool, error) {
-	var zero mtproto.TLPhoneCreateGroupCall
+func loadCreateForCall(callID, creatorID int64) (*mtproto.TLPhoneCreateGroupCall, bool, error) {
+	storedRequest := &mtproto.TLPhoneCreateGroupCall{}
 	raw, err := persist.Default.Get("gcall:" + strconv.FormatInt(creatorID, 10))
 	if err != nil {
-		return zero, false, err
+		return nil, false, err
 	}
 	stored, _ := strconv.ParseInt(raw, 10, 64)
 	if stored != callID {
-		return zero, false, nil
+		return nil, false, nil
 	}
 	blob, err := persist.Default.Get("gcall:" + strconv.FormatInt(creatorID, 10) + ":PhoneCreateGroupCall")
 	if err != nil {
-		return zero, false, err
+		return nil, false, err
 	}
-	if blob == "" || blob == "null" || json.Unmarshal([]byte(blob), &zero) != nil {
-		return zero, false, nil
+	if blob == "" || blob == "null" || json.Unmarshal([]byte(blob), storedRequest) != nil {
+		return nil, false, nil
 	}
-	return zero, true, nil
+	return storedRequest, true, nil
 }
 
 func sameInputPeer(a, b *mtproto.InputPeer) bool {

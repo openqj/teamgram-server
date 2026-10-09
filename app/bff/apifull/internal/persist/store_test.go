@@ -20,3 +20,11 @@ func TestCompareAndSwapMemoryStore(t *testing.T) {
 		t.Fatalf("replace: ok=%v err=%v", ok, err)
 	}
 }
+
+func TestPostgresRequiresExplicitDSN(t *testing.T) {
+	for _, dsn := range []string{"", " \t\n"} {
+		if db, err := OpenPostgresDB(dsn); err == nil || db != nil {
+			t.Fatalf("OpenPostgresDB(%q) = (%v, %v), want missing DSN error", dsn, db, err)
+		}
+	}
+}

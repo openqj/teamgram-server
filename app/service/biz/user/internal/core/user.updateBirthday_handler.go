@@ -26,10 +26,13 @@ import (
 // UserUpdateBirthday
 // user.updateBirthday flags:# user_id:long birthday:flags.1?Birthday = Bool;
 func (c *UserCore) UserUpdateBirthday(in *user.TLUserUpdateBirthday) (*mtproto.Bool, error) {
-	rB := c.svcCtx.Dao.UpdateBirthday(
+	err := c.svcCtx.Dao.UpdateBirthday(
 		c.ctx,
 		in.GetUserId(),
 		in.GetBirthday())
 
-	return mtproto.ToBool(rB), nil
+	if err != nil {
+		return nil, err
+	}
+	return mtproto.BoolTrue, nil
 }

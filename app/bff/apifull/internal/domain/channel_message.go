@@ -737,14 +737,16 @@ func DeleteChannelParticipantHistory(channelID, actorID, participantID int64) (i
 	if _, _, err = loadChannelMessageSequence(tx, channelID); err != nil {
 		return 0, 0, err
 	}
-	if _, err = tx.Exec(`DELETE r FROM apifull_channel_message_content_read r
-		JOIN apifull_channel_message m ON m.channel_id=r.channel_id AND m.message_id=r.message_id
-		WHERE m.channel_id=? AND m.sender_user_id=?`, channelID, participantID); err != nil {
+	if _, err = tx.Exec(`DELETE FROM apifull_channel_message_content_read r
+		WHERE EXISTS (SELECT 1 FROM apifull_channel_message m
+			WHERE m.channel_id=r.channel_id AND m.message_id=r.message_id
+			AND m.channel_id=? AND m.sender_user_id=?)`, channelID, participantID); err != nil {
 		return 0, 0, err
 	}
-	if _, err = tx.Exec(`DELETE h FROM apifull_channel_message_hidden h
-		JOIN apifull_channel_message m ON m.channel_id=h.channel_id AND m.message_id=h.message_id
-		WHERE m.channel_id=? AND m.sender_user_id=?`, channelID, participantID); err != nil {
+	if _, err = tx.Exec(`DELETE FROM apifull_channel_message_hidden h
+		WHERE EXISTS (SELECT 1 FROM apifull_channel_message m
+			WHERE m.channel_id=h.channel_id AND m.message_id=h.message_id
+			AND m.channel_id=? AND m.sender_user_id=?)`, channelID, participantID); err != nil {
 		return 0, 0, err
 	}
 	deleted, err := selectChannelMessageIDsBySender(tx, channelID, participantID)
@@ -825,13 +827,14 @@ func HideChannelHistory(userID, channelID int64, maxID int32) (int32, error) {
 	if err != nil {
 		return 0, err
 	}
-	query := `INSERT IGNORE INTO apifull_channel_message_hidden (user_id, channel_id, message_id)
-		SELECT ?, channel_id, message_id FROM apifull_channel_message WHERE channel_id=?`
+	query := `INSERT INTO apifull_channel_message_hidden (user_id, channel_id, message_id)
+		SELECT $1, channel_id, message_id FROM apifull_channel_message WHERE channel_id=$2`
 	args := []any{userID, channelID}
 	if maxID > 0 {
-		query += ` AND message_id<=?`
+		query += ` AND message_id<=$3`
 		args = append(args, maxID)
 	}
+	query += ` ON CONFLICT (user_id, channel_id, message_id) DO NOTHING`
 	result, err := tx.Exec(query, args...)
 	if err != nil {
 		return 0, err
@@ -1127,6 +1130,11 @@ func ChannelMessageAuthor(userID, channelID, accessHash int64, messageID int32) 
 	var legacyDeleted int
 	err := db.QueryRow(`SELECT access_hash, creator_user_id, deleted FROM channels WHERE id=?`, channelID).
 		Scan(&legacyAccessHash, &creatorID, &legacyDeleted)
+	if undefinedTable(err) {
+		// The core channel service is optional on a fresh PostgreSQL install.
+		// Continue with the APIFull-owned projection below.
+		err = sql.ErrNoRows
+	}
 	if err != nil && err != sql.ErrNoRows {
 		return 0, false, err
 	}
@@ -1138,28 +1146,46 @@ func ChannelMessageAuthor(userID, channelID, accessHash int64, messageID int32) 
 		if creatorID != userID {
 			if err = db.QueryRow(`SELECT EXISTS(SELECT 1 FROM channel_participants
 				WHERE channel_id=? AND user_id=? AND state=0 AND left_at=0)`, channelID, userID).Scan(&member); err != nil {
+				if undefinedTable(err) {
+					return 0, false, ErrNotChannelMember
+				}
 				return 0, false, err
 			}
 			if !member {
 				return 0, false, ErrNotChannelMember
 			}
 		}
-		var fromPredicate sql.NullString
-		var authorID sql.NullInt64
-		err = db.QueryRow(`SELECT JSON_UNQUOTE(JSON_EXTRACT(message_data, '$.from_id.predicate_name')),
-			CAST(JSON_UNQUOTE(JSON_EXTRACT(message_data, '$.from_id.user_id')) AS SIGNED)
+		// message_data is JSON in the legacy schema. Read the document and
+		// decode it in Go so the query remains valid on PostgreSQL (the old
+		// JSON_UNQUOTE/JSON_EXTRACT functions are MySQL-only).
+		var rawMessage []byte
+		err = db.QueryRow(`SELECT message_data
 			FROM channel_messages WHERE channel_id=? AND message_id=? AND deleted=0`, channelID, messageID).
-			Scan(&fromPredicate, &authorID)
+			Scan(&rawMessage)
 		if err == sql.ErrNoRows {
+			return 0, false, nil
+		}
+		if undefinedTable(err) {
 			return 0, false, nil
 		}
 		if err != nil {
 			return 0, false, err
 		}
-		if fromPredicate.String != "peerUser" || !authorID.Valid || authorID.Int64 <= 0 {
+		var messageData struct {
+			FromID struct {
+				PredicateName string `json:"predicate_name"`
+				UserID        int64  `json:"user_id"`
+			} `json:"from_id"`
+		}
+		if err = json.Unmarshal(rawMessage, &messageData); err != nil {
+			return 0, false, err
+		}
+		fromPredicate := messageData.FromID.PredicateName
+		authorID := messageData.FromID.UserID
+		if fromPredicate != "peerUser" || authorID <= 0 {
 			return 0, true, nil
 		}
-		return authorID.Int64, true, nil
+		return authorID, true, nil
 	}
 
 	channel, ok, err := LoadChannel(channelID)
@@ -1322,7 +1348,8 @@ func MarkChannelReadHistory(userID, channelID int64, maxID int32) (int32, error)
 		maxID = top
 	}
 	if _, err = tx.Exec(`INSERT INTO apifull_channel_read_state (user_id, channel_id, read_max_id)
-		VALUES (?,?,?) ON DUPLICATE KEY UPDATE read_max_id=GREATEST(read_max_id, VALUES(read_max_id))`,
+		VALUES ($1,$2,$3) ON CONFLICT (user_id, channel_id) DO UPDATE
+		SET read_max_id=GREATEST(apifull_channel_read_state.read_max_id, EXCLUDED.read_max_id)`,
 		userID, channelID, maxID); err != nil {
 		return 0, err
 	}
@@ -1433,8 +1460,9 @@ func MarkChannelMessageContentsRead(userID, channelID, accessHash int64, ids []i
 
 	readAt := time.Now().Unix()
 	for _, id := range ids {
-		if _, err = tx.Exec(`INSERT IGNORE INTO apifull_channel_message_content_read
-			(user_id, channel_id, message_id, read_at) VALUES (?,?,?,?)`, userID, channelID, id, readAt); err != nil {
+		if _, err = tx.Exec(`INSERT INTO apifull_channel_message_content_read
+			(user_id, channel_id, message_id, read_at) VALUES ($1,$2,$3,$4)
+			ON CONFLICT (user_id, channel_id, message_id) DO NOTHING`, userID, channelID, id, readAt); err != nil {
 			return err
 		}
 	}
@@ -1481,6 +1509,39 @@ func ChannelMessageViewCounts(channelID int64, ids []int32) (map[int32]int32, er
 		return nil, err
 	}
 	defer rows.Close()
+	for rows.Next() {
+		var id, count int32
+		if err = rows.Scan(&id, &count); err != nil {
+			return nil, err
+		}
+		counts[id] = count
+	}
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+	return counts, nil
+}
+
+// ChannelMessageViewStats returns the persisted view count for every message
+// in a channel. A read cursor contributes a view to all messages at or below
+// its max id, matching ChannelMessageViewCounts and the Layer 229 message
+// view semantics.
+func ChannelMessageViewStats(channelID int64) (map[int32]int32, error) {
+	if db == nil {
+		return nil, errors.New("domain PostgreSQL is not open")
+	}
+	rows, err := db.Query(`SELECT m.message_id, COUNT(r.user_id)
+		FROM apifull_channel_message m
+		LEFT JOIN apifull_channel_read_state r
+			ON r.channel_id=m.channel_id AND r.read_max_id>=m.message_id
+		WHERE m.channel_id=?
+		GROUP BY m.message_id
+		ORDER BY m.message_id`, channelID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	counts := make(map[int32]int32)
 	for rows.Next() {
 		var id, count int32
 		if err = rows.Scan(&id, &count); err != nil {

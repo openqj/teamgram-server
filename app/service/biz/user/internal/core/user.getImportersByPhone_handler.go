@@ -30,22 +30,24 @@ func (c *UserCore) UserGetImportersByPhone(in *user.TLUserGetImportersByPhone) (
 	if in == nil {
 		return nil, mtproto.ErrInputRequestInvalid
 	}
+	if err := c.requirePostgres(); err != nil {
+		return nil, err
+	}
 
 	contacts := &user.Vector_InputContact{
 		Datas: make([]*mtproto.InputContact, 0),
 	}
 
-	_, err := c.svcCtx.Dao.UnregisteredContactsDAO.SelectImportersByPhoneWithCB(
-		c.ctx,
-		in.GetPhone(),
-		func(sz, i int, v *dataobject.UnregisteredContactsDO) {
-			contacts.Datas = append(contacts.Datas, mtproto.MakeTLInputPhoneContact(&mtproto.InputContact{
-				ClientId:  v.ImporterUserId,
-				Phone:     "",
-				FirstName: v.ImportFirstName,
-				LastName:  v.ImportLastName,
-			}).To_InputContact())
-		})
+	var err error
+	appendContact := func(_ int, _ int, v *dataobject.UnregisteredContactsDO) {
+		contacts.Datas = append(contacts.Datas, mtproto.MakeTLInputPhoneContact(&mtproto.InputContact{
+			ClientId:  v.ImporterUserId,
+			Phone:     "",
+			FirstName: v.ImportFirstName,
+			LastName:  v.ImportLastName,
+		}).To_InputContact())
+	}
+	_, err = c.svcCtx.Dao.Postgres.Store.Unregistered.SelectImportersByPhoneWithCB(c.ctx, in.GetPhone(), appendContact)
 	if err != nil {
 		c.Logger.Errorf("user.getImportersByPhone - database lookup error: %v", err)
 		return nil, err

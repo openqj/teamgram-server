@@ -20,6 +20,12 @@ import (
 // AuthsessionGetPushSessionId
 // authsession.getPushSessionId user_id:long auth_key_id:long token_type:int = Int64;
 func (c *AuthsessionCore) AuthsessionGetPushSessionId(in *authsession.TLAuthsessionGetPushSessionId) (*mtproto.Int64, error) {
+	if in == nil || in.GetAuthKeyId() == 0 {
+		return nil, mtproto.ErrAuthKeyInvalid
+	}
+	if in.GetUserId() <= 0 {
+		return nil, mtproto.ErrUserIdInvalid
+	}
 	var (
 		inKeyId = in.GetAuthKeyId()
 	)

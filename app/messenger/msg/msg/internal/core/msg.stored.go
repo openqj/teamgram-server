@@ -160,6 +160,13 @@ func (c *MsgCore) deleteChatHistory(in *msg.TLMsgDeleteChatHistory) (*mtproto.Bo
 	if chat == nil {
 		return nil, mtproto.ErrPeerIdInvalid
 	}
+	if c.svcCtx.Dao.Postgres != nil {
+		if err := c.svcCtx.Dao.DeleteChatUserHistory(c.ctx, in.ChatId, in.DeleteUserId); err != nil {
+			c.Logger.Errorf("msg.deleteChatHistory - postgres delete failed")
+			return nil, asStored(err)
+		}
+		return mtproto.BoolTrue, nil
+	}
 	did := mtproto.MakeDialogId(0, mtproto.PEER_CHAT, in.ChatId)
 	var walkErr error
 	chat.Walk(func(userId int64, participant *mtproto.ImmutableChatParticipant) error {

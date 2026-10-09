@@ -18,7 +18,7 @@ import (
 // user.getImmutableUserByPhone phone:string = ImmutableUser;
 func (c *UserCore) UserGetImmutableUserByPhone(in *user.TLUserGetImmutableUserByPhone) (*mtproto.ImmutableUser, error) {
 	// TODO: performance optimization
-	do, err := c.svcCtx.Dao.UsersDAO.SelectByPhoneNumber(c.ctx, in.Phone)
+	do, err := c.svcCtx.Dao.SelectUserByPhone(c.ctx, in.Phone)
 	if err != nil {
 		c.Logger.Errorf("user.getImmutableUserByPhone - error: %v", err)
 		return nil, err

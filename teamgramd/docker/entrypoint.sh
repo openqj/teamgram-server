@@ -38,6 +38,4 @@
 # createConfigs
 
 cd /app/bin
-./runall-docker.sh
-
-tail -f /dev/null
+exec ./runall-docker.sh

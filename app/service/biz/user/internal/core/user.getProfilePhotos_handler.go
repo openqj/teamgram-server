@@ -20,7 +20,7 @@ func (c *UserCore) UserGetProfilePhotos(in *user.TLUserGetProfilePhotos) (*user.
 	if in == nil || in.GetUserId() <= 0 {
 		return nil, mtproto.ErrInputRequestInvalid
 	}
-	idList, err := c.svcCtx.Dao.UserProfilePhotosDAO.SelectList(c.ctx, in.UserId)
+	idList, err := c.svcCtx.Dao.Postgres.Store.ProfilePhotos.SelectList(c.ctx, in.UserId)
 	if err != nil {
 		c.Logger.Errorf("user.getProfilePhotos - error: %v", err)
 		return nil, err

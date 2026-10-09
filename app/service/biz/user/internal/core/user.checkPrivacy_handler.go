@@ -15,21 +15,11 @@ import (
 )
 
 // UserCheckPrivacy
-// user.checkPrivacy flags:# user_id:int key_type:int peer_id:int is_contact:flags.0?true = Bool;
+// user.checkPrivacy user_id:long key_type:int peer_id:long = Bool;
 func (c *UserCore) UserCheckPrivacy(in *user.TLUserCheckPrivacy) (*mtproto.Bool, error) {
-	rules, err := c.UserGetPrivacy(&user.TLUserGetPrivacy{
-		UserId:  in.UserId,
-		KeyType: in.KeyType,
-	})
-
+	allowed, err := c.svcCtx.Dao.CheckUserPrivacy(c.ctx, in.GetUserId(), in.GetKeyType(), in.GetPeerId())
 	if err != nil {
-		return mtproto.BoolFalse, nil
-	} else if len(rules.GetDatas()) == 0 {
-		return mtproto.BoolTrue, nil
+		return nil, err
 	}
-
-	// TODO(@benqi): check allow
-	// return rulesData2.IsAllow(peerId, isContact)
-	return mtproto.BoolTrue, nil
-
+	return mtproto.ToBool(allowed), nil
 }

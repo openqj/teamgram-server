@@ -21,12 +21,14 @@ package core
 import (
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/service/biz/dialog/dialog"
-	"github.com/teamgram/teamgram-server/app/service/biz/dialog/internal/dal/dataobject"
 )
 
 // DialogGetPinnedSavedDialogs
 // dialog.getPinnedSavedDialogs user_id:long = SavedDialogList;
 func (c *DialogCore) DialogGetPinnedSavedDialogs(in *dialog.TLDialogGetPinnedSavedDialogs) (*dialog.SavedDialogList, error) {
+	if c == nil || c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.Postgres == nil || c.svcCtx.Dao.Postgres.Store == nil || c.svcCtx.Dao.Postgres.Store.SavedDialogs == nil {
+		return nil, mtproto.ErrMethodNotImpl
+	}
 	var (
 		meId  = in.GetUserId()
 		dList = dialog.MakeTLSavedDialogList(&dialog.SavedDialogList{
@@ -35,12 +37,13 @@ func (c *DialogCore) DialogGetPinnedSavedDialogs(in *dialog.TLDialogGetPinnedSav
 		}).To_SavedDialogList()
 	)
 
-	c.svcCtx.Dao.SavedDialogsDAO.SelectPinnedDialogsWithCB(
-		c.ctx,
-		meId,
-		func(sz, i int, v *dataobject.SavedDialogsDO) {
-			dList.Dialogs = append(dList.Dialogs, c.svcCtx.Dao.MakeSavedDialog(v))
-		})
+	rows, err := c.svcCtx.Dao.Postgres.Store.SavedDialogs.SelectPinnedDialogs(c.ctx, meId)
+	if err != nil {
+		return nil, err
+	}
+	for i := range rows {
+		dList.Dialogs = append(dList.Dialogs, c.svcCtx.Dao.MakeSavedDialog(&rows[i]))
+	}
 	dList.Count = int32(len(dList.Dialogs))
 
 	return dList, nil

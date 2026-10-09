@@ -25,6 +25,12 @@ import (
 // MsgReadHistory
 // msg.readHistory user_id:long auth_key_id:long peer_type:int peer_id:long max_id:int = messages.AffectedMessages;
 func (c *MsgCore) MsgReadHistory(in *msg.TLMsgReadHistory) (*mtproto.Messages_AffectedMessages, error) {
+	if in == nil || in.GetUserId() <= 0 {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if c.svcCtx.Dao.Postgres != nil {
+		return c.readHistoryPostgres(in.UserId, in.AuthKeyId, in.PeerType, in.PeerId, in.MaxId)
+	}
 	var (
 		pts, ptsCount int32
 		maxId               = in.MaxId

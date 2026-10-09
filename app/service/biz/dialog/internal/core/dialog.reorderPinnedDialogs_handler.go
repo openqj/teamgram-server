@@ -10,10 +10,9 @@
 package core
 
 import (
-	"context"
 	"time"
 
-	"github.com/teamgram/marmota/pkg/stores/sqlx"
+	"github.com/jackc/pgx/v5"
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/service/biz/dialog/dialog"
 )
@@ -21,94 +20,46 @@ import (
 // DialogReorderPinnedDialogs
 // dialog.reorderPinnedDialogs user_id:long force:Bool folder_id:int id_list:Vector<long> = Bool;
 func (c *DialogCore) DialogReorderPinnedDialogs(in *dialog.TLDialogReorderPinnedDialogs) (*mtproto.Bool, error) {
+	store, err := c.pgStore()
+	if err != nil || store.Dialogs == nil || c.svcCtx.Dao.Postgres == nil {
+		return nil, mtproto.ErrMethodNotImpl
+	}
 	var (
 		userId      = in.GetUserId()
 		force       = mtproto.FromBool(in.GetForce())
 		folderId    = in.GetFolderId()
 		idList      = in.GetIdList()
 		orderPinned = time.Now().Unix()
-		keyList     = make([]string, 0, len(idList)+1)
 	)
-	for _, id := range idList {
-		keyList = append(keyList, dialog.GetDialogCacheKey(in.GetUserId(), id))
-	}
-
-	if folderId == 0 {
-		c.svcCtx.Dao.CachedConn.Exec(
-			c.ctx,
-			func(ctx context.Context, conn *sqlx.DB) (int64, int64, error) {
-				tR := sqlx.TxWrapper(
-					ctx,
-					conn,
-					func(tx *sqlx.Tx, result *sqlx.StoreResult) {
-						if force {
-							if len(idList) > 0 {
-								_, result.Err = c.svcCtx.Dao.DialogsDAO.UpdateUnPinnedNotIdListTx(
-									tx,
-									userId,
-									idList)
-							} else {
-								_, result.Err = c.svcCtx.Dao.DialogsDAO.UpdateUnPinnedNotIdListTx(
-									tx,
-									userId,
-									[]int64{0}) // hack
-							}
-							if result.Err != nil {
-								return
-							}
-						}
-
-						for _, id := range idList {
-							_, result.Err = c.svcCtx.Dao.DialogsDAO.UpdatePeerDialogListPinnedTx(
-								tx,
-								orderPinned<<32,
-								in.UserId, []int64{id})
-							if result.Err != nil {
-								return
-							}
-							orderPinned -= 1
-						}
-					})
-				return 0, 0, tR.Err
-			},
-			append(keyList, dialog.GetPinnedDialogIdListCacheKey(in.GetUserId()))...)
-	} else {
-		c.svcCtx.Dao.CachedConn.Exec(
-			c.ctx,
-			func(ctx context.Context, conn *sqlx.DB) (int64, int64, error) {
-				tR := sqlx.TxWrapper(
-					c.ctx,
-					c.svcCtx.Dao.DB,
-					func(tx *sqlx.Tx, result *sqlx.StoreResult) {
-						if force {
-							if len(idList) > 0 {
-								_, result.Err = c.svcCtx.Dao.DialogsDAO.UpdateUnPinnedNotIdListTx(
-									tx,
-									userId,
-									idList)
-							} else {
-								_, result.Err = c.svcCtx.Dao.DialogsDAO.UpdateUnPinnedNotIdListTx(
-									tx,
-									userId,
-									[]int64{0}) // hack
-							}
-							if result.Err != nil {
-								return
-							}
-						}
-
-						for _, id := range idList {
-							_, result.Err = c.svcCtx.Dao.DialogsDAO.UpdateFolderPeerDialogListPinnedTx(
-								tx,
-								orderPinned<<32,
-								in.UserId,
-								[]int64{id})
-							orderPinned -= 1
-						}
-					})
-				return 0, 0, tR.Err
-			},
-			append(keyList, dialog.GetFolderPinnedDialogIdListCacheKey(in.GetUserId()))...)
+	err = c.svcCtx.Dao.Postgres.InTx(c.ctx, func(tx pgx.Tx) error {
+		ids := idList
+		if len(ids) == 0 {
+			ids = []int64{0}
+		}
+		if force {
+			if folderId == 0 {
+				if _, err := store.Dialogs.UpdateUnPinnedNotIdListTx(c.ctx, tx, userId, ids); err != nil {
+					return err
+				}
+			} else if _, err := store.Dialogs.UpdateFolderUnPinnedNotIdListTx(c.ctx, tx, userId, ids); err != nil {
+				return err
+			}
+		}
+		for _, id := range idList {
+			pinned := orderPinned << 32
+			if folderId == 0 {
+				if _, err := store.Dialogs.UpdatePeerDialogListPinnedTx(c.ctx, tx, pinned, userId, []int64{id}); err != nil {
+					return err
+				}
+			} else if _, err := store.Dialogs.UpdateFolderPeerDialogListPinnedTx(c.ctx, tx, pinned, userId, []int64{id}); err != nil {
+				return err
+			}
+			orderPinned--
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
 
 	return mtproto.BoolTrue, nil

@@ -19,8 +19,10 @@
 package server
 
 import (
+	"errors"
 	"flag"
 
+	"github.com/teamgram/teamgram-server/app/bff/apifull/state"
 	"github.com/teamgram/teamgram-server/app/bff/chats/internal/config"
 	"github.com/teamgram/teamgram-server/app/bff/chats/internal/server/grpc"
 	"github.com/teamgram/teamgram-server/app/bff/chats/internal/svc"
@@ -42,7 +44,10 @@ func New() *Server {
 
 func (s *Server) Initialize() error {
 	var c config.Config
-	conf.MustLoad(*configFile, &c)
+	conf.MustLoad(*configFile, &c, conf.UseEnv())
+	if c.PostgresDSN == "" {
+		return errors.New("chats: PostgresDSN is required")
+	}
 
 	logx.Infov(c)
 	ctx := svc.NewServiceContext(c)
@@ -59,4 +64,7 @@ func (s *Server) RunLoop() {
 
 func (s *Server) Destroy() {
 	s.grpcSrv.Stop()
+	if err := state.ClosePostgres(); err != nil {
+		logx.Errorf("close chats PostgreSQL: %v", err)
+	}
 }

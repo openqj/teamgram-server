@@ -27,6 +27,7 @@ import (
 
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/persist"
+	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
 // RPCStickersServer: Layer 229 methods previously returned ERR_ENTERPRISE_IS_BLOCKED.
@@ -436,168 +437,763 @@ func (c *ApiFullCore) loadFeaturedStickers(hash int64) (*mtproto.Messages_Featur
 }
 
 func (c *ApiFullCore) MessagesGetStickers(in *mtproto.TLMessagesGetStickers) (*mtproto.Messages_Stickers, error) {
-	_ = in
-	return nil, stickersProviderUnavailable(c)
+	if in == nil {
+		return nil, stickersProviderUnavailable(c)
+	}
+	uid, err := c.requireUserId()
+	if err != nil {
+		return nil, err
+	}
+	docs, err := persist.SearchStickerDocuments(stickerRequestContext(c), uid, "", in.GetEmoticon(), 0, 100)
+	if err != nil {
+		return nil, stickerProviderError(c, err)
+	}
+	ids := make([]int64, 0, len(docs))
+	out := make([]*mtproto.Document, 0, len(docs))
+	for _, d := range docs {
+		ids = append(ids, d.ID)
+		out = append(out, stickerDocumentFromRecord(d))
+	}
+	hash := idListHash(ids)
+	if in.GetHash() != 0 && in.GetHash() == hash {
+		return mtproto.MakeTLMessagesStickersNotModified(nil).To_Messages_Stickers(), nil
+	}
+	return mtproto.MakeTLMessagesStickers(&mtproto.Messages_Stickers{Hash: hash, Stickers: out}).To_Messages_Stickers(), nil
 }
 
 func (c *ApiFullCore) MessagesGetAllStickers(in *mtproto.TLMessagesGetAllStickers) (*mtproto.Messages_AllStickers, error) {
-	_ = in
-	return nil, stickersProviderUnavailable(c)
+	if in == nil {
+		return nil, stickersProviderUnavailable(c)
+	}
+	uid, err := c.requireUserId()
+	if err != nil {
+		return nil, err
+	}
+	sets, err := persist.ListStickerSets(stickerRequestContext(c), uid, false, false, false, 100)
+	if err != nil {
+		return nil, stickerProviderError(c, err)
+	}
+	items := make([]*mtproto.StickerSet, 0, len(sets))
+	ids := make([]int64, 0, len(sets))
+	for i := range sets {
+		set := sets[i]
+		ids = append(ids, set.ID)
+		items = append(items, mtproto.MakeTLStickerSet(&mtproto.StickerSet{Id: set.ID, AccessHash: set.AccessHash, Title: set.Title, ShortName: set.ShortName, Masks: set.Masks, Emojis: set.Emojis, TextColor: set.TextColor, Creator: set.Creator, Count: int32(len(set.Documents)), Hash: int32(stickerSetHash(&set)), Animated: set.Animated, Videos: set.Videos}).To_StickerSet())
+	}
+	hash := idListHash(ids)
+	if in.GetHash() != 0 && in.GetHash() == hash {
+		return mtproto.MakeTLMessagesAllStickersNotModified(nil).To_Messages_AllStickers(), nil
+	}
+	return mtproto.MakeTLMessagesAllStickers(&mtproto.Messages_AllStickers{Hash: hash, Sets: items}).To_Messages_AllStickers(), nil
 }
 
 func (c *ApiFullCore) MessagesGetStickerSet(in *mtproto.TLMessagesGetStickerSet) (*mtproto.Messages_StickerSet, error) {
-	_ = in
-	return nil, stickersProviderUnavailable(c)
+	if in == nil {
+		return nil, stickersProviderUnavailable(c)
+	}
+	uid, err := c.requireUserId()
+	if err != nil {
+		return nil, err
+	}
+	setID, short := stickerSetTokenID(in.GetStickerset())
+	if ref, ok := builtinStickerRef(in.GetStickerset()); ok {
+		return messagesStickerSetFromRef(ref, in.GetHash()), nil
+	}
+	if setID == 0 && short == "" {
+		return nil, mtproto.ErrStickersetInvalid
+	}
+	set, err := persist.GetStickerSet(stickerRequestContext(c), uid, setID, short)
+	if err != nil {
+		return nil, stickerProviderError(c, err)
+	}
+	if set == nil {
+		return nil, mtproto.ErrStickersetInvalid
+	}
+	if err := validateStickerSetAccess(in.GetStickerset(), set); err != nil {
+		return nil, err
+	}
+	return stickerSetFromRecord(set, in.GetHash()), nil
 }
 
 func (c *ApiFullCore) MessagesInstallStickerSet(in *mtproto.TLMessagesInstallStickerSet) (*mtproto.Messages_StickerSetInstallResult, error) {
-	_ = in
-	return nil, stickersProviderUnavailable(c)
+	if in == nil {
+		return nil, stickersProviderUnavailable(c)
+	}
+	uid, err := c.requireUserId()
+	if err != nil {
+		return nil, err
+	}
+	setID, short := stickerSetTokenID(in.GetStickerset())
+	set, err := persist.GetStickerSet(stickerRequestContext(c), uid, setID, short)
+	if err != nil {
+		return nil, stickerProviderError(c, err)
+	}
+	if set == nil {
+		return nil, mtproto.ErrStickersetInvalid
+	}
+	if err := validateStickerSetAccess(in.GetStickerset(), set); err != nil {
+		return nil, err
+	}
+	archived := in.GetArchived() != nil && in.GetArchived().GetPredicateName() == mtproto.Predicate_boolTrue
+	if err = persist.SetInstalled(stickerRequestContext(c), uid, set.ID, true, archived); err != nil {
+		return nil, stickerProviderError(c, err)
+	}
+	set.Installed, set.Archived = true, archived
+	return mtproto.MakeTLMessagesStickerSetInstallResultSuccess(&mtproto.Messages_StickerSetInstallResult{Sets: []*mtproto.StickerSetCovered{stickerCovered(*set)}}).To_Messages_StickerSetInstallResult(), nil
 }
 
 func (c *ApiFullCore) MessagesUninstallStickerSet(in *mtproto.TLMessagesUninstallStickerSet) (*mtproto.Bool, error) {
-	_ = in
-	return nil, stickersProviderUnavailable(c)
+	if in == nil {
+		return nil, stickersProviderUnavailable(c)
+	}
+	uid, err := c.requireUserId()
+	if err != nil {
+		return nil, err
+	}
+	setID, short := stickerSetTokenID(in.GetStickerset())
+	set, err := persist.GetStickerSet(stickerRequestContext(c), uid, setID, short)
+	if err != nil {
+		return nil, stickerProviderError(c, err)
+	}
+	if set == nil {
+		return nil, mtproto.ErrStickersetInvalid
+	}
+	if err := validateStickerSetAccess(in.GetStickerset(), set); err != nil {
+		return nil, err
+	}
+	if err = persist.SetInstalled(stickerRequestContext(c), uid, set.ID, false, false); err != nil {
+		return nil, stickerProviderError(c, err)
+	}
+	return mtproto.BoolTrue, nil
 }
 
 func (c *ApiFullCore) MessagesReorderStickerSets(in *mtproto.TLMessagesReorderStickerSets) (*mtproto.Bool, error) {
-	_ = in
-	return nil, stickersProviderUnavailable(c)
+	if in == nil {
+		return nil, stickersProviderUnavailable(c)
+	}
+	uid, err := c.requireUserId()
+	if err != nil {
+		return nil, err
+	}
+	if err = persist.ReorderStickerSets(stickerRequestContext(c), uid, in.GetOrder()); err != nil {
+		return nil, stickerProviderError(c, err)
+	}
+	return mtproto.BoolTrue, nil
 }
 
 func (c *ApiFullCore) MessagesGetFeaturedStickers(in *mtproto.TLMessagesGetFeaturedStickers) (*mtproto.Messages_FeaturedStickers, error) {
-	_ = in
-	return nil, stickersProviderUnavailable(c)
+	if in == nil {
+		return nil, stickersProviderUnavailable(c)
+	}
+	uid, err := c.requireUserId()
+	if err != nil {
+		return nil, err
+	}
+	sets, err := persist.ListStickerSets(stickerRequestContext(c), uid, false, false, true, 100)
+	if err != nil {
+		return nil, stickerProviderError(c, err)
+	}
+	ids := make([]int64, 0, len(sets))
+	covers := make([]*mtproto.StickerSetCovered, 0, len(sets))
+	unread := make([]int64, 0, len(sets))
+	for _, set := range sets {
+		ids = append(ids, set.ID)
+		covers = append(covers, stickerCovered(set))
+		if set.Unread {
+			unread = append(unread, set.ID)
+		}
+	}
+	hash := idListHash(ids)
+	if in.GetHash() != 0 && in.GetHash() == hash {
+		return mtproto.MakeTLMessagesFeaturedStickersNotModified(&mtproto.Messages_FeaturedStickers{Count: int32(len(sets)), Hash: hash}).To_Messages_FeaturedStickers(), nil
+	}
+	return mtproto.MakeTLMessagesFeaturedStickers(&mtproto.Messages_FeaturedStickers{Count: int32(len(sets)), Hash: hash, Sets: covers, Unread: unread}).To_Messages_FeaturedStickers(), nil
 }
 
 func (c *ApiFullCore) MessagesReadFeaturedStickers(in *mtproto.TLMessagesReadFeaturedStickers) (*mtproto.Bool, error) {
-	_ = in
-	return nil, stickersProviderUnavailable(c)
+	if in == nil {
+		return nil, stickersProviderUnavailable(c)
+	}
+	uid, err := c.requireUserId()
+	if err != nil {
+		return nil, err
+	}
+	if err = persist.SetFeaturedRead(stickerRequestContext(c), uid, in.GetId()); err != nil {
+		return nil, stickerProviderError(c, err)
+	}
+	return mtproto.BoolTrue, nil
 }
 
 func (c *ApiFullCore) MessagesGetRecentStickers(in *mtproto.TLMessagesGetRecentStickers) (*mtproto.Messages_RecentStickers, error) {
-	_ = in
-	return nil, stickersProviderUnavailable(c)
+	if in == nil {
+		return nil, stickersProviderUnavailable(c)
+	}
+	uid, err := c.requireUserId()
+	if err != nil {
+		return nil, err
+	}
+	docs, err := persist.ListRecentStickers(stickerRequestContext(c), uid, in.GetAttached(), 100)
+	if err != nil {
+		return nil, stickerProviderError(c, err)
+	}
+	items := make([]*mtproto.Document, 0, len(docs))
+	ids := make([]int64, 0, len(docs))
+	dates := make([]int32, 0, len(docs))
+	for _, d := range docs {
+		items = append(items, stickerDocumentFromRecord(d))
+		ids = append(ids, d.ID)
+		dates = append(dates, d.Date)
+	}
+	hash := idListHash(ids)
+	if in.GetHash() != 0 && in.GetHash() == hash {
+		return mtproto.MakeTLMessagesRecentStickersNotModified(&mtproto.Messages_RecentStickers{Hash: hash}).To_Messages_RecentStickers(), nil
+	}
+	return mtproto.MakeTLMessagesRecentStickers(&mtproto.Messages_RecentStickers{Hash: hash, Packs: []*mtproto.StickerPack{}, Stickers: items, Dates: dates}).To_Messages_RecentStickers(), nil
 }
 
 func (c *ApiFullCore) MessagesSaveRecentSticker(in *mtproto.TLMessagesSaveRecentSticker) (*mtproto.Bool, error) {
-	_ = in
-	return nil, stickersProviderUnavailable(c)
+	if in == nil {
+		return nil, stickersProviderUnavailable(c)
+	}
+	uid, err := c.requireUserId()
+	if err != nil {
+		return nil, err
+	}
+	if in.GetId() == nil || inputDocumentID(in.GetId()) == 0 {
+		return nil, mtproto.ErrStickerIdInvalid
+	}
+	unsave := in.GetUnsave() != nil && in.GetUnsave().GetPredicateName() == mtproto.Predicate_boolTrue
+	if err = persist.SaveRecentSticker(stickerRequestContext(c), uid, inputDocumentID(in.GetId()), in.GetAttached(), unsave); err != nil {
+		return nil, stickerProviderError(c, err)
+	}
+	return mtproto.BoolTrue, nil
 }
 
 func (c *ApiFullCore) MessagesClearRecentStickers(in *mtproto.TLMessagesClearRecentStickers) (*mtproto.Bool, error) {
-	_ = in
-	return nil, stickersProviderUnavailable(c)
+	if in == nil {
+		return nil, stickersProviderUnavailable(c)
+	}
+	uid, err := c.requireUserId()
+	if err != nil {
+		return nil, err
+	}
+	if err = persist.ClearRecentStickers(stickerRequestContext(c), uid, in.GetAttached()); err != nil {
+		return nil, stickerProviderError(c, err)
+	}
+	return mtproto.BoolTrue, nil
 }
 
 func (c *ApiFullCore) MessagesGetArchivedStickers(in *mtproto.TLMessagesGetArchivedStickers) (*mtproto.Messages_ArchivedStickers, error) {
-	_ = in
-	return nil, stickersProviderUnavailable(c)
+	if in == nil {
+		return nil, stickersProviderUnavailable(c)
+	}
+	uid, err := c.requireUserId()
+	if err != nil {
+		return nil, err
+	}
+	sets, err := persist.ListStickerSets(stickerRequestContext(c), uid, false, true, false, in.GetLimit())
+	if err != nil {
+		return nil, stickerProviderError(c, err)
+	}
+	covers := make([]*mtproto.StickerSetCovered, 0, len(sets))
+	for _, set := range sets {
+		covers = append(covers, stickerCovered(set))
+	}
+	return mtproto.MakeTLMessagesArchivedStickers(&mtproto.Messages_ArchivedStickers{Count: int32(len(covers)), Sets: covers}).To_Messages_ArchivedStickers(), nil
 }
 
 func (c *ApiFullCore) MessagesGetMaskStickers(in *mtproto.TLMessagesGetMaskStickers) (*mtproto.Messages_AllStickers, error) {
-	_ = in
-	return nil, stickersProviderUnavailable(c)
+	if in == nil {
+		return nil, stickersProviderUnavailable(c)
+	}
+	uid, err := c.requireUserId()
+	if err != nil {
+		return nil, err
+	}
+	sets, err := persist.ListStickerSets(stickerRequestContext(c), uid, false, false, false, 100)
+	if err != nil {
+		return nil, stickerProviderError(c, err)
+	}
+	items := make([]*mtproto.StickerSet, 0)
+	ids := make([]int64, 0)
+	for _, set := range sets {
+		if !set.Masks {
+			continue
+		}
+		items = append(items, mtproto.MakeTLStickerSet(&mtproto.StickerSet{Id: set.ID, AccessHash: set.AccessHash, Title: set.Title, ShortName: set.ShortName, Masks: true, Count: int32(len(set.Documents)), Hash: int32(stickerSetHash(&set))}).To_StickerSet())
+		ids = append(ids, set.ID)
+	}
+	hash := idListHash(ids)
+	if in.GetHash() != 0 && in.GetHash() == hash {
+		return mtproto.MakeTLMessagesAllStickersNotModified(nil).To_Messages_AllStickers(), nil
+	}
+	return mtproto.MakeTLMessagesAllStickers(&mtproto.Messages_AllStickers{Hash: hash, Sets: items}).To_Messages_AllStickers(), nil
 }
 
 func (c *ApiFullCore) MessagesGetAttachedStickers(in *mtproto.TLMessagesGetAttachedStickers) (*mtproto.Vector_StickerSetCovered, error) {
-	_ = in
-	return nil, stickersProviderUnavailable(c)
+	if in == nil {
+		return nil, stickersProviderUnavailable(c)
+	}
+	uid, err := c.requireUserId()
+	if err != nil {
+		return nil, err
+	}
+	if in.GetMedia() == nil || in.GetMedia().GetId_INPUTDOCUMENT() == nil || in.GetMedia().GetId_INPUTDOCUMENT().GetId() == 0 {
+		return &mtproto.Vector_StickerSetCovered{Datas: []*mtproto.StickerSetCovered{}}, nil
+	}
+	sets, err := persist.StickerSetsForDocument(stickerRequestContext(c), uid, in.GetMedia().GetId_INPUTDOCUMENT().GetId())
+	if err != nil {
+		return nil, stickerProviderError(c, err)
+	}
+	covered := make([]*mtproto.StickerSetCovered, 0, len(sets))
+	for _, set := range sets {
+		covered = append(covered, stickerCovered(set))
+	}
+	return &mtproto.Vector_StickerSetCovered{Datas: covered}, nil
 }
 
 func (c *ApiFullCore) MessagesGetFavedStickers(in *mtproto.TLMessagesGetFavedStickers) (*mtproto.Messages_FavedStickers, error) {
-	_ = in
-	return nil, stickersProviderUnavailable(c)
+	if in == nil {
+		return nil, stickersProviderUnavailable(c)
+	}
+	uid, err := c.requireUserId()
+	if err != nil {
+		return nil, err
+	}
+	docs, err := persist.ListFavouriteStickers(stickerRequestContext(c), uid, 100)
+	if err != nil {
+		return nil, stickerProviderError(c, err)
+	}
+	items := make([]*mtproto.Document, 0, len(docs))
+	ids := make([]int64, 0, len(docs))
+	for _, d := range docs {
+		items = append(items, stickerDocumentFromRecord(d))
+		ids = append(ids, d.ID)
+	}
+	hash := idListHash(ids)
+	if in.GetHash() != 0 && in.GetHash() == hash {
+		return mtproto.MakeTLMessagesFavedStickersNotModified(&mtproto.Messages_FavedStickers{Hash: hash}).To_Messages_FavedStickers(), nil
+	}
+	return mtproto.MakeTLMessagesFavedStickers(&mtproto.Messages_FavedStickers{Hash: hash, Packs: []*mtproto.StickerPack{}, Stickers: items}).To_Messages_FavedStickers(), nil
 }
 
 func (c *ApiFullCore) MessagesFaveSticker(in *mtproto.TLMessagesFaveSticker) (*mtproto.Bool, error) {
-	_ = in
-	return nil, stickersProviderUnavailable(c)
+	if in == nil {
+		return nil, stickersProviderUnavailable(c)
+	}
+	uid, err := c.requireUserId()
+	if err != nil {
+		return nil, err
+	}
+	if in.GetId() == nil || inputDocumentID(in.GetId()) == 0 {
+		return nil, mtproto.ErrStickerIdInvalid
+	}
+	unfave := in.GetUnfave() != nil && in.GetUnfave().GetPredicateName() == mtproto.Predicate_boolTrue
+	if err = persist.SaveFavouriteSticker(stickerRequestContext(c), uid, inputDocumentID(in.GetId()), unfave); err != nil {
+		return nil, stickerProviderError(c, err)
+	}
+	return mtproto.BoolTrue, nil
 }
 
 func (c *ApiFullCore) MessagesSearchStickerSets(in *mtproto.TLMessagesSearchStickerSets) (*mtproto.Messages_FoundStickerSets, error) {
-	_ = in
-	return nil, stickersProviderUnavailable(c)
+	if in == nil {
+		return nil, stickersProviderUnavailable(c)
+	}
+	uid, err := c.requireUserId()
+	if err != nil {
+		return nil, err
+	}
+	sets, err := persist.SearchStickerSets(stickerRequestContext(c), uid, in.GetQ(), false, 100)
+	if err != nil {
+		return nil, stickerProviderError(c, err)
+	}
+	covers := make([]*mtproto.StickerSetCovered, 0, len(sets))
+	ids := make([]int64, 0, len(sets))
+	for _, set := range sets {
+		ids = append(ids, set.ID)
+		covers = append(covers, stickerCovered(set))
+	}
+	hash := idListHash(ids)
+	if in.GetHash() != 0 && in.GetHash() == hash {
+		return mtproto.MakeTLMessagesFoundStickerSetsNotModified(&mtproto.Messages_FoundStickerSets{Hash: hash}).To_Messages_FoundStickerSets(), nil
+	}
+	return mtproto.MakeTLMessagesFoundStickerSets(&mtproto.Messages_FoundStickerSets{Hash: hash, Sets: covers}).To_Messages_FoundStickerSets(), nil
 }
 
 func (c *ApiFullCore) MessagesToggleStickerSets(in *mtproto.TLMessagesToggleStickerSets) (*mtproto.Bool, error) {
-	_ = in
-	return nil, stickersProviderUnavailable(c)
+	if in == nil {
+		return nil, stickersProviderUnavailable(c)
+	}
+	uid, err := c.requireUserId()
+	if err != nil {
+		return nil, err
+	}
+	for _, input := range in.GetStickersets() {
+		setID, short := stickerSetTokenID(input)
+		set, getErr := persist.GetStickerSet(stickerRequestContext(c), uid, setID, short)
+		if getErr != nil {
+			return nil, stickerProviderError(c, getErr)
+		}
+		if set == nil {
+			return nil, mtproto.ErrStickersetInvalid
+		}
+		if err := validateStickerSetAccess(input, set); err != nil {
+			return nil, err
+		}
+		installed := !in.GetUninstall()
+		archived := in.GetArchive() && installed
+		if in.GetUnarchive() {
+			archived = false
+		}
+		if err = persist.SetInstalled(stickerRequestContext(c), uid, set.ID, installed, archived); err != nil {
+			return nil, stickerProviderError(c, err)
+		}
+	}
+	return mtproto.BoolTrue, nil
 }
 
 func (c *ApiFullCore) MessagesGetOldFeaturedStickers(in *mtproto.TLMessagesGetOldFeaturedStickers) (*mtproto.Messages_FeaturedStickers, error) {
-	_ = in
-	return nil, stickersProviderUnavailable(c)
+	if in == nil {
+		return nil, stickersProviderUnavailable(c)
+	}
+	uid, err := c.requireUserId()
+	if err != nil {
+		return nil, err
+	}
+	if in.GetOffset() < 0 {
+		return nil, mtproto.ErrOffsetInvalid
+	}
+	if in.GetLimit() < 0 {
+		return nil, mtproto.ErrLimitInvalid
+	}
+	sets, total, err := persist.ListFeaturedStickerSets(stickerRequestContext(c), uid, in.GetOffset(), in.GetLimit())
+	if err != nil {
+		return nil, stickerProviderError(c, err)
+	}
+	covers := make([]*mtproto.StickerSetCovered, 0, len(sets))
+	ids := make([]int64, 0, len(sets))
+	for _, set := range sets {
+		ids = append(ids, set.ID)
+		covers = append(covers, stickerCovered(set))
+	}
+	hash := idListHash(ids)
+	count := int32(total)
+	if total > int64(^uint32(0)>>1) {
+		count = int32(^uint32(0) >> 1)
+	}
+	if in.GetHash() != 0 && in.GetHash() == hash {
+		return mtproto.MakeTLMessagesFeaturedStickersNotModified(&mtproto.Messages_FeaturedStickers{Count: count, Hash: hash}).To_Messages_FeaturedStickers(), nil
+	}
+	return mtproto.MakeTLMessagesFeaturedStickers(&mtproto.Messages_FeaturedStickers{Count: count, Hash: hash, Sets: covers}).To_Messages_FeaturedStickers(), nil
 }
 
 func (c *ApiFullCore) MessagesSearchEmojiStickerSets(in *mtproto.TLMessagesSearchEmojiStickerSets) (*mtproto.Messages_FoundStickerSets, error) {
-	_ = in
-	return nil, stickersProviderUnavailable(c)
+	if in == nil {
+		return nil, stickersProviderUnavailable(c)
+	}
+	uid, err := c.requireUserId()
+	if err != nil {
+		return nil, err
+	}
+	sets, err := persist.SearchStickerSets(stickerRequestContext(c), uid, in.GetQ(), true, 100)
+	if err != nil {
+		return nil, stickerProviderError(c, err)
+	}
+	covers := make([]*mtproto.StickerSetCovered, 0, len(sets))
+	for _, set := range sets {
+		covers = append(covers, stickerCovered(set))
+	}
+	return mtproto.MakeTLMessagesFoundStickerSets(&mtproto.Messages_FoundStickerSets{Sets: covers, Hash: int64(len(covers))}).To_Messages_FoundStickerSets(), nil
 }
 
 func (c *ApiFullCore) MessagesGetMyStickers(in *mtproto.TLMessagesGetMyStickers) (*mtproto.Messages_MyStickers, error) {
-	_ = in
-	return nil, stickersProviderUnavailable(c)
+	if in == nil {
+		return nil, stickersProviderUnavailable(c)
+	}
+	uid, err := c.requireUserId()
+	if err != nil {
+		return nil, err
+	}
+	sets, err := persist.ListStickerSets(stickerRequestContext(c), uid, false, false, false, in.GetLimit())
+	if err != nil {
+		return nil, stickerProviderError(c, err)
+	}
+	covers := make([]*mtproto.StickerSetCovered, 0, len(sets))
+	for _, set := range sets {
+		if set.OwnerUserID == uid {
+			covers = append(covers, stickerCovered(set))
+		}
+	}
+	return mtproto.MakeTLMessagesMyStickers(&mtproto.Messages_MyStickers{Count: int32(len(covers)), Sets: covers}).To_Messages_MyStickers(), nil
 }
 
 func (c *ApiFullCore) MessagesSearchStickers(in *mtproto.TLMessagesSearchStickers) (*mtproto.Messages_FoundStickers, error) {
-	_ = in
-	return nil, stickersProviderUnavailable(c)
+	if in == nil {
+		return nil, stickersProviderUnavailable(c)
+	}
+	uid, err := c.requireUserId()
+	if err != nil {
+		return nil, err
+	}
+	docs, err := persist.SearchStickerDocuments(stickerRequestContext(c), uid, in.GetQ(), in.GetEmoticon(), in.GetOffset(), in.GetLimit())
+	if err != nil {
+		return nil, stickerProviderError(c, err)
+	}
+	items := make([]*mtproto.Document, 0, len(docs))
+	for _, d := range docs {
+		items = append(items, stickerDocumentFromRecord(d))
+	}
+	next := int32(in.GetOffset()) + int32(len(items))
+	return mtproto.MakeTLMessagesFoundStickers(&mtproto.Messages_FoundStickers{NextOffset: wrapperspb.Int32(next), Hash: int64(len(items)), Stickers: items}).To_Messages_FoundStickers(), nil
 }
 
 func (c *ApiFullCore) StickersCreateStickerSet(in *mtproto.TLStickersCreateStickerSet) (*mtproto.Messages_StickerSet, error) {
-	_ = in
-	return nil, stickersProviderUnavailable(c)
+	if in == nil {
+		return nil, stickersProviderUnavailable(c)
+	}
+	uid, err := c.requireUserId()
+	if err != nil {
+		return nil, err
+	}
+	set, err := persist.CreateStickerSet(stickerRequestContext(c), uid, in.GetTitle(), in.GetShortName(), in.GetMasks(), in.GetEmojis(), in.GetTextColor(), in.GetAnimated(), in.GetVideos(), inputStickerDocs(in.GetStickers()))
+	if err != nil {
+		return nil, stickerProviderError(c, err)
+	}
+	return stickerSetFromRecord(set, 0), nil
 }
 
 func (c *ApiFullCore) StickersRemoveStickerFromSet(in *mtproto.TLStickersRemoveStickerFromSet) (*mtproto.Messages_StickerSet, error) {
-	_ = in
-	return nil, stickersProviderUnavailable(c)
+	if in == nil {
+		return nil, stickersProviderUnavailable(c)
+	}
+	uid, err := c.requireUserId()
+	if err != nil {
+		return nil, err
+	}
+	if in.GetSticker() == nil || in.GetSticker().GetId() == 0 {
+		return nil, mtproto.ErrStickerIdInvalid
+	}
+	set, err := persist.RemoveSticker(stickerRequestContext(c), uid, in.GetSticker().GetId())
+	if err != nil {
+		return nil, stickerProviderError(c, err)
+	}
+	return stickerSetFromRecord(set, 0), nil
 }
 
 func (c *ApiFullCore) StickersChangeStickerPosition(in *mtproto.TLStickersChangeStickerPosition) (*mtproto.Messages_StickerSet, error) {
-	_ = in
-	return nil, stickersProviderUnavailable(c)
+	if in == nil {
+		return nil, stickersProviderUnavailable(c)
+	}
+	uid, err := c.requireUserId()
+	if err != nil {
+		return nil, err
+	}
+	if in.GetSticker() == nil || in.GetSticker().GetId() == 0 {
+		return nil, mtproto.ErrStickerIdInvalid
+	}
+	set, err := persist.MoveSticker(stickerRequestContext(c), uid, in.GetSticker().GetId(), in.GetPosition())
+	if err != nil {
+		return nil, stickerProviderError(c, err)
+	}
+	return stickerSetFromRecord(set, 0), nil
 }
 
 func (c *ApiFullCore) StickersAddStickerToSet(in *mtproto.TLStickersAddStickerToSet) (*mtproto.Messages_StickerSet, error) {
-	_ = in
-	return nil, stickersProviderUnavailable(c)
+	if in == nil {
+		return nil, stickersProviderUnavailable(c)
+	}
+	uid, err := c.requireUserId()
+	if err != nil {
+		return nil, err
+	}
+	setID, short := stickerSetTokenID(in.GetStickerset())
+	set, err := persist.GetStickerSet(stickerRequestContext(c), uid, setID, short)
+	if err != nil {
+		return nil, stickerProviderError(c, err)
+	}
+	if set == nil {
+		return nil, mtproto.ErrStickersetInvalid
+	}
+	if err := validateStickerSetAccess(in.GetStickerset(), set); err != nil {
+		return nil, err
+	}
+	items := inputStickerDocs([]*mtproto.InputStickerSetItem{in.GetSticker()})
+	if len(items) == 0 {
+		return nil, mtproto.ErrStickersEmpty
+	}
+	updated, err := persist.AddSticker(stickerRequestContext(c), uid, set.ID, items[0])
+	if err != nil {
+		return nil, stickerProviderError(c, err)
+	}
+	return stickerSetFromRecord(updated, 0), nil
 }
 
 func (c *ApiFullCore) StickersSetStickerSetThumb(in *mtproto.TLStickersSetStickerSetThumb) (*mtproto.Messages_StickerSet, error) {
-	_ = in
-	return nil, stickersProviderUnavailable(c)
+	if in == nil {
+		return nil, stickersProviderUnavailable(c)
+	}
+	uid, err := c.requireUserId()
+	if err != nil {
+		return nil, err
+	}
+	setID, short := stickerSetTokenID(in.GetStickerset())
+	set, err := persist.GetStickerSet(stickerRequestContext(c), uid, setID, short)
+	if err != nil {
+		return nil, stickerProviderError(c, err)
+	}
+	if set == nil {
+		return nil, mtproto.ErrStickersetInvalid
+	}
+	if err := validateStickerSetAccess(in.GetStickerset(), set); err != nil {
+		return nil, err
+	}
+	documentID := inputDocumentID(in.GetThumb())
+	if in.GetThumbDocumentId() != nil {
+		documentID = in.GetThumbDocumentId().GetValue()
+	}
+	updated, err := persist.SetStickerSetThumb(stickerRequestContext(c), uid, set.ID, documentID)
+	if err != nil {
+		return nil, stickerProviderError(c, err)
+	}
+	return stickerSetFromRecord(updated, 0), nil
 }
 
 func (c *ApiFullCore) StickersCheckShortName(in *mtproto.TLStickersCheckShortName) (*mtproto.Bool, error) {
-	_ = in
-	return nil, stickersProviderUnavailable(c)
+	if in == nil {
+		return nil, stickersProviderUnavailable(c)
+	}
+	if _, err := c.requireUserId(); err != nil {
+		return nil, err
+	}
+	available, err := persist.StickerShortNameAvailable(stickerRequestContext(c), in.GetShortName())
+	if err != nil {
+		return nil, stickerProviderError(c, err)
+	}
+	if available {
+		return mtproto.BoolTrue, nil
+	}
+	return mtproto.BoolFalse, nil
 }
 
 func (c *ApiFullCore) StickersSuggestShortName(in *mtproto.TLStickersSuggestShortName) (*mtproto.Stickers_SuggestedShortName, error) {
-	_ = in
-	return nil, stickersProviderUnavailable(c)
+	if in == nil {
+		return nil, stickersProviderUnavailable(c)
+	}
+	if _, err := c.requireUserId(); err != nil {
+		return nil, err
+	}
+	short := strings.ToLower(strings.TrimSpace(in.GetTitle()))
+	short = strings.Map(func(r rune) rune {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '_' {
+			return r
+		}
+		return '_'
+	}, short)
+	short = strings.Trim(short, "_")
+	if short == "" {
+		short = "sticker_set"
+	}
+	return mtproto.MakeTLStickersSuggestedShortName(&mtproto.Stickers_SuggestedShortName{ShortName: short}).To_Stickers_SuggestedShortName(), nil
 }
 
 func (c *ApiFullCore) StickersChangeSticker(in *mtproto.TLStickersChangeSticker) (*mtproto.Messages_StickerSet, error) {
-	_ = in
-	return nil, stickersProviderUnavailable(c)
+	if in == nil {
+		return nil, stickersProviderUnavailable(c)
+	}
+	uid, err := c.requireUserId()
+	if err != nil {
+		return nil, err
+	}
+	if in.GetSticker() == nil || in.GetSticker().GetId() == 0 {
+		return nil, mtproto.ErrStickerIdInvalid
+	}
+	// Telegram exposes emoji/keywords edits on the existing document. The
+	// provider keeps the update transactional and returns the rebuilt set.
+	emoji, keywords := "", ""
+	if in.GetEmoji() != nil {
+		emoji = in.GetEmoji().GetValue()
+	}
+	if in.GetKeywords() != nil {
+		keywords = in.GetKeywords().GetValue()
+	}
+	set, err := persist.ChangeSticker(stickerRequestContext(c), uid, in.GetSticker().GetId(), emoji, keywords)
+	if err != nil {
+		return nil, stickerProviderError(c, err)
+	}
+	return stickerSetFromRecord(set, 0), nil
 }
 
 func (c *ApiFullCore) StickersRenameStickerSet(in *mtproto.TLStickersRenameStickerSet) (*mtproto.Messages_StickerSet, error) {
-	_ = in
-	return nil, stickersProviderUnavailable(c)
+	if in == nil {
+		return nil, stickersProviderUnavailable(c)
+	}
+	uid, err := c.requireUserId()
+	if err != nil {
+		return nil, err
+	}
+	setID, short := stickerSetTokenID(in.GetStickerset())
+	set, err := persist.GetStickerSet(stickerRequestContext(c), uid, setID, short)
+	if err != nil {
+		return nil, stickerProviderError(c, err)
+	}
+	if set == nil {
+		return nil, mtproto.ErrStickersetInvalid
+	}
+	if err := validateStickerSetAccess(in.GetStickerset(), set); err != nil {
+		return nil, err
+	}
+	updated, err := persist.UpdateStickerSetTitle(stickerRequestContext(c), uid, set.ID, in.GetTitle())
+	if err != nil {
+		return nil, stickerProviderError(c, err)
+	}
+	return stickerSetFromRecord(updated, 0), nil
 }
 
 func (c *ApiFullCore) StickersDeleteStickerSet(in *mtproto.TLStickersDeleteStickerSet) (*mtproto.Bool, error) {
-	_ = in
-	return nil, stickersProviderUnavailable(c)
+	if in == nil {
+		return nil, stickersProviderUnavailable(c)
+	}
+	uid, err := c.requireUserId()
+	if err != nil {
+		return nil, err
+	}
+	setID, short := stickerSetTokenID(in.GetStickerset())
+	set, err := persist.GetStickerSet(stickerRequestContext(c), uid, setID, short)
+	if err != nil {
+		return nil, stickerProviderError(c, err)
+	}
+	if set == nil {
+		return nil, mtproto.ErrStickersetInvalid
+	}
+	if err := validateStickerSetAccess(in.GetStickerset(), set); err != nil {
+		return nil, err
+	}
+	if err = persist.DeleteStickerSet(stickerRequestContext(c), uid, set.ID); err != nil {
+		return nil, stickerProviderError(c, err)
+	}
+	return mtproto.BoolTrue, nil
 }
 
 func (c *ApiFullCore) StickersReplaceSticker(in *mtproto.TLStickersReplaceSticker) (*mtproto.Messages_StickerSet, error) {
-	_ = in
-	return nil, stickersProviderUnavailable(c)
+	if in == nil {
+		return nil, stickersProviderUnavailable(c)
+	}
+	uid, err := c.requireUserId()
+	if err != nil {
+		return nil, err
+	}
+	if in.GetSticker() == nil || in.GetSticker().GetId() == 0 || in.GetNewSticker() == nil {
+		return nil, mtproto.ErrStickerIdInvalid
+	}
+	items := inputStickerDocs([]*mtproto.InputStickerSetItem{in.GetNewSticker()})
+	if len(items) == 0 {
+		return nil, mtproto.ErrStickersEmpty
+	}
+	set, err := persist.ReplaceSticker(stickerRequestContext(c), uid, in.GetSticker().GetId(), items[0])
+	if err != nil {
+		return nil, stickerProviderError(c, err)
+	}
+	return stickerSetFromRecord(set, 0), nil
 }
 
 type storedStickerDoc struct {

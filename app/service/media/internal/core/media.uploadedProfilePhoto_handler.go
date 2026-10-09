@@ -43,18 +43,18 @@ func (c *MediaCore) MediaUploadedProfilePhoto(in *media.TLMediaUploadedProfilePh
 	if photo == nil {
 		return nil, mtproto.ErrInternalServerError
 	}
-
-	if err = c.svcCtx.Dao.SavePhotoSizeV2(c.ctx, photo.GetId(), photo.GetSizes()); err != nil {
-		c.Logger.Error("media.uploadedProfilePhoto - error: %v", err.Error())
-		return nil, err
+	if photo.GetId() <= 0 {
+		return nil, mtproto.ErrInternalServerError
 	}
 
-	if err = c.svcCtx.SavePhotoV2(c.ctx,
+	if err = c.svcCtx.Dao.SavePhotoAggregateV2(c.ctx,
 		photo.GetId(),
 		photo.GetAccessHash(),
 		photo.GetHasStickers(),
 		false,
-		fmt.Sprintf("0/%d.jpeg", in.GetPhotoId())); err != nil {
+		fmt.Sprintf("0/%d.jpeg", in.GetPhotoId()),
+		photo.GetSizes(),
+		nil); err != nil {
 		c.Logger.Errorf("media.uploadedProfilePhoto - save photo: %v", err)
 		return nil, err
 	}

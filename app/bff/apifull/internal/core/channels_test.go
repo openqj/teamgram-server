@@ -407,9 +407,13 @@ func TestChannelSettingsRoundTrip(t *testing.T) {
 	if err != nil || updated == nil || len(updated.GetChats()) != 1 {
 		t.Fatalf("toggle antispam: result=%+v err=%v", updated, err)
 	}
+	updated, err = c.ChannelsToggleAutotranslation(&mtproto.TLChannelsToggleAutotranslation{Channel: input, Enabled: mtproto.BoolTrue})
+	if err != nil || updated == nil || len(updated.GetChats()) != 1 || !updated.GetChats()[0].GetAutotranslation() {
+		t.Fatalf("toggle autotranslation: result=%+v err=%v", updated, err)
+	}
 
 	loaded, ok, err := domain.LoadChannel(channelID)
-	if err != nil || !ok || !loaded.Signatures || !loaded.SignatureProfiles || !loaded.HiddenPrehistory || !loaded.ParticipantsHidden || !loaded.Antispam || loaded.SlowmodeSeconds != 30 {
+	if err != nil || !ok || !loaded.Signatures || !loaded.SignatureProfiles || !loaded.HiddenPrehistory || !loaded.ParticipantsHidden || !loaded.Antispam || !loaded.Autotranslation || loaded.SlowmodeSeconds != 30 {
 		t.Fatalf("stored channel settings: channel=%+v ok=%v err=%v", loaded, ok, err)
 	}
 	if _, err = channelview.Post(owner, channelID, "anti-spam false positive", 0); err != nil {
@@ -423,7 +427,7 @@ func TestChannelSettingsRoundTrip(t *testing.T) {
 		t.Fatalf("report unknown anti-spam message: %v", err)
 	}
 	chats, err := c.ChannelsGetChannels(&mtproto.TLChannelsGetChannels{Id: []*mtproto.InputChannel{input}})
-	if err != nil || chats == nil || len(chats.GetChats()) != 1 || !chats.GetChats()[0].GetSignatures() || !chats.GetChats()[0].GetSignatureProfiles() {
+	if err != nil || chats == nil || len(chats.GetChats()) != 1 || !chats.GetChats()[0].GetSignatures() || !chats.GetChats()[0].GetSignatureProfiles() || !chats.GetChats()[0].GetAutotranslation() {
 		t.Fatalf("get channels settings: result=%+v err=%v", chats, err)
 	}
 	full, err := c.ChannelsGetFullChannel(&mtproto.TLChannelsGetFullChannel{Channel: input})

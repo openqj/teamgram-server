@@ -19,7 +19,9 @@
 package server
 
 import (
+	"errors"
 	"flag"
+	"strings"
 
 	"github.com/teamgram/teamgram-server/app/bff/authorization/internal/config"
 	"github.com/teamgram/teamgram-server/app/bff/authorization/internal/server/grpc"
@@ -42,9 +44,12 @@ func New() *Server {
 
 func (s *Server) Initialize() error {
 	var c config.Config
-	conf.MustLoad(*configFile, &c)
+	conf.MustLoad(*configFile, &c, conf.UseEnv())
+	if strings.TrimSpace(c.PostgresDSN) == "" {
+		return errors.New("authorization: PostgresDSN is required")
+	}
 
-	logx.Infov(c)
+	logx.Infof("authorization config loaded")
 	ctx := svc.NewServiceContext(c, nil, nil)
 	s.grpcSrv = grpc.New(ctx, c.RpcServerConf)
 

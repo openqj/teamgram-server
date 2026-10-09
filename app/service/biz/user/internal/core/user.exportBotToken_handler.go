@@ -15,7 +15,7 @@ func (c *UserCore) UserExportBotToken(in *user.TLUserExportBotToken) (*mtproto.S
 	if c.svcCtx == nil || c.svcCtx.Dao == nil {
 		return nil, mtproto.ErrMethodNotImpl
 	}
-	botUser, err := c.svcCtx.Dao.UsersDAO.SelectById(c.ctx, in.GetBotId())
+	botUser, err := c.svcCtx.Dao.SelectUserByID(c.ctx, in.GetBotId())
 	if err != nil {
 		return nil, err
 	}

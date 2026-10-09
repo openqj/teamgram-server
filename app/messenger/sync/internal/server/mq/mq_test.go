@@ -6,13 +6,10 @@ import (
 	"testing"
 
 	"github.com/teamgram/teamgram-server/app/messenger/sync/sync"
-	"github.com/zeromicro/go-zero/core/logx/logtest"
 	"google.golang.org/protobuf/proto"
 )
 
 func TestHandleMessageDispatchesPushVariants(t *testing.T) {
-	collector := logtest.NewCollector(t)
-
 	cases := []struct {
 		name   string
 		method string
@@ -32,12 +29,24 @@ func TestHandleMessageDispatchesPushVariants(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			collector.Reset()
-			if !handlePushVariant(context.Background(), nil, tc.method, []byte(tc.value)) {
-				t.Fatalf("message was not handled")
+			err := handleMessage(context.Background(), nil, tc.method, "1", []byte(tc.value))
+			if err == nil || strings.Contains(err.Error(), "invalid Kafka method") {
+				t.Fatalf("message was not handled or its error was swallowed: %v", err)
 			}
-			if strings.Contains(collector.String(), "invalid key") {
-				t.Fatalf("message was routed to the invalid-key handler: %s", collector.String())
+		})
+	}
+}
+
+func TestHandleMessageRejectsMalformedRequests(t *testing.T) {
+	for _, request := range []proto.Message{
+		&sync.TLSyncUpdatesMe{}, &sync.TLSyncUpdatesNotMe{}, &sync.TLSyncPushUpdates{},
+		&sync.TLSyncPushUpdatesIfNot{}, &sync.TLSyncPushBotUpdates{}, &sync.TLSyncPushRpcResult{}, &sync.TLSyncBroadcastUpdates{},
+	} {
+		t.Run(string(proto.MessageName(request)), func(t *testing.T) {
+			for _, value := range []string{"null", "{}", "{"} {
+				if err := handleMessage(context.Background(), nil, string(proto.MessageName(request)), "1", []byte(value)); err == nil {
+					t.Fatalf("invalid request %q returned success", value)
+				}
 			}
 		})
 	}

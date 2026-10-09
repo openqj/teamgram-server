@@ -39,7 +39,7 @@ func (c *UserCore) UserSetBotInfo(in *user.BotRegistrySetBotInfoRequest) (*mtpro
 		return nil, err
 	}
 	defer func() { _ = tx.Rollback(c.ctx) }()
-	bot, err := c.svcCtx.Dao.Postgres.Store.Bots.Select(c.ctx, in.GetBotId())
+	bot, err := c.svcCtx.Dao.Postgres.Store.Bots.SelectForUpdateTx(c.ctx, tx, in.GetBotId())
 	if err != nil {
 		return nil, err
 	}

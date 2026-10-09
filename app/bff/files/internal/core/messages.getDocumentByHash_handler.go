@@ -22,10 +22,11 @@ import (
 	"crypto/sha256"
 
 	"github.com/teamgram/proto/mtproto"
+	"github.com/teamgram/teamgram-server/app/service/media/media/hashrpc"
 )
 
 // MessagesGetDocumentByHash
-// messages.getDocumentByHash#338e2464 sha256:bytes size:int mime_type:string = Document;
+// messages.getDocumentByHash#b1f2061f sha256:bytes size:long mime_type:string = Document;
 func (c *FilesCore) MessagesGetDocumentByHash(in *mtproto.TLMessagesGetDocumentByHash) (*mtproto.Document, error) {
 	if in == nil {
 		return nil, mtproto.ErrInputRequestInvalid
@@ -41,11 +42,22 @@ func (c *FilesCore) MessagesGetDocumentByHash(in *mtproto.TLMessagesGetDocumentB
 		return nil, mtproto.ErrDocumentInvalid
 	}
 
-	// MediaGetDocument (messages.uploadMedia) is keyed by document id. The
-	// media and DFS services expose no authoritative sha256 lookup, so fail
-	// closed instead of returning documentEmpty as a successful response.
-	if c != nil && c.Logger != nil {
-		c.Logger.Errorf("messages.getDocumentByHash - hash lookup provider unavailable")
+	if c == nil || c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.MediaClient == nil {
+		if c != nil && c.Logger != nil {
+			c.Logger.Errorf("messages.getDocumentByHash - media provider unavailable")
+		}
+		return nil, mtproto.ErrMethodNotImpl
 	}
-	return nil, mtproto.ErrMethodNotImpl
+	document, err := c.svcCtx.Dao.MediaClient.MediaGetDocumentByHash(c.ctx, &hashrpc.DocumentHashRequest{
+		Sha256:   in.GetSha256(),
+		Size:     size,
+		MimeType: in.GetMimeType(),
+	})
+	if err != nil {
+		return nil, err
+	}
+	if document == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
+	return document, nil
 }

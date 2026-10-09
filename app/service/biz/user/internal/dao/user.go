@@ -44,7 +44,7 @@ func (d *Dao) getBotData(ctx context.Context, botId int64) (*mtproto.BotData, bo
 		botData *mtproto.BotData
 	)
 
-	botDO, err := d.BotsDAO.Select(ctx, botId)
+	botDO, err := d.SelectBot(ctx, botId)
 	if err != nil {
 		return nil, false, 0, err
 	}
@@ -100,6 +100,13 @@ func (d *Dao) CreateNewUserV2(
 		CountryCode:    countryCode,
 		AccountDaysTtl: 548,
 	}
+	if d.Postgres != nil {
+		if err := d.pgCreateNewUser(ctx, userDO, now, 300); err != nil {
+			return nil, err
+		}
+		cacheUserData.UserData = d.MakeUserDataByDO(userDO)
+		return mtproto.MakeTLImmutableUser(&mtproto.ImmutableUser{User: cacheUserData.UserData, LastSeenAt: now}).To_ImmutableUser(), nil
+	}
 	if lastInsertId, _, err2 := d.UsersDAO.Insert(ctx, userDO); err2 != nil {
 		if sqlx.IsDuplicate(err2) {
 			err2 = mtproto.ErrPhoneNumberOccupied
@@ -131,7 +138,7 @@ func (d *Dao) CreateNewUserV2(
 	d.CachedConn.SetCache(ctx, genCacheUserDataCacheKey(userDO.Id), cacheUserData)
 
 	// 2. PutLastSeenAt
-	d.PutLastSeenAt(ctx, userDO.Id, now, 300)
+	_ = d.PutLastSeenAt(ctx, userDO.Id, now, 300)
 
 	return mtproto.MakeTLImmutableUser(&mtproto.ImmutableUser{
 		User:             cacheUserData.UserData,
@@ -141,7 +148,11 @@ func (d *Dao) CreateNewUserV2(
 	}).To_ImmutableUser(), nil
 }
 
-func (d *Dao) UpdateUserFirstAndLastName(ctx context.Context, id int64, firstName, lastName string) bool {
+func (d *Dao) UpdateUserFirstAndLastName(ctx context.Context, id int64, firstName, lastName string) error {
+	if d.Postgres != nil {
+		_, err := d.UpdateUserFields(ctx, id, map[string]any{"first_name": firstName, "last_name": lastName})
+		return err
+	}
 	_, _, err := d.CachedConn.Exec(
 		ctx,
 		func(ctx context.Context, conn *sqlx.DB) (int64, int64, error) {
@@ -159,13 +170,16 @@ func (d *Dao) UpdateUserFirstAndLastName(ctx context.Context, id int64, firstNam
 		genCacheUserDataCacheKey(id))
 	if err != nil {
 		logx.WithContext(ctx).Errorf("updateUserFirstAndLastName - error: %v", err)
-		return false
 	}
 
-	return true
+	return err
 }
 
-func (d *Dao) UpdateUserAbout(ctx context.Context, id int64, about string) bool {
+func (d *Dao) UpdateUserAbout(ctx context.Context, id int64, about string) error {
+	if d.Postgres != nil {
+		_, err := d.UpdateUserFields(ctx, id, map[string]any{"about": about})
+		return err
+	}
 	_, _, err := d.CachedConn.Exec(
 		ctx,
 		func(ctx context.Context, conn *sqlx.DB) (int64, int64, error) {
@@ -182,13 +196,15 @@ func (d *Dao) UpdateUserAbout(ctx context.Context, id int64, about string) bool 
 		genCacheUserDataCacheKey(id))
 	if err != nil {
 		logx.WithContext(ctx).Errorf("updateUserAbout - error: %v", err)
-		return false
 	}
 
-	return true
+	return err
 }
 
 func (d *Dao) UpdateUserUsername(ctx context.Context, id int64, username string) error {
+	if d.Postgres != nil {
+		return d.pgUpdateUsername(ctx, id, username)
+	}
 	_, _, err := d.CachedConn.Exec(
 		ctx,
 		func(ctx context.Context, conn *sqlx.DB) (int64, int64, error) {
@@ -287,6 +303,9 @@ func (d *Dao) UpdateUserUsername(ctx context.Context, id int64, username string)
 //}
 
 func (d *Dao) UpdateProfilePhoto(ctx context.Context, userId, photoId int64) (int64, error) {
+	if d.Postgres != nil {
+		return d.pgUpdateProfilePhoto(ctx, userId, photoId)
+	}
 	var mainPhotoId int64
 	_, _, err := d.CachedConn.Exec(
 		ctx,
@@ -344,6 +363,9 @@ func (d *Dao) UpdateProfilePhoto(ctx context.Context, userId, photoId int64) (in
 }
 
 func (d *Dao) DeleteProfilePhotos(ctx context.Context, userId int64, photoIds []int64) (int64, error) {
+	if d.Postgres != nil {
+		return d.pgDeleteProfilePhotos(ctx, userId, photoIds)
+	}
 	var mainPhotoId int64
 	_, _, err := d.CachedConn.Exec(
 		ctx,
@@ -420,12 +442,19 @@ func (d *Dao) GetImmutableUser(ctx context.Context, id int64, privacy bool, cont
 		userData.UserType == user.UserTypeBot ||
 		userData.UserType == user.UserTypeDeleted {
 		// not need load
+		if privacy && userData.UserType == user.UserTypeBot {
+			if err := d.prepareUserPrivacy(ctx, []*mtproto.ImmutableUser{immutableUser}, map[int64][]int64{id: contacts}); err != nil {
+				return nil, err
+			}
+		}
 		return immutableUser, nil
 	}
 
+	var presenceErr, contactsErr error
 	mr.FinishVoid(
 		func() {
-			lastSeenAt, _ := d.GetLastSeenAt(ctx, id)
+			var lastSeenAt *dataobject.UserPresencesDO
+			lastSeenAt, presenceErr = d.GetLastSeenAt(ctx, id)
 			if lastSeenAt != nil {
 				immutableUser.LastSeenAt = lastSeenAt.LastSeenAt
 			}
@@ -449,8 +478,14 @@ func (d *Dao) GetImmutableUser(ctx context.Context, id int64, privacy bool, cont
 				return
 			}
 
-			immutableUser.Contacts = d.getContactListByIdList(ctx, id, idList2)
+			immutableUser.Contacts, contactsErr = d.getContactListByIdList(ctx, id, idList2)
 		})
+	if presenceErr != nil && !errors.Is(presenceErr, sqlc.ErrNotFound) {
+		return nil, presenceErr
+	}
+	if contactsErr != nil {
+		return nil, contactsErr
+	}
 	//func() {
 	//	if privacy {
 	//		immutableUser.KeysPrivacyRules = c.svcCtx.Dao.GetUserPrivacyRulesListByKeys(
@@ -463,12 +498,19 @@ func (d *Dao) GetImmutableUser(ctx context.Context, id int64, privacy bool, cont
 	//})
 	if privacy {
 		immutableUser.KeysPrivacyRules = cacheUserData.CachesPrivacyKeyRules
+		if err := d.prepareUserPrivacy(ctx, []*mtproto.ImmutableUser{immutableUser}, map[int64][]int64{id: contacts}); err != nil {
+			return nil, err
+		}
 	}
 
 	return immutableUser, nil
 }
 
-func (d *Dao) UpdateUserEmojiStatus(ctx context.Context, id int64, emojiStatusDocumentId int64, emojiStatusUntil int32) bool {
+func (d *Dao) UpdateUserEmojiStatus(ctx context.Context, id int64, emojiStatusDocumentId int64, emojiStatusUntil int32) error {
+	if d.Postgres != nil {
+		_, err := d.UpdateUserFields(ctx, id, map[string]any{"emoji_status_document_id": emojiStatusDocumentId, "emoji_status_until": emojiStatusUntil})
+		return err
+	}
 	_, _, err := d.CachedConn.Exec(
 		ctx,
 		func(ctx context.Context, conn *sqlx.DB) (int64, int64, error) {
@@ -487,10 +529,9 @@ func (d *Dao) UpdateUserEmojiStatus(ctx context.Context, id int64, emojiStatusDo
 		genCacheUserDataCacheKey(id))
 	if err != nil {
 		logx.WithContext(ctx).Errorf("updateUserEmojiStatus - error: %v", err)
-		return false
 	}
 
-	return true
+	return err
 }
 
 // DeleteUser marks the account deleted and removes all user-owned data kept by
@@ -499,6 +540,12 @@ func (d *Dao) UpdateUserEmojiStatus(ctx context.Context, id int64, emojiStatusDo
 func (d *Dao) DeleteUser(ctx context.Context, id int64, phoneNumber string, reason string) (bool, error) {
 	if id <= 0 {
 		return false, mtproto.ErrUserIdInvalid
+	}
+	if d.Postgres != nil {
+		if err := d.pgDeleteUser(ctx, id, phoneNumber, reason); err != nil {
+			return false, err
+		}
+		return true, nil
 	}
 
 	result := sqlx.TxWrapper(ctx, d.DB, func(tx *sqlx.Tx, result *sqlx.StoreResult) {
@@ -636,7 +683,11 @@ func (d *Dao) GetCacheImmutableUserList(ctx context.Context, idList2 []int64, co
 	return mUsers
 }
 
-func (d *Dao) UpdateStoriesMaxId(ctx context.Context, id int64, maxId int32) bool {
+func (d *Dao) UpdateStoriesMaxId(ctx context.Context, id int64, maxId int32) error {
+	if d.Postgres != nil {
+		_, err := d.UpdateUserFields(ctx, id, map[string]any{"stories_max_id": maxId})
+		return err
+	}
 	_, _, err := d.CachedConn.Exec(
 		ctx,
 		func(ctx context.Context, conn *sqlx.DB) (int64, int64, error) {
@@ -651,13 +702,22 @@ func (d *Dao) UpdateStoriesMaxId(ctx context.Context, id int64, maxId int32) boo
 		genCacheUserDataCacheKey(id))
 	if err != nil {
 		logx.WithContext(ctx).Errorf("updateStoriesMaxId - error: %v", err)
-		return false
 	}
 
-	return true
+	return err
 }
 
-func (d *Dao) UpdateColor(ctx context.Context, id int64, forProfile bool, color int32, backgroundEmojiId int64) bool {
+func (d *Dao) UpdateColor(ctx context.Context, id int64, forProfile bool, color int32, backgroundEmojiId int64) error {
+	if d.Postgres != nil {
+		field := "color"
+		background := "color_background_emoji_id"
+		if forProfile {
+			field = "profile_color"
+			background = "profile_color_background_emoji_id"
+		}
+		_, err := d.UpdateUserFields(ctx, id, map[string]any{field: color, background: backgroundEmojiId})
+		return err
+	}
 	_, _, err := d.CachedConn.Exec(
 		ctx,
 		func(ctx context.Context, conn *sqlx.DB) (int64, int64, error) {
@@ -681,13 +741,16 @@ func (d *Dao) UpdateColor(ctx context.Context, id int64, forProfile bool, color 
 		genCacheUserDataCacheKey(id))
 	if err != nil {
 		logx.WithContext(ctx).Errorf("updateColor - error: %v", err)
-		return false
 	}
 
-	return true
+	return err
 }
 
-func (d *Dao) UpdateBirthday(ctx context.Context, id int64, birthday *mtproto.Birthday) bool {
+func (d *Dao) UpdateBirthday(ctx context.Context, id int64, birthday *mtproto.Birthday) error {
+	if d.Postgres != nil {
+		_, err := d.UpdateUserFields(ctx, id, map[string]any{"birthday": birthday.ToBirthdayString()})
+		return err
+	}
 	_, _, err := d.CachedConn.Exec(
 		ctx,
 		func(ctx context.Context, conn *sqlx.DB) (int64, int64, error) {
@@ -707,13 +770,12 @@ func (d *Dao) UpdateBirthday(ctx context.Context, id int64, birthday *mtproto.Bi
 		genCacheUserDataCacheKey(id))
 	if err != nil {
 		logx.WithContext(ctx).Errorf("updateBirthday - error: %v", err)
-		return false
 	}
 
-	return true
+	return err
 }
 
-func (d *Dao) GetCacheImmutableUserListV2(ctx context.Context, idList2 []int64, contacts []int64) []*mtproto.ImmutableUser {
+func (d *Dao) GetCacheImmutableUserListV2(ctx context.Context, idList2 []int64, contacts []int64) ([]*mtproto.ImmutableUser, error) {
 	logger := logx.WithContext(ctx)
 
 	logger.Infof("getCacheImmutableUserList - request: {id: %v, contacts: %v}", idList2, contacts)
@@ -731,23 +793,29 @@ func (d *Dao) GetCacheImmutableUserListV2(ctx context.Context, idList2 []int64, 
 	}
 
 	if len(id2) == 0 {
-		return []*mtproto.ImmutableUser{}
+		return []*mtproto.ImmutableUser{}, nil
 	}
 
 	if len(id2) == 1 {
-		immutableUser, _ := d.GetImmutableUser(ctx, id2[0], false)
+		immutableUser, err := d.GetImmutableUser(ctx, id2[0], true, contacts...)
+		if err != nil && !errors.Is(err, mtproto.ErrUserIdInvalid) {
+			return nil, err
+		}
 		if immutableUser != nil {
-			return []*mtproto.ImmutableUser{immutableUser}
+			return []*mtproto.ImmutableUser{immutableUser}, nil
 		} else {
-			return []*mtproto.ImmutableUser{}
+			return []*mtproto.ImmutableUser{}, nil
 		}
 	}
 
 	// len(id) > 1
 
-	cDataList := d.GetCacheUserDataListByIdList(ctx, id2)
+	cDataList, err := d.GetCacheUserDataListByIdList(ctx, id2)
+	if err != nil {
+		return nil, err
+	}
 	if len(cDataList) == 0 {
-		return []*mtproto.ImmutableUser{}
+		return []*mtproto.ImmutableUser{}, nil
 	}
 
 	var (
@@ -808,8 +876,47 @@ func (d *Dao) GetCacheImmutableUserListV2(ctx context.Context, idList2 []int64, 
 		}
 	}
 	logger.Infof("getCacheImmutableUserList - cDataList: %d", len(cDataList))
+	if d.Postgres != nil {
+		for _, cData := range cDataList {
+			id := cData.GetUserData().GetId()
+			cUser, ok := mUsers[id]
+			if !ok {
+				continue
+			}
+			presence, err := d.GetLastSeenAt(ctx, id)
+			if err != nil {
+				return nil, err
+			}
+			if presence != nil {
+				cUser.LastSeenAt = presence.LastSeenAt
+			}
+			myContacts := contacts
+			if len(myContacts) == 0 || container2.ContainsInt64(contacts, id) {
+				myContacts = idList2
+			}
+			list, err := d.Postgres.Store.Contacts.SelectListByIdList(ctx, id, myContacts)
+			if err != nil {
+				return nil, err
+			}
+			for _, contact := range list {
+				cUser.Contacts = append(cUser.Contacts, mtproto.MakeTLContactData(&mtproto.ContactData{UserId: contact.OwnerUserId, ContactUserId: contact.ContactUserId, FirstName: mtproto.MakeFlagsString(contact.ContactFirstName), LastName: mtproto.MakeFlagsString(contact.ContactLastName), MutualContact: contact.Mutual, Phone: mtproto.MakeFlagsString(contact.ContactPhone), CloseFriend: contact.CloseFriend}).To_ContactData())
+			}
+		}
+		viewers := make(map[int64][]int64, len(cUserList))
+		for _, entry := range cUserList {
+			if len(contacts) == 0 || container2.ContainsInt64(contacts, entry.Id()) {
+				viewers[entry.Id()] = idList2
+			} else {
+				viewers[entry.Id()] = contacts
+			}
+		}
+		if err := d.prepareUserPrivacy(ctx, cUserList, viewers); err != nil {
+			return nil, err
+		}
+		return cUserList, nil
+	}
 
-	_ = d.CachedConn.QueryRows(
+	err = d.CachedConn.QueryRows(
 		ctx,
 		func(ctx context.Context, conn *sqlx.DB, keys ...string) (map[string]interface{}, error) {
 			noCaches := make(map[string]interface{}, len(keys))
@@ -897,11 +1004,17 @@ func (d *Dao) GetCacheImmutableUserListV2(ctx context.Context, idList2 []int64, 
 
 	logger.Infof("getCacheImmutableUserList - cUserList: %d", len(cUserList))
 
-	return cUserList
+	return cUserList, err
 }
 
 func (d *Dao) GetImmutableUserV2(ctx context.Context, id int64, privacy bool, hasReverseContacts bool, reverseContacts []int64) (*mtproto.ImmutableUser, error) {
-	cacheUserData := d.GetCacheUserData(ctx, id)
+	cacheUserData, err := d.GetCacheUserDataWithError(ctx, id)
+	if errors.Is(err, sqlc.ErrNotFound) {
+		return nil, mtproto.ErrUserIdInvalid
+	}
+	if err != nil {
+		return nil, err
+	}
 
 	if cacheUserData == nil {
 		err := mtproto.ErrUserIdInvalid
@@ -924,6 +1037,11 @@ func (d *Dao) GetImmutableUserV2(ctx context.Context, id int64, privacy bool, ha
 		userData.UserType == user.UserTypeBot ||
 		userData.UserType == user.UserTypeDeleted {
 		// not load these data
+		if privacy && userData.UserType == user.UserTypeBot {
+			if err := d.prepareUserPrivacy(ctx, []*mtproto.ImmutableUser{immutableUser}, map[int64][]int64{id: reverseContacts}); err != nil {
+				return nil, err
+			}
+		}
 		return immutableUser, nil
 	}
 
@@ -943,9 +1061,11 @@ func (d *Dao) GetImmutableUserV2(ctx context.Context, id int64, privacy bool, ha
 		}
 	}
 
+	var presenceErr, contactsErr error
 	fns := []func(){
 		func() {
-			lastSeenAt, _ := d.GetLastSeenAt(ctx, id)
+			var lastSeenAt *dataobject.UserPresencesDO
+			lastSeenAt, presenceErr = d.GetLastSeenAt(ctx, id)
 			if lastSeenAt != nil {
 				immutableUser.LastSeenAt = lastSeenAt.LastSeenAt
 			}
@@ -956,7 +1076,7 @@ func (d *Dao) GetImmutableUserV2(ctx context.Context, id int64, privacy bool, ha
 		fns = append(
 			fns,
 			func() {
-				immutableUser.ReverseContacts = d.getReverseContactListByIdList(ctx, id, rIdList)
+				immutableUser.ReverseContacts, contactsErr = d.getReverseContactListByIdList(ctx, id, rIdList)
 			})
 
 	}
@@ -966,31 +1086,50 @@ func (d *Dao) GetImmutableUserV2(ctx context.Context, id int64, privacy bool, ha
 	} else {
 		mr.FinishVoid(fns...)
 	}
+	if presenceErr != nil && !errors.Is(presenceErr, sqlc.ErrNotFound) {
+		return nil, presenceErr
+	}
+	if contactsErr != nil {
+		return nil, contactsErr
+	}
 
 	if privacy {
 		immutableUser.KeysPrivacyRules = cacheUserData.CachesPrivacyKeyRules
+		viewers := reverseContacts
+		if len(viewers) == 0 && hasReverseContacts {
+			viewers = rIdList
+		}
+		if err := d.prepareUserPrivacy(ctx, []*mtproto.ImmutableUser{immutableUser}, map[int64][]int64{id: viewers}); err != nil {
+			return nil, err
+		}
 	}
 
 	return immutableUser, nil
 }
 
-func (d *Dao) GetMutableUsersV2(ctx context.Context, idList2 []int64, privacy bool, hasTo bool, to []int64) []*mtproto.ImmutableUser {
+func (d *Dao) GetMutableUsersV2(ctx context.Context, idList2 []int64, privacy bool, hasTo bool, to []int64) ([]*mtproto.ImmutableUser, error) {
 	if len(idList2) == 0 {
-		return []*mtproto.ImmutableUser{}
+		return []*mtproto.ImmutableUser{}, nil
 	}
 
 	if len(idList2) == 1 {
-		immutableUser, _ := d.GetImmutableUserV2(ctx, idList2[0], privacy, hasTo, to)
+		immutableUser, err := d.GetImmutableUserV2(ctx, idList2[0], privacy, hasTo, to)
+		if err != nil && !errors.Is(err, mtproto.ErrUserIdInvalid) {
+			return nil, err
+		}
 		if immutableUser != nil {
-			return []*mtproto.ImmutableUser{immutableUser}
+			return []*mtproto.ImmutableUser{immutableUser}, nil
 		} else {
-			return []*mtproto.ImmutableUser{}
+			return []*mtproto.ImmutableUser{}, nil
 		}
 	}
 
-	cDataList := d.GetCacheUserDataListByIdList(ctx, idList2)
+	cDataList, err := d.GetCacheUserDataListByIdList(ctx, idList2)
+	if err != nil {
+		return nil, err
+	}
 	if len(cDataList) == 0 {
-		return []*mtproto.ImmutableUser{}
+		return []*mtproto.ImmutableUser{}, nil
 	}
 
 	var (
@@ -1050,8 +1189,63 @@ func (d *Dao) GetMutableUsersV2(ctx context.Context, idList2 []int64, privacy bo
 			keyList = append(keyList, genContactCacheKey(v, id))
 		}
 	}
+	if d.Postgres != nil {
+		for _, cData := range cDataList {
+			id := cData.GetUserData().GetId()
+			cUser, ok := mUsers[id]
+			if !ok {
+				continue
+			}
+			presence, err := d.GetLastSeenAt(ctx, id)
+			if err != nil {
+				return nil, err
+			}
+			if presence != nil {
+				cUser.LastSeenAt = presence.LastSeenAt
+			}
+			if !hasTo || len(cData.ReverseContactIdList) == 0 {
+				continue
+			}
+			owners := cData.ReverseContactIdList
+			if len(to) > 0 {
+				owners = make([]int64, 0, len(to))
+				for _, owner := range to {
+					if container2.ContainsInt64(cData.ReverseContactIdList, owner) {
+						owners = append(owners, owner)
+					}
+				}
+			}
+			list, err := d.Postgres.Store.Contacts.SelectReverseListByIdList(ctx, id, owners)
+			if err != nil {
+				return nil, err
+			}
+			for _, contact := range list {
+				cUser.ReverseContacts = append(cUser.ReverseContacts, mtproto.MakeTLContactData(&mtproto.ContactData{UserId: contact.OwnerUserId, ContactUserId: contact.ContactUserId, FirstName: mtproto.MakeFlagsString(contact.ContactFirstName), LastName: mtproto.MakeFlagsString(contact.ContactLastName), MutualContact: contact.Mutual, Phone: mtproto.MakeFlagsString(contact.ContactPhone), CloseFriend: contact.CloseFriend}).To_ContactData())
+			}
+		}
+		if privacy {
+			viewers := make(map[int64][]int64, len(cUserList))
+			for _, entry := range cUserList {
+				if len(to) == 0 || container2.ContainsInt64(to, entry.Id()) {
+					viewers[entry.Id()] = idList2
+				} else {
+					viewers[entry.Id()] = to
+				}
+				if hasTo && len(to) == 0 {
+					viewers[entry.Id()] = append([]int64{}, viewers[entry.Id()]...)
+					for _, contact := range entry.GetReverseContacts() {
+						viewers[entry.Id()] = append(viewers[entry.Id()], contact.GetUserId())
+					}
+				}
+			}
+			if err := d.prepareUserPrivacy(ctx, cUserList, viewers); err != nil {
+				return nil, err
+			}
+		}
+		return cUserList, nil
+	}
 
-	_ = d.CachedConn.QueryRows(
+	err = d.CachedConn.QueryRows(
 		ctx,
 		func(ctx context.Context, conn *sqlx.DB, keys ...string) (map[string]interface{}, error) {
 			noCaches := make(map[string]interface{}, len(keys))
@@ -1136,10 +1330,14 @@ func (d *Dao) GetMutableUsersV2(ctx context.Context, idList2 []int64, privacy bo
 		},
 		keyList...)
 
-	return cUserList
+	return cUserList, err
 }
 
-func (d *Dao) UpdatePersonalChannel(ctx context.Context, id int64, personalChanelId int64) bool {
+func (d *Dao) UpdatePersonalChannel(ctx context.Context, id int64, personalChanelId int64) error {
+	if d.Postgres != nil {
+		_, err := d.UpdateUserFields(ctx, id, map[string]any{"personal_channel_id": personalChanelId})
+		return err
+	}
 	_, _, err := d.CachedConn.Exec(
 		ctx,
 		func(ctx context.Context, conn *sqlx.DB) (int64, int64, error) {
@@ -1154,13 +1352,16 @@ func (d *Dao) UpdatePersonalChannel(ctx context.Context, id int64, personalChane
 		genCacheUserDataCacheKey(id))
 	if err != nil {
 		logx.WithContext(ctx).Errorf("updatePersonalChannel - error: %v", err)
-		return false
 	}
 
-	return true
+	return err
 }
 
 func (d *Dao) UpdatePhoneNumber(ctx context.Context, id int64, phoneNumber string) error {
+	if d.Postgres != nil {
+		_, err := d.UpdateUserFields(ctx, id, map[string]any{"phone": phoneNumber})
+		return err
+	}
 	_, _, err := d.CachedConn.Exec(
 		ctx,
 		func(ctx context.Context, conn *sqlx.DB) (int64, int64, error) {
@@ -1186,7 +1387,10 @@ func (d *Dao) UpdatePhoneNumber(ctx context.Context, id int64, phoneNumber strin
 	return nil
 }
 
-func (d *Dao) UpdateUserPremium(ctx context.Context, id int64, premium bool, months int32) bool {
+func (d *Dao) UpdateUserPremium(ctx context.Context, id int64, premium bool, months int32) error {
+	if d.Postgres != nil {
+		return d.pgUpdatePremium(ctx, id, premium, months)
+	}
 	_, _, err := d.CachedConn.Exec(
 		ctx,
 		func(ctx context.Context, conn *sqlx.DB) (int64, int64, error) {
@@ -1235,10 +1439,16 @@ func (d *Dao) UpdateUserPremium(ctx context.Context, id int64, premium bool, mon
 		genCacheUserDataCacheKey(id))
 	if err != nil {
 		logx.WithContext(ctx).Errorf("updateUserPremium - error: %v", err)
-		return false
 	}
 
-	return true
+	return err
+}
+
+func (d *Dao) SaveUserMusic(ctx context.Context, userID, musicID int64, unsave bool) error {
+	if d == nil || d.Postgres == nil {
+		return errors.New("biz/user: PostgreSQL store is not configured")
+	}
+	return d.pgSaveMusic(ctx, userID, musicID, unsave)
 }
 
 var errPremiumPaymentConflict = errors.New("premium payment transaction conflicts with an existing grant")
@@ -1246,6 +1456,12 @@ var errPremiumPaymentConflict = errors.New("premium payment transaction conflict
 func (d *Dao) GrantUserPremium(ctx context.Context, id int64, months int32, provider, transactionID string) (bool, error) {
 	if id <= 0 || months < 1 || months > 36 || provider == "" || len(provider) > 32 || transactionID == "" || len(transactionID) > 191 {
 		return false, mtproto.ErrInputRequestInvalid
+	}
+	if d.Postgres != nil {
+		if err := d.pgGrantPremium(ctx, id, months, provider, transactionID); err != nil {
+			return false, err
+		}
+		return true, nil
 	}
 	transactionKey := sha256.Sum256([]byte(provider + "\x00" + transactionID))
 

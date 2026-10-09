@@ -1,13 +1,55 @@
 # Layer 229 API 功能验收
 
+## 2026-10-09 PostgreSQL 18 migration checkpoint (latest)
+
+- The checked-in PostgreSQL deployment set contains 46 uniquely versioned migrations through `047_apifull_stars_refund.sql` (`043_apifull_bot_default_admin_rights.sql` and `044_authsession_temp_keys.sql` fill the latest service-owned additions). A fresh PostgreSQL 18.6 database applied all 46 migrations; a second runner pass skipped all entries by checksum. The bot default-rights, app-log, game-score, and Stars refund tables were present, and the migration portability guard passed.
+- `messages.setGameScore`, `messages.setInlineGameScore`, `messages.getGameHighScores`, `messages.getInlineGameHighScores`, and `messages.getEmojiGameInfo` now use the PostgreSQL APIFull store for durable score state where the PostgreSQL runtime is selected. The isolated `TestGameScoresPostgresPersistence` race test verified monotonic and forced updates, tie ordering, and readback after migration `046`; game/message ownership, canonical user hydration, emoji-game provider semantics, and a production session remain unaccepted.
+- Media document hydration now propagates PostgreSQL photo-size query failures instead of returning documents with silently missing thumbnails. The PostgreSQL 18 media aggregate test covers atomic writes, readback, and failure propagation through single and batch document reads.
+- Sticker deletion now compacts positions in two phases under the PostgreSQL unique position constraint, and featured sticker unread state defaults to unread until `messages.readFeaturedStickers` records a durable read. Focused PostgreSQL 18 race tests cover both paths; mask/emoji-specific catalog semantics and external sticker providers remain open.
+- `channels.getLeftChannels` now records participant join/leave events in the PostgreSQL channel admin log, queries the caller's latest leave event with bounded offset paging, excludes rejoined channels, and hydrates canonical channel entities. The focused domain and takeout tests passed against PostgreSQL 18.6.
+- `messages.togglePeerTranslations` now stores a caller/peer-specific disabled flag through the PostgreSQL 18 transactional state provider. `TestTogglePeerTranslationsPostgresRoundTrip` passed with PostgreSQL 18.6, including enable/disable readback; translation-provider semantics, canonical peer authorization, complete Layer 229 session coverage, restart behavior, and production traffic remain unverified.
+- Report intake methods (`account.reportPeer`, `account.reportProfilePhoto`, `messages.reportSpam`, `messages.report`, and `messages.reportEncryptedSpam`) now use transactional PostgreSQL `apifull_report` writes with dedupe keys. The focused report-handler and durable-idempotency tests passed against PostgreSQL 18.6; moderation consumers, review/enforcement, and production session acceptance remain open.
+- Authsession PostgreSQL authorization reads now verify the permanent auth-key ownership against `auth_users` before returning another user's sessions, including the bind-before-`initConnection` case. The authsession package `-race` suite and a fresh PostgreSQL 18.6 runtime smoke passed; full live logout/session update delivery and restart acceptance remain unverified.
+- `biz/message` saved-history offset and date queries now prefer the canonical PostgreSQL message store when the PostgreSQL runtime is configured; package-level `-race` tests pass. `messages.deleteSavedHistory` remains explicitly `METHOD_NOT_IMPL` because no authoritative deletion RPC and update-delivery transaction is available.
+- Focused `-race` PostgreSQL tests also passed for chatlists, communities, SMS jobs, premium boosts, ephemeral messages/reports, stickers, channel autotranslation, bot default admin rights, message split ranges, and takeout session guards. Compose configuration checks and `git diff --check` pass.
+- The authoritative ledger remains 813 unique methods. Current production evidence counts are `PARTIAL_ISOLATED_SESSION_E2E=309`, `BLOCKED_BY_IMPLEMENTATION_GAP=168`, `PARTIAL_COMPONENT_ONLY=144`, `PARTIAL_ISOLATED_DB_ONLY=158`, `NOT_ACCEPTED=15`, `TRANSPORT_ONLY=11`, `ISOLATED_COMPONENT_ONLY=6`, and `ISOLATED_DB_ONLY=2`. Self-owned story quota, edit, delete, listing, export-link, stealth, reaction, peer hydration, max-ID, caption-search, and story-stat graph paths now have PostgreSQL 18 isolated evidence; media upload, live stories, cross-peer story providers, live session coverage, restart/failover evidence, and other implementation gaps remain open.
+
+- `TestStoriesPostgresSelfOwnedMethods` adds PostgreSQL 18 evidence for self-owned Story RPC paths: quota, edit, delete, aggregate listing, export link, stealth mode, reaction, peer listing, peer max IDs, caption search, and story-stat graphs. The handlers continue to fail closed for media-provider, live-stream, and cross-peer operations that have no authoritative backend.
+
 ## 台账唯一来源
 
 `LAYER229_METHOD_LEDGER.csv` 是本项目 Layer 229 方法台账的唯一权威来源。方法数量、`audit_status`、`production_acceptance_status` 及对应证据均以该文件为准；历史重复文件 `PARTIAL_COMPONENT_ONLY` 已退役，后续不再读取或更新。
+
+## 2026-10-09 APIFull prepared inline message PostgreSQL round-trip
+
+- `messages.savePreparedInlineMessage` 与 `messages.getPreparedInlineMessage` 现在有真实 PostgreSQL 18 focused round-trip：保存唯一 prepared result ID，直接读取 `apifull_kv` 精确行，确认 caller-scoped key 隔离，关闭并重新打开 PostgreSQL store 后仍能读回。
+- 回环通过 `APIFULL_POSTGRES_DSN` 连接部署 schema；测试同时确认其他用户不能读取保存用户的 ID。该证据只提升为 `PARTIAL_ISOLATED_DB_ONLY`，不宣称 Bot registry 校验、完整 inline result hydration、Layer 229 session 或生产流量验收。
+- `messages.rateTranscribedAudio` 与 `messages.transcribeAudio` 新增 PostgreSQL 18 `b18` round-trip：评分写入默认和 message-specific transcription keys，读取方法在两条路径返回相同 ID，其他用户看不到该状态，store 关闭并重连后仍可读回。真实 transcription provider、pending 生命周期、rating 校验和生产 session 仍未验收。
+- `messages.translateText` 新增 PostgreSQL 18 `b13` round-trip：caller-scoped 文本写入 `apifull_kv`，owner 读回，其他用户隔离，store 关闭并重连后仍可读回；该路径仍是本地状态实现，外部翻译 provider、实体/语言协商和生产 session 尚未验收。
+
+## 2026-10-09 PostgreSQL 18 full-schema verification (service migration remains staged)
+
+- A clean PostgreSQL 18.6 database (`teamgram_verify_pg18_20261009`, `server_version_num=180006`) accepted all 46 checked-in migrations from `000_bootstrap` through `047_apifull_stars_refund`. The runner keys migrations by the complete basename, records SHA-256 checksums, and completed a second idempotent run without reapplying any migration.
+- The clean database contained 46 migration records and 126 public tables after the first run. This check used the PostgreSQL 18 deployment image's `psql` client and the same `apply.sh` runner, so it does not depend on a host PostgreSQL installation.
+- `teamgramd/deploy/postgres/check.sh`, `docker compose -f docker-compose-postgres.yaml config --quiet`, and `git diff --check` pass. The migration runner refuses non-PostgreSQL-18 servers, empty migration directories, missing directories, and checksum drift before applying schema changes.
+- APIFull package tests pass, including `go test -race ./app/bff/apifull/...`. Focused PostgreSQL 18.6 race tests pass for sticker-set round trips, channel emoji-set persistence, featured-sticker pagination, saved-dialog force clearing, and the two-factor proof store. Additional focused PostgreSQL suites for Messenger message/inbox, User, Chat, Dialog, Updates, Authsession, Media, ID generation, Sync, Authorization, Passkey and QR code packages are recorded in the earlier verification checkpoint. Production constructors require a non-empty PostgreSQL DSN and verify pool connectivity, PostgreSQL 18, and required schema before serving requests; bot-manager now applies the same version/schema gate before mutation. Monolithic BFF shutdown closes its messages, updates, passkey, two-factor, and APIFull PostgreSQL stores. APIFull persistence and the two-factor proof store no longer expose MySQL constructors.
+- The ledger contains 813 unique Layer 229 methods. The latest production evidence counts are recorded in the checkpoint above and in `LAYER229_METHOD_LEDGER.csv`; this is a migration verification checkpoint, not a claim of 813/813 business acceptance.
+- Repository-wide `go test ./...` is not clean: it still fails in pre-existing DFS logging vet diagnostics, absent JPEG fixtures, and the ffmpeg fixture suite. The verification-code provider fixture was aligned with the loopback-only HTTP test policy and now passes; the remaining failures are outside the PostgreSQL migration packages and are recorded rather than hidden.
+- This evidence proves the PostgreSQL schema and isolated service slices, not full Layer 229 production acceptance. Live session probes, restart/failover checks, external providers, and remaining implementation gaps still prevent a claim of 813/813 production completion.
+
+## 2026-10-08 PostgreSQL 18 current verification (migration work remains partial)
+
+- The earlier PostgreSQL 18.6 instance (`teamgram-pg18-fresh`, `server_version_num=180006`) had migrations through `020_msg_state_delivery_outbox`; the closeout also applied a clean database through `022_apifull_ai_compose` as recorded below. The migration runner, portability check, and Compose config check pass.
+- PostgreSQL-backed focused suites pass against that instance: Messenger message/inbox DAO and core suites under `-race`, authsession DAO under `-race`, biz updates, idgen counter/core, chat, dialog, user, message DAO, and APIFull core/domain/Layer 229/channelview suites.
+- Runtime constructors for authsession, biz chat/dialog/message/updates/user, media, idgen, Messenger msg/inbox/sync, APIFull, authorization, passkey, qrcode, and updates require PostgreSQL configuration and fail closed on unavailable pools or missing schema. The two-factor PostgreSQL proof store now also verifies PostgreSQL 18 and `apifull_kv` at startup.
+- `go test ./...` reaches all migration packages but remains red on unrelated pre-existing DFS vet/example issues, missing JPEG fixture files, an external verification-code provider test, and ffmpeg test inputs. This is not evidence of a clean repository-wide test run.
+- The 813-method Layer 229 ledger still records 272 `PARTIAL_SESSION_VERIFIED`, 266 `KNOWN_INCOMPLETE_STATIC`, 172 `PARTIAL_COMPONENT_VERIFIED`, 50 `ROUTED_NOT_FUNCTIONALLY_ACCEPTED`, and other partial states. Full production acceptance, external providers, and several method implementation gaps remain; this work does not claim the 813-method migration complete.
 
 ## 2026-10-08 PostgreSQL 18 migration runner 验证（未完成生产迁移）
 
 - `teamgramd/deploy/postgres/apply.sh` 现在在任何 schema 写入前检查 `server_version_num`，只接受 PostgreSQL 18（18.0 至 18.x），其它版本直接失败。Compose 数据库服务为 `postgres:18`，迁移服务使用显式 `postgres` 网络别名，避免 `container_name` 覆盖服务 DNS 名称后 one-off runner 无法解析数据库。
 - 在全新临时数据库 `teamgram_verify_20261008`（PostgreSQL 18.6，`server_version_num=180006`）上按文件顺序执行 `000_bootstrap` 至 `011_pgcrypto` 共 12 个迁移成功；第二次运行全部通过 checksum 幂等跳过。临时数据库已删除，未触碰业务数据。
+- Passkey ceremony/credential schema is now deployment-owned in `012_passkey.sql`; an isolated PostgreSQL 18.6 run applied `000_bootstrap` through `012_passkey` (13 migrations), and a second run skipped all 13 by checksum. The temporary database was dropped after verifying both passkey tables.
 - 现有开发数据库的 runner 在 `004_biz_dialog` checksum 漂移处按设计停止，未覆盖记录或自动修复；这说明迁移文件被修改后必须重新建立验证库或经审查更新 checksum，不能绕过漂移保护。上述结果是迁移/部署验证，不代表所有服务已切换 PostgreSQL，也不提升 Layer 229 生产接受状态。
 
 ## 2026-10-07 持久频道消息投递 outbox（未验收）
@@ -542,7 +584,7 @@
 
 ## 2026-10-05 密码重置等待状态原子更新
 
-- `account.resetPassword` 的首次请求状态不再使用无条件 read/modify/write。共享 KV 增加 compare-and-swap：内存 store 用互斥锁，Redis store 用 Lua 原子脚本，APIFull MySQL store 用事务 `SELECT ... FOR UPDATE`；授权 handler 在竞争失败时重新读取并重试，保留最初的 `reset_until_date`/`reset_retry_date`。
+- `account.resetPassword` 的首次请求状态不再使用无条件 read/modify/write。共享 KV 增加 compare-and-swap：内存 store 用互斥锁，Redis store 用 Lua 原子脚本，APIFull PostgreSQL store 用事务锁与 CAS；授权 handler 在竞争失败时重新读取并重试，保留最初的 `reset_until_date`/`reset_retry_date`。
 - `go test ./app/bff/authorization/internal/core ./app/bff/apifull/internal/persist ./app/bff/apifull/persist -count=1` 与 `git diff --check` 通过。该修复只证明组件级并发边界，密码恢复完成、真实验证码/邮件 provider、重启持久性和生产 session 仍未验收。
 - 台账从 `KNOWN_INCOMPLETE_STATIC/BLOCKED_BY_IMPLEMENTATION_GAP` 调整为 `PARTIAL_COMPONENT_VERIFIED/PARTIAL_COMPONENT_ONLY`；当前 813 行生产列为 `BLOCKED_BY_IMPLEMENTATION_GAP=292`、`PARTIAL_ISOLATED_SESSION_E2E=177`、`PARTIAL_COMPONENT_ONLY=156`、`NOT_ACCEPTED=111`、`PARTIAL_ISOLATED_DB_ONLY=48`，另有隔离组件 10、隔离库 8、传输包装 11。
 
@@ -723,7 +765,7 @@
 - Stories 的只读与本地状态边界已补齐：`getPinnedStories`、`getStoriesArchive`、`getStoriesByID`、`toggleAllStoriesHidden`、`readStories`、`incrementStoryViews`、`getStoryViewsList`、`getStoriesViews`、`togglePeerStoriesHidden`、`getStoryReactionsList`、`togglePinnedToTop` 现在读取/更新当前用户的持久化故事记录，并拒绝非本人 peer；空故事仍返回协议允许的空 typed envelope。故事发布、跨用户读取、媒体 provider 和跨设备更新仍未实现，因此仅计组件验收。
 - Stories album 的创建、更新、排序、删除、读取和按 album 读取故事也已接入同一持久化 store；所有 story ID 和 album ID 都在写入前验证，跨用户 peer 仍失败关闭。故事媒体发布和跨设备更新仍未接入。
 - 当前 CSV 台账仍为 813 个唯一方法：`KNOWN_INCOMPLETE_STATIC=339`、`ROUTED_NOT_FUNCTIONALLY_ACCEPTED=141`、`PARTIAL_COMPONENT_VERIFIED=117`、`PARTIAL_ISOLATED_DB_VERIFIED=34`、`PARTIAL_SESSION_VERIFIED=151`、`ISOLATED_COMPONENT_VERIFIED=10`、`ISOLATED_DB_VERIFIED=8`、传输包装 11、手动分发待验收 2。生产列为 `BLOCKED_BY_IMPLEMENTATION_GAP=350`、`NOT_ACCEPTED=141`、`PARTIAL_COMPONENT_ONLY=111`、`PARTIAL_ISOLATED_DB_ONLY=29`、`PARTIAL_ISOLATED_SESSION_E2E=153`、隔离组件 10、隔离库 8、传输包装 11。完整生产级验收仍为 **0/813**。
-- `channels.setMainProfileTab`、`channels.setEmojiStickers` 仍只写共享 KV，缺少频道权威读取、同步和重启后的业务回读，因此继续保持未验收；短信/邮件 provider、真实支付结算、Passkey RP、第二 DC、原生频道完整 provider、礼物库存结算和通话媒体控制面仍是外部阻塞。
+- `channels.setMainProfileTab` 仍写共享 KV；`channels.setEmojiStickers` 已改为使用 PostgreSQL sticker catalog 和事务化频道绑定表，并保留 Biz Chat 管理员校验，但没有标准读取路径或完整 session/restart 回读，因此仍未验收。短信/邮件 provider、真实支付结算、Passkey RP、第二 DC、原生频道完整 provider、礼物库存结算和通话媒体控制面仍是外部阻塞。
 
 ## 2026-10-02 原生频道方法级复核（本轮）
 
@@ -941,14 +983,14 @@
 - `messages.composeMessageWithAI` 返回空文本，没有生成服务。
 - `channels.reportAntiSpamFalsePositive` 现在校验频道成员、消息 ID 和 canonical 频道消息，并写入幂等 `apifull_report` moderation intake；审核消费者/处置仍未接入。`channels.toggleAntiSpam` 已改为写入 canonical 频道反垃圾设置，但消息拦截消费者和生产验收仍未完成。
 - `contacts.blockFromReplies` 现在从权威消息服务解析当前用户收到的私聊消息作者，通过 UserBlockPeer 持久化屏蔽，按 flags 调用 msg 删除消息/历史并把 spam 写入持久化举报 intake，最后通过 SyncClient 推送 `updatePeerBlocked`；缺少任一 provider 时 fail-closed。尚未做隔离 session、真实数据库和生产往返验收，消息服务对入站私聊归属及删除/举报副作用仍需端到端核对。`messages.readDiscussion` 现在按用户、peer 和根消息保存单调递增的 `read_max_id` 并返回 `BoolTrue`；讨论更新推送和完整消息语义仍未接入。
-- `messages.reportMessagesDelivery` 只保存第一个消息 ID，没有执行实际业务副作用。`messages.startBot`、`help.getDeepLinkInfo` 和 `help.getRecentMeUrls` 没有 bot 启动、深链解析或最近链接存储后端；现在明确返回 `METHOD_NOT_IMPL`，不再返回伪造成功结果。
+- `messages.reportMessagesDelivery` 现在校验完整 ID 向量并写入 PostgreSQL 幂等回执表；仍需真实客户端/session 通知确认探针。`help.getDeepLinkInfo` 和 `help.getRecentMeUrls` 现在返回 Layer 229 定义的空构造器/空向量，并保留鉴权与输入校验；深链解析、最近链接写入和 bot 启动后端仍未接入，不伪造预览或链接实体。
 - `account.uploadRingtone` 已校验文件名并通过 DFS 返回真实 `Document`，但保存铃声目录仍是本地状态；`contacts.exportContactToken` 没有生成 token URL，`contacts.importContactToken` 只保存输入 token 并返回 `UserEmpty`。
 - 邮箱验证与找回只在部署配置 `EmailProvider: http`、`EmailSendCodeUrl` 和有效 provider 凭据后使用真实 HTTP 投递；未配置时明确返回发送不可用，不生成可用的成功结果。HTTP provider 校验 endpoint、超时和响应状态，`ProviderRetryCount` 只重试网络错误和 5xx，4xx/3xx/空 endpoint fail-closed。APIFull 的 `account.resendPasswordEmail` / `account.confirmPasswordEmail` 现在复用 Redis challenge 和同一 HTTP email provider：重发保存一次性 challenge ID，确认原子消费验证码并清除 pending 状态。当前仍没有真实邮件 endpoint/Redis 凭据、完整密码邮箱流程或生产验收。
-- `account.resetPassword` 现在把原始请求时间、requested-wait 截止时间和 failed-wait 重试时间写入共享密码状态，并在顺序重复调用时复用已保存的时间；首次请求并发时仍有非原子写入竞态。仅有内存存储组件测试，重置完成路径和生产持久化尚未验收。
+- `account.resetPassword` 现在把原始请求时间、requested-wait 截止时间和 failed-wait 重试时间写入共享密码状态，并在 PostgreSQL compare-and-swap 下保留首次请求的原子性；等待截止后清除 verifier 并返回 `account.resetPasswordOk`，取消等待到期后重新开启七天窗口。已有内存状态转换测试和 PostgreSQL 18 `apifull_kv` 直接读回测试；完整 WebSocket/session、多服务会话撤销和重启验收仍未完成。
 
 ### 本轮继续静态复核新增的问题
 
-- **认证与隐私：** SRP 证明校验和 session 2FA 门禁已补上；四个核心 SRP 校验场景和 MySQL 挑战原子消费已在组件/隔离库验证，但没有完整手机号登录或 QR 登录实测。仍缺 `auth.sendCode` / `auth.resendCode` 的手机号防刷和数据中心迁移，`auth.signUp` 的手机号防刷和注册名策略校验；邮箱验证码/密码恢复没有发送通道，邮箱确认还接受任意非空 code；`account.resetPassword` 的顺序重复调用已复用持久化等待时间，但首次请求的并发竞态、完成重置流程和生产持久化尚未验收。`messages.getOutboxReadDate` 现在校验双方 `STATUS_TIMESTAMP` 隐私、消息归属和目标 peer；七天过期阈值采用客户端/TDLib 的 604800 秒默认值，服务端动态配置未接入，且高级隐私规则仍返回 `METHOD_NOT_IMPL`。群邀请权限已做静态修复，但底层 `messages.getExportedChatInvites` RPC 仍缺少调用者 ID，`messages.getChatInviteImporters` 的 `q` 搜索未实现，相关权限边界尚未用真实数据验收。`account.deleteAccount` 现在会在 user service 事务中清理账户拥有的资料、联系人、隐私、设置和已保存数据，并在 BFF 层传播会话撤销/通知错误；消息、对话、媒体等其他服务的数据仍需各自权威清理接口。
+- **认证与隐私：** SRP 证明校验和 session 2FA 门禁已补上；四个核心 SRP 校验场景和 MySQL 挑战原子消费已在组件/隔离库验证，但没有完整手机号登录或 QR 登录实测。仍缺 `auth.sendCode` / `auth.resendCode` 的手机号防刷和数据中心迁移，`auth.signUp` 的手机号防刷和注册名策略校验；邮箱验证码/密码恢复没有发送通道，邮箱确认还接受任意非空 code；`account.resetPassword` 已完成 PostgreSQL 原子等待、截止清除和重试窗口转换，但完整 session 验收及多服务会话撤销仍未完成。`messages.getOutboxReadDate` 现在校验双方 `STATUS_TIMESTAMP` 隐私、消息归属和目标 peer；七天过期阈值采用客户端/TDLib 的 604800 秒默认值，服务端动态配置未接入，且高级隐私规则仍返回 `METHOD_NOT_IMPL`。群邀请权限已做静态修复，但底层 `messages.getExportedChatInvites` RPC 仍缺少调用者 ID，`messages.getChatInviteImporters` 的 `q` 搜索未实现，相关权限边界尚未用真实数据验收。`account.deleteAccount` 现在会在 user service 事务中清理账户拥有的资料、联系人、隐私、设置和已保存数据，并在 BFF 层传播会话撤销/通知错误；消息、对话、媒体等其他服务的数据仍需各自权威清理接口。
 - **消息和更新：** `messages.searchGlobal` 只接受后端支持的未过滤首屏请求；folder/filter/date/cursor 等暂不支持字段返回 `METHOD_NOT_IMPL`，频道对象 hydration 缺失也会失败关闭。`messages.getMessages` 现在校验调用者和消息 ID，传播消息、用户、群组服务错误；消息涉及频道时因没有频道对象解析器返回 `METHOD_NOT_IMPL`。`messages.getCommonChats` 现在校验目标用户，合并基础群和 APIFull 频道的共同成员关系，回填两类聊天并支持分页；APIFull 频道路径已通过真实隔离 session 验收，原生频道仍没有权威 provider。`messages.getSavedHistory` 通过 `channelview.ChatsByID` 只回填 APIFull 本地频道；原生频道对象仍不会出现在响应中。`messages.getUnreadMentions` 的频道请求明确返回 `CHANNEL_UNREAD_MENTIONS_UNSUPPORTED`：消息 DAO 只实现基础群未读提及查询，APIFull 频道存储没有提及实体或按用户记录的未读提及状态。`messages.getMessagesViews` 在没有权威阅读计数时返回 `METHOD_NOT_IMPL`，不再合成零值成功。`messages.getMessageEditData` 的频道分支可读回 APIFull 存储的文本消息，并验证 access hash、成员、创建者编辑权限和消息存在性；原生频道消息与媒体 caption 仍不支持。`updates.getDifference` 的频道对象收集分支为空。Layer 229 的 `messages.getMessageReadParticipants#2c6f97b7` 现在校验消息归属和请求者频道 dialog，并通过 native `dialog.getChannelMessageReadParticipants` 返回原生频道阅读游标命中的用户 ID；APIFull 频道存储保持独立，不会被误当作该 provider。基础群路径同样校验成员、消息归属、nil 响应和 provider 错误。`messages.getMessageReadParticipants#31c1c44f` 复用频道阅读游标 provider，但 `ReadParticipantDate.date` 仍无权威逐用户时间：无参与者时返回空向量，有参与者时 fail-closed 为 `METHOD_NOT_IMPL`；基础群 read history 只持久化 `read_inbox_max_id`，`message_read_outbox.read_outbox_max_date` 仅写入 `PEER_USER`，不能代替群已读时间。定向 helper 测试覆盖消息归属、空向量和无时间戳时 fail-closed；native 频道 provider 尚无完整生产验收。`messages.hidePeerSettingsBar` 现在传播 `user.deletePeerSettings` 错误，并对 nil 回复返回 `INTERNAL_SERVER_ERROR`；用户核心也会返回 DAO 错误。DAO 对 `user_peer_settings.hide` 执行 SQL 更新，并且仅在 SQL 成功后失效缓存。当前 `updatePeerSettings` 负载只有 `PeerSettings` 字段，没有隐藏提示条状态，不能准确同步该状态；`messages.readDiscussion` 已保存讨论已读游标，但仍没有对应更新推送。
 - **列表与资料：** `contacts.getBlocked` 现在实际使用 50 条上限、offset 分页和带总数的 `contacts.blockedSlice`，并回填可用群对象；频道对象仍依赖插件，完整服务链路未验收。`users.getSavedMusic` 现在按完整列表计算 hash 并支持 offset/limit 分页；尚无真实用户数据验收。`users.getFullUser` 仍有共同频道计数及基于共同群组的隐私判定缺口。`account.setAccountTTL` 现在传播用户服务的写入错误；`messages.getPeerSettings` 现在传播读取错误并回填用户和基础群，频道对象仍依赖默认未注入的插件。
 - **联系人状态写入：** `contacts.block` 和 `contacts.unblock` 现在传播用户服务写入错误；尚无真实屏蔽/取消屏蔽往返验收。
@@ -969,7 +1011,7 @@
 - **AI 文本、支持信息与广告：** `messages.summarizeText`、`translateRichMessage`、`composeRichMessageWithAI` 都返回原文或原 rich-text，没有摘要、翻译或生成服务。`messages.setTyping` 已补齐用户、普通群和 APIFull 频道的成员校验与 `UpdateChannelUserTyping` 推送；跨用户隔离会话已通过，生产双用户投递和重启持久性仍未验收。`help.getSupport`、`getSupportName`、`getInviteText` 固定空；`getAppUpdate` 不查询更新源而始终返回无更新。赞助消息的 `contacts.getSponsoredPeers`、`messages.getSponsoredMessages` 固定空，`account.toggleSponsoredMessages` 和 `channels.restrictSponsoredMessages` 只写本地 flag，view/click/report 只记本地事件，不接广告库存、分析或审核服务。
 - **Passkey：** `account.initPasskeyRegistration`、`registerPasskey` 只处理挑战并存 credential ID，没有校验 attestation 或保存公钥；`getPasskeys`、`deletePasskey` 只管理这份本地 ID 列表。`auth.initPasskeyLogin` 使用空凭证白名单和 `localhost` RP；`auth.finishPasskeyLogin` 不验证 assertion，消费挑战后固定返回 `AUTH_BYTES_INVALID`，不会创建授权会话。
 - **媒体与搜索：** `messages.getDocumentByHash` 校验参数后固定返回 `DocumentEmpty`，`help.getCdnConfig` 固定报 `CDN_METHOD_INVALID`，`messages.receivedMessages` 校验认证、请求构造器和 `max_id` 后在缺少回执 provider 时返回 `METHOD_NOT_IMPL`。`contacts.getTopPeers` 用用户 ID 合成排序分数且跳过非联系人分类；`messages.getRecentLocations` 把读取失败伪装成空结果并没有回填频道；`getSearchResultsPositions` 把当前页索引当全局位置；`channels.checkSearchPostsFlood` 永远给固定免费额度，不执行限流。
-- **频道成员与导出：** `channels.getParticipants` / `getParticipant` 只把本地频道创建者当成员，无法列出普通成员或真实管理员。`account.initTakeoutSession` / `finishTakeoutSession` 只开关本地 session，不控制导出；`messages.getSplitRanges` 与 `channels.getLeftChannels` 在认证后 fail-closed 为 `METHOD_NOT_IMPL`，未实现 takeout 分区或退出频道历史，也不再伪造空结果。
+- **频道成员与导出（历史复核）：** `channels.getParticipants` / `getParticipant` 只把本地频道创建者当成员，无法列出普通成员或真实管理员。早期复核时 `account.initTakeoutSession` / `finishTakeoutSession` 只开关本地 session，`messages.getSplitRanges` 与 `channels.getLeftChannels` 在认证后 fail-closed 为 `METHOD_NOT_IMPL`；后续 PostgreSQL 18 切片已为 split ranges 和 left-channel 查询补上权威存储路径，当前证据与剩余限制见文末对应记录。
 - **Bot 与 Mini App：** `bots.createBot` 的标准创建和父 Bot deeplink 创建现在写入 User 服务 registry；deeplink 事务检查父 Bot 的 access hash 与默认关闭的 `bot_can_manage_bots`。该能力只允许运维通过受控数据库操作授予，客户端没有授予入口。`getAdminedBots` 按 `creator_user_id` 返回，`checkUsername` 查询全局用户名索引，`exportBotToken` 校验创建者并支持轮换；这些路径仍缺少完整 DB/session 验收。`getAccessSettings` 固定空，`editAccessSettings`、`setJoinChatResults`、两种默认管理员权限及 `setCustomVerification` 只保存请求或描述；`getBotRecommendations`、`getPopularAppBots` 固定空。`bots.sendCustomRequest` 回显输入 JSON，`answerWebhookJSONQuery` 与 `help.setBotUpdatesStatus` 只保存请求。`messages.requestWebView`、`requestSimpleWebView`、`requestAppWebView`、`requestMainWebView`、`requestChatJoinWebView`、`prolongWebView`、`sendWebViewResultMessage`、`sendWebViewData`、`getBotApp`，以及 `bots.invokeWebViewCustomMethod`、`checkDownloadFileParams`、`requestWebViewButton`、`getRequestedWebViewButton` 都是 URL 回显、本地记录或固定空值，未建立已授权的 WebView 会话或 Bot 调用链。常规 Bot 命令和菜单按钮本地读写不在此缺口列表。
 - **付款、Stars 与预付 Giveaway：** `payments.getPaymentForm`、`sendPaymentForm`、`assignAppStoreTransaction`、`assignPlayMarketTransaction` 对有效凭证均返回 `PAYMENT_UNSUPPORTED`；收据不校验，Premium/权益不发放。`getPaymentReceipt` 只读本地合成记录，`validateRequestedInfo`、`getSavedInfo`、`clearSavedInfo` 在鉴权和必要的请求形状校验后返回 `METHOD_NOT_IMPL`，不再读写本地支付信息。`getBankCardData` 固定空。`payments.getStarsTopupOptions` 和 `getStarsGiftOptions` 固定空；`sendStarsForm` 只扣内部 Stars 余额并记本地流水；`refundStarsCharge` 对未知 charge 以 0 金额成功返回。Stars 订阅四个读写方法仅维护每用户一个本地订阅记录，没有续费或权益生命周期。`getPremiumGiftCodeOptions`、`getGiveawayInfo`、`launchPrepaidGiveaway`、`getStarsGiveawayOptions` 只保存一个 giveaway ID 并据此合成字段。
 - **一对一 VoIP 与群通话：** `messages.deletePhoneCallHistory` 只存请求并返回 0 条受影响记录；`phone.requestCall`、`acceptCall`、`confirmCall`、`receivedCall`、`discardCall` 使用本地合成 ID / 状态，没有呼叫对端路由或信令投递；`setCallRating`、`saveCallDebug`、`sendSignalingData`、`saveCallLog` 只存请求。群/会议创建、加入/离开、参与者读取等方法只操作 APIFull 本地成员记录，没有通话控制面和跨客户端更新；流媒体 URL/频道只由本地参与者及 relay 配置构造，`phone.getGroupCallStars` 硬编码 0 星并把参与者当 donor。已在台账标为缺口的方法包括 `phone.createGroupCall`、`joinGroupCall`、`leaveGroupCall`、`getGroupCall`、`getGroupParticipants`、`checkGroupCall`、`getGroupCallJoinAs`、`getGroupCallStreamChannels`、`getGroupCallStreamRtmpUrl`、`createConferenceCall`、`deleteConferenceCallParticipants`、`getGroupCallStars`；现有已标缺口的邀请、录制、设置、屏幕共享、广播及通话消息方法继续保留原记录。
@@ -985,11 +1027,11 @@
 | 自定义表情和关键词 | `account.getDefaultProfilePhotoEmojis`、`getDefaultGroupPhotoEmojis`；`messages.getCustomEmojiDocuments`、`getEmojiStickers`、`getFeaturedEmojiStickers`、`searchCustomEmoji`、`getEmojiKeywords`、`getEmojiKeywordsDifference`、`getEmojiURL`、`getEmojiGroups`、`getEmojiStatusGroups`、`getEmojiProfilePhotoGroups`、`getEmojiStickerGroups`。没有完整服务端表情目录；关键词只从当前用户自建贴纸取值，`getEmojiKeywordsLanguages` 目前只声明关键词接口真实可服务的 `en` 基线，URL 和其它目录接口仍为空或缺少权威媒体目录。 |
 | 主题 | `account.uploadTheme`、`createTheme`、`updateTheme`、`saveTheme`、`installTheme`、`getTheme`、`getThemes`、`getChatThemes`、`getUniqueGiftChatThemes`、`messages.setChatTheme`。上传通过 DFS；create/update 仅接受调用者自己上传且已持久化的真实 Document，并保存主题元数据及可表示设置；全局主题目录和 chat-theme/unique-gift provider 仍未接入。 |
 | 语言包 | `langpack.getLangPack`、`getStrings`、`getDifference`、`getLanguages`、`getLanguage`。翻译值回显请求 key/code，语言列表硬编码，差分版本不递增。 |
-| SMS Jobs | `smsjobs.isEligibleToJoin`、`join`、`leave`、`updateSettings`、`getStatus`、`getSmsJob`、`finishJob`。只有本地标记/计数，没有任务分配或短信服务。 |
-| Boosts | `channels.setBoostsToUnblockRestrictions`；`premium.getBoostsList`、`getMyBoosts`、`applyBoost`、`getBoostsStatus`、`getUserBoosts`。Boost 存为单个本地记录，数量与 ID 合成，没有扣除库存或修改频道状态。 |
+| SMS Jobs | `smsjobs.isEligibleToJoin`、`join`、`leave`、`updateSettings`、`getStatus`、`getSmsJob`、`finishJob`。成员设置、计数和任务 ownership 已落到 PostgreSQL 18 并用事务保证完成幂等；生产短信 provider、分配 worker 和 live Layer 229 验收仍未接入。 |
+| Boosts | `channels.setBoostsToUnblockRestrictions`；`premium.getBoostsList`、`getMyBoosts`、`applyBoost`、`getBoostsStatus`、`getUserBoosts`；`stories.getBoostsStatus`、`getBoostersList`、`canApplyBoost`、`applyBoost`。Boost inventory、目标聚合、频道 owner/admin 权限和 slot reassignment 已落到 PostgreSQL 18 并覆盖并发测试；权威 Premium entitlement/balance provider、跨服务更新和 live Layer 229 验收仍未接入。 |
 | 游戏分数 | `messages.setGameScore`、`setInlineGameScore`、`getGameHighScores`、`getInlineGameHighScores`、`getEmojiGameInfo`。分数表按请求中的 peer/message ID 本地存储，没有验证游戏消息/权限；emoji game 忽略目标参数。 |
 | 壁纸 | `account.getWallPapers`、`getWallPaper`、`uploadWallPaper`、`saveWallPaper`、`installWallPaper`、`resetWallPapers`、`getMultiWallPapers`、`messages.setChatWallPaper`。saved 列表仍是本地引用；上传的真实 DFS `Document` 现在保存到调用者自己的上传目录，`getWallPaper`/`getMultiWallPapers`/保存安装可读回该文档，但没有全局壁纸目录；聊天背景方法已写入 Dialog 的 peer 状态。 |
-| 建议、深链和 Bot 信息 | `messages.getSuggestedDialogFilters`（固定空列表）；`help.getDeepLinkInfo`、`messages.startBot`、`help.getRecentMeUrls`（无后端数据源，现明确返回 `METHOD_NOT_IMPL`）；`help.dismissSuggestion`（固定成功、不记录）；`bots.getBotInfo`（忽略 bot/lang_code，总是读当前用户本地 Bot）。 |
+| 建议、深链和 Bot 信息 | `messages.getSuggestedDialogFilters`（固定空列表）；`help.getDeepLinkInfo`、`help.getRecentMeUrls`（无后端数据源，返回 Layer 229 定义的空构造器/空向量并保留输入校验）；`messages.startBot`（需 canonical bot/message provider）；`help.dismissSuggestion`（按用户、peer 和 suggestion 在 PostgreSQL 18 APIFull KV 中事务记录且幂等）；`bots.getBotInfo`（忽略 bot/lang_code，总是读当前用户本地 Bot）。 |
 | Premium 商店门面 | `help.getPremiumPromo`（硬编码“此服务器不提供 Premium”，无套餐）；`payments.canPurchaseStore`（忽略 purpose，只看本地 Premium 标记，没有商店/provider 检查）。 |
 | 表情状态和颜色 | `account.updateEmojiStatus`、`getDefaultEmojiStatuses`、`getRecentEmojiStatuses`、`clearRecentEmojiStatuses`、`getChannelDefaultEmojiStatuses`、`getChannelRestrictedStatusEmojis`、`getCollectibleEmojiStatuses`；`account.updateColor`、`getDefaultBackgroundEmojis`、`channels.updateEmojiStatus`；`bots.updateUserEmojiStatus`、`toggleUserEmojiStatusPermission`。状态/颜色目录和跨用户同步仍缺失；recent 接口复用当前状态记录，clear 会把当前状态清空。`channels.updateColor` 已单独接入 canonical 频道资料，仍只有隔离数据库证据。 |
 | 历史导入和讨论线程 | `messages.checkHistoryImport`、`initHistoryImport`、`startHistoryImport`、`checkHistoryImportPeer`（只记本地文件名/导入元数据，未导入消息）；`uploadImportedMedia` 已对带媒体请求校验导入会话和目标 peer，并通过 DFS 返回真实照片/文档，但最终导入消息投递仍未接入；`messages.getReplies`、`getDiscussionMessage`（合成线程/讨论消息，不读取真实回复或关联讨论群）；`messages.toggleSuggestedPostApproval`（只存单条 note，不更新频道待审批状态）；`payments.exportInvoice`（有效输入仍固定 `PAYMENT_UNSUPPORTED`）。 |
@@ -2185,10 +2227,21 @@
 - `docker/production/probe-saved-star-gifts-readonly.ts` 通过同一生产授权验证 `payments.getSavedStarGifts` 和 `payments.getSavedStarGift`，均返回类型化 `payments.SavedStarGifts` 空结果；保存礼物行保持 0，writes=0。现有 `payments.getStarGifts` / `payments.getUniqueStarGift` 探针也继续通过。
 - PostgreSQL 18 的 `biz/chat` 切片新增 `teamgramd/deploy/sql/postgres/000_bootstrap.sql`、`001_authsession.sql`、`002_biz_chat.sql`，以及独立 `postgres_dao` 的 chats 和 chat participants DAO。迁移脚本现在默认扫描 `deploy/sql/postgres`，支持 `POSTGRES_MIGRATION_DIR` 覆盖并拒绝不存在或空目录；未接入全局旧 Dao，Teamgram MySQL 运行栈保持原状。
 
-## 当前 Layer 229 验收统计（2026-10-08）
+## 当前 Layer 229 验收统计（2026-10-09）
 
-- `LAYER229_METHOD_LEDGER.csv` 仍包含 813 个唯一方法。按当前生产验收列统计：部分生产 session 验收 322、部分隔离库验收 21、静态实现缺口 280、部分组件验收 121、未验收 50、隔离组件验收 6、隔离库验收 2、仅传输包装 11。
-- 本轮没有方法达到完整生产验收；本轮提升的条目仍只覆盖各自探针记录的账户、实体和数据分支。`backend-backend-1` 当前运行 r29 digest；本轮只重建 backend，MySQL、Redis、etcd、Kafka 未重建。群通话 `media_source` 兼容迁移已应用到现有 MySQL，PostgreSQL 18 迁移仅完成脚本和 DAO 验证，尚未切换生产运行时。
+- `LAYER229_METHOD_LEDGER.csv` 仍包含 813 个唯一方法。按当前生产验收列结构化统计：`PARTIAL_ISOLATED_SESSION_E2E=309`、`BLOCKED_BY_IMPLEMENTATION_GAP=199`、`PARTIAL_COMPONENT_ONLY=144`、`NOT_ACCEPTED=22`、`PARTIAL_ISOLATED_DB_ONLY=120`、`ISOLATED_COMPONENT_ONLY=6`、`ISOLATED_DB_ONLY=2`、`TRANSPORT_ONLY=11`。
+- 本轮没有方法达到完整生产验收；这些状态只描述各方法已有证据级别。PostgreSQL 18 全 schema 与服务切片已在隔离库验证，但真实 Layer 229 session、重启/故障恢复、外部 provider 和剩余业务缺口仍未完成，因此不能宣称 813/813 生产完成。
+
+## 2026-10-09：messages.getSplitRanges PostgreSQL range provider
+
+- `messages.getSplitRanges` now uses the PostgreSQL 18 `messages` table as its authoritative caller-scoped ID span. It emits bounded `MessageRange` vectors, preserves empty-account semantics, requires a matching active takeout session, and fails closed when the PostgreSQL provider is unavailable.
+- `TestMessageSplitRangesUseAuthoritativeMessages` and the APIFull takeout/session guard tests pass with `-race` against the isolated PostgreSQL 18 schema. The ledger entry is now `PARTIAL_ISOLATED_DB_ONLY`; complete takeout export workers, live Layer 229 delivery, restart persistence, and production acceptance remain open.
+
+## 2026-10-09：Channel autotranslation and bot default rights PostgreSQL paths
+
+- `channels.toggleAutotranslation` now updates the canonical PostgreSQL 18 channel row in an explicit transaction, preserves the typed `Updates` response, and enforces creator authorization. The focused `-race` round-trip covers enable, disable, readback, and non-owner rejection.
+- `bots.setBotBroadcastDefaultAdminRights` and `bots.setBotGroupDefaultAdminRights` now authenticate the caller as a bot and atomically persist the exact `ChatAdminRights` constructors in PostgreSQL JSONB storage. Migration `043_apifull_bot_default_admin_rights.sql` provisions the shared defaults row; the focused PostgreSQL round-trip verifies both rights families and constructor fidelity.
+- These three methods remain `PARTIAL_ISOLATED_DB_ONLY`: live Layer 229 session delivery, restart persistence, downstream bot/channel behavior, external translation providers, and production acceptance are still unverified.
 
 ## 2026-10-07：群通话 provider 分配媒体 source
 
@@ -2202,3 +2255,107 @@
 - `biz/message` 的 `message.search`、`message.searchGlobal`、`message.searchByMediaType` 和 `message.getSavedHistoryMessages` 已补齐 PostgreSQL 查询、分页和空结果编码；保存历史计数、媒体筛选、全文匹配、标签消息读取均使用 `$N` 参数和 PostgreSQL 布尔字段。
 - `user.setBotCommands` 已支持 PostgreSQL 事务替换命令集合，删除与批量 upsert 在同一 `pgx.Tx` 中完成；`dialog` 的 filter-tags 读写已优先使用 PostgreSQL DAO。
 - 这些切片的包级测试、相关 msg/chat/dialog/user 测试和 PostgreSQL migration portability check 通过。msg 收件箱/出站消息、message 置顶与历史列表仍有生成式旧 DAO 直接引用，尚未达到全服务切换条件；没有部署新镜像，也没有改变 r29 生产容器。
+
+## 2026-10-08 PostgreSQL 18 migration closeout checkpoint
+
+- PostgreSQL 18 deployment migrations now include `021_apifull_chatlists.sql` and `022_apifull_ai_compose.sql`. APIFull read-only startup validation checks the KV, channel, chatlist, and AI compose tables before serving requests; the session Layer 229 dispatcher uses the same PostgreSQL-only read-only gate.
+- AI Compose create/update/save/delete/get methods use `apifull_ai_compose_tone` with a per-user PostgreSQL advisory lock and explicit transaction. Chatlist owner state and public invite index are replaced together in one PostgreSQL transaction. Focused APIFull core/domain/persist tests and service package builds pass against the PostgreSQL 18 test instance.
+- A clean PostgreSQL 18.6 database (`teamgram_audit`, `server_version_num=180006`) applied every migration from `000_bootstrap` through `022_apifull_ai_compose`; the migration portability check, shell syntax checks, and APIFull tests with `APIFULL_POSTGRES_DSN` all passed. Migration versions are unique, so the runner cannot hit a duplicate `021` checksum conflict.
+- Final fresh-install recheck created isolated database `teamgram_verify_20261008_final` on PostgreSQL 18.6, applied all 23 migrations (`000` through `022`), verified the three Chatlists/AI Compose tables and their indexes, and reran the runner with all 23 entries skipped by checksum before dropping the temporary database.
+- The ledger remains intentionally partial: 813 unique methods are present, with current production statuses recorded in `LAYER229_METHOD_LEDGER.csv`; unimplemented Communities, Sticker, Story provider, Games, Ephemeral, payment/provider, and other external dependency gaps remain fail-closed. This checkpoint does not claim 813/813 production acceptance or a live production database cutover.
+
+## 2026-10-09：密码重置 PostgreSQL 完成路径
+
+- `account.resetPassword` now commits the Layer 229 reset state machine. The first request stores the requested deadline with PostgreSQL compare-and-swap; the second request after the seven-day deadline atomically removes the verifier and reset/recovery fields before returning `account.resetPasswordOk`. A reset canceled through `account.declinePasswordReset` blocks requests only until `retry_date`; the next request then starts a new requested-wait window.
+- Focused authorization tests cover deadline reuse, expiry completion, declined retry, storage errors and concurrent first requests. With `APIFULL_POSTGRES_DSN` set to the PostgreSQL 18.6 isolated instance, the handler tests seeded password-reset state, exercised expiry and eight concurrent first requests, and read back one shared deadline plus `HasPassword=false` after completion. This is isolated database evidence only; full WebSocket/session delivery, cross-service session invalidation and restart acceptance remain unverified.
+
+## 2026-10-09：messages.receivedMessages PostgreSQL cursor
+
+- `messages.receivedMessages` now records the caller's highest acknowledged notification ID in `bff_messages_received_message` on PostgreSQL 18. The write is transactional and monotonic via `GREATEST`, so retries cannot move a user's cursor backwards; the BFF messages service requires `TEAMGRAM_POSTGRES_DSN` and verifies the table at startup.
+- The isolated DAO monotonicity test and MessagesCore validation/persistence tests pass. The notification producer and `ReceivedNotifyMessage` delivery path are not wired, so this remains `PARTIAL_ISOLATED_DB_ONLY` rather than full Layer 229 production acceptance.
+
+## 2026-10-09：Mini Bot preview media PostgreSQL round-trip
+
+- `bots.addPreviewMedia`, `bots.editPreviewMedia`, `bots.deletePreviewMedia`, `bots.reorderPreviewMedias`, `bots.getPreviewInfo`, and `bots.getPreviewMedias` now have an isolated PostgreSQL-backed add/edit/reorder/read/delete round-trip test. The existing APIFull KV store is PostgreSQL-owned in production, so language-scoped media survives process boundaries through the deployment schema.
+- The test verifies typed preview constructors and cleanup. Bot registry ownership checks, media entity hydration and full session delivery remain outside this evidence; the six methods are recorded as `PARTIAL_ISOLATED_DB_ONLY`.
+
+## 2026-10-09：PostgreSQL 18 migration set recheck (superseded)
+
+- This earlier checkpoint covered 37 migrations through `038_apifull_channel_emoji_stickers.sql`; the later `043`–`045` migrations and the 44-file recheck are recorded below.
+- The Layer 229 ledger remains intentionally partial and no production runtime cutover is claimed.
+
+## 2026-10-09：Chatlist join/hide/leave PostgreSQL round-trip
+
+- `chatlists.joinChatlistUpdates`, `chatlists.hideChatlistUpdates`, and `chatlists.leaveChatlist` now have valid isolated PostgreSQL 18 core evidence. The focused tests persist joined/hidden state, verify update suppression, move a selected peer back to the main folder, and read the resulting state back from PostgreSQL.
+- `go test -race ./app/bff/apifull/internal/core -run 'TestChatlist(HideUpdatesPersistsAndSuppresses|JoinAndLeaveUpdatesPersistPostgresState)' -count=1` passed with `APIFULL_POSTGRES_DSN` against the isolated PostgreSQL 18 instance. These methods are recorded as `PARTIAL_ISOLATED_DB_ONLY`; no live Layer 229 session or production acceptance is claimed.
+
+## 2026-10-09：Production r29 PostgreSQL wiring and report retry evidence
+
+- `Dockerfile.backend-r29` now carries the built `teamgramd/etc2` PostgreSQL configuration and Docker entrypoint into the runtime image. `backend-deploy-r29-prod.yaml` now declares PostgreSQL 18, an idempotent migration runner, a health-gated backend dependency, a shared bridge network, and a required non-empty `TEAMGRAM_POSTGRES_DSN`.
+- `account.reportPeer` now has a focused PostgreSQL retry assertion: submitting the same typed report twice returns BoolTrue twice while the actor-scoped `apifull_report` intake remains exactly one row. The test passes against the isolated PostgreSQL 18 database. This remains isolated database evidence because no moderation worker or production session acceptance exists.
+- This deployment checkpoint covered the 37-file schema then present; the current 44-file migration set is recorded in the final recheck below. A real r29 image build could not run locally because the private base image `teamgram-server-latest:20261007-r28-prod` is not present or pullable.
+
+## 2026-10-09：messages.getDocumentByHash PostgreSQL 18 component path
+
+- `messages.getDocumentByHash` now forwards the Layer 229 SHA-256, 64-bit size, and MIME tuple through a typed internal media RPC. Media upload persistence computes SHA-256 from the stored DFS bytes; PostgreSQL resolves the tuple through the indexed `documents` catalog and excludes deleted rows. A miss returns `documentEmpty`; provider and database errors are not converted into successful empty results.
+- `TestHashDocumentContent`, `TestDocumentHashLookupGRPC`, `TestMessagesGetDocumentByHashUsesMediaProvider`, and the PostgreSQL 18 `TestDocumentsSelectByHashPostgres18` pass, including deterministic active-row selection, mismatch checks, and an `EXPLAIN` assertion that the partial hash index is usable in an isolated schema.
+- This is component and isolated-database evidence only. No live Layer 229 session path, restart probe, or production acceptance was performed.
+
+## 2026-10-09：Forum, media and PostgreSQL 18 migration closeout
+
+- APIFull forum topics and channel forum settings now use PostgreSQL 18 persistence. The focused forum round-trip, settings readback, authorization, and typed update tests pass against the isolated PostgreSQL database. The earlier forum session probes exercised the MySQL-backed build; they remain historical evidence and do not validate the current PostgreSQL path. The eight affected ledger methods are `PARTIAL_ISOLATED_DB_ONLY`; no current PostgreSQL-wired Layer 229 session or production acceptance is claimed.
+- Media photo aggregate persistence writes photo metadata and its sizes/dimensions in one PostgreSQL transaction. `media.getPhotoSizeListList` preserves the request vector order when returning DAO results and rejects a nil request. The focused Media/Files race-enabled package tests passed.
+- The fresh PostgreSQL 18.6 install applied all 40 uniquely versioned migrations from `000` through `041` (with reserved version gaps), and the second runner pass verified checksums and skipped all 40. Forum tables and `apifull_channel_message.pinned` were present. Migration `010_apifull.sql` remains byte-for-byte unchanged; the pin column is in `041_apifull_channel_message_pinned.sql` so an already-applied checksum is not altered.
+- The migration portability guard, PostgreSQL Compose configuration check, focused APIFull and Media/Files tests, and `git diff --check` passed. This validates the listed schema and isolated data paths only; remaining services, DAOs, deployment checks, restart/failure recovery, and Layer 229 session acceptance still block a full production migration claim.
+
+## 2026-10-09：help.dismissSuggestion PostgreSQL idempotency
+
+- `help.dismissSuggestion` now requires an authenticated caller, validates the Layer 229 `InputPeer`, and records the dismissal in the caller-scoped PostgreSQL 18 APIFull KV row. The read/modify/write uses the store transaction boundary, so retrying the same peer/suggestion does not append a duplicate entry.
+- `help.dismissSuggestion_handler_test.go` passed against a freshly created PostgreSQL 18.6 database after all 41 migrations then checked in were applied. The test verified two identical requests, one persisted peer entry, JSON readback, and invalid-request rejection; the temporary database was dropped after the run.
+- The ledger remains `PARTIAL_ISOLATED_DB_ONLY`: no PostgreSQL-wired live session, client suggestion catalogue, restart persistence, or production acceptance has been performed.
+
+## 2026-10-09：独立 BFF PostgreSQL 启动门禁
+
+- 独立 `autodownload`、`chatinvites`、`contacts`、`drafts`、`messages`、`notification`、`passport`、`sponsoredmessages`、`tos`、`userchannelprofiles` 和 `webbrowser` BFF 均要求非空 `TEAMGRAM_POSTGRES_DSN`，启动时通过共享 APIFull PostgreSQL 18 store 检查连接、服务器版本和必需 schema；连接失败不会回退到 nil 或 MySQL DAO。
+- 总 BFF 将同一 DSN 传递给这些服务，独立配置文件使用环境变量读取。受影响包编译测试通过，生产 BFF 路径未发现 `MysqlDSN`、`OpenMySQL` 或 MySQL DAO 引用（隔离 legacy 文件除外）。
+- 生产验收台账当前仍为 813 个唯一方法，状态为 `PARTIAL_ISOLATED_SESSION_E2E=309`、`BLOCKED_BY_IMPLEMENTATION_GAP=186`、`PARTIAL_COMPONENT_ONLY=144`、`PARTIAL_ISOLATED_DB_ONLY=137`、`NOT_ACCEPTED=18`、`TRANSPORT_ONLY=11`、`ISOLATED_COMPONENT_ONLY=6`、`ISOLATED_DB_ONLY=2`。这些是证据级别，不构成 813/813 的生产完成声明。
+
+## 2026-10-09：PostgreSQL 18 最终迁移重跑
+
+- This earlier run covered 41 migration files through `042`; it is superseded by the 44-file PostgreSQL 18.6 run recorded in the section below.
+- The portability and compile checks from that run remain historical evidence; they do not establish a full production cutover.
+
+## 2026-10-09：PostgreSQL 18 全量迁移集与 authsession/app-log 回环复核
+
+- 最新迁移目录包含 44 个唯一版本（`000`–`045`，保留历史版本空档）。在 PostgreSQL 18.6 隔离数据库 `teamgram_full_migration_20261009` 上，`apply.sh` 首次应用后 `schema_migrations` 为 44 行；第二次运行按 checksum 跳过 44 项。`apifull_app_log`、`apifull_bot_default_admin_rights` 和 `auth_key_infos.expires_at` 均已确认存在，隔离数据库随后删除。
+- `TestPostgresRuntimeSmoke` 通过 PostgreSQL 18.6 隔离数据库验证 auth key/session/salt、临时 key 绑定、用户授权绑定和 reset authorization 路径。authsession 启动要求非空 PostgreSQL DSN，pool/schema/Redis 配置不可用时返回错误；`auth.dropTempAuthKeys` 仍因缺少临时 key 删除 RPC/provider 保持 fail-closed。
+- `TestSaveAppLogEventsPostgresTransaction` 在另一全新 PostgreSQL 18.6 隔离数据库通过，覆盖有效事件 JSONB 读回、nil/空类型事件过滤和触发器失败时同批记录全部回滚。数据库容器已清理。
+- `deploy/postgres/check.sh` 与 `git diff --check` 通过。此项只验证迁移和两个 DAO 切片；生产服务、DAO、BFF/MTProto Layer 229 仍有未完成项，完整生产迁移和流量切换尚未验收。
+
+## 2026-10-09：独立 BFF 配置环境覆盖门禁
+
+- `authorization`、`passkey`、`qrcode` 和 `updates` 独立服务现在使用 `conf.UseEnv()` 加载配置；passkey 的独立 YAML 明确声明 `TEAMGRAM_POSTGRES_DSN`，四个服务均在构造 DAO 前拒绝空 PostgreSQL DSN。
+- 相关 server 包编译检查通过。该门禁修复环境变量覆盖和空 DSN 启动错误，但不改变仍未完成的全量 Layer 229 生产业务验收。
+
+## 2026-10-09：保存对话置顶顺序 PostgreSQL 回环
+
+- `messages.reorderPinnedSavedDialogs` 的 BFF 校验和 Dialog service 现在走同一个 PostgreSQL 事务：`force=true` 先清除现有置顶，再按 Layer 229 vector 顺序写入；`force=false` 保留未列出的已置顶项。顺序值和更新不会跨事务半完成。
+- `TestDialogReorderPinnedSavedDialogsPostgresRoundTrip` 在全新 PostgreSQL 18.6、41 个迁移全部应用的隔离库通过，覆盖 force 清空、vector 顺序、未列出项取消置顶以及非 force 保留路径。该方法提升为 `PARTIAL_ISOLATED_DB_ONLY`，仍缺 PostgreSQL-wired live session、重启和生产流量验收。
+
+## 2026-10-09：channels.toggleAutotranslation PostgreSQL 18
+
+- `channels.toggleAutotranslation` 已通过 APIFull PostgreSQL channel domain 校验 `InputChannel` access hash 与创建者权限，在同一 PostgreSQL 事务内更新 canonical `apifull_channel.autotranslation`，返回带 channel 实体的 `Updates`；非创建者返回 `CHAT_ADMIN_REQUIRED`。
+- `TestChannelsToggleAutotranslationPostgresRoundTripAndAuthorization` 在 PostgreSQL 18.6 隔离数据库上以 race 模式验证开启、关闭、重新读取和非创建者拒绝；`UpdateChannelSettings` 与 owner 行锁使用 PostgreSQL `$N` 参数，路径不依赖 MySQL 占位符兼容层。
+- 当前证据仍为 `PARTIAL_ISOLATED_DB_ONLY`：尚未完成 PostgreSQL-wired Layer 229 session、进程重启持久性、真实翻译 provider 和生产流量验收。
+
+## 2026-10-09：channels.getLeftChannels PostgreSQL 18
+
+- `channels.getLeftChannels` 现在要求有效的 `invokeWithTakeout` 会话，从 PostgreSQL 18 的频道管理日志读取每个频道最新的成员事件；只有最新事件为 `participant_leave` 且当前成员表没有该用户时才返回频道，重新加入会自动排除。结果使用 canonical `apifull_channel` hydration、稳定 ID 排序和 offset 分页，未知存储继续 fail-closed。
+- 新增 `042_apifull_channel_admin_log_target.sql` 为 target/channel/latest-event 查询建立索引。`TestListLeftChannelsUsesLatestLeaveEvent` 验证离开、重新加入和 offset 分页，`TestChannelsGetLeftChannelsFailsClosedWithoutHistoryProvider` 验证无 PostgreSQL provider 时拒绝；定向 core/domain 测试在 PostgreSQL 18.6 隔离库通过。
+- 当前证据仍为 `PARTIAL_ISOLATED_DB_ONLY`：完整 Layer 229 takeout session/export 投递、重启和生产流量验收尚未完成。
+
+## 2026-10-09：auth.dropTempAuthKeys 临时密钥撤销
+
+- authorization BFF 将 `except_auth_keys` 转发到 authsession 内部 RPC。PostgreSQL 在同一事务中撤销当前永久密钥绑定的 TEMP 和 MEDIA_TEMP 密钥、相关 session/authorization 行，并清除被撤销密钥的绑定引用；例外向量中的密钥保持有效。
+- BFF provider 路径有 focused test，PostgreSQL runtime smoke 已扩展覆盖普通/媒体临时密钥撤销与例外保留，但本轮未运行 opt-in PostgreSQL smoke。`payments.go` 的生成类型转换错误已修复，`go test ./app/bff/apifull/...` 与 authsession core、DAO、gRPC service 定向包测试通过。
+- 当前证据为 `PARTIAL_COMPONENT_VERIFIED`；真实 Layer 229 session 调用、PostgreSQL smoke 执行与生产验收仍未完成。

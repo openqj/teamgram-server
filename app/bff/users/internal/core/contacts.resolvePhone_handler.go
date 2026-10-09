@@ -27,6 +27,12 @@ import (
 // ContactsResolvePhone
 // contacts.resolvePhone#8af94344 phone:string = contacts.ResolvedPeer;
 func (c *UsersCore) ContactsResolvePhone(in *mtproto.TLContactsResolvePhone) (*mtproto.Contacts_ResolvedPeer, error) {
+	if c.MD == nil || c.MD.UserId <= 0 {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
+	if in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
 	_, phone, err := phonenumber.CheckPhoneNumberInvalid(in.GetPhone())
 	if err != nil {
 		return nil, err
@@ -40,9 +46,9 @@ func (c *UsersCore) ContactsResolvePhone(in *mtproto.TLContactsResolvePhone) (*m
 		return nil, err
 	}
 
-	var (
-		allow = false
-	)
+	if id == nil || id.GetV() <= 0 {
+		return nil, mtproto.ErrPhoneNotOccupied
+	}
 
 	contactList, err := c.svcCtx.Dao.UserClient.UserGetMutableUsersV2(c.ctx, &userpb.TLUserGetMutableUsersV2{
 		Id:      []int64{id.GetV(), c.MD.UserId},
@@ -52,7 +58,10 @@ func (c *UsersCore) ContactsResolvePhone(in *mtproto.TLContactsResolvePhone) (*m
 	})
 	if err != nil {
 		c.Logger.Errorf("contacts.resolvePhone - error: %v", err)
-		return nil, mtproto.ErrPhoneNotOccupied
+		return nil, err
+	}
+	if contactList == nil {
+		return nil, mtproto.ErrInternalServerError
 	}
 
 	me, _ := contactList.GetImmutableUser(c.MD.UserId)
@@ -64,25 +73,18 @@ func (c *UsersCore) ContactsResolvePhone(in *mtproto.TLContactsResolvePhone) (*m
 		return nil, err
 	}
 
-	rules, _ := c.svcCtx.Dao.UserClient.UserGetPrivacy(c.ctx, &userpb.TLUserGetPrivacy{
+	allowed, err := c.svcCtx.Dao.UserClient.UserCheckPrivacy(c.ctx, &userpb.TLUserCheckPrivacy{
 		UserId:  id.GetV(),
 		KeyType: mtproto.ADDED_BY_PHONE,
+		PeerId:  c.MD.UserId,
 	})
-	if rules != nil && len(rules.Datas) > 0 {
-		allow = mtproto.CheckPrivacyIsAllow(
-			c.MD.UserId,
-			rules.Datas,
-			id.GetV(),
-			func(id, checkId int64) bool {
-				contact, _ := resolved.CheckContact(checkId)
-				return contact
-			},
-			func(checkId int64, idList []int64) bool {
-				return false
-			})
+	if err != nil {
+		return nil, err
 	}
-	if !allow {
-		c.Logger.Errorf("contacts.resolvePhone - error: %v", err)
+	if allowed == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
+	if !mtproto.FromBool(allowed) {
 		return nil, mtproto.ErrPhoneNotOccupied
 	}
 

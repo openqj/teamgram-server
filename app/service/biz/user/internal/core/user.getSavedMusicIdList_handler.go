@@ -32,7 +32,7 @@ func (c *UserCore) UserGetSavedMusicIdList(in *user.TLUserGetSavedMusicIdList) (
 		}
 	)
 
-	_, err := c.svcCtx.Dao.UserSavedMusicDAO.SelectListWithCB(
+	_, err := c.svcCtx.Dao.Postgres.Store.SavedMusic.SelectListWithCB(
 		c.ctx,
 		in.GetUserId(),
 		func(sz int, i int, v *dataobject.UserSavedMusicDO) {

@@ -19,6 +19,9 @@
 package svc
 
 import (
+	"errors"
+
+	"github.com/teamgram/teamgram-server/app/bff/apifull/state"
 	"github.com/teamgram/teamgram-server/app/bff/chats/internal/config"
 	"github.com/teamgram/teamgram-server/app/bff/chats/internal/dao"
 )
@@ -29,6 +32,12 @@ type ServiceContext struct {
 }
 
 func NewServiceContext(c config.Config) *ServiceContext {
+	if c.PostgresDSN == "" {
+		panic(errors.New("chats: PostgresDSN is required"))
+	}
+	if err := state.OpenPostgresReadOnly(c.PostgresDSN); err != nil {
+		panic(err)
+	}
 	return &ServiceContext{
 		Config: c,
 		Dao:    dao.New(c),

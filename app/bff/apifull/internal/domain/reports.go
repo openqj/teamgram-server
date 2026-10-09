@@ -45,12 +45,20 @@ func SaveReport(actorID int64, kind, targetType string, targetID int64, dedupeKe
 		return ErrInvalidReport
 	}
 	now := time.Now().Unix()
-	_, err := db.Exec(`INSERT INTO apifull_report
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	_, err = tx.Exec(`INSERT INTO apifull_report
 		(actor_user_id, kind, target_type, target_id, dedupe_key, payload, state, created_at, updated_at)
-		VALUES (?,?,?,?,?,?, 'pending', ?, ?)
-		ON DUPLICATE KEY UPDATE updated_at=VALUES(updated_at)`,
+		VALUES ($1,$2,$3,$4,$5,$6, 'pending', $7,$8)
+		ON CONFLICT (dedupe_key) DO UPDATE SET updated_at=EXCLUDED.updated_at`,
 		actorID, kind, targetType, targetID, dedupeKey, payload, now, now)
-	return err
+	if err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // LoadReportByDedupe returns the canonical record for an idempotency key.
@@ -66,7 +74,7 @@ func LoadReportByDedupe(dedupeKey string) (Report, bool, error) {
 		return out, false, ErrInvalidReport
 	}
 	err := db.QueryRow(`SELECT id, actor_user_id, kind, target_type, target_id, dedupe_key, payload, state, created_at, updated_at
-		FROM apifull_report WHERE dedupe_key=?`, dedupeKey).Scan(
+		FROM apifull_report WHERE dedupe_key=$1`, dedupeKey).Scan(
 		&out.ID, &out.ActorID, &out.Kind, &out.TargetType, &out.TargetID, &out.DedupeKey,
 		&out.Payload, &out.State, &out.CreatedAt, &out.UpdatedAt)
 	if err == sql.ErrNoRows {

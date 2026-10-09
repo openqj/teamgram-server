@@ -32,7 +32,9 @@ import (
 
 var (
 	// ErrDataChannelFull sessionDataChan 缓冲满时返回此错误，让调用方感知背压
-	ErrDataChannelFull = errors.New("session data channel is full")
+	ErrDataChannelFull  = errors.New("session data channel is full")
+	ErrSessionClosed    = errors.New("session actor is closed")
+	ErrPushNotDelivered = errors.New("session push was not delivered to a gateway")
 )
 
 type SessionList struct {
@@ -625,16 +627,16 @@ func (m *MainAuthWrapper) runLoop() {
 					m.onSessionHttpData(ctxData.ctx, &ctxData.sessionHttpData)
 				})
 			case *syncRpcResultDataCtx:
-				threading.RunSafe(func() {
-					m.onSyncRpcResultData(ctxData.ctx, &ctxData.syncRpcResultData)
+				runSyncPush(ctxData.done, func() error {
+					return m.onSyncRpcResultData(ctxData.ctx, &ctxData.syncRpcResultData)
 				})
 			case *syncDataCtx:
-				threading.RunSafe(func() {
-					m.onSyncData(ctxData.ctx, &ctxData.syncData)
+				runSyncPush(ctxData.done, func() error {
+					return m.onSyncData(ctxData.ctx, &ctxData.syncData)
 				})
 			case *syncSessionDataCtx:
-				threading.RunSafe(func() {
-					m.onSyncSessionData(ctxData.ctx, &ctxData.syncSessionData)
+				runSyncPush(ctxData.done, func() error {
+					return m.onSyncSessionData(ctxData.ctx, &ctxData.syncSessionData)
 				})
 			case *connDataCtx:
 				threading.RunSafe(func() {
@@ -836,8 +838,11 @@ func (m *MainAuthWrapper) SessionClientClosed(ctx context.Context, kType int, kI
 }
 
 func (m *MainAuthWrapper) SyncRpcResultDataArrived(ctx context.Context, kId int64, sessionId, clientMsgId int64, data []byte) error {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
 	rData := &syncRpcResultDataCtx{
-		ctx: contextx.ValueOnlyFrom(ctx),
+		ctx:  ctx,
+		done: make(chan error, 1),
 		syncRpcResultData: syncRpcResultData{
 			authType:    mtproto.AuthKeyTypeUnknown,
 			authId:      kId,
@@ -847,18 +852,15 @@ func (m *MainAuthWrapper) SyncRpcResultDataArrived(ctx context.Context, kId int6
 		},
 	}
 
-	select {
-	case m.sessionDataChan <- rData:
-		return nil
-	default:
-		logx.WithContext(ctx).Errorf("sessionDataChan full, dropping SyncRpcResultDataArrived (authKeyId:%d, sessionId:%d)", kId, sessionId)
-		return ErrDataChannelFull
-	}
+	return m.waitSyncPush(ctx, rData, rData.done)
 }
 
 func (m *MainAuthWrapper) SyncSessionDataArrived(ctx context.Context, kId int64, sessionId int64, updates *mtproto.Updates) error {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
 	sData := &syncSessionDataCtx{
-		ctx: contextx.ValueOnlyFrom(ctx),
+		ctx:  ctx,
+		done: make(chan error, 1),
 		syncSessionData: syncSessionData{
 			authType:  mtproto.AuthKeyTypeUnknown,
 			authId:    kId,
@@ -867,31 +869,58 @@ func (m *MainAuthWrapper) SyncSessionDataArrived(ctx context.Context, kId int64,
 		},
 	}
 
-	select {
-	case m.sessionDataChan <- sData:
-		return nil
-	default:
-		logx.WithContext(ctx).Errorf("sessionDataChan full, dropping SyncSessionDataArrived (authKeyId:%d, sessionId:%d)", kId, sessionId)
-		return ErrDataChannelFull
-	}
+	return m.waitSyncPush(ctx, sData, sData.done)
 }
 
 func (m *MainAuthWrapper) SyncDataArrived(ctx context.Context, needAndroidPush bool, updates *mtproto.Updates) error {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
 	sData := &syncDataCtx{
-		ctx: contextx.ValueOnlyFrom(ctx),
+		ctx:  ctx,
+		done: make(chan error, 1),
 		syncData: syncData{
 			needAndroidPush: needAndroidPush,
 			data:            &messageData{obj: updates},
 		},
 	}
 
+	return m.waitSyncPush(ctx, sData, sData.done)
+}
+
+// Queue admission is not a delivery acknowledgement. MTProto message
+// acknowledgements remain in the session's outgoing queue after gateway delivery.
+func (m *MainAuthWrapper) waitSyncPush(ctx context.Context, message interface{}, done <-chan error) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	select {
-	case m.sessionDataChan <- sData:
-		return nil
+	case <-m.closeChan:
+		return ErrSessionClosed
 	default:
-		logx.WithContext(ctx).Errorf("sessionDataChan full, dropping SyncDataArrived (authKeyId:%d)", m.authKeyId)
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-m.closeChan:
+		return ErrSessionClosed
+	case m.sessionDataChan <- message:
+	default:
 		return ErrDataChannelFull
 	}
+	select {
+	case err := <-done:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-m.closeChan:
+		return ErrSessionClosed
+	}
+}
+
+func runSyncPush(done chan<- error, fn func() error) {
+	err := error(mtproto.ErrInternalServerError)
+	defer func() { done <- err }()
+	threading.RunSafe(func() { err = fn() })
 }
 
 func (m *MainAuthWrapper) onSessionNew(ctx context.Context, connMsg *connData) {
@@ -1013,7 +1042,10 @@ func (m *MainAuthWrapper) onSessionClosed(ctx context.Context, connMsg *connData
 	}
 }
 
-func (m *MainAuthWrapper) onSyncRpcResultData(ctx context.Context, syncMsg *syncRpcResultData) {
+func (m *MainAuthWrapper) onSyncRpcResultData(ctx context.Context, syncMsg *syncRpcResultData) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	logx.WithContext(ctx).Infof("onSyncRpcResultData - receive data: {sess: %s}, data: {auth_id: %d, session_id: %d, client_msg_id: %d}",
 		m,
 		syncMsg.authId,
@@ -1032,29 +1064,37 @@ func (m *MainAuthWrapper) onSyncRpcResultData(ctx context.Context, syncMsg *sync
 	}
 
 	if sess != nil {
-		sess.onSyncRpcResultData(ctx, syncMsg.clientMsgId, syncMsg.data)
+		return sess.onSyncRpcResultData(ctx, syncMsg.clientMsgId, syncMsg.data)
 	} else {
 		logx.WithContext(ctx).Errorf("onSyncRpcResultData - not found session by sessionId: %d", syncMsg.sessionId)
+		return ErrPushNotDelivered
 	}
 }
 
-func (m *MainAuthWrapper) onSyncSessionData(ctx context.Context, syncMsg *syncSessionData) {
+func (m *MainAuthWrapper) onSyncSessionData(ctx context.Context, syncMsg *syncSessionData) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	logx.WithContext(ctx).Infof("onSyncSessionData - receive data: {sess: %s}",
 		m)
 
 	sList := m.getSessionListById(syncMsg.authId)
 	if sList == nil {
 		logx.WithContext(ctx).Errorf("onSyncRpcResultData - not found sessionList by authId: %d", syncMsg.authId)
-		return
+		return ErrPushNotDelivered
 	}
 
 	sess, _ := sList.sessions[syncMsg.sessionId]
 	if sess != nil {
-		sess.onSyncSessionData(ctx, syncMsg.data.obj)
+		return sess.onSyncSessionData(ctx, syncMsg.data.obj)
 	}
+	return ErrPushNotDelivered
 }
 
-func (m *MainAuthWrapper) onSyncData(ctx context.Context, syncMsg *syncData) {
+func (m *MainAuthWrapper) onSyncData(ctx context.Context, syncMsg *syncData) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	logx.WithContext(ctx).Info("authSessions - ", reflect.TypeOf(syncMsg.data.obj))
 
 	if upds, ok := syncMsg.data.obj.(*mtproto.Updates); ok {
@@ -1067,17 +1107,25 @@ func (m *MainAuthWrapper) onSyncData(ctx context.Context, syncMsg *syncData) {
 			// m.cb.DeleteByAuthKeyId(m.authKeyId)
 			m.changeAuthState(ctx, mtproto.AuthStateDeleted, 0)
 			// m.AuthUserId = 0
-			return
+			return nil
 		}
 	}
 
 	if m.mainUpdatesSession != nil {
-		m.mainUpdatesSession.onSyncData(ctx, syncMsg.data.obj)
+		if err := m.mainUpdatesSession.onSyncData(ctx, syncMsg.data.obj); err != nil {
+			return err
+		}
 	}
 
 	if syncMsg.needAndroidPush && m.androidPushSession != nil {
-		m.androidPushSession.onSyncData(ctx, nil)
+		if err := m.androidPushSession.onSyncData(ctx, nil); err != nil {
+			return err
+		}
 	}
+	if m.mainUpdatesSession == nil && (!syncMsg.needAndroidPush || m.androidPushSession == nil) {
+		return ErrPushNotDelivered
+	}
+	return nil
 }
 
 func doRpcRequest(ctx context.Context, dao *dao.Dao, md *metadata.RpcMetadata, request *rpcApiMessage) {

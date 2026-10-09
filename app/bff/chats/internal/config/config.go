@@ -25,6 +25,9 @@ import (
 
 type Config struct {
 	zrpc.RpcServerConf
+	// PostgresDSN points at the deployment-owned PostgreSQL 18 APIFull store.
+	// Chat mutations that share APIFull state must fail startup when it is absent.
+	PostgresDSN       string `json:",optional"`
 	UserClient        zrpc.RpcClientConf
 	ChatClient        zrpc.RpcClientConf
 	MsgClient         zrpc.RpcClientConf

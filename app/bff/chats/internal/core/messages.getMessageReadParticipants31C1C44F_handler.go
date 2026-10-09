@@ -138,52 +138,29 @@ func (c *ChatsCore) MessagesGetMessageReadParticipants31C1C44F(in *mtproto.TLMes
 			return nil, err
 		}
 
-		var (
-			readParticipantIdList []int64
-			lookupErr             error
-		)
-		// TODO: performance optimization
-		boxList.Walk(func(idx int, v *mtproto.MessageBox) {
-			if lookupErr != nil {
-				return
-			}
-			if v == nil {
-				lookupErr = mtproto.ErrInternalServerError
-				return
-			}
-			if v.UserId == c.MD.UserId {
-				return
-			}
-
-			dialogList, err := c.svcCtx.Dao.DialogClient.DialogGetDialogsByIdList(c.ctx, &dialog.TLDialogGetDialogsByIdList{
-				UserId: v.UserId,
-				IdList: []int64{mtproto.MakePeerDialogId(peer.PeerType, peer.PeerId)},
-			})
-			if err != nil {
-				lookupErr = err
-				return
-			} else if dialogList == nil {
-				lookupErr = mtproto.ErrInternalServerError
-				return
-			}
-
-			for _, d := range dialogList.GetDatas() {
-				if d == nil || d.GetDialog() == nil {
-					lookupErr = mtproto.ErrInternalServerError
-					return
-				}
-				if d.GetDialog().GetReadInboxMaxId() >= v.MessageId {
-					readParticipantIdList = append(readParticipantIdList, v.UserId)
-					return
-				}
+		// Read receipts are persisted against the sender's local cursor. Resolve
+		// that cursor from the participant copies, then read all dates in one
+		// PostgreSQL-backed message-service call.
+		senderMessageID := int32(0)
+		boxList.Walk(func(_ int, v *mtproto.MessageBox) {
+			if v != nil && v.UserId == msgBox.SenderUserId {
+				senderMessageID = v.MessageId
 			}
 		})
-		if lookupErr != nil {
-			c.Logger.Errorf("messages.getMessageReadParticipants - error: %v", lookupErr)
-			return nil, lookupErr
+		if senderMessageID == 0 {
+			return &mtproto.Vector_ReadParticipantDate{Datas: []*mtproto.ReadParticipantDate{}}, nil
 		}
-
-		return buildMessageReadParticipantDates(readParticipantIdList)
+		readDates, err := c.svcCtx.Dao.MessageClient.MessageGetOutboxReadDate(c.ctx, &message.TLMessageGetOutboxReadDate{
+			UserId: msgBox.SenderUserId, PeerType: mtproto.PEER_CHAT, PeerId: peer.PeerId, MsgId: senderMessageID,
+		})
+		if err != nil {
+			c.Logger.Errorf("messages.getMessageReadParticipants - error: %v", err)
+			return nil, err
+		}
+		if readDates == nil {
+			return nil, mtproto.ErrInternalServerError
+		}
+		return &mtproto.Vector_ReadParticipantDate{Datas: readDates.GetDatas()}, nil
 	default:
 		err := mtproto.ErrPeerIdInvalid
 		c.Logger.Errorf("messages.getMessageReadParticipants - error: %v", err)

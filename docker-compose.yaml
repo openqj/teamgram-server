@@ -1,7 +1,51 @@
 services:
+  postgres:
+    image: postgres:18
+    container_name: teamgram-postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-teamgram}
+      POSTGRES_USER: ${POSTGRES_USER:-teamgram}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-teamgram}
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./data/postgres:/var/lib/postgresql
+    restart: always
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    networks:
+      teamgram_net:
+        aliases:
+          - postgres
+
+  postgres-migrate:
+    image: postgres:18
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-teamgram}:${POSTGRES_PASSWORD:-teamgram}@postgres:5432/${POSTGRES_DB:-teamgram}?sslmode=disable
+    volumes:
+      - ./teamgramd/deploy:/workspace/teamgramd/deploy:ro
+    entrypoint: ["/bin/bash", "-euc"]
+    command:
+      - /workspace/teamgramd/deploy/postgres/apply.sh
+    restart: "no"
+    networks:
+      - teamgram_net
+
   teamgram:
     build: .
+    depends_on:
+      postgres-migrate:
+        condition: service_completed_successfully
     restart: always
+    environment:
+      TEAMGRAM_POSTGRES_DSN: postgresql://${POSTGRES_USER:-teamgram}:${POSTGRES_PASSWORD:-teamgram}@postgres:5432/${POSTGRES_DB:-teamgram}?sslmode=disable
     ports:
       - "10443:10443"
       - "11443:11443"

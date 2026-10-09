@@ -34,6 +34,9 @@ func (c *UpdatesCore) UpdatesGetState(in *mtproto.TLUpdatesGetState) (*mtproto.U
 		c.Logger.Errorf("updates.getState - error: %v", err)
 		return nil, err
 	}
+	if rValue == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
 	qts, err := c.svcCtx.Dao.CurrentSecretQTS(c.ctx, c.MD.UserId)
 	if err != nil {
 		c.Logger.Errorf("updates.getState - secret qts error: %v", err)

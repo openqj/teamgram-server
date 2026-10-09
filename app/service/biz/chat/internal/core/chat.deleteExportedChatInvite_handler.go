@@ -17,6 +17,10 @@ import (
 // ChatDeleteExportedChatInvite
 // chat.deleteExportedChatInvite self_id:long chat_id:long link:string = Bool;
 func (c *ChatCore) ChatDeleteExportedChatInvite(in *chat.TLChatDeleteExportedChatInvite) (*mtproto.Bool, error) {
+	if c == nil || c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.Postgres == nil ||
+		c.svcCtx.Dao.Postgres.Pool == nil || c.svcCtx.Dao.Postgres.Store == nil || c.svcCtx.Dao.Postgres.Store.Invites == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
 	selfID, err := c.requireInviteSelf(in.SelfId)
 	if err != nil {
 		return nil, err
@@ -27,19 +31,16 @@ func (c *ChatCore) ChatDeleteExportedChatInvite(in *chat.TLChatDeleteExportedCha
 	}
 
 	var rows int64
-	if c.svcCtx.Dao.Postgres != nil && c.svcCtx.Dao.Postgres.Store != nil {
-		tx, txErr := c.svcCtx.Dao.Postgres.Pool.Begin(c.ctx)
-		if txErr == nil {
-			defer tx.Rollback(c.ctx)
-			rows, txErr = c.svcCtx.Dao.Postgres.Store.Invites.DeleteByLinkOn(c.ctx, tx, in.ChatId, link)
-			if txErr == nil {
-				txErr = tx.Commit(c.ctx)
-			}
-		}
-		err = txErr
-	} else {
-		rows, err = c.svcCtx.Dao.ChatInvitesDAO.DeleteByLink(c.ctx, in.ChatId, link)
+	tx, txErr := c.svcCtx.Dao.Postgres.Pool.Begin(c.ctx)
+	if txErr != nil {
+		return nil, txErr
 	}
+	defer func() { _ = tx.Rollback(c.ctx) }()
+	rows, txErr = c.svcCtx.Dao.Postgres.Store.Invites.DeleteByLinkOn(c.ctx, tx, in.ChatId, link)
+	if txErr == nil {
+		txErr = tx.Commit(c.ctx)
+	}
+	err = txErr
 	if err != nil {
 		c.Logger.Errorf("chat.deleteExportedChatInvite - error: %v", err)
 		return nil, err

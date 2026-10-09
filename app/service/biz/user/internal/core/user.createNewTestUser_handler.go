@@ -24,10 +24,10 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/teamgram/marmota/pkg/stores/sqlx"
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/service/biz/user/internal/dal/dataobject"
 	"github.com/teamgram/teamgram-server/app/service/biz/user/user"
+	"github.com/teamgram/teamgram-server/pkg/storage/postgres"
 )
 
 const (
@@ -38,6 +38,10 @@ const (
 // UserCreateNewTestUser
 // user.createNewTestUser secret_key_id:long min_id:long max_id:long = ImmutableUser;
 func (c *UserCore) UserCreateNewTestUser(in *user.TLUserCreateNewTestUser) (*mtproto.ImmutableUser, error) {
+	if c == nil || c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.Postgres == nil ||
+		c.svcCtx.Dao.Postgres.Store == nil || c.svcCtx.Dao.Postgres.Store.Users == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
 	var (
 		userDO *dataobject.UsersDO
 		now    = time.Now().Unix()
@@ -70,12 +74,11 @@ retry:
 		AccountDaysTtl: 180,
 	}
 
-	_, _, err2 := c.svcCtx.Dao.UsersDAO.InsertTestUser(
-		c.ctx,
-		userDO)
+	_, _, err2 := c.svcCtx.Dao.Postgres.Store.Users.InsertTestUser(c.ctx, userDO)
 	if err2 != nil {
-		if sqlx.IsDuplicate(err2) {
-			do2, err := c.svcCtx.Dao.UsersDAO.SelectNextTestUserId(c.ctx, maxId)
+		duplicate := postgres.IsUniqueViolation(err2)
+		if duplicate {
+			do2, err := c.svcCtx.Dao.Postgres.Store.Users.SelectNextTestUserId(c.ctx, maxId)
 			if err != nil {
 				return nil, err
 			}

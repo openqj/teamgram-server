@@ -21,7 +21,7 @@ func (c *UserCore) UserGetCountryCode(in *user.TLUserGetCountryCode) (*mtproto.S
 		V: "",
 	}
 
-	if do, err := c.svcCtx.Dao.UsersDAO.SelectCountryCode(c.ctx, in.UserId); err != nil {
+	if do, err := c.svcCtx.Dao.SelectUserByID(c.ctx, in.UserId); err != nil {
 		return nil, err
 	} else if do == nil {
 		// return rVal, nil

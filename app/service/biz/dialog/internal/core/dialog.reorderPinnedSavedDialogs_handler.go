@@ -21,7 +21,6 @@ package core
 import (
 	"time"
 
-	"github.com/teamgram/marmota/pkg/stores/sqlx"
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/service/biz/dialog/dialog"
 )
@@ -29,38 +28,35 @@ import (
 // DialogReorderPinnedSavedDialogs
 // dialog.reorderPinnedSavedDialogs user_id:long force:Bool order:Vector<PeerUtil> = Bool;
 func (c *DialogCore) DialogReorderPinnedSavedDialogs(in *dialog.TLDialogReorderPinnedSavedDialogs) (*mtproto.Bool, error) {
+	if c == nil || c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.Postgres == nil ||
+		c.svcCtx.Dao.Postgres.Pool == nil || c.svcCtx.Dao.Postgres.Store == nil ||
+		c.svcCtx.Dao.Postgres.Store.SavedDialogs == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
 	var (
 		userId      = in.GetUserId()
 		force       = mtproto.FromBool(in.GetForce())
 		orderPinned = time.Now().Unix()
 	)
-
-	sqlx.TxWrapper(
-		c.ctx,
-		c.svcCtx.Dao.DB,
-		func(tx *sqlx.Tx, result *sqlx.StoreResult) {
-			if force {
-				_, result.Err = c.svcCtx.Dao.SavedDialogsDAO.UpdateUserUnPinnedTx(
-					tx,
-					userId)
-				if result.Err != nil {
-					return
-				}
-			}
-
-			for _, id := range in.Order {
-				_, result.Err = c.svcCtx.Dao.SavedDialogsDAO.UpdateUserPeerPinnedTx(
-					tx,
-					orderPinned<<32,
-					in.UserId,
-					id.PeerType,
-					id.PeerId)
-				if result.Err != nil {
-					return
-				}
-				orderPinned -= 1
-			}
-		})
+	tx, err := c.svcCtx.Dao.Postgres.Pool.Begin(c.ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback(c.ctx) }()
+	if force {
+		if _, err = c.svcCtx.Dao.Postgres.Store.SavedDialogs.UpdateUserUnPinnedTx(c.ctx, tx, userId); err != nil {
+			return nil, err
+		}
+	}
+	for _, id := range in.Order {
+		if _, err = c.svcCtx.Dao.Postgres.Store.SavedDialogs.UpdateUserPeerPinnedTx(c.ctx, tx, orderPinned<<32, userId, id.PeerType, id.PeerId); err != nil {
+			return nil, err
+		}
+		orderPinned--
+	}
+	if err = tx.Commit(c.ctx); err != nil {
+		return nil, err
+	}
 
 	return mtproto.BoolTrue, nil
 }

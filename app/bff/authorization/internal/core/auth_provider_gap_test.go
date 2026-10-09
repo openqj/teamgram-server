@@ -9,6 +9,8 @@ import (
 	"github.com/teamgram/proto/mtproto/rpc/metadata"
 	"github.com/teamgram/teamgram-server/app/bff/authorization/internal/dao"
 	"github.com/teamgram/teamgram-server/app/bff/authorization/internal/svc"
+	authsession "github.com/teamgram/teamgram-server/app/service/authsession/authsession"
+	authsessionclient "github.com/teamgram/teamgram-server/app/service/authsession/client"
 	verification "github.com/teamgram/teamgram-server/pkg/code"
 	"github.com/zeromicro/go-zero/core/logx"
 )
@@ -38,6 +40,16 @@ func (s *missingCodeReporterStub) Deliver(_ context.Context, delivery verificati
 
 func validAuthAPI() (int32, string) {
 	return 100, "0123456789abcdef0123456789abcdef"
+}
+
+type tempAuthKeyDropClient struct {
+	authsessionclient.AuthsessionClient
+	request *authsession.TLAuthsessionDropTempAuthKeys
+}
+
+func (s *tempAuthKeyDropClient) AuthsessionDropTempAuthKeys(_ context.Context, request *authsession.TLAuthsessionDropTempAuthKeys) (*mtproto.Bool, error) {
+	s.request = request
+	return mtproto.BoolTrue, nil
 }
 
 func TestAuthorizationProviderGapsFailClosed(t *testing.T) {
@@ -85,6 +97,21 @@ func TestAuthorizationProviderGapInputErrors(t *testing.T) {
 	}
 	if result, err := c.AuthResetLoginEmail(nil); result != nil || !errors.Is(err, mtproto.ErrInputRequestInvalid) {
 		t.Fatalf("nil reset-email request = (%v, %v), want (nil, INPUT_REQUEST_INVALID)", result, err)
+	}
+}
+
+func TestAuthDropTempAuthKeysUsesAuthsessionProvider(t *testing.T) {
+	client := &tempAuthKeyDropClient{}
+	c := newProviderGapCore()
+	c.svcCtx.Dao.AuthsessionClient = client
+	except := []int64{101, 202}
+
+	result, err := c.AuthDropTempAuthKeys(&mtproto.TLAuthDropTempAuthKeys{ExceptAuthKeys: except})
+	if err != nil || result != mtproto.BoolTrue {
+		t.Fatalf("drop temporary keys = (%v, %v), want BoolTrue", result, err)
+	}
+	if client.request == nil || len(client.request.GetExceptAuthKeys()) != len(except) || client.request.GetExceptAuthKeys()[0] != except[0] || client.request.GetExceptAuthKeys()[1] != except[1] {
+		t.Fatalf("authsession drop request = %v, want except IDs %v", client.request, except)
 	}
 }
 

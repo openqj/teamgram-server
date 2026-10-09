@@ -17,7 +17,7 @@ import (
 // UserGetAccountDaysTTL
 // user.getAccountDaysTTL user_id:int = AccountDaysTTL;
 func (c *UserCore) UserGetAccountDaysTTL(in *user.TLUserGetAccountDaysTTL) (*mtproto.AccountDaysTTL, error) {
-	userDO, err := c.svcCtx.Dao.UsersDAO.SelectAccountDaysTTL(c.ctx, in.UserId)
+	userDO, err := c.svcCtx.Dao.SelectUserByID(c.ctx, in.UserId)
 	if err != nil {
 		c.Logger.Errorf("user.getAccountDaysTTL - error: %v", err)
 		return nil, err

@@ -19,13 +19,12 @@
 package core
 
 import (
-	"encoding/json"
 	"fmt"
+	"sort"
 
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/bff/apifull/channelview"
 	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/domain"
-	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/persist"
 )
 
 // RPCStatisticsServer: Layer 229 methods previously returned ERR_ENTERPRISE_IS_BLOCKED.
@@ -50,24 +49,20 @@ func inputChannelID(ch *mtproto.InputChannel) int64 {
 	return ch.GetChannelId()
 }
 
-func msgViewsKey(userID, peerID int64) string {
-	return fmt.Sprintf("mv:%d:%d", userID, peerID)
-}
-
 type msgViewStore struct {
 	Total int64           `json:"total"`
 	Msgs  map[int32]int64 `json:"msgs"`
 }
 
-func loadMsgViews(userID, peerID int64) (msgViewStore, error) {
-	empty := msgViewStore{Msgs: map[int32]int64{}}
-	raw, err := persist.Default.Get(msgViewsKey(userID, peerID))
-	if err != nil || raw == "" {
-		return empty, err
+func loadChannelMessageViews(channelID int64) (msgViewStore, error) {
+	stored := msgViewStore{Msgs: map[int32]int64{}}
+	counts, err := domain.ChannelMessageViewStats(channelID)
+	if err != nil {
+		return stored, err
 	}
-	var stored msgViewStore
-	if json.Unmarshal([]byte(raw), &stored) != nil || stored.Msgs == nil {
-		return empty, nil
+	for id, count := range counts {
+		stored.Msgs[id] = int64(count)
+		stored.Total += int64(count)
 	}
 	return stored, nil
 }
@@ -183,7 +178,7 @@ func (c *ApiFullCore) StatsGetBroadcastStats(in *mtproto.TLStatsGetBroadcastStat
 		return nil, err
 	}
 	channelID := channel.ID
-	views, err := loadMsgViews(uid, channelID)
+	views, err := loadChannelMessageViews(channelID)
 	if err != nil {
 		return nil, err
 	}
@@ -197,7 +192,13 @@ func (c *ApiFullCore) StatsGetBroadcastStats(in *mtproto.TLStatsGetBroadcastStat
 	}
 	posts := []*mtproto.PostInteractionCounters{}
 	messages := []*mtproto.MessageInteractionCounters{}
-	for id, n := range views.Msgs {
+	ids := make([]int32, 0, len(views.Msgs))
+	for id := range views.Msgs {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	for _, id := range ids {
+		n := views.Msgs[id]
 		posts = append(posts, mtproto.MakeTLPostInteractionCountersMessage(&mtproto.PostInteractionCounters{
 			MsgId: id,
 			Views: int32(n),
@@ -262,7 +263,7 @@ func (c *ApiFullCore) StatsGetMegagroupStats(in *mtproto.TLStatsGetMegagroupStat
 		return nil, err
 	}
 	channelID := channel.ID
-	views, err := loadMsgViews(uid, channelID)
+	views, err := loadChannelMessageViews(channelID)
 	if err != nil {
 		return nil, err
 	}
@@ -349,11 +350,41 @@ func (c *ApiFullCore) StatsGetMessageStats(in *mtproto.TLStatsGetMessageStats) (
 }
 
 func (c *ApiFullCore) StatsGetStoryStats(in *mtproto.TLStatsGetStoryStats) (*mtproto.Stats_StoryStats, error) {
-	_ = in
-	if _, err := c.requireUserId(); err != nil {
+	if in == nil {
+		if _, err := c.requireUserId(); err != nil {
+			return nil, err
+		}
+		return nil, mtproto.ErrMethodNotImpl
+	}
+	uid, err := c.requireUserId()
+	if err != nil {
 		return nil, err
 	}
-	return nil, mtproto.ErrMethodNotImpl
+	if in.GetPeer() == nil {
+		return nil, mtproto.ErrPeerIdInvalid
+	}
+	if !storyPeerOwned(uid, in.GetPeer()) {
+		return nil, mtproto.ErrMethodNotImpl
+	}
+	if in.GetId() <= 0 {
+		return nil, mtproto.ErrStoryIdEmpty
+	}
+	stories, err := loadUserStories(uid)
+	if err != nil {
+		return nil, err
+	}
+	if stories == nil || stories.Items[in.GetId()] == nil {
+		return nil, mtproto.ErrStoryIdEmpty
+	}
+	views, err := storedStoryViews(uid, in.GetId())
+	if err != nil {
+		return nil, err
+	}
+	reactions := int64(len(stories.Reactions[in.GetId()]))
+	return mtproto.MakeTLStatsStoryStats(&mtproto.Stats_StoryStats{
+		ViewsGraph:              countGraph(views),
+		ReactionsByEmotionGraph: countGraph(reactions),
+	}).To_Stats_StoryStats(), nil
 }
 
 func (c *ApiFullCore) StatsGetStoryPublicForwards(in *mtproto.TLStatsGetStoryPublicForwards) (*mtproto.Stats_PublicForwards, error) {

@@ -21,6 +21,7 @@ package server
 import (
 	"flag"
 
+	"github.com/teamgram/teamgram-server/app/bff/apifull/persist"
 	"github.com/teamgram/teamgram-server/app/bff/miscellaneous/internal/config"
 	"github.com/teamgram/teamgram-server/app/bff/miscellaneous/internal/server/grpc"
 	"github.com/teamgram/teamgram-server/app/bff/miscellaneous/internal/svc"
@@ -42,7 +43,10 @@ func New() *Server {
 
 func (s *Server) Initialize() error {
 	var c config.Config
-	conf.MustLoad(*configFile, &c)
+	conf.MustLoad(*configFile, &c, conf.UseEnv())
+	if err := persist.OpenPostgresRequired("miscellaneous", c.PostgresDSN); err != nil {
+		return err
+	}
 
 	logx.Infov(c)
 	ctx := svc.NewServiceContext(c)
@@ -59,4 +63,5 @@ func (s *Server) RunLoop() {
 
 func (s *Server) Destroy() {
 	s.grpcSrv.Stop()
+	_ = persist.ClosePostgres()
 }

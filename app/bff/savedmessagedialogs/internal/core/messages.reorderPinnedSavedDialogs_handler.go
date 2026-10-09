@@ -35,7 +35,7 @@ func (c *SavedMessageDialogsCore) MessagesReorderPinnedSavedDialogs(in *mtproto.
 	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.DialogClient == nil {
 		return nil, mtproto.ErrInternalServerError
 	}
-	if len(in.GetOrder()) == 0 {
+	if len(in.GetOrder()) == 0 && !in.GetForce() {
 		c.Logger.Errorf("messages.reorderPinnedDialogs - len(order) == 0")
 		return mtproto.BoolTrue, nil
 	}

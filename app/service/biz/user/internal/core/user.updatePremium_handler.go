@@ -43,11 +43,14 @@ func (c *UserCore) UserUpdatePremium(in *user.TLUserUpdatePremium) (*mtproto.Boo
 		return mtproto.ToBool(ok), nil
 	}
 
-	rB := c.svcCtx.Dao.UpdateUserPremium(
+	err := c.svcCtx.Dao.UpdateUserPremium(
 		c.ctx,
 		in.GetUserId(),
 		mtproto.FromBool(in.Premium),
 		in.GetMonths().GetValue())
 
-	return mtproto.ToBool(rB), nil
+	if err != nil {
+		return nil, err
+	}
+	return mtproto.BoolTrue, nil
 }

@@ -19,11 +19,14 @@
 package server
 
 import (
+	"errors"
 	"flag"
+	"strings"
 
 	"github.com/teamgram/teamgram-server/app/bff/account/internal/config"
 	"github.com/teamgram/teamgram-server/app/bff/account/internal/server/grpc"
 	"github.com/teamgram/teamgram-server/app/bff/account/internal/svc"
+	sharedpersist "github.com/teamgram/teamgram-server/app/bff/apifull/persist"
 
 	"github.com/zeromicro/go-zero/core/conf"
 	"github.com/zeromicro/go-zero/core/logx"
@@ -42,7 +45,13 @@ func New() *Server {
 
 func (s *Server) Initialize() error {
 	var c config.Config
-	conf.MustLoad(*configFile, &c)
+	conf.MustLoad(*configFile, &c, conf.UseEnv())
+	if strings.TrimSpace(c.PostgresDSN) == "" {
+		return errors.New("account: PostgresDSN is required")
+	}
+	if err := sharedpersist.OpenPostgresRequired("account", c.PostgresDSN); err != nil {
+		return err
+	}
 
 	logx.Infov(c)
 	ctx := svc.NewServiceContext(c, nil, nil)
@@ -59,4 +68,7 @@ func (s *Server) RunLoop() {
 
 func (s *Server) Destroy() {
 	s.grpcSrv.Stop()
+	if err := sharedpersist.ClosePostgres(); err != nil {
+		logx.Errorf("close account PostgreSQL: %v", err)
+	}
 }

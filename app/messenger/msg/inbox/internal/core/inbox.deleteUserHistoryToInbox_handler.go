@@ -27,6 +27,15 @@ import (
 // InboxDeleteUserHistoryToInbox
 // inbox.deleteUserHistoryToInbox flags:# from_id:long peer_user_id:long just_clear:flags.1?true max_id:int = Void;
 func (c *InboxCore) InboxDeleteUserHistoryToInbox(in *inbox.TLInboxDeleteUserHistoryToInbox) (*mtproto.Void, error) {
+	if in == nil || in.FromId <= 0 || in.PeerUserId <= 0 || in.MaxId < 0 {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if c.svcCtx.Dao.Postgres != nil {
+		if _, _, err := c.svcCtx.Dao.DeleteHistoryState(c.ctx, in.PeerUserId, mtproto.MakePeerUtil(mtproto.PEER_USER, in.FromId), in.MaxId, in.JustClear, false); err != nil {
+			return nil, err
+		}
+		return mtproto.EmptyVoid, nil
+	}
 	var (
 		pts, ptsCount int32
 		peer          = mtproto.MakePeerUtil(mtproto.PEER_USER, in.FromId)

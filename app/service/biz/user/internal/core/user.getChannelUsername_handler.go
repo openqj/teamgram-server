@@ -26,21 +26,21 @@ import (
 // UserGetChannelUsername
 // user.getChannelUsername channel_id:long = UsernameData;
 func (c *UserCore) UserGetChannelUsername(in *user.TLUserGetChannelUsername) (*user.UsernameData, error) {
-	do, err := c.svcCtx.Dao.UsernameDAO.SelectByPeer(c.ctx, mtproto.PEER_CHANNEL, in.ChannelId)
+	list, err := c.svcCtx.Dao.SelectUsernamesByPeer(c.ctx, mtproto.PEER_CHANNEL, in.ChannelId)
 	if err != nil {
 		c.Logger.Errorf("username.getChannelUsername - error: %v", err)
 		return nil, err
 	}
-	if do == nil || do.Username == "" {
+	if len(list) == 0 || list[0].Username == "" {
 		err = mtproto.ErrUsernameNotOccupied
 		c.Logger.Errorf("username.getChannelUsername - error: %v", err)
 		return nil, err
 	}
 
 	return user.MakeTLUsernameData(&user.UsernameData{
-		Username: do.Username,
+		Username: list[0].Username,
 		Peer:     mtproto.MakePeerChannel(in.ChannelId),
-		Editable: do.Editable,
-		Active:   do.Active,
+		Editable: list[0].Editable,
+		Active:   list[0].Active,
 	}).To_UsernameData(), nil
 }

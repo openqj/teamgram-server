@@ -1,6 +1,7 @@
 package core
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/teamgram/proto/mtproto"
@@ -90,5 +91,19 @@ func TestStickerMethodsFailClosedWithoutProvider(t *testing.T) {
 	}
 	if raw != "sentinel" {
 		t.Fatalf("unsupported sticker methods mutated local state: %q", raw)
+	}
+}
+
+func TestStickerSetIDRequiresExactAccessHash(t *testing.T) {
+	set := &persist.StickerSet{ID: 42, AccessHash: 73}
+	for _, accessHash := range []int64{0, 72, 74} {
+		input := mtproto.MakeTLInputStickerSetID(&mtproto.InputStickerSet{Id: set.ID, AccessHash: accessHash}).To_InputStickerSet()
+		if err := validateStickerSetAccess(input, set); !errors.Is(err, mtproto.ErrStickersetInvalid) {
+			t.Errorf("access hash %d error = %v, want STICKERSET_INVALID", accessHash, err)
+		}
+	}
+	valid := mtproto.MakeTLInputStickerSetID(&mtproto.InputStickerSet{Id: set.ID, AccessHash: set.AccessHash}).To_InputStickerSet()
+	if err := validateStickerSetAccess(valid, set); err != nil {
+		t.Fatalf("valid access hash rejected: %v", err)
 	}
 }

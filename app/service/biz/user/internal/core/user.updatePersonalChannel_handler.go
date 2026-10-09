@@ -26,10 +26,13 @@ import (
 // UserUpdatePersonalChannel
 // user.updatePersonalChannel user_id:long channel_id:long = Bool;
 func (c *UserCore) UserUpdatePersonalChannel(in *user.TLUserUpdatePersonalChannel) (*mtproto.Bool, error) {
-	rB := c.svcCtx.Dao.UpdatePersonalChannel(
+	err := c.svcCtx.Dao.UpdatePersonalChannel(
 		c.ctx,
 		in.GetUserId(),
 		in.GetChannelId())
 
-	return mtproto.ToBool(rB), nil
+	if err != nil {
+		return nil, err
+	}
+	return mtproto.BoolTrue, nil
 }

@@ -19,22 +19,47 @@
 package core
 
 import (
+	"context"
+
 	"github.com/teamgram/proto/mtproto"
+	"github.com/teamgram/teamgram-server/app/bff/apifull/persist"
 )
 
 // HelpSaveAppLog
 // help.saveAppLog#6f02f748 events:Vector<InputAppEvent> = Bool;
 func (c *MiscellaneousCore) HelpSaveAppLog(in *mtproto.TLHelpSaveAppLog) (*mtproto.Bool, error) {
-	n := 0
+	var events []*mtproto.InputAppEvent
 	if in != nil {
-		for _, ev := range in.GetEvents() {
-			if ev == nil || ev.GetType() == "" {
-				continue
+		events = in.GetEvents()
+	}
+	// The composite BFF opens the shared PostgreSQL store before registering
+	// this service. Standalone miscellaneous startup does the same in server.
+	// Keep direct unit callers compatible when no service context is present.
+	if c != nil && c.svcCtx != nil && c.svcCtx.Config.PostgresDSN != "" {
+		userID := int64(0)
+		if c.MD != nil {
+			userID = c.MD.UserId
+		}
+		ctx := c.ctx
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		if err := persist.SaveAppLogEvents(ctx, userID, events); err != nil {
+			if c.Logger != nil {
+				c.Logger.Errorf("help.saveAppLog - error: %v", err)
 			}
-			n++
+			return nil, err
 		}
 	}
-	c.Logger.Infof("help.saveAppLog events=%d", n)
+	if c != nil && c.Logger != nil {
+		n := 0
+		for _, ev := range events {
+			if ev != nil && ev.GetType() != "" {
+				n++
+			}
+		}
+		c.Logger.Infof("help.saveAppLog events=%d", n)
+	}
 
 	return mtproto.BoolTrue, nil
 }

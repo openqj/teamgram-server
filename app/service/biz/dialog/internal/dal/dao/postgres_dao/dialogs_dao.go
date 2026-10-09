@@ -113,10 +113,11 @@ func (d *DialogsDAO) insertOrUpdate(ctx context.Context, db DB, do *dataobject.D
   unread_count, unread_mentions_count, draft_message_data, date2)
  VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
 	 ON CONFLICT (user_id, peer_dialog_id) DO UPDATE SET
-	  top_message = EXCLUDED.top_message,
+	  top_message = GREATEST(dialogs.top_message, EXCLUDED.top_message),
   unread_count = dialogs.unread_count + EXCLUDED.unread_count,
   unread_mentions_count = dialogs.unread_mentions_count + EXCLUDED.unread_mentions_count,
-  date2 = EXCLUDED.date2
+  date2 = CASE WHEN EXCLUDED.top_message >= dialogs.top_message THEN EXCLUDED.date2 ELSE dialogs.date2 END,
+  deleted = FALSE
  RETURNING id`, do.UserId, do.PeerType, do.PeerId, do.PeerDialogId, do.TopMessage,
 		do.PinnedMsgId, do.UnreadCount, do.UnreadMentionsCount, do.DraftMessageData, do.Date2).Scan(&id)
 	if err != nil {
@@ -155,10 +156,21 @@ func (d *DialogsDAO) insertOrUpdateDialog(ctx context.Context, db DB, do *dataob
 }
 
 func (d *DialogsDAO) UpdateOutboxDialog(ctx context.Context, topMessage int32, date2, userID int64, peerType int32, peerID int64) (int64, error) {
-	return d.update(ctx, d.db, `UPDATE dialogs SET unread_count = 0, deleted = FALSE,
+	return d.UpdateOutboxDialogOn(ctx, d.db, topMessage, date2, userID, peerType, peerID)
+}
+
+func (d *DialogsDAO) UpdateOutboxDialogOn(ctx context.Context, db DB, topMessage int32, date2, userID int64, peerType int32, peerID int64) (int64, error) {
+	return d.update(ctx, db, `UPDATE dialogs SET unread_count = 0, deleted = FALSE,
 	 top_message = $1, date2 = $2, unread_mark = FALSE,
 	 draft_message_data = 'null'::jsonb WHERE user_id = $3 AND peer_type = $4 AND peer_id = $5`,
 		topMessage, date2, userID, peerType, peerID)
+}
+
+func (d *DialogsDAO) UpdateMessageTopOn(ctx context.Context, db DB, topMessage int32, date2, userID int64, peerType int32, peerID int64) (int64, error) {
+	return d.update(ctx, db, `UPDATE dialogs SET deleted = FALSE,
+ top_message = GREATEST(top_message, $1),
+ date2 = CASE WHEN $1 >= top_message THEN $2 ELSE date2 END
+ WHERE user_id = $3 AND peer_type = $4 AND peer_id = $5`, topMessage, date2, userID, peerType, peerID)
 }
 
 func (d *DialogsDAO) UpdateInboxDialog(ctx context.Context, values map[string]any, userID int64, peerType int32, peerID int64) (int64, error) {
@@ -191,6 +203,7 @@ func (d *DialogsDAO) update(ctx context.Context, db DB, query string, args ...an
 var allowedDialogColumns = map[string]bool{
 	"top_message": true, "date2": true, "read_outbox_max_id": true,
 	"read_inbox_max_id": true, "unread_count": true, "unread_mark": true,
+	"unread_mentions_count": true, "unread_reactions_count": true,
 	"pinned_msg_id": true, "deleted": true, "wallpaper_id": true,
 	"wallpaper_overridden": true, "theme_emoticon": true, "ttl_period": true,
 }
@@ -282,7 +295,10 @@ func (d *DialogsDAO) SelectPeerDialogListWithCB(ctx context.Context, userID int6
 	return list, err
 }
 func (d *DialogsDAO) SelectDialog(ctx context.Context, userID int64, peerType int32, peerID int64) (*dataobject.DialogsDO, error) {
-	return scanDialog(d.db.QueryRow(ctx, `SELECT `+dialogColumns+` FROM dialogs WHERE user_id = $1 AND peer_type = $2 AND peer_id = $3 AND deleted = FALSE`, userID, peerType, peerID))
+	return d.SelectDialogOn(ctx, d.db, userID, peerType, peerID)
+}
+func (d *DialogsDAO) SelectDialogOn(ctx context.Context, db DB, userID int64, peerType int32, peerID int64) (*dataobject.DialogsDO, error) {
+	return scanDialog(db.QueryRow(ctx, `SELECT `+dialogColumns+` FROM dialogs WHERE user_id = $1 AND peer_type = $2 AND peer_id = $3 AND deleted = FALSE`, userID, peerType, peerID))
 }
 func (d *DialogsDAO) SelectByPeerDialogId(ctx context.Context, userID, peerDialogID int64) (*dataobject.DialogsDO, error) {
 	return scanDialog(d.db.QueryRow(ctx, `SELECT `+dialogColumns+` FROM dialogs WHERE user_id = $1 AND peer_dialog_id = $2 AND deleted = FALSE`, userID, peerDialogID))
@@ -366,6 +382,9 @@ func (d *DialogsDAO) UpdateCustomMap(ctx context.Context, values map[string]any,
 }
 
 func (d *DialogsDAO) UpdateCustomMapTx(ctx context.Context, tx DB, values map[string]any, userID int64, peerType int32, peerID int64) (int64, error) {
+	return d.updateMap(ctx, tx, values, userID, peerType, peerID)
+}
+func (d *DialogsDAO) UpdateCustomMapOn(ctx context.Context, tx DB, values map[string]any, userID int64, peerType int32, peerID int64) (int64, error) {
 	return d.updateMap(ctx, tx, values, userID, peerType, peerID)
 }
 func (d *DialogsDAO) SaveDraft(ctx context.Context, draftType int32, draftMessageData string, userID int64, peerType int32, peerID int64) (int64, error) {

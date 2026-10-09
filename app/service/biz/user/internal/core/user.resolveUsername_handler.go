@@ -47,7 +47,7 @@ func (c *UserCore) UserResolveUsername(in *user.TLUserResolveUsername) (*mtproto
 		}
 	}
 
-	usernameDO, err := c.svcCtx.Dao.UsernameDAO.SelectByUsername(c.ctx, username)
+	usernameDO, err := c.svcCtx.Dao.SelectUsername(c.ctx, username)
 	if err != nil {
 		c.Logger.Errorf("username.resolveUsername - error: %v", err)
 		return nil, mtproto.ErrInternalServerError

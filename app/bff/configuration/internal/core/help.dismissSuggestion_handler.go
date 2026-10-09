@@ -19,14 +19,83 @@
 package core
 
 import (
+	"encoding/json"
+	"fmt"
+
 	"github.com/teamgram/proto/mtproto"
+	"github.com/teamgram/teamgram-server/app/bff/apifull/persist"
 )
+
+const dismissSuggestionKeyPrefix = "help:dismiss_suggestion:"
+
+func dismissSuggestionKey(userID int64) string {
+	return fmt.Sprintf("%s%d", dismissSuggestionKeyPrefix, userID)
+}
+
+func dismissSuggestionPeerKey(selfID int64, peer *mtproto.InputPeer) (string, error) {
+	if peer == nil {
+		return "", mtproto.ErrPeerIdInvalid
+	}
+	switch peer.GetPredicateName() {
+	case mtproto.Predicate_inputPeerSelf:
+		return fmt.Sprintf("user:%d", selfID), nil
+	case mtproto.Predicate_inputPeerUser:
+		if peer.GetUserId() <= 0 {
+			return "", mtproto.ErrPeerIdInvalid
+		}
+		return fmt.Sprintf("user:%d", peer.GetUserId()), nil
+	case mtproto.Predicate_inputPeerChat:
+		if peer.GetChatId() <= 0 {
+			return "", mtproto.ErrPeerIdInvalid
+		}
+		return fmt.Sprintf("chat:%d", peer.GetChatId()), nil
+	case mtproto.Predicate_inputPeerChannel:
+		if peer.GetChannelId() <= 0 {
+			return "", mtproto.ErrPeerIdInvalid
+		}
+		return fmt.Sprintf("channel:%d", peer.GetChannelId()), nil
+	default:
+		return "", mtproto.ErrPeerIdInvalid
+	}
+}
 
 // HelpDismissSuggestion
 // help.dismissSuggestion#f50dbaa1 peer:InputPeer suggestion:string = Bool;
 func (c *ConfigurationCore) HelpDismissSuggestion(in *mtproto.TLHelpDismissSuggestion) (*mtproto.Bool, error) {
-	// No suggestion store in this package. Accept the dismiss so the client drops it.
-	_ = in
+	if c == nil || c.MD == nil || c.MD.UserId <= 0 {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
+	if in == nil || in.GetPeer() == nil || in.GetSuggestion() == "" {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	peerKey, err := dismissSuggestionPeerKey(c.MD.UserId, in.GetPeer())
+	if err != nil {
+		return nil, err
+	}
+	key := dismissSuggestionKey(c.MD.UserId)
+	err = persist.Update(key, func(raw string) (string, error) {
+		entries := make(map[string][]string)
+		if raw != "" {
+			if err := json.Unmarshal([]byte(raw), &entries); err != nil {
+				return "", fmt.Errorf("decode dismissed suggestions: %w", err)
+			}
+		}
+		for _, suggestion := range entries[peerKey] {
+			if suggestion == in.GetSuggestion() {
+				return raw, nil
+			}
+		}
+		entries[peerKey] = append(entries[peerKey], in.GetSuggestion())
+		encoded, err := json.Marshal(entries)
+		if err != nil {
+			return "", fmt.Errorf("encode dismissed suggestions: %w", err)
+		}
+		return string(encoded), nil
+	})
+	if err != nil {
+		c.Logger.Errorf("help.dismissSuggestion - error: %v", err)
+		return nil, err
+	}
 
 	return mtproto.BoolTrue, nil
 }

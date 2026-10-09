@@ -10,8 +10,6 @@
 package core
 
 import (
-	"context"
-	"github.com/teamgram/marmota/pkg/stores/sqlx"
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/service/biz/chat/chat"
 )
@@ -19,51 +17,20 @@ import (
 // ChatMigratedToChannel
 // chat.migratedToChannel chat:MutableChat id:long access_hash:long = Bool;
 func (c *ChatCore) ChatMigratedToChannel(in *chat.TLChatMigratedToChannel) (*mtproto.Bool, error) {
-	var (
-		chat2 = in.Chat
-		_     = chat2
-	)
-
-	keys := []string{c.svcCtx.Dao.GetChatCacheKey(chat2.Id())}
-	chat2.Walk(func(userId int64, participant *mtproto.ImmutableChatParticipant) error {
-		keys = append(keys, c.svcCtx.Dao.GetChatParticipantCacheKey(participant.ChatId, participant.UserId))
-		return nil
-	})
-	if c.svcCtx.Dao.Postgres != nil && c.svcCtx.Dao.Postgres.Store != nil {
-		tx, txErr := c.svcCtx.Dao.Postgres.Pool.Begin(c.ctx)
+	tx, txErr := c.svcCtx.Dao.Postgres.Pool.Begin(c.ctx)
+	if txErr == nil {
+		defer tx.Rollback(c.ctx)
+		_, txErr = c.svcCtx.Dao.Postgres.Store.Chats.UpdateMigratedToOn(c.ctx, tx, in.Id, in.AccessHash, in.Chat.Id())
 		if txErr == nil {
-			defer tx.Rollback(c.ctx)
-			_, txErr = c.svcCtx.Dao.Postgres.Store.Chats.UpdateMigratedToOn(c.ctx, tx, in.Id, in.AccessHash, in.Chat.Id())
-			if txErr == nil {
-				_, txErr = c.svcCtx.Dao.Postgres.Store.Participants.UpdateStateByChatIdOn(c.ctx, tx, mtproto.ChatMemberStateMigrated, in.Chat.Id())
-			}
-			if txErr == nil {
-				txErr = tx.Commit(c.ctx)
-			}
+			_, txErr = c.svcCtx.Dao.Postgres.Store.Participants.UpdateStateByChatIdOn(c.ctx, tx, mtproto.ChatMemberStateMigrated, in.Chat.Id())
 		}
-		if txErr != nil {
-			return nil, txErr
+		if txErr == nil {
+			txErr = tx.Commit(c.ctx)
 		}
-		return mtproto.BoolTrue, nil
 	}
-
-	_, _, err := c.svcCtx.Dao.CachedConn.Exec(
-		c.ctx,
-		func(ctx context.Context, conn *sqlx.DB) (int64, int64, error) {
-			tR := sqlx.TxWrapper(c.ctx, c.svcCtx.Dao.DB, func(tx *sqlx.Tx, result *sqlx.StoreResult) {
-				_, err := c.svcCtx.Dao.ChatsDAO.UpdateMigratedToTx(tx, in.Id, in.AccessHash, in.Chat.Id())
-				if err != nil {
-					result.Err = err
-					return
-				}
-				c.svcCtx.Dao.ChatParticipantsDAO.UpdateStateByChatIdTx(tx, mtproto.ChatMemberStateMigrated, in.Chat.Id())
-			})
-			return 0, 0, tR.Err
-		},
-		keys...)
-	if err != nil {
-		c.Logger.Errorf("chat.migratedToChannel - error: %v", err)
-		return nil, err
+	if txErr != nil {
+		c.Logger.Errorf("chat.migratedToChannel - error: %v", txErr)
+		return nil, txErr
 	}
 
 	return mtproto.BoolTrue, nil

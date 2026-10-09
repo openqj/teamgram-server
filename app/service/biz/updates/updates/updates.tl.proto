@@ -94,6 +94,7 @@ message TL_updates_getDifferenceV2 {
   int32 pts = 5;
   google.protobuf.Int32Value pts_total_limit = 6;
   int64 date = 7;
+  google.protobuf.Int32Value pts_limit = 8;
 }
 
 //--------------------------------------------------------------------------------------------

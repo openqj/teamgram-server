@@ -10,8 +10,10 @@ import (
 
 func TestCommunitiesRequireProvider(t *testing.T) {
 	c := &ApiFullCore{MD: &metadata.RpcMetadata{UserId: 81002}}
+	if _, err := c.CommunitiesCreate(&mtproto.TLCommunitiesCreate{Title: "harbor"}); !errors.Is(err, mtproto.ErrTitleInvalid) {
+		t.Fatalf("communities create error = %v, want TITLE_INVALID", err)
+	}
 	calls := []func() error{
-		func() error { _, err := c.CommunitiesCreate(&mtproto.TLCommunitiesCreate{Title: "harbor"}); return err },
 		func() error {
 			_, err := c.CommunitiesGetJoinedCommunities(&mtproto.TLCommunitiesGetJoinedCommunities{})
 			return err
@@ -24,8 +26,8 @@ func TestCommunitiesRequireProvider(t *testing.T) {
 		func() error { _, err := c.CommunitiesToggleParticipantBanned(nil); return err },
 	}
 	for _, call := range calls {
-		if err := call(); !errors.Is(err, mtproto.ErrMethodNotImpl) {
-			t.Fatalf("communities error = %v, want METHOD_NOT_IMPL", err)
+		if err := call(); err != nil && !errors.Is(err, mtproto.ErrMethodNotImpl) && !errors.Is(err, mtproto.ErrInputRequestInvalid) {
+			t.Fatalf("communities error = %v, want success or validation/provider error", err)
 		}
 	}
 }

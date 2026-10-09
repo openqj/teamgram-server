@@ -41,7 +41,7 @@ func commandRows(tag pgconn.CommandTag) int64 { return tag.RowsAffected() }
 
 const documentColumns = `id, document_id, access_hash, dc_id, file_path, file_size,
 uploaded_file_name, ext, mime_type, thumb_id, video_thumb_id, attributes, version,
-date2, import_document_id, deleted`
+date2, import_document_id, deleted, sha256`
 
 func scanDocument(row interface{ Scan(...any) error }) (*dataobject.DocumentsDO, error) {
 	do := new(dataobject.DocumentsDO)
@@ -49,7 +49,7 @@ func scanDocument(row interface{ Scan(...any) error }) (*dataobject.DocumentsDO,
 	err := row.Scan(&do.Id, &do.DocumentId, &do.AccessHash, &do.DcId, &do.FilePath,
 		&do.FileSize, &do.UploadedFileName, &do.Ext, &do.MimeType, &do.ThumbId,
 		&do.VideoThumbId, &attributes, &do.Version, &do.Date2, &do.ImportDocumentId,
-		&do.Deleted)
+		&do.Deleted, &do.Sha256)
 	if err == pgx.ErrNoRows {
 		return nil, nil
 	}
@@ -69,7 +69,7 @@ func scanDocumentRows(rows pgx.Rows) ([]dataobject.DocumentsDO, error) {
 		if err := rows.Scan(&do.Id, &do.DocumentId, &do.AccessHash, &do.DcId, &do.FilePath,
 			&do.FileSize, &do.UploadedFileName, &do.Ext, &do.MimeType, &do.ThumbId,
 			&do.VideoThumbId, &attributes, &do.Version, &do.Date2, &do.ImportDocumentId,
-			&do.Deleted); err != nil {
+			&do.Deleted, &do.Sha256); err != nil {
 			return nil, err
 		}
 		do.Attributes = string(attributes)

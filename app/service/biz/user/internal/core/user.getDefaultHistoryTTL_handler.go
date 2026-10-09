@@ -20,17 +20,23 @@ package core
 
 import (
 	"github.com/teamgram/proto/mtproto"
+	"github.com/teamgram/teamgram-server/app/service/biz/user/internal/dal/dataobject"
 	"github.com/teamgram/teamgram-server/app/service/biz/user/user"
 )
 
 // UserGetDefaultHistoryTTL
 // user.getDefaultHistoryTTL user_id:long = DefaultHistoryTTL;
 func (c *UserCore) UserGetDefaultHistoryTTL(in *user.TLUserGetDefaultHistoryTTL) (*mtproto.DefaultHistoryTTL, error) {
+	if err := c.requirePostgres(); err != nil {
+		return nil, err
+	}
 	rV := mtproto.MakeTLDefaultHistoryTTL(&mtproto.DefaultHistoryTTL{
 		Period: 0,
 	}).To_DefaultHistoryTTL()
 
-	do, err := c.svcCtx.Dao.DefaultHistoryTtlDAO.Select(c.ctx, in.GetUserId())
+	var do *dataobject.DefaultHistoryTtlDO
+	var err error
+	do, err = c.svcCtx.Dao.Postgres.Store.HistoryTTL.Select(c.ctx, in.GetUserId())
 	if err != nil {
 		c.Logger.Errorf("user.getDefaultHistoryTTL - error: %v", err)
 		return nil, err

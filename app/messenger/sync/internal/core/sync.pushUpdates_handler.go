@@ -17,6 +17,15 @@ import (
 // SyncPushUpdates
 // sync.pushUpdates user_id:long updates:Updates = Void;
 func (c *SyncCore) SyncPushUpdates(in *sync.TLSyncPushUpdates) (*mtproto.Void, error) {
+	if in == nil || in.GetUserId() <= 0 {
+		return nil, mtproto.ErrUserIdInvalid
+	}
+	if in.GetUpdates() == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if c == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
 	var (
 		userId  = in.GetUserId()
 		updates = in.GetUpdates()
@@ -28,7 +37,9 @@ func (c *SyncCore) SyncPushUpdates(in *sync.TLSyncPushUpdates) (*mtproto.Void, e
 		return nil, err
 	}
 
-	c.pushUpdatesToSession(syncTypeUser, userId, 0, nil, nil, nil, updates, notification)
+	if err := c.pushUpdatesToSession(syncTypeUser, userId, 0, nil, nil, nil, updates, notification); err != nil {
+		return nil, err
+	}
 
 	return mtproto.EmptyVoid, nil
 }

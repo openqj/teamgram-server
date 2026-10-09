@@ -35,6 +35,7 @@ type Store struct {
 	Bots           *BotsDAO
 	BotCommands    *BotCommandsDAO
 	Imported       *ImportedContactsDAO
+	Unregistered   *UnregisteredContactsDAO
 	HistoryTTL     *DefaultHistoryTtlDAO
 }
 
@@ -43,7 +44,7 @@ func NewStore(pool *pgxpool.Pool) *Store {
 		Presences: NewUserPresencesDAO(pool), Privacies: NewUserPrivaciesDAO(pool), PeerBlocks: NewUserPeerBlocksDAO(pool),
 		PeerSettings: NewUserPeerSettingsDAO(pool), Settings: NewUserSettingsDAO(pool), NotifySettings: NewUserNotifySettingsDAO(pool),
 		GlobalPrivacy: NewUserGlobalPrivacySettingsDAO(pool), ProfilePhotos: NewUserProfilePhotosDAO(pool), SavedMusic: NewUserSavedMusicDAO(pool),
-		Bots: NewBotsDAO(pool), BotCommands: NewBotCommandsDAO(pool), Imported: NewImportedContactsDAO(pool), HistoryTTL: NewDefaultHistoryTtlDAO(pool)}
+		Bots: NewBotsDAO(pool), BotCommands: NewBotCommandsDAO(pool), Imported: NewImportedContactsDAO(pool), Unregistered: NewUnregisteredContactsDAO(pool), HistoryTTL: NewDefaultHistoryTtlDAO(pool)}
 }
 
 func scanUser(row pgx.Row) (*dataobject.UsersDO, error) {

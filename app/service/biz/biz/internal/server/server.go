@@ -45,6 +45,7 @@ var configFile = flag.String("f", "etc/biz.yaml", "the config file")
 
 type Server struct {
 	grpcSrv *zrpc.RpcServer
+	closers []func()
 }
 
 func New() *Server {
@@ -53,27 +54,27 @@ func New() *Server {
 
 func (s *Server) Initialize() error {
 	var c config.Config
-	conf.MustLoad(*configFile, &c)
+	conf.MustLoad(*configFile, &c, conf.UseEnv())
 	if c.Postgres.DSN == "" {
 		return errors.New("biz: Postgres.DSN is required")
 	}
 
-	logx.Infov(c)
+	logx.Infof("biz config loaded")
 	// ctx := svc.NewServiceContext(c)
 	// s.grpcSrv = grpc.New(ctx, c.RpcServerConf)
 
 	s.grpcSrv = zrpc.MustNewServer(c.RpcServerConf, func(grpcServer *grpc.Server) {
 		// chat_helper
-		chat.RegisterRPCChatServer(
-			grpcServer,
-			chat_helper.New(
-				chat_helper.Config{
-					RpcServerConf: c.RpcServerConf,
-					Postgres:      c.Postgres,
-					Cache:         c.Cache,
-					MediaClient:   c.MediaClient,
-				},
-				nil))
+		chatService := chat_helper.New(
+			chat_helper.Config{
+				RpcServerConf: c.RpcServerConf,
+				Postgres:      c.Postgres,
+				Cache:         c.Cache,
+				MediaClient:   c.MediaClient,
+			},
+			nil)
+		chat.RegisterRPCChatServer(grpcServer, chatService)
+		s.closers = append(s.closers, func() { chatService.GetServiceContext().Dao.Postgres.Close() })
 
 		// code_helper
 		code.RegisterRPCCodeServer(
@@ -85,45 +86,45 @@ func (s *Server) Initialize() error {
 			}))
 
 		// dialog_helper
-		dialog.RegisterRPCDialogServer(
-			grpcServer,
-			dialog_helper.New(dialog_helper.Config{
-				RpcServerConf: c.RpcServerConf,
-				Postgres:      c.Postgres,
-				Cache:         c.Cache,
-			}))
+		dialogService := dialog_helper.New(dialog_helper.Config{
+			RpcServerConf: c.RpcServerConf,
+			Postgres:      c.Postgres,
+			Cache:         c.Cache,
+		})
+		dialog.RegisterRPCDialogServer(grpcServer, dialogService)
+		s.closers = append(s.closers, func() { dialogService.GetServiceContext().Dao.Postgres.Close() })
 
 		// message_helper
-		message.RegisterRPCMessageServer(
-			grpcServer,
-			message_helper.New(
-				message_helper.Config{
-					RpcServerConf:   c.RpcServerConf,
-					Postgres:        c.Postgres,
-					Cache:           c.Cache,
-					MessageSharding: c.MessageSharding,
-				},
-				nil))
+		messageService := message_helper.New(
+			message_helper.Config{
+				RpcServerConf:   c.RpcServerConf,
+				Postgres:        c.Postgres,
+				Cache:           c.Cache,
+				MessageSharding: c.MessageSharding,
+			},
+			nil)
+		message.RegisterRPCMessageServer(grpcServer, messageService)
+		s.closers = append(s.closers, func() { messageService.GetServiceContext().Dao.Postgres.Close() })
 
 		// updates_helper
-		updates.RegisterRPCUpdatesServer(
-			grpcServer,
-			updates_helper.New(updates_helper.Config{
-				RpcServerConf: c.RpcServerConf,
-				Postgres:      c.Postgres,
-				KV:            c.KV,
-				IdgenClient:   c.IdgenClient,
-			}))
+		updatesService := updates_helper.New(updates_helper.Config{
+			RpcServerConf: c.RpcServerConf,
+			Postgres:      c.Postgres,
+			KV:            c.KV,
+			IdgenClient:   c.IdgenClient,
+		})
+		updates.RegisterRPCUpdatesServer(grpcServer, updatesService)
+		s.closers = append(s.closers, func() { updatesService.GetServiceContext().Dao.Postgres.Close() })
 
 		// user_helper
-		user.RegisterRPCUserServer(
-			grpcServer,
-			user_helper.New(user_helper.Config{
-				RpcServerConf: c.RpcServerConf,
-				Postgres:      c.Postgres,
-				Cache:         c.Cache,
-				MediaClient:   c.MediaClient,
-			}))
+		userService := user_helper.New(user_helper.Config{
+			RpcServerConf: c.RpcServerConf,
+			Postgres:      c.Postgres,
+			Cache:         c.Cache,
+			MediaClient:   c.MediaClient,
+		})
+		user.RegisterRPCUserServer(grpcServer, userService)
+		s.closers = append(s.closers, func() { userService.GetServiceContext().Dao.Postgres.Close() })
 	})
 
 	// logx.Must(err)
@@ -137,5 +138,11 @@ func (s *Server) RunLoop() {
 }
 
 func (s *Server) Destroy() {
-	s.grpcSrv.Stop()
+	if s.grpcSrv != nil {
+		s.grpcSrv.Stop()
+	}
+	for _, closePool := range s.closers {
+		closePool()
+	}
+	s.closers = nil
 }

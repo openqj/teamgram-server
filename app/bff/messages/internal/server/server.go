@@ -19,8 +19,11 @@
 package server
 
 import (
+	"errors"
 	"flag"
+	"strings"
 
+	"github.com/teamgram/teamgram-server/app/bff/apifull/persist"
 	"github.com/teamgram/teamgram-server/app/bff/messages/internal/config"
 	"github.com/teamgram/teamgram-server/app/bff/messages/internal/server/grpc"
 	"github.com/teamgram/teamgram-server/app/bff/messages/internal/svc"
@@ -34,6 +37,7 @@ var configFile = flag.String("f", "etc/messages.yaml", "the config file")
 
 type Server struct {
 	grpcSrv *zrpc.RpcServer
+	ctx     *svc.ServiceContext
 }
 
 func New() *Server {
@@ -42,11 +46,17 @@ func New() *Server {
 
 func (s *Server) Initialize() error {
 	var c config.Config
-	conf.MustLoad(*configFile, &c)
+	conf.MustLoad(*configFile, &c, conf.UseEnv())
+	if strings.TrimSpace(c.PostgresDSN) == "" {
+		return errors.New("messages: PostgresDSN is required")
+	}
+	if err := persist.OpenPostgresRequired("messages", c.PostgresDSN); err != nil {
+		return err
+	}
 
 	logx.Infov(c)
-	ctx := svc.NewServiceContext(c, nil)
-	s.grpcSrv = grpc.New(ctx, c.RpcServerConf)
+	s.ctx = svc.NewServiceContext(c, nil)
+	s.grpcSrv = grpc.New(s.ctx, c.RpcServerConf)
 
 	go func() {
 		go s.grpcSrv.Start()
@@ -59,4 +69,8 @@ func (s *Server) RunLoop() {
 
 func (s *Server) Destroy() {
 	s.grpcSrv.Stop()
+	if s.ctx != nil && s.ctx.Dao != nil {
+		s.ctx.Dao.Close()
+	}
+	_ = persist.ClosePostgres()
 }

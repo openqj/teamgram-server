@@ -43,6 +43,14 @@ func NewPostgres(c config.Config) (*Postgres, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := postgres.VerifySchema(context.Background(), pool,
+		`SELECT auth_key_id,body,deleted FROM auth_keys LIMIT 0`,
+		`SELECT auth_key_id,auth_key_type,perm_auth_key_id,temp_auth_key_id,media_temp_auth_key_id,expires_at,deleted FROM auth_key_infos LIMIT 0`,
+		`SELECT id,auth_key_id,user_id,hash,date_created,date_active,android_push_session_id FROM auth_users LIMIT 0`,
+		`SELECT id,auth_key_id,layer,api_id,device_model,system_version,app_version,system_lang_code,lang_pack,lang_code,system_code,proxy,params,client_ip,date_active,deleted FROM auths LIMIT 0`); err != nil {
+		pool.Close()
+		return nil, err
+	}
 	if len(c.KV) == 0 {
 		pool.Close()
 		return nil, errors.New("authsession: at least one Redis KV node is required")
@@ -92,6 +100,9 @@ func (d *Postgres) keyInfo(ctx context.Context, authKeyID int64) (*mtproto.AuthK
 	if info == nil || key == nil {
 		return nil, mtproto.ErrAuthKeyUnregistered
 	}
+	if info.ExpiresAt > 0 && info.ExpiresAt <= time.Now().Unix() {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
 	body, err := base64.RawStdEncoding.DecodeString(key.Body)
 	if err != nil {
 		return nil, fmt.Errorf("decode auth key: %w", err)
@@ -110,9 +121,19 @@ func (d *Postgres) QueryAuthKeyV2(ctx context.Context, authKeyID int64) (*mtprot
 	return d.keyInfo(ctx, authKeyID)
 }
 
-func (d *Postgres) SetAuthKeyV2(ctx context.Context, key *mtproto.AuthKeyInfo, _ int32) error {
+func (d *Postgres) SetAuthKeyV2(ctx context.Context, key *mtproto.AuthKeyInfo, expiresIn int32) error {
 	if key == nil || key.AuthKeyId == 0 || len(key.AuthKey) == 0 {
 		return fmt.Errorf("invalid auth key")
+	}
+	if key.AuthKeyType != mtproto.AuthKeyTypePerm && key.AuthKeyType != mtproto.AuthKeyTypeTemp && key.AuthKeyType != mtproto.AuthKeyTypeMediaTemp {
+		return fmt.Errorf("invalid auth key type: %d", key.AuthKeyType)
+	}
+	if expiresIn < 0 {
+		return fmt.Errorf("invalid auth key expiration: %d", expiresIn)
+	}
+	expiresAt := int64(0)
+	if expiresIn > 0 && key.AuthKeyType != mtproto.AuthKeyTypePerm {
+		expiresAt = time.Now().Unix() + int64(expiresIn)
 	}
 	return postgres.WithTx(ctx, d.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx, `
@@ -123,15 +144,19 @@ func (d *Postgres) SetAuthKeyV2(ctx context.Context, key *mtproto.AuthKeyInfo, _
 		}
 		_, err := tx.Exec(ctx, `
 			INSERT INTO auth_key_infos
-			(auth_key_id, auth_key_type, perm_auth_key_id, temp_auth_key_id, media_temp_auth_key_id, deleted)
-			VALUES ($1, $2, $3, $4, $5, FALSE)
+			(auth_key_id, auth_key_type, perm_auth_key_id, temp_auth_key_id, media_temp_auth_key_id, expires_at, deleted)
+			VALUES ($1, $2, $3, $4, $5, $6, FALSE)
 			ON CONFLICT (auth_key_id) DO UPDATE SET
 			auth_key_type = EXCLUDED.auth_key_type,
-			perm_auth_key_id = EXCLUDED.perm_auth_key_id,
-			temp_auth_key_id = EXCLUDED.temp_auth_key_id,
-			media_temp_auth_key_id = EXCLUDED.media_temp_auth_key_id,
+			-- A reconnect may only carry the key itself. Preserve an established
+			-- relationship when that request omits the corresponding ID; binding
+			-- and unbinding are handled by their own transactional methods.
+			perm_auth_key_id = CASE WHEN EXCLUDED.perm_auth_key_id = 0 THEN auth_key_infos.perm_auth_key_id ELSE EXCLUDED.perm_auth_key_id END,
+			temp_auth_key_id = CASE WHEN EXCLUDED.temp_auth_key_id = 0 THEN auth_key_infos.temp_auth_key_id ELSE EXCLUDED.temp_auth_key_id END,
+			media_temp_auth_key_id = CASE WHEN EXCLUDED.media_temp_auth_key_id = 0 THEN auth_key_infos.media_temp_auth_key_id ELSE EXCLUDED.media_temp_auth_key_id END,
+			expires_at = CASE WHEN EXCLUDED.expires_at = 0 THEN auth_key_infos.expires_at ELSE EXCLUDED.expires_at END,
 			deleted = FALSE`, key.AuthKeyId, key.AuthKeyType, key.PermAuthKeyId,
-			key.TempAuthKeyId, key.MediaTempAuthKeyId)
+			key.TempAuthKeyId, key.MediaTempAuthKeyId, expiresAt)
 		return err
 	})
 }
@@ -145,29 +170,114 @@ func (d *Postgres) BindTempAuthKeyV2(ctx context.Context, permAuthKeyID, tempAut
 	}
 	return postgres.WithTx(ctx, d.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
 		var permType, tempActualType int32
-		var tempOwner, permCurrent int64
+		var currentTemp, currentMedia, tempOwner, tempExpiresAt int64
 		if err := tx.QueryRow(ctx, `SELECT auth_key_type, temp_auth_key_id, media_temp_auth_key_id FROM auth_key_infos WHERE auth_key_id = $1 AND deleted = FALSE FOR UPDATE`, permAuthKeyID).
-			Scan(&permType, &permCurrent, new(int64)); err != nil {
+			Scan(&permType, &currentTemp, &currentMedia); err != nil {
 			return err
 		}
-		if err := tx.QueryRow(ctx, `SELECT auth_key_type, perm_auth_key_id FROM auth_key_infos WHERE auth_key_id = $1 AND deleted = FALSE FOR UPDATE`, tempAuthKeyID).
-			Scan(&tempActualType, &tempOwner); err != nil {
+		if permType != mtproto.AuthKeyTypePerm {
+			return fmt.Errorf("permanent auth key has type %d", permType)
+		}
+		if err := tx.QueryRow(ctx, `SELECT auth_key_type, perm_auth_key_id, expires_at FROM auth_key_infos WHERE auth_key_id = $1 AND deleted = FALSE FOR UPDATE`, tempAuthKeyID).
+			Scan(&tempActualType, &tempOwner, &tempExpiresAt); err != nil {
 			return err
 		}
 		if tempActualType != tempType {
 			return fmt.Errorf("temporary auth key type mismatch: got %d, want %d", tempActualType, tempType)
 		}
+		if tempExpiresAt > 0 && tempExpiresAt <= time.Now().Unix() {
+			return fmt.Errorf("temporary auth key expired")
+		}
 		if tempOwner != 0 && tempOwner != permAuthKeyID {
 			return ErrTempAuthKeyAlreadyBound
 		}
 		field := "temp_auth_key_id"
+		previousTemp := currentTemp
 		if tempType == mtproto.AuthKeyTypeMediaTemp {
 			field = "media_temp_auth_key_id"
+			previousTemp = currentMedia
+		}
+		if previousTemp != 0 && previousTemp != tempAuthKeyID {
+			if _, err := tx.Exec(ctx, `UPDATE auth_key_infos SET perm_auth_key_id = 0 WHERE auth_key_id = $1 AND perm_auth_key_id = $2 AND deleted = FALSE`, previousTemp, permAuthKeyID); err != nil {
+				return err
+			}
 		}
 		if _, err := tx.Exec(ctx, `UPDATE auth_key_infos SET `+field+` = $1 WHERE auth_key_id = $2 AND deleted = FALSE`, tempAuthKeyID, permAuthKeyID); err != nil {
 			return err
 		}
 		_, err := tx.Exec(ctx, `UPDATE auth_key_infos SET perm_auth_key_id = $1 WHERE auth_key_id = $2 AND deleted = FALSE`, permAuthKeyID, tempAuthKeyID)
+		return err
+	})
+}
+
+func (d *Postgres) DropTempAuthKeys(ctx context.Context, permAuthKeyID int64, exceptAuthKeys []int64) error {
+	if permAuthKeyID <= 0 {
+		return fmt.Errorf("invalid permanent auth key ID")
+	}
+	if exceptAuthKeys == nil {
+		exceptAuthKeys = []int64{}
+	}
+	return postgres.WithTx(ctx, d.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+		var authKeyType int32
+		var tempAuthKeyID, mediaTempAuthKeyID int64
+		if err := tx.QueryRow(ctx, `SELECT auth_key_type, temp_auth_key_id, media_temp_auth_key_id
+			FROM auth_key_infos WHERE auth_key_id = $1 AND deleted = FALSE FOR UPDATE`, permAuthKeyID).
+			Scan(&authKeyType, &tempAuthKeyID, &mediaTempAuthKeyID); err != nil {
+			return err
+		}
+		if authKeyType != mtproto.AuthKeyTypePerm {
+			return fmt.Errorf("auth key %d is not permanent", permAuthKeyID)
+		}
+
+		// Include reverse bindings and the permanent key's direct references,
+		// while leaving keys owned by another permanent authorization alone.
+		targetKeys := make([]int64, 0, 2)
+		rows, err := tx.Query(ctx, `SELECT auth_key_id FROM auth_key_infos
+			WHERE auth_key_type IN ($2, $3) AND deleted = FALSE
+			AND (perm_auth_key_id = $1 OR auth_key_id = ANY($4::bigint[]))
+			AND (perm_auth_key_id = 0 OR perm_auth_key_id = $1) FOR UPDATE`,
+			permAuthKeyID, mtproto.AuthKeyTypeTemp, mtproto.AuthKeyTypeMediaTemp, []int64{tempAuthKeyID, mediaTempAuthKeyID})
+		if err != nil {
+			return err
+		}
+		for rows.Next() {
+			var keyID int64
+			if err := rows.Scan(&keyID); err != nil {
+				rows.Close()
+				return err
+			}
+			targetKeys = append(targetKeys, keyID)
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return err
+		}
+		rows.Close()
+
+		if len(targetKeys) > 0 {
+			if _, err := tx.Exec(ctx, `UPDATE auth_keys SET deleted = TRUE
+				WHERE auth_key_id = ANY($1::bigint[]) AND auth_key_id <> ALL($2::bigint[])`, targetKeys, exceptAuthKeys); err != nil {
+				return err
+			}
+			if _, err := tx.Exec(ctx, `UPDATE auth_key_infos SET deleted = TRUE, perm_auth_key_id = 0,
+				temp_auth_key_id = 0, media_temp_auth_key_id = 0
+				WHERE auth_key_id = ANY($1::bigint[]) AND auth_key_id <> ALL($2::bigint[])`, targetKeys, exceptAuthKeys); err != nil {
+				return err
+			}
+			if _, err := tx.Exec(ctx, `UPDATE auths SET deleted = TRUE, date_active = 0
+				WHERE auth_key_id = ANY($1::bigint[]) AND auth_key_id <> ALL($2::bigint[])`, targetKeys, exceptAuthKeys); err != nil {
+				return err
+			}
+			if _, err := tx.Exec(ctx, `UPDATE auth_users SET deleted = TRUE, date_active = 0
+				WHERE auth_key_id = ANY($1::bigint[]) AND auth_key_id <> ALL($2::bigint[])`, targetKeys, exceptAuthKeys); err != nil {
+				return err
+			}
+		}
+
+		_, err = tx.Exec(ctx, `UPDATE auth_key_infos SET
+			temp_auth_key_id = CASE WHEN temp_auth_key_id = ANY($2::bigint[]) THEN temp_auth_key_id ELSE 0 END,
+			media_temp_auth_key_id = CASE WHEN media_temp_auth_key_id = ANY($2::bigint[]) THEN media_temp_auth_key_id ELSE 0 END
+			WHERE auth_key_id = $1 AND deleted = FALSE`, permAuthKeyID, exceptAuthKeys)
 		return err
 	})
 }
@@ -213,12 +323,14 @@ func (d *Postgres) BindAuthKeyUser(ctx context.Context, authKeyID, userID int64)
 }
 
 func (d *Postgres) UnbindAuthUser(ctx context.Context, authKeyID, userID int64) error {
-	if authKeyID == 0 {
-		_, err := d.pool.Exec(ctx, `UPDATE auth_users SET deleted = TRUE, date_active = 0 WHERE user_id = $1 AND deleted = FALSE`, userID)
+	return postgres.WithTx(ctx, d.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+		if authKeyID == 0 {
+			_, err := tx.Exec(ctx, `UPDATE auth_users SET deleted = TRUE, date_active = 0 WHERE user_id = $1 AND deleted = FALSE`, userID)
+			return err
+		}
+		_, err := tx.Exec(ctx, `UPDATE auth_users SET deleted = TRUE, date_active = 0 WHERE auth_key_id = $1 AND user_id = $2 AND deleted = FALSE`, authKeyID, userID)
 		return err
-	}
-	_, err := d.pool.Exec(ctx, `UPDATE auth_users SET deleted = TRUE, date_active = 0 WHERE auth_key_id = $1 AND user_id = $2 AND deleted = FALSE`, authKeyID, userID)
-	return err
+	})
 }
 
 func (d *Postgres) SetClientSessionInfo(ctx context.Context, session *authsession.ClientSession) error {
@@ -229,32 +341,36 @@ func (d *Postgres) SetClientSessionInfo(ctx context.Context, session *authsessio
 	if strings.TrimSpace(params) == "" {
 		params = "null"
 	}
-	_, err := d.pool.Exec(ctx, `
-		INSERT INTO auths (auth_key_id, layer, api_id, device_model, system_version, app_version,
-		 system_lang_code, lang_pack, lang_code, proxy, params, client_ip, date_active, deleted)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$12::jsonb,$11,$13,FALSE)
-		ON CONFLICT (auth_key_id) DO UPDATE SET layer=EXCLUDED.layer, api_id=EXCLUDED.api_id,
-		 device_model=EXCLUDED.device_model, system_version=EXCLUDED.system_version,
-		 app_version=EXCLUDED.app_version, system_lang_code=EXCLUDED.system_lang_code,
-		 lang_pack=EXCLUDED.lang_pack, lang_code=EXCLUDED.lang_code, proxy=EXCLUDED.proxy,
-		 params=EXCLUDED.params, client_ip=EXCLUDED.client_ip, date_active=EXCLUDED.date_active, deleted=FALSE`,
-		session.GetAuthKeyId(), session.GetLayer(), session.GetApiId(), session.GetDeviceModel(),
-		session.GetSystemVersion(), session.GetAppVersion(), session.GetSystemLangCode(), session.GetLangPack(),
-		session.GetLangCode(), session.GetProxy(), session.GetIp(), params, time.Now().Unix())
-	return err
+	return postgres.WithTx(ctx, d.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `
+			INSERT INTO auths (auth_key_id, layer, api_id, device_model, system_version, app_version,
+			 system_lang_code, lang_pack, lang_code, proxy, params, client_ip, date_active, deleted)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$12::jsonb,$11,$13,FALSE)
+			ON CONFLICT (auth_key_id) DO UPDATE SET layer=EXCLUDED.layer, api_id=EXCLUDED.api_id,
+			 device_model=EXCLUDED.device_model, system_version=EXCLUDED.system_version,
+			 app_version=EXCLUDED.app_version, system_lang_code=EXCLUDED.system_lang_code,
+			 lang_pack=EXCLUDED.lang_pack, lang_code=EXCLUDED.lang_code, proxy=EXCLUDED.proxy,
+			 params=EXCLUDED.params, client_ip=EXCLUDED.client_ip, date_active=EXCLUDED.date_active, deleted=FALSE`,
+			session.GetAuthKeyId(), session.GetLayer(), session.GetApiId(), session.GetDeviceModel(),
+			session.GetSystemVersion(), session.GetAppVersion(), session.GetSystemLangCode(), session.GetLangPack(),
+			session.GetLangCode(), session.GetProxy(), session.GetIp(), params, time.Now().Unix())
+		return err
+	})
 }
 
 func (d *Postgres) SetLayer(ctx context.Context, in *authsession.TLAuthsessionSetLayer) error {
 	if in == nil {
 		return fmt.Errorf("nil set layer request")
 	}
-	_, err := d.pool.Exec(ctx, `
-		INSERT INTO auths (auth_key_id, layer, client_ip, date_active, params, deleted)
-		VALUES ($1,$2,NULLIF($3, '')::inet,$4,'null'::jsonb,FALSE)
-		ON CONFLICT (auth_key_id) DO UPDATE SET layer=EXCLUDED.layer,
-		 client_ip=EXCLUDED.client_ip,date_active=EXCLUDED.date_active,deleted=FALSE`,
-		in.GetAuthKeyId(), in.GetLayer(), in.GetIp(), time.Now().Unix())
-	return err
+	return postgres.WithTx(ctx, d.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `
+			INSERT INTO auths (auth_key_id, layer, client_ip, date_active, params, deleted)
+			VALUES ($1,$2,NULLIF($3, '')::inet,$4,'null'::jsonb,FALSE)
+			ON CONFLICT (auth_key_id) DO UPDATE SET layer=EXCLUDED.layer,
+			 client_ip=EXCLUDED.client_ip,date_active=EXCLUDED.date_active,deleted=FALSE`,
+			in.GetAuthKeyId(), in.GetLayer(), in.GetIp(), time.Now().Unix())
+		return err
+	})
 }
 
 func (d *Postgres) SetInitConnection(ctx context.Context, in *authsession.TLAuthsessionSetInitConnection) error {
@@ -265,23 +381,27 @@ func (d *Postgres) SetInitConnection(ctx context.Context, in *authsession.TLAuth
 	if strings.TrimSpace(params) == "" {
 		params = "null"
 	}
-	_, err := d.pool.Exec(ctx, `
-		INSERT INTO auths (auth_key_id, api_id, device_model, system_version, app_version,
-		 system_lang_code, lang_pack, lang_code, proxy, params, client_ip, date_active, deleted)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,NULLIF($11, '')::inet,$12,FALSE)
-		ON CONFLICT (auth_key_id) DO UPDATE SET api_id=EXCLUDED.api_id,
-		 device_model=EXCLUDED.device_model,system_version=EXCLUDED.system_version,
-		 app_version=EXCLUDED.app_version,system_lang_code=EXCLUDED.system_lang_code,
-		 lang_pack=EXCLUDED.lang_pack,lang_code=EXCLUDED.lang_code,proxy=EXCLUDED.proxy,
-		 params=EXCLUDED.params,client_ip=EXCLUDED.client_ip,date_active=EXCLUDED.date_active,deleted=FALSE`,
-		in.GetAuthKeyId(), in.GetApiId(), in.GetDeviceModel(), in.GetSystemVersion(), in.GetAppVersion(),
-		in.GetSystemLangCode(), in.GetLangPack(), in.GetLangCode(), in.GetProxy(), params, in.GetIp(), time.Now().Unix())
-	return err
+	return postgres.WithTx(ctx, d.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `
+			INSERT INTO auths (auth_key_id, api_id, device_model, system_version, app_version,
+			 system_lang_code, lang_pack, lang_code, proxy, params, client_ip, date_active, deleted)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,NULLIF($11, '')::inet,$12,FALSE)
+			ON CONFLICT (auth_key_id) DO UPDATE SET api_id=EXCLUDED.api_id,
+			 device_model=EXCLUDED.device_model,system_version=EXCLUDED.system_version,
+			 app_version=EXCLUDED.app_version,system_lang_code=EXCLUDED.system_lang_code,
+			 lang_pack=EXCLUDED.lang_pack,lang_code=EXCLUDED.lang_code,proxy=EXCLUDED.proxy,
+			 params=EXCLUDED.params,client_ip=EXCLUDED.client_ip,date_active=EXCLUDED.date_active,deleted=FALSE`,
+			in.GetAuthKeyId(), in.GetApiId(), in.GetDeviceModel(), in.GetSystemVersion(), in.GetAppVersion(),
+			in.GetSystemLangCode(), in.GetLangPack(), in.GetLangCode(), in.GetProxy(), params, in.GetIp(), time.Now().Unix())
+		return err
+	})
 }
 
 func (d *Postgres) SetAndroidPushSessionId(ctx context.Context, userID, keyID, sessionID int64) error {
-	_, err := d.pool.Exec(ctx, `UPDATE auth_users SET android_push_session_id = $1 WHERE auth_key_id = $2 AND user_id = $3 AND deleted = FALSE`, sessionID, keyID, userID)
-	return err
+	return postgres.WithTx(ctx, d.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `UPDATE auth_users SET android_push_session_id = $1 WHERE auth_key_id = $2 AND user_id = $3 AND deleted = FALSE`, sessionID, keyID, userID)
+		return err
+	})
 }
 
 type pgAuthData struct {
@@ -326,11 +446,16 @@ func (d *Postgres) getAuthData(ctx context.Context, keyID int64) (*pgAuthData, e
 }
 
 func (d *Postgres) GetAuthKeyUserId(ctx context.Context, keyID int64) int64 {
-	data, err := d.getAuthData(ctx, keyID)
-	if err != nil || data == nil || data.user == nil {
+	// Ownership is stored in auth_users and must not depend on the optional
+	// client/session metadata row in auths. A freshly-bound key can be used
+	// before the session has sent initConnection.
+	var userID int64
+	if err := d.pool.QueryRow(ctx, `
+		SELECT user_id FROM auth_users
+		WHERE auth_key_id = $1 AND deleted = FALSE`, keyID).Scan(&userID); err != nil {
 		return 0
 	}
-	return data.user.userID
+	return userID
 }
 
 func (d *Postgres) GetCacheAuthData(ctx context.Context, keyID int64) (*CacheAuthData, error) {

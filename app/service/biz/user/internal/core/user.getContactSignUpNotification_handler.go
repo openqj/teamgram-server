@@ -21,7 +21,7 @@ func (c *UserCore) UserGetContactSignUpNotification(in *user.TLUserGetContactSig
 		rV = false
 	)
 
-	do, err := c.svcCtx.Dao.UserSettingsDAO.SelectByKey(c.ctx, in.UserId, "contactSignUpNotification")
+	do, err := c.svcCtx.Dao.Postgres.Store.Settings.SelectByKey(c.ctx, in.UserId, "contactSignUpNotification")
 	if do != nil {
 		if do.Value == "true" {
 			rV = true

@@ -12,6 +12,7 @@ package core
 import (
 	"context"
 
+	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/proto/mtproto/rpc/metadata"
 	"github.com/teamgram/teamgram-server/app/service/biz/user/internal/svc"
 	"github.com/teamgram/teamgram-server/app/service/biz/user/user"
@@ -40,4 +41,14 @@ func New(ctx context.Context, svcCtx *svc.ServiceContext) *UserCore {
 		Logger: logx.WithContext(ctx),
 		MD:     metadata.RpcMetadataFromIncoming(ctx),
 	}
+}
+
+// requirePostgres keeps production handlers on the authoritative PostgreSQL
+// store. MySQL DAOs remain available only to isolated migration-boundary code.
+func (c *UserCore) requirePostgres() error {
+	if c == nil || c.svcCtx == nil || c.svcCtx.Dao == nil ||
+		c.svcCtx.Dao.Postgres == nil || c.svcCtx.Dao.Postgres.Store == nil {
+		return mtproto.ErrMethodNotImpl
+	}
+	return nil
 }

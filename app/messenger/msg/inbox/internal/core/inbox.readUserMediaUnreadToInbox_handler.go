@@ -28,6 +28,15 @@ import (
 // InboxReadUserMediaUnreadToInbox
 // inbox.readUserMediaUnreadToInbox from_id:long peer_user_id:long id:Vector<InboxMessageId> = Voi
 func (c *InboxCore) InboxReadUserMediaUnreadToInbox(in *inbox.TLInboxReadUserMediaUnreadToInbox) (*mtproto.Void, error) {
+	if in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if c.svcCtx.Dao.Postgres != nil {
+		if err := c.readLegacyInboxMedia(in.FromId, mtproto.PEER_USER, in.PeerUserId, in.Id); err != nil {
+			return nil, err
+		}
+		return mtproto.EmptyVoid, nil
+	}
 	idList := make([]int64, 0, len(in.GetId()))
 	for _, id := range in.GetId() {
 		idList = append(idList, id.DialogMessageId)

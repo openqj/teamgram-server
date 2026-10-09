@@ -26,7 +26,15 @@ import (
 // UserDeactivateAllChannelUsernames
 // user.deactivateAllChannelUsernames channel_id:long = Bool;
 func (c *UserCore) UserDeactivateAllChannelUsernames(in *user.TLUserDeactivateAllChannelUsernames) (*mtproto.Bool, error) {
-	_, _ = c.svcCtx.Dao.UsernameDAO.DeleteByChannelId(c.ctx, in.GetChannelId())
+	if in.GetChannelId() <= 0 {
+		return nil, mtproto.ErrChannelInvalid
+	}
+	if c.MD == nil || c.MD.GetUserId() <= 0 {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
+	if err := c.svcCtx.Dao.DeactivateChannelUsernames(c.ctx, c.MD.GetUserId(), in.GetChannelId()); err != nil {
+		return nil, err
+	}
 
 	return mtproto.BoolTrue, nil
 }

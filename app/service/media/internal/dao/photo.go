@@ -113,6 +113,9 @@ func (c *CachePhotoData) ToVideoSizeList() *media.VideoSizeList {
 }
 
 func makePhotoSizesDO(szId int64, sz *mtproto.PhotoSize) *dataobject.PhotoSizesDO {
+	if sz == nil {
+		return nil
+	}
 	szDO := &dataobject.PhotoSizesDO{
 		PhotoSizeId: szId,
 		SizeType:    sz.Type,
@@ -134,7 +137,7 @@ func makePhotoSizesDO(szId int64, sz *mtproto.PhotoSize) *dataobject.PhotoSizesD
 		szDO.CachedBytes = base64.RawStdEncoding.EncodeToString(sz.Bytes)
 		szDO.FileSize = int32(len(sz.Bytes))
 	case mtproto.Predicate_photoCachedSize:
-		szDO.CachedType = CachedTypeSizeProgressive
+		szDO.CachedType = CachedTypeCachedSize
 		szDO.CachedBytes = base64.RawStdEncoding.EncodeToString(sz.Bytes)
 		szDO.FileSize = int32(len(sz.Bytes))
 	case mtproto.Predicate_photoSizeProgressive:
@@ -195,7 +198,7 @@ func getPhotoSize(szDO *dataobject.PhotoSizesDO) *mtproto.PhotoSize {
 			var (
 				sizes []int32
 			)
-			err := jsonx.UnmarshalFromString(szDO.CachedBytes, sizes)
+			err := jsonx.UnmarshalFromString(szDO.CachedBytes, &sizes)
 			if err != nil {
 				return nil
 			}
@@ -232,8 +235,11 @@ func (m *Dao) SavePhotoSizeV2(ctx context.Context, szId int64, szList []*mtproto
 	return nil
 }
 
-func (m *Dao) SavePhotoV2(ctx context.Context, id, accessHash int64, hasStickers, hasVideo bool, fileName string) error {
-	_, _, err := m.photosStore().Insert(ctx, &dataobject.PhotosDO{
+func (m *Dao) SavePhotoAggregateV2(ctx context.Context, id, accessHash int64, hasStickers, hasVideo bool, fileName string, sizes []*mtproto.PhotoSize, videoSizes []*mtproto.VideoSize) error {
+	if id <= 0 {
+		return fmt.Errorf("media: invalid photo id %d", id)
+	}
+	photo := &dataobject.PhotosDO{
 		PhotoId:       id,
 		AccessHash:    accessHash,
 		HasStickers:   hasStickers,
@@ -242,17 +248,38 @@ func (m *Dao) SavePhotoV2(ctx context.Context, id, accessHash int64, hasStickers
 		HasVideo:      hasVideo,
 		InputFileName: fileName,
 		Ext:           getFileExtName(fileName),
-	})
-	return err
+	}
+	photoSizes := make([]*dataobject.PhotoSizesDO, 0, len(sizes))
+	for _, size := range sizes {
+		if sizeDO := makePhotoSizesDO(id, size); sizeDO != nil {
+			photoSizes = append(photoSizes, sizeDO)
+		}
+	}
+	videoSizeDOs, err := makeVideoSizesDO(id, videoSizes)
+	if err != nil {
+		return err
+	}
+	if m.Postgres == nil {
+		return fmt.Errorf("media: PostgreSQL store is not initialized")
+	}
+	return m.Postgres.SavePhoto(ctx, photo, photoSizes, videoSizeDOs)
 }
 
 func (m *Dao) GetPhotoSizeListList(ctx context.Context, idList []int64) (sizes map[int64][]*mtproto.PhotoSize) {
+	sizes, _ = m.GetPhotoSizeListListE(ctx, idList)
+	return
+}
+
+func (m *Dao) GetPhotoSizeListListE(ctx context.Context, idList []int64) (sizes map[int64][]*mtproto.PhotoSize, err error) {
 	sizes = make(map[int64][]*mtproto.PhotoSize)
 	if len(idList) == 0 {
-		return
+		return sizes, nil
 	}
 
-	sizeDOList, _ := m.photoSizesStore().SelectListByPhotoSizeIdList(ctx, idList)
+	sizeDOList, err := m.photoSizesStore().SelectListByPhotoSizeIdList(ctx, idList)
+	if err != nil {
+		return nil, err
+	}
 	for i := 0; i < len(sizeDOList); i++ {
 		szList, ok := sizes[sizeDOList[i].PhotoSizeId]
 		if !ok {
@@ -266,23 +293,22 @@ func (m *Dao) GetPhotoSizeListList(ctx context.Context, idList []int64) (sizes m
 
 		sizes[sizeDOList[i].PhotoSizeId] = szList
 	}
-	return
+	return sizes, nil
 }
 
-func (m *Dao) GetPhotoSizeListV2(ctx context.Context, sizeId int64) (sizes []*mtproto.PhotoSize) {
-	sizeDOList, _ := m.photoSizesStore().SelectListByPhotoSizeId(ctx, sizeId)
-
-	if len(sizeDOList) >= 0 {
-		sizes = make([]*mtproto.PhotoSize, 0, len(sizeDOList))
-		for i := 0; i < len(sizeDOList); i++ {
-			sz := getPhotoSize(&sizeDOList[i])
-			if sz != nil {
-				sizes = append(sizes, sz)
-			}
-		}
+func (m *Dao) GetPhotoSizeListV2(ctx context.Context, sizeId int64) ([]*mtproto.PhotoSize, error) {
+	sizeDOList, err := m.photoSizesStore().SelectListByPhotoSizeId(ctx, sizeId)
+	if err != nil {
+		return nil, err
 	}
 
-	return
+	sizes := make([]*mtproto.PhotoSize, 0, len(sizeDOList))
+	for i := range sizeDOList {
+		if sz := getPhotoSize(&sizeDOList[i]); sz != nil {
+			sizes = append(sizes, sz)
+		}
+	}
+	return sizes, nil
 }
 
 func (m *Dao) GetPhotoV2(ctx context.Context, photoId int64) (*mtproto.Photo, error) {
@@ -298,14 +324,28 @@ func (m *Dao) GetPhotoV2(ctx context.Context, photoId int64) (*mtproto.Photo, er
 		return emptyPhoto, nil
 	}
 
-	photoSizes = m.GetPhotoSizeListV2(ctx, photoDO.PhotoId)
-	if photoSizes == nil {
-		// photoSizes = []*mtproto.PhotoSize{}
-		return emptyPhoto, nil
+	sizeDOList, err := m.photoSizesStore().SelectListByPhotoSizeId(ctx, photoDO.PhotoId)
+	if err != nil {
+		return nil, err
+	}
+	photoSizes = make([]*mtproto.PhotoSize, 0, len(sizeDOList))
+	for i := range sizeDOList {
+		if size := getPhotoSize(&sizeDOList[i]); size != nil {
+			photoSizes = append(photoSizes, size)
+		}
 	}
 
 	if photoDO.HasVideo {
-		videoSizes = m.GetVideoSizeList(ctx, photoDO.PhotoId)
+		videoSizeDOList, err := m.videoSizesStore().SelectListByVideoSizeIdWithCB(ctx, photoDO.PhotoId, nil)
+		if err != nil {
+			return nil, err
+		}
+		videoSizes = make([]*mtproto.VideoSize, 0, len(videoSizeDOList))
+		for i := range videoSizeDOList {
+			if size := getVideoSize(&videoSizeDOList[i]); size != nil {
+				videoSizes = append(videoSizes, size)
+			}
+		}
 	}
 
 	photo := mtproto.MakeTLPhoto(&mtproto.Photo{

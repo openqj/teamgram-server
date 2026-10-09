@@ -20,7 +20,10 @@ func (c *UserCore) UserGetContactIdList(in *user.TLUserGetContactIdList) (*user.
 		Datas: []int64{},
 	}
 
-	cacheUserData := c.svcCtx.Dao.GetCacheUserData(c.ctx, in.GetUserId())
+	cacheUserData, err := c.svcCtx.Dao.GetCacheUserDataWithError(c.ctx, in.GetUserId())
+	if err != nil {
+		return nil, err
+	}
 	if len(cacheUserData.GetContactIdList()) > 0 {
 		rValList.Datas = cacheUserData.GetContactIdList()
 	}

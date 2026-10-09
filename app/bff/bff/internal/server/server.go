@@ -59,6 +59,7 @@ import (
 	webbrowserhelper "github.com/teamgram/teamgram-server/app/bff/webbrowser"
 	dialogpb "github.com/teamgram/teamgram-server/app/service/biz/dialog/dialog"
 	codeconf "github.com/teamgram/teamgram-server/pkg/code/conf"
+	"github.com/teamgram/teamgram-server/pkg/twofa"
 
 	"github.com/zeromicro/go-zero/core/conf"
 	"github.com/zeromicro/go-zero/core/logx"
@@ -233,8 +234,9 @@ func applyProviderEnvironment(c *config.Config) error {
 }
 
 type Server struct {
-	grpcSrv        *zrpc.RpcServer
-	apiFullWorkers interface {
+	grpcSrv         *zrpc.RpcServer
+	postgresClosers []func() error
+	apiFullWorkers  interface {
 		StopWorkers()
 	}
 }
@@ -263,7 +265,7 @@ func New() *Server {
 
 func (s *Server) Initialize() error {
 	var c config.Config
-	conf.MustLoad(*configFile, &c)
+	conf.MustLoad(*configFile, &c, conf.UseEnv())
 	if err := applyTurnEnvironment(&c); err != nil {
 		return err
 	}
@@ -284,6 +286,7 @@ func (s *Server) Initialize() error {
 			grpcServer,
 			tos_helper.New(tos_helper.Config{
 				RpcServerConf: c.RpcServerConf,
+				PostgresDSN:   c.PostgresDSN,
 			}))
 
 		// configuration_helper
@@ -291,6 +294,7 @@ func (s *Server) Initialize() error {
 			grpcServer,
 			configuration_helper.New(configuration_helper.Config{
 				RpcServerConf: c.RpcServerConf,
+				PostgresDSN:   c.PostgresDSN,
 			}))
 
 		// qrcode_helper
@@ -315,6 +319,7 @@ func (s *Server) Initialize() error {
 			grpcServer,
 			miscellaneous_helper.New(miscellaneous_helper.Config{
 				RpcServerConf: c.RpcServerConf,
+				PostgresDSN:   c.PostgresDSN,
 			}))
 
 		// authorization_helper
@@ -356,6 +361,7 @@ func (s *Server) Initialize() error {
 			grpcServer,
 			chatinvites_helper.New(chatinvites_helper.Config{
 				RpcServerConf: c.RpcServerConf,
+				PostgresDSN:   c.PostgresDSN,
 				UserClient:    c.BizServiceClient,
 				ChatClient:    c.BizServiceClient,
 				MsgClient:     c.MsgClient,
@@ -367,6 +373,7 @@ func (s *Server) Initialize() error {
 			grpcServer,
 			chats_helper.New(chats_helper.Config{
 				RpcServerConf:     c.RpcServerConf,
+				PostgresDSN:       c.PostgresDSN,
 				UserClient:        c.BizServiceClient,
 				ChatClient:        c.BizServiceClient,
 				MsgClient:         c.MsgClient,
@@ -394,21 +401,22 @@ func (s *Server) Initialize() error {
 			grpcServer,
 			passport_helper.New(passport_helper.Config{
 				RpcServerConf:     c.RpcServerConf,
+				PostgresDSN:       c.PostgresDSN,
 				AuthsessionClient: c.AuthSessionClient,
 				UserClient:        c.BizServiceClient,
 			}))
 
 		// updates_helper
-		mtproto.RegisterRPCUpdatesServer(
-			grpcServer,
-			updates_helper.New(updates_helper.Config{
-				RpcServerConf:     c.RpcServerConf,
-				PostgresDSN:       c.PostgresDSN,
-				UpdatesClient:     c.BizServiceClient,
-				UserClient:        c.BizServiceClient,
-				ChatClient:        c.BizServiceClient,
-				AuthsessionClient: c.AuthSessionClient,
-			}))
+		updatesService := updates_helper.New(updates_helper.Config{
+			RpcServerConf:     c.RpcServerConf,
+			PostgresDSN:       c.PostgresDSN,
+			UpdatesClient:     c.BizServiceClient,
+			UserClient:        c.BizServiceClient,
+			ChatClient:        c.BizServiceClient,
+			AuthsessionClient: c.AuthSessionClient,
+		})
+		s.postgresClosers = append(s.postgresClosers, updatesService.ClosePostgres)
+		mtproto.RegisterRPCUpdatesServer(grpcServer, updatesService)
 
 		// contacts_helper
 		mtproto.RegisterRPCContactsServer(
@@ -416,6 +424,7 @@ func (s *Server) Initialize() error {
 			contacts_helper.New(
 				contacts_helper.Config{
 					RpcServerConf: c.RpcServerConf,
+					PostgresDSN:   c.PostgresDSN,
 					UserClient:    c.BizServiceClient,
 					ChatClient:    c.BizServiceClient,
 					MessageClient: c.BizServiceClient,
@@ -441,6 +450,7 @@ func (s *Server) Initialize() error {
 			grpcServer,
 			drafts_helper.New(drafts_helper.Config{
 				RpcServerConf: c.RpcServerConf,
+				PostgresDSN:   c.PostgresDSN,
 				DialogClient:  c.BizServiceClient,
 				UserClient:    c.BizServiceClient,
 				SyncClient:    c.SyncClient,
@@ -452,32 +462,35 @@ func (s *Server) Initialize() error {
 			grpcServer,
 			autodownload_helper.New(autodownload_helper.Config{
 				RpcServerConf: c.RpcServerConf,
+				PostgresDSN:   c.PostgresDSN,
 			}))
 
 		// messages_helper
-		mtproto.RegisterRPCMessagesServer(
-			grpcServer,
-			messages_helper.New(messages_helper.Config{
-				RpcServerConf: c.RpcServerConf,
-				KV:            c.KV,
-				SearchPostsFlood: messages_helper.SearchPostsFloodConfig{
-					TotalDaily: c.SearchPostsFlood.TotalDaily,
-				},
-				UserClient:    c.BizServiceClient,
-				ChatClient:    c.BizServiceClient,
-				MsgClient:     c.MsgClient,
-				DialogClient:  c.BizServiceClient,
-				IdgenClient:   c.IdgenClient,
-				MessageClient: c.BizServiceClient,
-				MediaClient:   c.MediaClient,
-				SyncClient:    c.SyncClient,
-			}, nil))
+		messagesService := messages_helper.New(messages_helper.Config{
+			RpcServerConf: c.RpcServerConf,
+			PostgresDSN:   c.PostgresDSN,
+			KV:            c.KV,
+			SearchPostsFlood: messages_helper.SearchPostsFloodConfig{
+				TotalDaily: c.SearchPostsFlood.TotalDaily,
+			},
+			UserClient:    c.BizServiceClient,
+			ChatClient:    c.BizServiceClient,
+			MsgClient:     c.MsgClient,
+			DialogClient:  c.BizServiceClient,
+			IdgenClient:   c.IdgenClient,
+			MessageClient: c.BizServiceClient,
+			MediaClient:   c.MediaClient,
+			SyncClient:    c.SyncClient,
+		}, nil)
+		s.postgresClosers = append(s.postgresClosers, messagesService.ClosePostgres)
+		mtproto.RegisterRPCMessagesServer(grpcServer, messagesService)
 
 		// notification_helper
 		mtproto.RegisterRPCNotificationServer(
 			grpcServer,
 			notification_helper.New(notification_helper.Config{
 				RpcServerConf: c.RpcServerConf,
+				PostgresDSN:   c.PostgresDSN,
 				UserClient:    c.BizServiceClient,
 				ChatClient:    c.BizServiceClient,
 				SyncClient:    c.SyncClient,
@@ -510,6 +523,7 @@ func (s *Server) Initialize() error {
 			grpcServer,
 			sponsoredmessages_helper.New(sponsoredmessages_helper.Config{
 				RpcServerConf: c.RpcServerConf,
+				PostgresDSN:   c.PostgresDSN,
 			}))
 
 		// account_helper
@@ -518,6 +532,7 @@ func (s *Server) Initialize() error {
 			account_helper.New(
 				account_helper.Config{
 					RpcServerConf:     c.RpcServerConf,
+					PostgresDSN:       c.PostgresDSN,
 					KV:                c.KV,
 					UserClient:        c.BizServiceClient,
 					AuthsessionClient: c.AuthSessionClient,
@@ -565,26 +580,28 @@ func (s *Server) Initialize() error {
 			grpcServer,
 			userchannelprofileshelper.New(userchannelprofileshelper.Config{
 				RpcServerConf: c.RpcServerConf,
+				PostgresDSN:   c.PostgresDSN,
 				MediaClient:   c.MediaClient,
 				UserClient:    c.BizServiceClient,
 				SyncClient:    c.SyncClient,
 			}))
 
-		mtproto.RegisterRPCPasskeyServer(
-			grpcServer,
-			passkeyhelper.New(passkeyhelper.Config{
-				RpcServerConf:     c.RpcServerConf,
-				Provider:          c.Passkey,
-				PostgresDSN:       c.PostgresDSN,
-				DcId:              c.DcId,
-				UserClient:        c.BizServiceClient,
-				AuthSessionClient: c.AuthSessionClient,
-			}))
+		passkeyService := passkeyhelper.New(passkeyhelper.Config{
+			RpcServerConf:     c.RpcServerConf,
+			Provider:          c.Passkey,
+			PostgresDSN:       c.PostgresDSN,
+			DcId:              c.DcId,
+			UserClient:        c.BizServiceClient,
+			AuthSessionClient: c.AuthSessionClient,
+		})
+		s.postgresClosers = append(s.postgresClosers, passkeyService.ClosePostgres)
+		mtproto.RegisterRPCPasskeyServer(grpcServer, passkeyService)
 
 		mtproto.RegisterRPCWebBrowserServer(
 			grpcServer,
 			webbrowserhelper.New(webbrowserhelper.Config{
 				RpcServerConf: c.RpcServerConf,
+				PostgresDSN:   c.PostgresDSN,
 			}))
 
 		apiFull := apifull_helper.New(apifull_helper.Config{
@@ -722,4 +739,15 @@ func (s *Server) Destroy() {
 		s.apiFullWorkers.StopWorkers()
 	}
 	s.grpcSrv.Stop()
+	for _, closePostgres := range s.postgresClosers {
+		if err := closePostgres(); err != nil {
+			logx.Errorf("close BFF PostgreSQL: %v", err)
+		}
+	}
+	if err := twofa.ClosePostgresProofStores(); err != nil {
+		logx.Errorf("close two-factor PostgreSQL: %v", err)
+	}
+	if err := apifull_helper.ClosePostgres(); err != nil {
+		logx.Errorf("close APIFull PostgreSQL: %v", err)
+	}
 }

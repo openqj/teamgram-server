@@ -17,6 +17,15 @@ import (
 // SyncUpdatesNotMe
 // sync.updatesNotMe user_id:long auth_key_id:long updates:Updates = Void;
 func (c *SyncCore) SyncUpdatesNotMe(in *sync.TLSyncUpdatesNotMe) (*mtproto.Void, error) {
+	if in == nil || in.GetUserId() <= 0 {
+		return nil, mtproto.ErrUserIdInvalid
+	}
+	if in.GetUpdates() == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if c == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
 	var (
 		userId    = in.GetUserId()
 		authKeyId = in.GetPermAuthKeyId()
@@ -29,7 +38,9 @@ func (c *SyncCore) SyncUpdatesNotMe(in *sync.TLSyncUpdatesNotMe) (*mtproto.Void,
 		return nil, err
 	}
 
-	c.pushUpdatesToSession(syncTypeUserNotMe, userId, authKeyId, nil, nil, nil, updates, notification)
+	if err := c.pushUpdatesToSession(syncTypeUserNotMe, userId, authKeyId, nil, nil, nil, updates, notification); err != nil {
+		return nil, err
+	}
 
 	return mtproto.EmptyVoid, nil
 }

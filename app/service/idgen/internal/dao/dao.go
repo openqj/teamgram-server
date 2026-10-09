@@ -10,16 +10,17 @@
 package dao
 
 import (
-	"log"
+	"context"
 
 	"github.com/bwmarrin/snowflake"
+	"github.com/teamgram/teamgram-server/app/service/idgen/counter"
 	"github.com/teamgram/teamgram-server/app/service/idgen/internal/config"
-	"github.com/zeromicro/go-zero/core/stores/kv"
+	"github.com/teamgram/teamgram-server/pkg/storage/postgres"
 )
 
 type Dao struct {
 	*snowflake.Node
-	KV kv.Store
+	*counter.CounterStore
 }
 
 func New(c config.Config) *Dao {
@@ -30,9 +31,24 @@ func New(c config.Config) *Dao {
 
 	d.Node, err = snowflake.NewNode(c.NodeId)
 	if err != nil {
-		log.Fatal("new snowflake node error: ", err)
+		panic(err)
 	}
-	d.KV = kv.NewStore(c.SeqIDGen)
+	pool, err := postgres.NewPool(context.Background(), c.Postgres)
+	if err != nil {
+		panic(err)
+	}
+	if err := postgres.VerifySchema(context.Background(), pool,
+		`SELECT key,value,updated_at FROM idgen_counters LIMIT 0`); err != nil {
+		pool.Close()
+		panic(err)
+	}
+	d.CounterStore = counter.NewCounterStore(pool)
 
 	return d
+}
+
+func (d *Dao) Close() {
+	if d != nil && d.CounterStore != nil && d.Pool != nil {
+		d.Pool.Close()
+	}
 }

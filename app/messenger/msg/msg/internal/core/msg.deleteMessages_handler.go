@@ -19,6 +19,9 @@ import (
 // MsgDeleteMessages
 // msg.deleteMessages user_id:long auth_key_id:long peer_type:int peer_id:long revoke:Bool id:Vector<int> = messages.AffectedMessages;
 func (c *MsgCore) MsgDeleteMessages(in *msg.TLMsgDeleteMessages) (*mtproto.Messages_AffectedMessages, error) {
+	if in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
 	var (
 		rValue *mtproto.Messages_AffectedMessages
 		err    error
@@ -28,6 +31,20 @@ func (c *MsgCore) MsgDeleteMessages(in *msg.TLMsgDeleteMessages) (*mtproto.Messa
 		err = mtproto.ErrInputRequestInvalid
 		c.Logger.Errorf("msg.deleteMessages - error: %v", err)
 		return nil, err
+	}
+	if c.svcCtx.Dao.Postgres != nil {
+		if in.PeerType != mtproto.PEER_EMPTY && in.PeerType != mtproto.PEER_USER && in.PeerType != mtproto.PEER_CHAT {
+			return nil, mtproto.ErrPeerIdInvalid
+		}
+		updates, pts, _, err := c.svcCtx.Dao.DeleteMessageState(c.ctx, in.UserId, in.Id, in.Revoke)
+		if err != nil {
+			return nil, err
+		}
+		var count int32
+		for _, update := range updates {
+			count += update.PtsCount
+		}
+		return mtproto.MakeTLMessagesAffectedMessages(&mtproto.Messages_AffectedMessages{Pts: pts, PtsCount: count}).To_Messages_AffectedMessages(), nil
 	}
 
 	switch in.PeerType {

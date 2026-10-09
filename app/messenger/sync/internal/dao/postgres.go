@@ -22,6 +22,12 @@ func newPostgresDao(c config.Config) (*Postgres, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := postgres.VerifySchema(context.Background(), pool,
+		`SELECT id,auth_id,user_id,seq,update_type,update_data,date2 FROM auth_seq_updates LIMIT 0`,
+		`SELECT id,user_id,pts,pts_count,update_type,update_data,date2 FROM user_pts_updates LIMIT 0`); err != nil {
+		pool.Close()
+		return nil, err
+	}
 	return &Postgres{
 		Pool:              pool,
 		AuthSeqUpdatesDAO: postgres_dao.NewAuthSeqUpdatesDAO(pool),

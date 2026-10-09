@@ -1,0 +1,18 @@
+syntax = "proto3";
+
+package mediahash;
+
+import "schema.tl.sync.proto";
+
+option go_package = "github.com/teamgram/teamgram-server/app/service/media/media/hashrpc;hashrpc";
+
+message DocumentHashRequest {
+  bytes sha256 = 1;
+  int64 size = 2;
+  string mime_type = 3;
+}
+
+service DocumentHashLookup {
+  // Internal media lookup used by the Files BFF for the public Layer 229 call.
+  rpc GetDocumentByHash(DocumentHashRequest) returns (mtproto.Document) {}
+}

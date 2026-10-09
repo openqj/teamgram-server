@@ -37,6 +37,13 @@ func (c *SyncCore) SyncPushUpdatesIfNot(in *sync.TLSyncPushUpdatesIfNot) (*mtpro
 		c.Logger.Errorf("sync.pushUpdatesIfNot - process updates error: %v", err)
 		return nil, err
 	}
+	prepared, err := c.svcCtx.Dao.PrepareUpdates(c.ctx, in.GetUserId(), in.GetUpdates(), in.GetUpdates().GetAuthKeyId(), in.GetExcludes())
+	if err != nil {
+		return nil, err
+	}
+	if prepared.Completed {
+		return mtproto.EmptyVoid, nil
+	}
 
 	statusList, err := c.svcCtx.Dao.StatusClient.StatusGetUserOnlineSessions(c.ctx, &status.TLStatusGetUserOnlineSessions{
 		UserId: in.GetUserId(),
@@ -68,6 +75,10 @@ func (c *SyncCore) SyncPushUpdatesIfNot(in *sync.TLSyncPushUpdatesIfNot) (*mtpro
 		if _, ok := excludes[permAuthKeyId]; ok {
 			continue
 		}
+		pushData, ok := prepared.AuthUpdates[permAuthKeyId]
+		if !ok {
+			continue
+		}
 		if permAuthKeyId == 0 || sess.GetGateway() == "" {
 			c.Logger.Errorf("sync.pushUpdatesIfNot - invalid online session: %s", sess)
 			return nil, mtproto.ErrMethodNotImpl
@@ -76,11 +87,14 @@ func (c *SyncCore) SyncPushUpdatesIfNot(in *sync.TLSyncPushUpdatesIfNot) (*mtpro
 		if err = c.svcCtx.Dao.PushUpdatesToSession(c.ctx, sess.GetGateway(), &session.TLSessionPushUpdatesData{
 			PermAuthKeyId: permAuthKeyId,
 			Notification:  notification,
-			Updates:       in.GetUpdates(),
+			Updates:       pushData,
 		}); err != nil {
 			c.Logger.Errorf("sync.pushUpdatesIfNot - push updates to gateway %s error: %v", sess.GetGateway(), err)
 			return nil, err
 		}
+	}
+	if err := c.svcCtx.Dao.MarkDeliveryComplete(c.ctx, in.GetUserId()); err != nil {
+		return nil, err
 	}
 
 	return mtproto.EmptyVoid, nil

@@ -12,11 +12,11 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	_ "github.com/go-sql-driver/mysql"
+	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/teamgram/teamgram-server/app/service/biz/user/user"
 )
 
-const dsnEnvironmentVariable = "TEAMGRAM_OPS_MYSQL_DSN"
+const dsnEnvironmentVariable = "TEAMGRAM_OPS_POSTGRES_DSN"
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
@@ -65,13 +65,19 @@ func run(args []string) error {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	db, err := sql.Open("mysql", dsn)
+	db, err := sql.Open("pgx", dsn)
 	if err != nil {
 		return fmt.Errorf("open database: %w", err)
 	}
 	defer db.Close()
 	if err = db.PingContext(ctx); err != nil {
 		return fmt.Errorf("connect to database: %w", err)
+	}
+	if err = verifyPostgres18(ctx, db); err != nil {
+		return err
+	}
+	if err = verifyBotManagerSchema(ctx, db); err != nil {
+		return err
 	}
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
@@ -83,7 +89,7 @@ func run(args []string) error {
 	var userType int32
 	err = tx.QueryRowContext(ctx, `SELECT b.bot_can_manage_bots, u.user_type, u.deleted
 		FROM bots b JOIN users u ON u.id=b.bot_id
-		WHERE b.bot_id=? FOR UPDATE`, *botID).Scan(&oldEnabled, &userType, &deleted)
+		WHERE b.bot_id=$1 FOR UPDATE`, *botID).Scan(&oldEnabled, &userType, &deleted)
 	if errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("bot %d is not registered", *botID)
 	}
@@ -94,12 +100,12 @@ func run(args []string) error {
 		return fmt.Errorf("user %d is not an active bot", *botID)
 	}
 	var operator string
-	if err = tx.QueryRowContext(ctx, "SELECT CURRENT_USER()").Scan(&operator); err != nil {
+	if err = tx.QueryRowContext(ctx, "SELECT CURRENT_USER").Scan(&operator); err != nil {
 		return fmt.Errorf("identify database operator: %w", err)
 	}
 	if oldEnabled != enabled {
 		var result sql.Result
-		if result, err = tx.ExecContext(ctx, `UPDATE bots SET bot_can_manage_bots=? WHERE bot_id=?`, enabled, *botID); err != nil {
+		if result, err = tx.ExecContext(ctx, `UPDATE bots SET bot_can_manage_bots=$1 WHERE bot_id=$2`, enabled, *botID); err != nil {
 			return fmt.Errorf("update bot capability: %w", err)
 		}
 		if affected, affectedErr := result.RowsAffected(); affectedErr != nil || affected != 1 {
@@ -110,7 +116,7 @@ func run(args []string) error {
 		}
 		if _, err = tx.ExecContext(ctx, `INSERT INTO bot_manager_capability_audit
 			(bot_id, old_enabled, new_enabled, operator_db_user, reason)
-			VALUES (?,?,?,?,?)`, *botID, oldEnabled, enabled, operator, cleanReason); err != nil {
+			VALUES ($1,$2,$3,$4,$5)`, *botID, oldEnabled, enabled, operator, cleanReason); err != nil {
 			return fmt.Errorf("record capability change: %w", err)
 		}
 	}
@@ -118,5 +124,59 @@ func run(args []string) error {
 		return fmt.Errorf("commit capability change: %w", err)
 	}
 	fmt.Printf("bot_id=%d bot_can_manage_bots=%t changed=%t operator=%s\n", *botID, enabled, oldEnabled != enabled, operator)
+	return nil
+}
+
+func verifyPostgres18(ctx context.Context, db *sql.DB) error {
+	var serverVersionNum int
+	if err := db.QueryRowContext(ctx, `SELECT current_setting('server_version_num')::integer`).Scan(&serverVersionNum); err != nil {
+		return fmt.Errorf("read PostgreSQL server version: %w", err)
+	}
+	return validatePostgres18Version(serverVersionNum)
+}
+
+func validatePostgres18Version(serverVersionNum int) error {
+	if serverVersionNum/10000 != 18 {
+		return fmt.Errorf("PostgreSQL 18 is required (server_version_num=%d)", serverVersionNum)
+	}
+	return nil
+}
+
+func verifyBotManagerSchema(ctx context.Context, db *sql.DB) error {
+	const query = `WITH required(relid, column_name, data_type) AS (
+		VALUES
+			(to_regclass('users'), 'id', 'bigint'::regtype),
+			(to_regclass('users'), 'user_type', 'integer'::regtype),
+			(to_regclass('users'), 'deleted', 'boolean'::regtype),
+			(to_regclass('bots'), 'bot_id', 'bigint'::regtype),
+			(to_regclass('bots'), 'bot_can_manage_bots', 'boolean'::regtype),
+			(to_regclass('bot_manager_capability_audit'), 'bot_id', 'bigint'::regtype),
+			(to_regclass('bot_manager_capability_audit'), 'old_enabled', 'boolean'::regtype),
+			(to_regclass('bot_manager_capability_audit'), 'new_enabled', 'boolean'::regtype),
+			(to_regclass('bot_manager_capability_audit'), 'operator_db_user', 'text'::regtype),
+			(to_regclass('bot_manager_capability_audit'), 'reason', 'text'::regtype)
+		)
+	SELECT COALESCE(bool_and(
+		required.relid IS NOT NULL
+		AND EXISTS (
+			SELECT 1
+			FROM pg_class AS relation
+			JOIN pg_attribute AS attribute ON attribute.attrelid = relation.oid
+			WHERE relation.oid = required.relid
+			  AND relation.relkind IN ('r', 'p')
+			  AND attribute.attname = required.column_name
+			  AND attribute.atttypid = required.data_type
+			  AND attribute.attnum > 0
+			  AND NOT attribute.attisdropped
+		)
+	), false)
+	FROM required`
+	var ready bool
+	if err := db.QueryRowContext(ctx, query).Scan(&ready); err != nil {
+		return fmt.Errorf("verify bot-manager PostgreSQL schema: %w", err)
+	}
+	if !ready {
+		return errors.New("bot-manager PostgreSQL schema is incomplete; apply the PostgreSQL migrations first")
+	}
 	return nil
 }

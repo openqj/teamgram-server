@@ -24,15 +24,34 @@ import (
 
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/persist"
+	userpb "github.com/teamgram/teamgram-server/app/service/biz/user/user"
 )
 
 // RPCMainMiniBotAppsServer: Layer 229 methods previously returned ERR_ENTERPRISE_IS_BLOCKED.
 
 func (c *ApiFullCore) MessagesRequestMainWebView(in *mtproto.TLMessagesRequestMainWebView) (*mtproto.WebViewResult, error) {
-	if _, err := c.requireUserId(); err != nil {
+	uid, err := c.requireUserId()
+	if err != nil {
 		return nil, err
 	}
-	return nil, mtproto.ErrMethodNotImpl
+	if !persist.PostgresEnabled() {
+		return nil, mtproto.ErrMethodNotImpl
+	}
+	if in == nil || in.GetBot() == nil || c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.UserClient == nil {
+		return nil, mtproto.ErrMethodNotImpl
+	}
+	botID, err := miniBotID(in.GetBot())
+	if err != nil {
+		return nil, err
+	}
+	botInfo, err := c.svcCtx.Dao.UserGetBotInfoV2(c.ctx, &userpb.TLUserGetBotInfoV2{BotId: botID})
+	if err != nil {
+		return nil, err
+	}
+	if botInfo == nil || botInfo.GetMainAppUrl() == nil || botInfo.GetMainAppUrl().GetValue() == "" {
+		return nil, mtproto.ErrMethodNotImpl
+	}
+	return c.requestMiniWebView(uid, in.GetBot(), botInfo.GetMainAppUrl().GetValue(), "requestMainWebView", in.GetPlatform(), !in.GetCompact(), in.GetFullscreen(), in)
 }
 
 func (c *ApiFullCore) BotsGetPopularAppBots(in *mtproto.TLBotsGetPopularAppBots) (*mtproto.Bots_PopularAppBots, error) {

@@ -28,6 +28,9 @@ type savedMusicByIDUserClient struct {
 	privacyCalls   int
 	privacyErr     error
 	nilSaved       bool
+	member         bool
+	nilPrivacy     bool
+	privacyRequest *userpb.TLUserCheckPrivacy
 }
 
 func (c *savedMusicByIDUserClient) UserGetImmutableUser(_ context.Context, in *userpb.TLUserGetImmutableUser) (*mtproto.ImmutableUser, error) {
@@ -35,12 +38,26 @@ func (c *savedMusicByIDUserClient) UserGetImmutableUser(_ context.Context, in *u
 	return c.users[in.GetId()], nil
 }
 
-func (c *savedMusicByIDUserClient) UserGetPrivacy(_ context.Context, _ *userpb.TLUserGetPrivacy) (*userpb.Vector_PrivacyRule, error) {
+func (c *savedMusicByIDUserClient) UserCheckPrivacy(_ context.Context, in *userpb.TLUserCheckPrivacy) (*mtproto.Bool, error) {
 	c.privacyCalls++
+	c.privacyRequest = in
 	if c.privacyErr != nil {
 		return nil, c.privacyErr
 	}
-	return &userpb.Vector_PrivacyRule{Datas: c.privacy}, nil
+	if c.nilPrivacy {
+		return nil, nil
+	}
+	ctx := mtproto.PrivacyRuleContext{UserKnown: true, ContactKnown: true, ChatParticipant: func([]int64) (bool, error) { return c.member, nil }}
+	if owner := c.users[in.GetUserId()]; owner != nil {
+		if contact := owner.GetContactData(in.GetPeerId()); contact != nil {
+			ctx.Contact, ctx.CloseFriend = true, contact.GetCloseFriend()
+		}
+	}
+	if viewer := c.users[in.GetPeerId()]; viewer != nil {
+		ctx.Bot, ctx.Premium = viewer.IsBot(), viewer.Premium()
+	}
+	allowed, err := mtproto.CheckPrivacyRules(c.privacy, in.GetPeerId(), ctx)
+	return mtproto.ToBool(allowed), err
 }
 
 func (c *savedMusicByIDUserClient) UserGetSavedMusicIdList(_ context.Context, in *userpb.TLUserGetSavedMusicIdList) (*userpb.Vector_Long, error) {
@@ -150,6 +167,7 @@ func TestUsersGetSavedMusicByIDHonorsContactPrivacy(t *testing.T) {
 
 func TestUsersGetSavedMusicByIDFailsClosedForChatParticipantPrivacy(t *testing.T) {
 	users := newSavedMusicByIDUserClient()
+	users.member = true
 	users.privacy = []*mtproto.PrivacyRule{
 		mtproto.MakeTLPrivacyValueAllowAll(nil).To_PrivacyRule(),
 		mtproto.MakeTLPrivacyValueDisallowChatParticipants(&mtproto.PrivacyRule{Chats: []int64{900}}).To_PrivacyRule(),
@@ -286,4 +304,52 @@ func savedMusicByIDRequest(userID, accessHash int64, documents ...*mtproto.Input
 
 func savedMusicInputDocument(id, accessHash int64) *mtproto.InputDocument {
 	return mtproto.MakeTLInputDocument(&mtproto.InputDocument{Id: id, AccessHash: accessHash}).To_InputDocument()
+}
+
+func TestUsersSavedMusicAuthoritativePrivacy(t *testing.T) {
+	wantErr := errors.New("postgres membership unavailable")
+	for _, method := range []string{"by ID", "list"} {
+		for _, tc := range []struct {
+			name         string
+			member       bool
+			err, wantErr error
+			nilPrivacy   bool
+		}{
+			{name: "participant allowed", member: true},
+			{name: "nonparticipant denied", wantErr: mtproto.ErrUserPrivacyRestricted},
+			{name: "membership failure", err: wantErr, wantErr: wantErr},
+			{name: "nil privacy", nilPrivacy: true, wantErr: mtproto.ErrInternalServerError},
+		} {
+			t.Run(method+"/"+tc.name, func(t *testing.T) {
+				users := newSavedMusicByIDUserClient()
+				users.privacy = []*mtproto.PrivacyRule{
+					mtproto.MakeTLPrivacyValueAllowChatParticipants(&mtproto.PrivacyRule{Chats: []int64{900}}).To_PrivacyRule(),
+					mtproto.MakeTLPrivacyValueDisallowAll(nil).To_PrivacyRule(),
+				}
+				users.member, users.privacyErr, users.nilPrivacy = tc.member, tc.err, tc.nilPrivacy
+				users.savedIDs = []int64{10}
+				mediaClient := &savedMusicByIDMediaClient{documents: []*mtproto.Document{{Id: 10, AccessHash: 1000}}}
+				core := newSavedMusicByIDCore(users, mediaClient)
+				var got *mtproto.Users_SavedMusic
+				var err error
+				if method == "by ID" {
+					got, err = core.UsersGetSavedMusicByID(savedMusicByIDRequest(7, 700, savedMusicInputDocument(10, 1000)))
+				} else {
+					got, err = core.UsersGetSavedMusic(&mtproto.TLUsersGetSavedMusic{Id: savedMusicByIDRequest(7, 700).GetId(), Limit: 10})
+				}
+				if !errors.Is(err, tc.wantErr) || tc.wantErr != nil && got != nil {
+					t.Fatalf("saved music = (%v, %v), want error %v", got, err, tc.wantErr)
+				}
+				if tc.wantErr == nil && (got.GetCount() != 1 || len(got.GetDocuments()) != 1) {
+					t.Fatalf("authorized saved music = %v, want one document", got)
+				}
+				if tc.wantErr != nil && (users.savedCalls != 0 || len(mediaClient.ids) != 0) {
+					t.Fatalf("reads after privacy failure: saved=%d media=%v", users.savedCalls, mediaClient.ids)
+				}
+				if in := users.privacyRequest; in.GetUserId() != 7 || in.GetPeerId() != 42 || in.GetKeyType() != mtproto.SAVED_MUSIC {
+					t.Fatalf("saved music privacy request = %v", in)
+				}
+			})
+		}
+	}
 }

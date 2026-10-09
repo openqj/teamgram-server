@@ -35,12 +35,12 @@ func New() *Server {
 
 func (s *Server) Initialize() error {
 	var c config.Config
-	conf.MustLoad(*configFile, &c)
+	conf.MustLoad(*configFile, &c, conf.UseEnv())
 	if c.Postgres.DSN == "" {
 		return errors.New("chat: Postgres.DSN is required")
 	}
 
-	logx.Infov(c)
+	logx.Infof("chat config loaded")
 	ctx := svc.NewServiceContext(c, nil)
 	s.ctx = ctx
 	s.grpcSrv = grpc.New(ctx, c.RpcServerConf)

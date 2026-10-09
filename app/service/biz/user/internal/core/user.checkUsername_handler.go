@@ -36,7 +36,7 @@ func (c *UserCore) UserCheckUsername(in *user.TLUserCheckUsername) (*user.Userna
 		checked = usernameNotExisted
 	)
 
-	usernameDO, err := c.svcCtx.Dao.UsernameDAO.SelectByUsername(c.ctx, in.GetUsername())
+	usernameDO, err := c.svcCtx.Dao.SelectUsername(c.ctx, in.GetUsername())
 	if err != nil {
 		return nil, err
 	}

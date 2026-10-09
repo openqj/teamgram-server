@@ -22,6 +22,7 @@ import (
 	kafka "github.com/teamgram/marmota/pkg/mq"
 	"github.com/teamgram/marmota/pkg/net/rpcx"
 	"github.com/teamgram/teamgram-server/app/bff/account/internal/config"
+	sharedpersist "github.com/teamgram/teamgram-server/app/bff/apifull/persist"
 	sync_client "github.com/teamgram/teamgram-server/app/messenger/sync/client"
 	authsession_client "github.com/teamgram/teamgram-server/app/service/authsession/client"
 	chat_client "github.com/teamgram/teamgram-server/app/service/biz/chat/client"
@@ -40,6 +41,9 @@ type Dao struct {
 }
 
 func New(c config.Config) *Dao {
+	if err := sharedpersist.OpenPostgresRequired("account", c.PostgresDSN); err != nil {
+		panic(err)
+	}
 	kvStore := kv.NewStore(c.KV)
 	return &Dao{
 		kv:                kvStore,

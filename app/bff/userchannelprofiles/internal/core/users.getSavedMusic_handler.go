@@ -50,27 +50,18 @@ func (c *UserChannelProfilesCore) UsersGetSavedMusic(in *mtproto.TLUsersGetSaved
 	}
 
 	if targetID != c.MD.UserId {
-		privacy, err := c.svcCtx.Dao.UserClient.UserGetPrivacy(c.ctx, &user.TLUserGetPrivacy{
+		allowed, err := c.svcCtx.Dao.UserClient.UserCheckPrivacy(c.ctx, &user.TLUserCheckPrivacy{
 			UserId:  targetID,
 			KeyType: mtproto.SAVED_MUSIC,
+			PeerId:  c.MD.UserId,
 		})
 		if err != nil {
 			return nil, err
 		}
-		if privacy == nil {
-			return nil, mtproto.ErrUserPrivacyRestricted
+		if allowed == nil {
+			return nil, mtproto.ErrInternalServerError
 		}
-		var viewer *mtproto.ImmutableUser
-		if savedMusicPrivacyNeedsViewerData(privacy.GetDatas()) {
-			viewer, err = c.svcCtx.Dao.UserClient.UserGetImmutableUser(c.ctx, &user.TLUserGetImmutableUser{Id: c.MD.UserId})
-			if err != nil {
-				return nil, err
-			}
-			if viewer == nil || viewer.GetUser() == nil || viewer.GetUser().GetId() != c.MD.UserId {
-				return nil, mtproto.ErrUserPrivacyRestricted
-			}
-		}
-		if !savedMusicPrivacyAllows(privacy.GetDatas(), c.MD.UserId, target, viewer) {
+		if !mtproto.FromBool(allowed) {
 			return nil, mtproto.ErrUserPrivacyRestricted
 		}
 	}

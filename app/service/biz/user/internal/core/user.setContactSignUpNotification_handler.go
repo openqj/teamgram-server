@@ -10,6 +10,7 @@
 package core
 
 import (
+	"github.com/jackc/pgx/v5"
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/service/biz/user/internal/dal/dataobject"
 	"github.com/teamgram/teamgram-server/app/service/biz/user/user"
@@ -30,10 +31,13 @@ func (c *UserCore) UserSetContactSignUpNotification(in *user.TLUserSetContactSig
 		v = "true"
 	}
 
-	_, _, err := c.svcCtx.Dao.UserSettingsDAO.InsertOrUpdate(c.ctx, &dataobject.UserSettingsDO{
-		UserId: in.UserId,
-		Key2:   k,
-		Value:  v,
+	err := c.svcCtx.Dao.Postgres.InTx(c.ctx, func(tx pgx.Tx) error {
+		_, _, err := c.svcCtx.Dao.Postgres.Store.Settings.InsertOrUpdateTx(c.ctx, tx, &dataobject.UserSettingsDO{
+			UserId: in.UserId,
+			Key2:   k,
+			Value:  v,
+		})
+		return err
 	})
 	if err != nil {
 		c.Logger.Errorf("user.setContactSignUpNotification - error: %v", err)

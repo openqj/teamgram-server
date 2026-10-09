@@ -10,9 +10,6 @@
 package core
 
 import (
-	"context"
-
-	"github.com/teamgram/marmota/pkg/stores/sqlx"
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/service/biz/dialog/dialog"
 	"github.com/teamgram/teamgram-server/app/service/biz/dialog/internal/dal/dataobject"
@@ -21,6 +18,10 @@ import (
 // DialogInsertOrUpdateDialog
 // dialog.insertOrUpdateDialog flags:# user_id:long peer_type:int peer_id:long top_message:flags.0?int read_outbox_max_id:flags.1?int read_inbox_max_id:flags.2?int unread_count:flags.3?int unread_mark:flags.4?true pinned_msg_id:flags.6?int date2:flags.5?long = Bool;
 func (c *DialogCore) DialogInsertOrUpdateDialog(in *dialog.TLDialogInsertOrUpdateDialog) (*mtproto.Bool, error) {
+	store, err := c.pgStore()
+	if err != nil || store.Dialogs == nil {
+		return nil, mtproto.ErrMethodNotImpl
+	}
 	var (
 		cMap = make(map[string]interface{}, 0)
 	)
@@ -47,22 +48,7 @@ func (c *DialogCore) DialogInsertOrUpdateDialog(in *dialog.TLDialogInsertOrUpdat
 
 	cMap["deleted"] = 0
 
-	_, rowsAffected, err := c.svcCtx.Dao.CachedConn.Exec(
-		c.ctx,
-		func(ctx context.Context, conn *sqlx.DB) (int64, int64, error) {
-			r, err := c.svcCtx.Dao.DialogsDAO.UpdateCustomMap(
-				c.ctx,
-				cMap,
-				in.UserId,
-				in.PeerType,
-				in.PeerId)
-			if err != nil {
-				c.Logger.Errorf("dialog.insertOrUpdateDialog - error: %v", err)
-			}
-
-			return 0, r, err
-		},
-		dialog.GetDialogCacheKeyByPeer(in.UserId, in.PeerType, in.PeerId))
+	rowsAffected, err := store.Dialogs.UpdateCustomMap(c.ctx, cMap, in.UserId, in.PeerType, in.PeerId)
 	if err != nil {
 		c.Logger.Errorf("dialog.insertOrUpdateDialog - error: %v", err)
 		return nil, err
@@ -97,13 +83,7 @@ func (c *DialogCore) DialogInsertOrUpdateDialog(in *dialog.TLDialogInsertOrUpdat
 			dlgDO.PinnedMsgId = in.GetPinnedMsgId().GetValue()
 		}
 
-		_, _, err = c.svcCtx.Dao.CachedConn.Exec(
-			c.ctx,
-			func(ctx context.Context, conn *sqlx.DB) (int64, int64, error) {
-				_, _, err2 := c.svcCtx.Dao.DialogsDAO.InsertIgnore(c.ctx, dlgDO)
-				return 0, 0, err2
-			},
-			dialog.GetCacheKeyByPeerType(dlgDO.UserId, dlgDO.PeerType))
+		_, _, err = store.Dialogs.InsertIgnore(c.ctx, dlgDO)
 		if err != nil {
 			c.Logger.Errorf("dialog.insertOrUpdateDialog - insert missing dialog error: %v", err)
 			return nil, err

@@ -1,8 +1,43 @@
 services:
+  postgres:
+    image: postgres:18
+    environment:
+      POSTGRES_DB: "${POSTGRES_DB:-teamgram}"
+      POSTGRES_USER: "${POSTGRES_USER:-teamgram}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-teamgram}"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - teamgram_net
+
+  postgres-migrate:
+    image: postgres:18
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: "postgresql://${POSTGRES_USER:-teamgram}:${POSTGRES_PASSWORD:-teamgram}@postgres:5432/${POSTGRES_DB:-teamgram}?sslmode=disable"
+    volumes:
+      - ../../teamgramd/deploy:/workspace/teamgramd/deploy:ro
+    entrypoint: ["/bin/bash", "-euc"]
+    command: ["/workspace/teamgramd/deploy/postgres/apply.sh"]
+    restart: "no"
+    networks:
+      - teamgram_net
+
   backend:
     image: teamgram-server-latest:20261008-r29-prod
     build: !reset null
+    depends_on:
+      postgres-migrate:
+        condition: service_completed_successfully
+    networks:
+      - teamgram_net
     environment:
+      TEAMGRAM_POSTGRES_DSN: "${TEAMGRAM_POSTGRES_DSN:?TEAMGRAM_POSTGRES_DSN is required}"
       TEAMGRAM_APIFULL_SCHEMA_READONLY: "true"
       TEAMGRAM_TURN_HOST: "${TEAMGRAM_TURN_HOST:-}"
       TEAMGRAM_TURN_PORT: "${TEAMGRAM_TURN_PORT:-3478}"
@@ -39,3 +74,7 @@ services:
       TEAMGRAM_GROUP_CALL_MEDIA_SIGNING_KEY: "${TEAMGRAM_GROUP_CALL_MEDIA_SIGNING_KEY:-}"
       TEAMGRAM_GROUP_CALL_MEDIA_RTMP_HOST: "${TEAMGRAM_GROUP_CALL_MEDIA_RTMP_HOST:-}"
       TEAMGRAM_GROUP_CALL_MEDIA_TIMEOUT_SECONDS: "${TEAMGRAM_GROUP_CALL_MEDIA_TIMEOUT_SECONDS:-5}"
+
+networks:
+  teamgram_net:
+    driver: bridge

@@ -13,7 +13,6 @@ import (
 	"math/rand"
 	"time"
 
-	"github.com/teamgram/marmota/pkg/stores/sqlx"
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/service/biz/chat/chat"
 	"github.com/teamgram/teamgram-server/app/service/biz/chat/internal/dal/dataobject"
@@ -22,6 +21,10 @@ import (
 // ChatCreateChat2
 // chat.createChat2 flags:# creator_id:long user_id_list:Vector<long> title:string bots:flags.0?Vector<long> ttl_period:flags.1?int = MutableChat;
 func (c *ChatCore) ChatCreateChat2(in *chat.TLChatCreateChat2) (*mtproto.MutableChat, error) {
+	if c == nil || c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.Postgres == nil ||
+		c.svcCtx.Dao.Postgres.Pool == nil || c.svcCtx.Dao.Postgres.Store == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
 	var (
 		chatsDO    *dataobject.ChatsDO
 		err        error
@@ -33,11 +36,7 @@ func (c *ChatCore) ChatCreateChat2(in *chat.TLChatCreateChat2) (*mtproto.Mutable
 
 	// TODO:
 	var lastChat *dataobject.ChatsDO
-	if c.svcCtx.Dao.Postgres != nil && c.svcCtx.Dao.Postgres.Store != nil {
-		lastChat, err = c.svcCtx.Dao.Postgres.Store.Chats.SelectLastCreator(c.ctx, creatorId)
-	} else {
-		lastChat, err = c.svcCtx.Dao.ChatsDAO.SelectLastCreator(c.ctx, creatorId)
-	}
+	lastChat, err = c.svcCtx.Dao.Postgres.Store.Chats.SelectLastCreator(c.ctx, creatorId)
 	if err != nil {
 		c.Logger.Errorf("chat.createChat2 - error: %v", err)
 		return nil, err
@@ -107,60 +106,30 @@ func (c *ChatCore) ChatCreateChat2(in *chat.TLChatCreateChat2) (*mtproto.Mutable
 		})
 	}
 
-	if c.svcCtx.Dao.Postgres != nil && c.svcCtx.Dao.Postgres.Store != nil {
-		tx, txErr := c.svcCtx.Dao.Postgres.Pool.Begin(c.ctx)
-		if txErr == nil {
-			defer tx.Rollback(c.ctx)
-			chatsDO.Id, _, txErr = c.svcCtx.Dao.Postgres.Store.Chats.InsertOn(c.ctx, tx, chatsDO)
-			if txErr == nil {
-				for i := range participantDOList {
-					participantDOList[i].ChatId = chatsDO.Id
-				}
-				_, _, txErr = c.svcCtx.Dao.Postgres.Store.Participants.InsertBulkOn(c.ctx, tx, participantDOList)
-			}
-			if txErr == nil {
-				_, _, txErr = c.svcCtx.Dao.Postgres.Store.Invites.InsertOn(c.ctx, tx, &dataobject.ChatInvitesDO{
-					ChatId: chatsDO.Id, AdminId: creatorId, Link: participantDOList[0].Link,
-					Permanent: true, Date2: date,
-				})
-			}
-			if txErr == nil {
-				txErr = tx.Commit(c.ctx)
-			}
+	tx, txErr := c.svcCtx.Dao.Postgres.Pool.Begin(c.ctx)
+	if txErr != nil {
+		return nil, txErr
+	}
+	defer func() { _ = tx.Rollback(c.ctx) }()
+	chatsDO.Id, _, txErr = c.svcCtx.Dao.Postgres.Store.Chats.InsertOn(c.ctx, tx, chatsDO)
+	if txErr == nil {
+		for i := range participantDOList {
+			participantDOList[i].ChatId = chatsDO.Id
 		}
-		if txErr != nil {
-			err = txErr
-			c.Logger.Errorf("chat.createChat2 - error: %v", txErr)
-			return nil, txErr
-		}
-	} else {
-		tR := sqlx.TxWrapper(c.ctx, c.svcCtx.Dao.DB, func(tx *sqlx.Tx, result *sqlx.StoreResult) {
-			// 1. insert chat
-			chatsDO.Id, _, err = c.svcCtx.Dao.ChatsDAO.InsertTx(tx, chatsDO)
-			if err != nil {
-				result.Err = err
-				return
-			}
-			for i := 0; i < len(participantDOList); i++ {
-				participantDOList[i].ChatId = chatsDO.Id
-			}
-
-			_, _, err = c.svcCtx.Dao.ChatParticipantsDAO.InsertBulkTx(tx, participantDOList)
-			if err != nil {
-				result.Err = err
-				return
-			}
-
-			_, _, result.Err = c.svcCtx.Dao.ChatInvitesDAO.InsertTx(tx, &dataobject.ChatInvitesDO{
-				ChatId: chatsDO.Id, AdminId: creatorId, Link: participantDOList[0].Link,
-				Permanent: true, Date2: date,
-			})
+		_, _, txErr = c.svcCtx.Dao.Postgres.Store.Participants.InsertBulkOn(c.ctx, tx, participantDOList)
+	}
+	if txErr == nil {
+		_, _, txErr = c.svcCtx.Dao.Postgres.Store.Invites.InsertOn(c.ctx, tx, &dataobject.ChatInvitesDO{
+			ChatId: chatsDO.Id, AdminId: creatorId, Link: participantDOList[0].Link,
+			Permanent: true, Date2: date,
 		})
-		if tR.Err != nil {
-			err = tR.Err
-			c.Logger.Errorf("chat.createChat2 - error: %v", tR.Err)
-			return nil, tR.Err
-		}
+	}
+	if txErr == nil {
+		txErr = tx.Commit(c.ctx)
+	}
+	if txErr != nil {
+		c.Logger.Errorf("chat.createChat2 - error: %v", txErr)
+		return nil, txErr
 	}
 
 	chat2 := mtproto.MakeTLMutableChat(&mtproto.MutableChat{

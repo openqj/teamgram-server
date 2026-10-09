@@ -19,6 +19,7 @@
 package core
 
 import (
+	"github.com/jackc/pgx/v5"
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/messenger/msg/inbox/inbox"
 	"github.com/teamgram/teamgram-server/app/messenger/msg/internal/dal/dataobject"
@@ -31,6 +32,31 @@ import (
 // InboxUpdatePinnedMessage
 // inbox.updatePinnedMessage flags:# user_id:long auth_key_id:long silent:flags.0?true unpin:flags.1?true pm_oneside:flags.2?true peer_type:int peer_id:long id:int = Void;
 func (c *InboxCore) InboxUpdatePinnedMessage(in *inbox.TLInboxUpdatePinnedMessage) (*mtproto.Void, error) {
+	if in == nil || in.UserId <= 0 || in.DialogMessageId <= 0 || in.PeerId <= 0 ||
+		(in.PeerType != mtproto.PEER_USER && in.PeerType != mtproto.PEER_CHAT) {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if c.svcCtx.Dao.Postgres != nil {
+		rows, err := c.svcCtx.Dao.Postgres.Pool.Query(c.ctx, `SELECT user_id,peer_type,peer_id FROM messages WHERE dialog_message_id=$1 AND user_id<>$2 AND NOT deleted ORDER BY user_id`, in.DialogMessageId, in.UserId)
+		if err != nil {
+			return nil, err
+		}
+		type recipient struct {
+			UserID   int64
+			PeerType int32
+			PeerID   int64
+		}
+		recipients, err := pgx.CollectRows(rows, pgx.RowToStructByPos[recipient])
+		if err != nil {
+			return nil, err
+		}
+		for _, recipient := range recipients {
+			if err := c.svcCtx.Dao.PinInboxMessageState(c.ctx, recipient.UserID, mtproto.MakePeerUtil(recipient.PeerType, recipient.PeerID), in.DialogMessageId, !in.Unpin); err != nil {
+				return nil, err
+			}
+		}
+		return mtproto.EmptyVoid, nil
+	}
 	var (
 		peer = mtproto.MakePeerUtil(in.PeerType, in.PeerId)
 	)

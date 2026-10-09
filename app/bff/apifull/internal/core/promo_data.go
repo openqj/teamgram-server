@@ -119,23 +119,35 @@ func (c *ApiFullCore) HelpHidePromoData(in *mtproto.TLHelpHidePromoData) (*mtpro
 	if !ok {
 		return mtproto.BoolTrue, nil
 	}
-	hidden, err := loadHiddenPromos(userID)
-	if err != nil {
-		return nil, err
-	}
-	if _, exists := hidden[id]; !exists {
+	// Hiding a promo is an authoritative per-user mutation. Update performs
+	// the read/modify/write under the PostgreSQL transaction boundary (and
+	// retains the in-memory/legacy-store fallback used by unit tests).
+	if err = persist.Update(promoHideKey(userID), func(raw string) (string, error) {
+		hidden := make(map[int64]struct{})
+		if raw != "" {
+			var ids []int64
+			if err := json.Unmarshal([]byte(raw), &ids); err != nil {
+				return "", err
+			}
+			for _, hiddenID := range ids {
+				hidden[hiddenID] = struct{}{}
+			}
+		}
+		if _, exists := hidden[id]; exists {
+			return raw, nil
+		}
 		ids := make([]int64, 0, len(hidden)+1)
-		for k := range hidden {
-			ids = append(ids, k)
+		for hiddenID := range hidden {
+			ids = append(ids, hiddenID)
 		}
 		ids = append(ids, id)
 		b, err := json.Marshal(ids)
 		if err != nil {
-			return nil, err
+			return "", err
 		}
-		if err = persist.Default.Set(promoHideKey(userID), string(b)); err != nil {
-			return nil, err
-		}
+		return string(b), nil
+	}); err != nil {
+		return nil, err
 	}
 	return mtproto.BoolTrue, nil
 }

@@ -1,25 +1,12 @@
 package domain
 
 import (
-	"database/sql"
-	"os"
 	"testing"
 	"time"
 )
 
 func TestCommonChannelIDsIncludesActiveMembers(t *testing.T) {
-	dsn := os.Getenv("APIFULL_MYSQL_DSN")
-	if dsn == "" {
-		t.Skip("APIFULL_MYSQL_DSN is not configured")
-	}
-	if err := Open(dsn); err != nil {
-		t.Fatal(err)
-	}
-	cleanupDB, err := sql.Open("mysql", dsn)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = cleanupDB.Close() })
+	requirePaymentLedgerDB(t)
 	channelID := time.Now().UnixNano()
 	const owner, member, outsider int64 = 93101, 93102, 93103
 	t.Cleanup(func() {
@@ -27,7 +14,7 @@ func TestCommonChannelIDsIncludesActiveMembers(t *testing.T) {
 			`DELETE FROM apifull_channel_member WHERE channel_id=?`,
 			`DELETE FROM apifull_channel WHERE id=?`,
 		} {
-			if _, err := cleanupDB.Exec(query, channelID); err != nil {
+			if _, err := db.Exec(query, channelID); err != nil {
 				t.Errorf("cleanup channel fixture: %v", err)
 			}
 		}

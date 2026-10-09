@@ -12,10 +12,10 @@ package server
 import (
 	"flag"
 
-	kafka "github.com/teamgram/marmota/pkg/mq"
 	"github.com/teamgram/teamgram-server/app/messenger/sync/internal/config"
 	"github.com/teamgram/teamgram-server/app/messenger/sync/internal/server/mq"
 	"github.com/teamgram/teamgram-server/app/messenger/sync/internal/svc"
+	"github.com/teamgram/teamgram-server/pkg/mqconsumer"
 
 	"github.com/zeromicro/go-zero/core/conf"
 	"github.com/zeromicro/go-zero/core/logx"
@@ -25,7 +25,7 @@ var configFile = flag.String("f", "etc/sync.yaml", "the config file")
 
 type Server struct {
 	// grpcSrv *zrpc.RpcServer
-	mq  *kafka.ConsumerGroup
+	mq  *mqconsumer.Consumer
 	ctx *svc.ServiceContext
 }
 
@@ -35,8 +35,8 @@ func New() *Server {
 
 func (s *Server) Initialize() error {
 	var c config.Config
-	conf.MustLoad(*configFile, &c)
-	logx.Infov(c)
+	conf.MustLoad(*configFile, &c, conf.UseEnv())
+	logx.Infof("messenger sync config loaded")
 
 	if err := logx.SetUp(c.Log); err != nil {
 		return err
@@ -48,7 +48,11 @@ func (s *Server) Initialize() error {
 	}
 	s.ctx = ctx
 	// s.grpcSrv = grpc.New(ctx, c.RpcServerConf)
-	s.mq = mq.New(ctx, c.SyncConsumer)
+	s.mq, err = mq.New(ctx, c.SyncConsumer)
+	if err != nil {
+		ctx.Dao.Close()
+		return err
+	}
 
 	// go s.grpcSrv.Start()
 	go s.mq.Start()

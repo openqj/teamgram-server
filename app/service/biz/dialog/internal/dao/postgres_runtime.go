@@ -21,6 +21,10 @@ func NewPostgres(cfg postgres.Config) (*Postgres, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := postgres_dao.VerifySchema(context.Background(), pool); err != nil {
+		pool.Close()
+		return nil, err
+	}
 	return &Postgres{Pool: pool, Store: postgres_dao.NewStore(pool)}, nil
 }
 

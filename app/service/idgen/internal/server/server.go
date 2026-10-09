@@ -10,6 +10,7 @@
 package server
 
 import (
+	"errors"
 	"flag"
 
 	"github.com/teamgram/teamgram-server/app/service/idgen/internal/config"
@@ -25,6 +26,7 @@ var configFile = flag.String("f", "etc/idgen.yaml", "the config file")
 
 type Server struct {
 	grpcSrv *zrpc.RpcServer
+	ctx     *svc.ServiceContext
 }
 
 func New() *Server {
@@ -33,10 +35,14 @@ func New() *Server {
 
 func (s *Server) Initialize() error {
 	var c config.Config
-	conf.MustLoad(*configFile, &c)
+	conf.MustLoad(*configFile, &c, conf.UseEnv())
+	if c.Postgres.DSN == "" {
+		return errors.New("idgen: Postgres.DSN is required")
+	}
 
-	logx.Infov(c)
+	logx.Info("idgen service config loaded")
 	ctx := svc.NewServiceContext(c)
+	s.ctx = ctx
 	s.grpcSrv = grpc.New(ctx, c.RpcServerConf)
 
 	go func() {
@@ -49,5 +55,10 @@ func (s *Server) RunLoop() {
 }
 
 func (s *Server) Destroy() {
-	s.grpcSrv.Stop()
+	if s.grpcSrv != nil {
+		s.grpcSrv.Stop()
+	}
+	if s.ctx != nil {
+		s.ctx.Dao.Close()
+	}
 }

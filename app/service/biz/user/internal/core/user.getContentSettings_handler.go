@@ -11,17 +11,23 @@ package core
 
 import (
 	"github.com/teamgram/proto/mtproto"
+	"github.com/teamgram/teamgram-server/app/service/biz/user/internal/dal/dataobject"
 	"github.com/teamgram/teamgram-server/app/service/biz/user/user"
 )
 
 // UserGetContentSettings
 // user.getContentSettings user_id:long = account.ContentSettings;
 func (c *UserCore) UserGetContentSettings(in *user.TLUserGetContentSettings) (*mtproto.Account_ContentSettings, error) {
+	if err := c.requirePostgres(); err != nil {
+		return nil, err
+	}
 	var (
 		rV = false
 	)
 
-	do, err := c.svcCtx.Dao.UserSettingsDAO.SelectByKey(c.ctx, in.UserId, "sensitive_enabled")
+	var do *dataobject.UserSettingsDO
+	var err error
+	do, err = c.svcCtx.Dao.Postgres.Store.Settings.SelectByKey(c.ctx, in.UserId, "sensitive_enabled")
 	if err != nil {
 		c.Logger.Errorf("user.getContentSettings - error: %v", err)
 		return nil, err

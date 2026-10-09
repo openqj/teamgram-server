@@ -22,6 +22,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/teamgram/marmota/pkg/stores/sqlx"
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/service/biz/user/internal/dal/dataobject"
@@ -61,6 +62,25 @@ func (d *Dao) GetUserPeerSettings(ctx context.Context, id int64, peerType int32,
 		NameChangeDate:         nil,
 		PhotoChangeDate:        nil,
 	}).To_PeerSettings()
+	if d.Postgres != nil {
+		settingsDO, err := d.Postgres.Store.PeerSettings.Select(ctx, id, peerType, peerId)
+		if err != nil {
+			return nil, err
+		}
+		if settingsDO != nil {
+			settings.ReportSpam = settingsDO.ReportSpam
+			settings.AddContact = settingsDO.AddContact
+			settings.BlockContact = settingsDO.BlockContact
+			settings.ShareContact = settingsDO.ShareContact
+			settings.NeedContactsException = settingsDO.NeedContactsException
+			settings.ReportGeo = settingsDO.ReportGeo
+			settings.Autoarchived = settingsDO.Autoarchived
+			if settingsDO.GeoDistance != 0 {
+				settings.GeoDistance = &wrapperspb.Int32Value{Value: settingsDO.GeoDistance}
+			}
+		}
+		return settings, nil
+	}
 
 	err := d.CachedConn.QueryRow(
 		ctx,
@@ -110,6 +130,12 @@ func (d *Dao) GetUserPeerSettings(ctx context.Context, id int64, peerType int32,
 }
 
 func (d *Dao) SetUserPeerSettings(ctx context.Context, id int64, peerType int32, peerId int64, settings *mtproto.PeerSettings) error {
+	if d.Postgres != nil {
+		return d.Postgres.InTx(ctx, func(tx pgx.Tx) error {
+			_, _, err := d.Postgres.Store.PeerSettings.InsertOrUpdateTx(ctx, tx, &dataobject.UserPeerSettingsDO{UserId: id, PeerType: peerType, PeerId: peerId, ReportSpam: settings.ReportSpam, AddContact: settings.AddContact, BlockContact: settings.BlockContact, ShareContact: settings.ShareContact, NeedContactsException: settings.NeedContactsException, ReportGeo: settings.ReportGeo, Autoarchived: settings.Autoarchived, GeoDistance: settings.GetGeoDistance().GetValue()})
+			return err
+		})
+	}
 	_, _, err := d.CachedConn.Exec(
 		ctx,
 		func(ctx context.Context, conn *sqlx.DB) (int64, int64, error) {
@@ -136,6 +162,12 @@ func (d *Dao) SetUserPeerSettings(ctx context.Context, id int64, peerType int32,
 }
 
 func (d *Dao) DeleteUserPeerSettings(ctx context.Context, id int64, peerType int32, peerId int64) error {
+	if d.Postgres != nil {
+		return d.Postgres.InTx(ctx, func(tx pgx.Tx) error {
+			_, err := d.Postgres.Store.PeerSettings.DeleteTx(ctx, tx, id, peerType, peerId)
+			return err
+		})
+	}
 	_, _, err := d.CachedConn.Exec(
 		ctx,
 		func(ctx context.Context, conn *sqlx.DB) (int64, int64, error) {

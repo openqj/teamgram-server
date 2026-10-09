@@ -292,15 +292,33 @@ func (c *ApiFullCore) AccountDeclinePasswordReset(in *mtproto.TLAccountDeclinePa
 		return nil, err
 	}
 	_ = in
-	st, err := loadAcctPassword(userID)
-	if err != nil {
-		return nil, err
+	key := twofa.PasswordKey(userID)
+	for attempt := 0; attempt < 4; attempt++ {
+		raw, readErr := persist.Default.Get(key)
+		if readErr != nil {
+			return nil, readErr
+		}
+		var st acctPassword
+		if raw != "" {
+			if readErr = json.Unmarshal([]byte(raw), &st); readErr != nil {
+				return nil, readErr
+			}
+		}
+		st.ResetDeclined = true
+		st.HasPassword = len(st.Secret) > 0
+		encoded, marshalErr := json.Marshal(st)
+		if marshalErr != nil {
+			return nil, marshalErr
+		}
+		updated, swapErr := persist.CompareAndSwap(key, raw, string(encoded))
+		if swapErr != nil {
+			return nil, swapErr
+		}
+		if updated {
+			return mtproto.BoolTrue, nil
+		}
 	}
-	st.ResetDeclined = true
-	if err := saveAcctPassword(userID, st); err != nil {
-		return nil, err
-	}
-	return mtproto.BoolTrue, nil
+	return nil, mtproto.ErrInternalServerError
 }
 
 type acctPassword = twofa.PasswordState

@@ -19,6 +19,7 @@
 package core
 
 import (
+	"github.com/jackc/pgx/v5"
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/messenger/msg/inbox/inbox"
 	"github.com/teamgram/teamgram-server/app/messenger/msg/internal/dal/dataobject"
@@ -28,6 +29,37 @@ import (
 // InboxUnpinAllMessages
 // inbox.unpinAllMessages user_id:long auth_key_id:long peer_type:int peer_id:long = Void;
 func (c *InboxCore) InboxUnpinAllMessages(in *inbox.TLInboxUnpinAllMessages) (*mtproto.Void, error) {
+	if in == nil || in.UserId <= 0 || in.PeerId <= 0 ||
+		(in.PeerType != mtproto.PEER_USER && in.PeerType != mtproto.PEER_CHAT) {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if c.svcCtx.Dao.Postgres != nil {
+		var users []int64
+		if in.PeerType == mtproto.PEER_USER {
+			users = []int64{in.PeerId}
+		} else if in.PeerType == mtproto.PEER_CHAT {
+			rows, err := c.svcCtx.Dao.Postgres.Pool.Query(c.ctx, `SELECT user_id FROM chat_participants WHERE chat_id=$1 AND user_id<>$2 AND state=$3 ORDER BY user_id`, in.PeerId, in.UserId, mtproto.ChatMemberStateNormal)
+			if err != nil {
+				return nil, err
+			}
+			users, err = pgx.CollectRows(rows, pgx.RowTo[int64])
+			if err != nil {
+				return nil, err
+			}
+		} else {
+			return nil, mtproto.ErrPeerIdInvalid
+		}
+		for _, userID := range users {
+			peerID := in.PeerId
+			if in.PeerType == mtproto.PEER_USER {
+				peerID = in.UserId
+			}
+			if _, _, err := c.svcCtx.Dao.UnpinMessageState(c.ctx, userID, mtproto.MakePeerUtil(in.PeerType, peerID), false); err != nil {
+				return nil, err
+			}
+		}
+		return mtproto.EmptyVoid, nil
+	}
 	var (
 		peer     = mtproto.MakePeerUtil(in.PeerType, in.PeerId)
 		idList   = make([]int32, 0)

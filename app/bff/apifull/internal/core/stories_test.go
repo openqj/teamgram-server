@@ -48,6 +48,22 @@ func TestStoriesMethodsRequireAuthentication(t *testing.T) {
 	}
 }
 
+func TestStoryPageByIDUsesExclusiveSparseCursor(t *testing.T) {
+	items := []*mtproto.StoryItem{
+		mtproto.MakeTLStoryItem(&mtproto.StoryItem{Id: 1}).To_StoryItem(),
+		mtproto.MakeTLStoryItem(&mtproto.StoryItem{Id: 4}).To_StoryItem(),
+		mtproto.MakeTLStoryItem(&mtproto.StoryItem{Id: 9}).To_StoryItem(),
+	}
+	page := storyPageByID(items, 4, 100)
+	if len(page) != 1 || page[0].GetId() != 9 {
+		t.Fatalf("storyPageByID(offset=4) = %v, want [9]", page)
+	}
+	page = storyPageByID(items, 0, 2)
+	if len(page) != 2 || page[0].GetId() != 1 || page[1].GetId() != 4 {
+		t.Fatalf("storyPageByID(offset=0) = %v, want [1 4]", page)
+	}
+}
+
 func TestStoriesMethodsFailClosedWithoutProvider(t *testing.T) {
 	uid := int64(229901)
 	c := &ApiFullCore{MD: &metadata.RpcMetadata{UserId: uid}}

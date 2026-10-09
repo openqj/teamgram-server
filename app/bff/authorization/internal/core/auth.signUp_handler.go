@@ -116,10 +116,12 @@ func (c *AuthorizationCore) AuthSignUp(in *mtproto.TLAuthSignUp) (*mtproto.Auth_
 		return nil, mtproto.ErrLastnameInvalid
 	}
 
-	// TODO(@benqi): PHONE_NUMBER_FLOOD
-	// <string name="PhoneNumberFlood">Sorry, you have deleted and re-created your account too many times recently.
-	//    Please wait for a few days before signing up again.</string>
-	//
+	// Apply the same atomic phone flood budget used by sendCode/signIn before
+	// consuming the one-time signup challenge or creating a user.
+	if err = c.svcCtx.Dao.CheckCanDoAction(c.ctx, c.MD.PermAuthKeyId, phoneNumber, logic.GetActionType(in)); err != nil {
+		c.Logger.Errorf("check can do signup action - %s: %v", phoneNumber, err)
+		return nil, err
+	}
 
 	////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 	var (

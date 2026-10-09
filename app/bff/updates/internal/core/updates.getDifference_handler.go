@@ -20,7 +20,6 @@ package core
 
 import (
 	"errors"
-	"time"
 
 	"github.com/teamgram/proto/mtproto"
 	updatesdao "github.com/teamgram/teamgram-server/app/bff/updates/internal/dao"
@@ -53,18 +52,25 @@ func (c *UpdatesCore) UpdatesGetDifference(in *mtproto.TLUpdatesGetDifference) (
 		c.Logger.Errorf("updates.getDifference - error: %v", err)
 		return nil, err
 	}
+	if keyId == nil || keyId.GetV() == 0 {
+		return nil, mtproto.ErrInternalServerError
+	}
 	c.Logger.Infof("updates.getDifference - keyId: %v", keyId)
 
 	updatesDiff, err := c.svcCtx.Dao.UpdatesClient.UpdatesGetDifferenceV2(c.ctx, &updates.TLUpdatesGetDifferenceV2{
 		AuthKeyId:     keyId.GetV(),
 		UserId:        c.MD.UserId,
 		Pts:           in.Pts,
+		PtsLimit:      in.PtsLimit,
 		PtsTotalLimit: in.PtsTotalLimit,
 		Date:          int64(in.Date),
 	})
 	if err != nil {
 		c.Logger.Errorf("updates.getDifference - error: %v", err)
 		return nil, err
+	}
+	if updatesDiff == nil {
+		return nil, mtproto.ErrInternalServerError
 	}
 
 	var (
@@ -82,8 +88,6 @@ func (c *UpdatesCore) UpdatesGetDifference(in *mtproto.TLUpdatesGetDifference) (
 		normalEmpty = true
 		state = updatesDiff.GetState()
 	case updates.Predicate_difference:
-		// TODO: fix date
-		updatesDiff.State.Date = int32(time.Now().Unix())
 		state = updatesDiff.GetState()
 		newMessages = updatesDiff.GetNewMessages()
 		otherUpdates = updatesDiff.GetOtherUpdates()
@@ -93,7 +97,6 @@ func (c *UpdatesCore) UpdatesGetDifference(in *mtproto.TLUpdatesGetDifference) (
 		newMessages = updatesDiff.GetNewMessages()
 		otherUpdates = updatesDiff.GetOtherUpdates()
 	case updates.Predicate_differenceTooLong:
-		// TODO: iOS
 		return mtproto.MakeTLUpdatesDifferenceTooLong(&mtproto.Updates_Difference{
 			Pts: updatesDiff.Pts,
 		}).To_Updates_Difference(), nil
@@ -102,7 +105,7 @@ func (c *UpdatesCore) UpdatesGetDifference(in *mtproto.TLUpdatesGetDifference) (
 	}
 
 	if state == nil {
-		state = mtproto.MakeTLUpdatesState(&mtproto.Updates_State{}).To_Updates_State()
+		return nil, mtproto.ErrInternalServerError
 	}
 	state.Qts = secretDiff.CurrentQTS
 	encryptedMessages := make([]*mtproto.EncryptedMessage, 0, len(secretDiff.Messages))

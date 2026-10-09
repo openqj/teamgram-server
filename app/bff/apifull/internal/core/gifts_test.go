@@ -1,7 +1,6 @@
 package core
 
 import (
-	"database/sql"
 	"errors"
 	"fmt"
 	"os"
@@ -11,6 +10,7 @@ import (
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/proto/mtproto/rpc/metadata"
 	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/domain"
+	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/persist"
 )
 
 func TestGiftHandlersUnauthed(t *testing.T) {
@@ -220,27 +220,27 @@ func TestTransferStarGiftRejectsMessageReferences(t *testing.T) {
 }
 
 func TestUserStarGiftsSaveAndConvertUseOwnedLedger(t *testing.T) {
-	dsn := os.Getenv("APIFULL_MYSQL_DSN")
+	dsn := os.Getenv("APIFULL_POSTGRES_DSN")
 	if dsn == "" {
-		t.Skip("APIFULL_MYSQL_DSN is not configured")
+		t.Skip("APIFULL_POSTGRES_DSN is not configured")
 	}
-	cleanupDB, err := sql.Open("mysql", dsn)
+	cleanupDB, err := persist.OpenPostgresDB(dsn)
 	if err != nil {
 		t.Fatalf("open cleanup connection: %v", err)
 	}
-	defer cleanupDB.Close()
+	t.Cleanup(func() { _ = cleanupDB.Close() })
 
 	uid := time.Now().UnixNano()
 	from := uid + 1
 	slug := fmt.Sprintf("gift-closure-%d", uid)
+	t.Cleanup(func() {
+		_, _ = cleanupDB.Exec(`DELETE FROM apifull_star_tx WHERE user_id=$1`, uid)
+		_, _ = cleanupDB.Exec(`DELETE FROM apifull_stars WHERE user_id=$1`, uid)
+		_, _ = cleanupDB.Exec(`DELETE FROM apifull_gift WHERE to_user=$1`, uid)
+	})
 	if err = domain.SaveGift(from, uid, slug, 17); err != nil {
 		t.Fatalf("seed gift: %v", err)
 	}
-	t.Cleanup(func() {
-		_, _ = cleanupDB.Exec(`DELETE FROM apifull_star_tx WHERE user_id=?`, uid)
-		_, _ = cleanupDB.Exec(`DELETE FROM apifull_stars WHERE user_id=?`, uid)
-		_, _ = cleanupDB.Exec(`DELETE FROM apifull_gift WHERE to_user=?`, uid)
-	})
 
 	self := mtproto.MakeTLInputUserSelf(&mtproto.InputUser{}).To_InputUser()
 	input := mtproto.MakeTLInputSavedStarGiftSlug(&mtproto.InputSavedStarGift{Slug: slug}).To_InputSavedStarGift()

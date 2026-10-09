@@ -27,18 +27,18 @@ import (
 // user.setColor flags:# user_id:long for_profile:flags.1?true color:int background_emoji_id:long = Bool;
 func (c *UserCore) UserSetColor(in *user.TLUserSetColor) (*mtproto.Bool, error) {
 	var (
-		rB bool
+		err error
 	)
 
 	if in.ForProfile {
-		rB = c.svcCtx.Dao.UpdateColor(
+		err = c.svcCtx.Dao.UpdateColor(
 			c.ctx,
 			in.UserId,
 			true,
 			in.Color,
 			in.BackgroundEmojiId)
 	} else {
-		rB = c.svcCtx.Dao.UpdateColor(
+		err = c.svcCtx.Dao.UpdateColor(
 			c.ctx,
 			in.UserId,
 			false,
@@ -46,5 +46,8 @@ func (c *UserCore) UserSetColor(in *user.TLUserSetColor) (*mtproto.Bool, error) 
 			in.BackgroundEmojiId)
 	}
 
-	return mtproto.ToBool(rB), nil
+	if err != nil {
+		return nil, err
+	}
+	return mtproto.BoolTrue, nil
 }

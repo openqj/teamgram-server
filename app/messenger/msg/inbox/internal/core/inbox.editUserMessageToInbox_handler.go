@@ -29,6 +29,15 @@ import (
 // InboxEditUserMessageToInbox
 // inbox.editUserMessageToInbox from_id:long peer_user_id:long message:Message = Void;
 func (c *InboxCore) InboxEditUserMessageToInbox(in *inbox.TLInboxEditUserMessageToInbox) (*mtproto.Void, error) {
+	if in == nil || in.FromId <= 0 || in.PeerUserId <= 0 || in.Message == nil || in.Message.Id <= 0 {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if c.svcCtx.Dao.Postgres != nil {
+		if err := c.editLegacyInboxMessages(in.FromId, mtproto.PEER_USER, in.PeerUserId, []int64{in.PeerUserId}, in.Message); err != nil {
+			return nil, err
+		}
+		return mtproto.EmptyVoid, nil
+	}
 	inBox, err := c.svcCtx.Dao.EditUserInboxMessage(c.ctx, in.FromId, in.PeerUserId, in.Message)
 	if err != nil {
 		c.Logger.Errorf("editUserInboxMessage - error: %v", err)

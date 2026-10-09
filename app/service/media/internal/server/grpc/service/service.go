@@ -12,9 +12,11 @@ package service
 
 import (
 	"github.com/teamgram/teamgram-server/app/service/media/internal/svc"
+	"github.com/teamgram/teamgram-server/app/service/media/media/hashrpc"
 )
 
 type Service struct {
+	hashrpc.UnimplementedDocumentHashLookupServer
 	svcCtx *svc.ServiceContext
 }
 

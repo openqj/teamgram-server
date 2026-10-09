@@ -25,12 +25,19 @@ import (
 // UserCheckBots
 // user.checkBots id:Vector<long> = Vector<long>;
 func (c *UserCore) UserCheckBots(in *user.TLUserCheckBots) (*user.Vector_Long, error) {
+	if err := c.requirePostgres(); err != nil {
+		return nil, err
+	}
 	var (
 		rVals []int64
+		err   error
 	)
 
 	if len(in.Id) > 0 {
-		rVals, _ = c.svcCtx.Dao.UsersDAO.SelectBots(c.ctx, in.Id)
+		rVals, err = c.svcCtx.Dao.Postgres.Store.Users.SelectBots(c.ctx, in.Id)
+		if err != nil {
+			return nil, err
+		}
 		if rVals == nil {
 			rVals = []int64{}
 		}

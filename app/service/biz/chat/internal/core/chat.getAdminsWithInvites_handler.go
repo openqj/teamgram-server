@@ -82,18 +82,8 @@ func (c *ChatCore) ChatGetAdminsWithInvites(in *chat.TLChatGetAdminsWithInvites)
 			admin.InvitesCount++
 		}
 	}
-	if c.svcCtx.Dao.Postgres != nil && c.svcCtx.Dao.Postgres.Store != nil {
-		invites, selectErr := c.svcCtx.Dao.Postgres.Store.Invites.SelectListByChatId(c.ctx, in.ChatId)
-		if selectErr != nil {
-			return nil, selectErr
-		}
-		for i := range invites {
-			processInvite(&invites[i])
-		}
-	} else {
-		_, err = c.svcCtx.Dao.ChatInvitesDAO.SelectListByChatIdWithCB(c.ctx, in.ChatId,
-			func(sz, i int, v *dataobject.ChatInvitesDO) { processInvite(v) })
-	}
+	_, err = c.svcCtx.Dao.SelectChatInvitesByChatIdWithCB(c.ctx, in.ChatId,
+		func(sz, i int, v *dataobject.ChatInvitesDO) { processInvite(v) })
 	if err != nil {
 		return nil, err
 	}

@@ -41,6 +41,10 @@ func (c *folderArchiveDialogClient) DialogEditPeerFolders(_ context.Context, in 
 	return &dialog.Vector_DialogPinnedExt{}, nil
 }
 
+func (c *folderArchiveDialogClient) DialogDeleteDialogFilter(context.Context, *dialog.TLDialogDeleteDialogFilter) (*mtproto.Bool, error) {
+	return mtproto.BoolTrue, nil
+}
+
 func (c *folderTagsDialogClient) DialogToggleDialogFilterTags(context.Context, *dialog.TLDialogToggleDialogFilterTags) (*mtproto.Bool, error) {
 	return c.result, nil
 }

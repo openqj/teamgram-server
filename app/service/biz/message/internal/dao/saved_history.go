@@ -23,11 +23,7 @@ func (d *Dao) GetOffsetIdBackwardSavedHistoryMessages(ctx context.Context, userI
 	switch savedPeerId.PeerType {
 	case mtproto.PEER_SELF, mtproto.PEER_USER, mtproto.PEER_CHAT:
 		var rList []dataobject.MessagesDO
-		if d.Postgres != nil && d.Postgres.Store != nil && d.Postgres.Store.Messages != nil {
-			rList, err = d.SelectBackwardSavedMessages(ctx, userId, savedPeerId.PeerType, savedPeerId.PeerId, offsetId, limit)
-		} else {
-			rList, err = d.MessagesDAO.SelectBackwardSavedByOffsetIdLimitWithCB(ctx, userId, savedPeerId.PeerType, savedPeerId.PeerId, offsetId, limit, nil)
-		}
+		rList, err = d.SelectBackwardSavedMessages(ctx, userId, savedPeerId.PeerType, savedPeerId.PeerId, offsetId, limit)
 		for i := range rList {
 			messages = append(messages, d.MakeMessageBox(ctx, userId, &rList[i]))
 		}
@@ -53,11 +49,7 @@ func (d *Dao) GetOffsetIdForwardSavedHistoryMessages(ctx context.Context, userId
 	switch savedPeerId.PeerType {
 	case mtproto.PEER_SELF, mtproto.PEER_USER, mtproto.PEER_CHAT:
 		var rList []dataobject.MessagesDO
-		if d.Postgres != nil && d.Postgres.Store != nil && d.Postgres.Store.Messages != nil {
-			rList, err = d.SelectForwardSavedMessages(ctx, userId, savedPeerId.PeerType, savedPeerId.PeerId, offsetId, limit)
-		} else {
-			rList, err = d.MessagesDAO.SelectForwardSavedByOffsetIdLimitWithCB(ctx, userId, savedPeerId.PeerType, savedPeerId.PeerId, offsetId, limit, nil)
-		}
+		rList, err = d.SelectForwardSavedMessages(ctx, userId, savedPeerId.PeerType, savedPeerId.PeerId, offsetId, limit)
 		for i := range rList {
 			messages = append(messages, d.MakeMessageBox(ctx, userId, &rList[i]))
 		}
@@ -82,15 +74,9 @@ func (d *Dao) GetOffsetDateBackwardSavedHistoryMessages(ctx context.Context, use
 	switch savedPeerId.PeerType {
 	case mtproto.PEER_SELF, mtproto.PEER_USER, mtproto.PEER_CHAT:
 		var rList []dataobject.MessagesDO
-		if d.Postgres != nil && d.Postgres.Store != nil && d.Postgres.Store.Messages != nil {
-			rList, err = d.Postgres.Store.Messages.SelectBackwardSavedByOffsetDateLimit(ctx, userId, savedPeerId.PeerType, savedPeerId.PeerId, int64(offsetDate), limit)
-			for i := range rList {
-				messages = append(messages, d.MakeMessageBox(ctx, userId, &rList[i]))
-			}
-		} else {
-			rList, err = d.MessagesDAO.SelectBackwardSavedByOffsetDateLimitWithCB(ctx, userId, savedPeerId.PeerType, savedPeerId.PeerId, int64(offsetDate), limit, func(sz, i int, v *dataobject.MessagesDO) {
-				messages = append(messages, d.MakeMessageBox(ctx, userId, v))
-			})
+		rList, err = d.SelectSavedBackwardByDate(ctx, userId, savedPeerId.PeerType, savedPeerId.PeerId, int64(offsetDate), limit)
+		for i := range rList {
+			messages = append(messages, d.MakeMessageBox(ctx, userId, &rList[i]))
 		}
 		_ = rList
 		if err != nil {
@@ -113,15 +99,9 @@ func (d *Dao) GetOffsetDateForwardSavedHistoryMessages(ctx context.Context, user
 	switch savedPeerId.PeerType {
 	case mtproto.PEER_SELF, mtproto.PEER_USER, mtproto.PEER_CHAT:
 		var rList []dataobject.MessagesDO
-		if d.Postgres != nil && d.Postgres.Store != nil && d.Postgres.Store.Messages != nil {
-			rList, err = d.Postgres.Store.Messages.SelectForwardSavedByOffsetDateLimit(ctx, userId, savedPeerId.PeerType, savedPeerId.PeerId, int64(offsetDate), limit)
-			for i := range rList {
-				messages = append(messages, d.MakeMessageBox(ctx, userId, &rList[i]))
-			}
-		} else {
-			rList, err = d.MessagesDAO.SelectForwardSavedByOffsetDateLimitWithCB(ctx, userId, savedPeerId.PeerType, savedPeerId.PeerId, int64(offsetDate), limit, func(sz, i int, v *dataobject.MessagesDO) {
-				messages = append(messages, d.MakeMessageBox(ctx, userId, v))
-			})
+		rList, err = d.SelectSavedForwardByDate(ctx, userId, savedPeerId.PeerType, savedPeerId.PeerId, int64(offsetDate), limit)
+		for i := range rList {
+			messages = append(messages, d.MakeMessageBox(ctx, userId, &rList[i]))
 		}
 		_ = rList
 		if err != nil {

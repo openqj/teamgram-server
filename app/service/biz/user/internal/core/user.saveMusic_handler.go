@@ -19,76 +19,19 @@
 package core
 
 import (
-	"context"
-	"time"
-
-	"github.com/teamgram/marmota/pkg/stores/sqlx"
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/service/biz/user/internal/dal/dataobject"
-	"github.com/teamgram/teamgram-server/app/service/biz/user/internal/dao"
 	"github.com/teamgram/teamgram-server/app/service/biz/user/user"
 )
 
 // UserSaveMusic
 // user.saveMusic flags:# unsave:flags.0?true user_id:long id:long after_id:flags.15?long = Bool;
 func (c *UserCore) UserSaveMusic(in *user.TLUserSaveMusic) (*mtproto.Bool, error) {
-	if in.GetUnsave() {
-		unsaveIdx := -1
-		nextId := int64(-1)
-
-		doList, _ := c.svcCtx.Dao.UserSavedMusicDAO.SelectListWithCB(
-			c.ctx,
-			in.GetUserId(),
-			func(sz int, i int, v *dataobject.UserSavedMusicDO) {
-				if savedMusicEntryMatches(v, in.GetId()) {
-					_, _ = c.svcCtx.Dao.UserSavedMusicDAO.Delete(c.ctx, in.GetUserId(), in.GetId())
-					unsaveIdx = i
-				}
-			},
-		)
-
-		// if unsaveIdx >= 0 {
-		if unsaveIdx == 0 {
-			if len(doList) > 1 {
-				nextId = doList[1].SavedMusicId
-			} else {
-				nextId = 0
-			}
-		} else if unsaveIdx > 0 {
-			nextId = doList[0].SavedMusicId
-		}
-
-		if nextId >= 0 {
-			_, _, _ = c.svcCtx.Dao.CachedConn.Exec(
-				c.ctx,
-				func(ctx context.Context, conn *sqlx.DB) (int64, int64, error) {
-					_, err := c.svcCtx.Dao.UsersDAO.UpdateSavedMusicId(c.ctx, nextId, in.GetUserId())
-					return 0, 0, err
-				},
-				dao.GenCacheUserDataCacheKey(in.GetUserId()))
-		}
-	} else {
-		_, _, err := c.svcCtx.Dao.UserSavedMusicDAO.InsertOrUpdate(c.ctx, &dataobject.UserSavedMusicDO{
-			UserId:       in.GetUserId(),
-			SavedMusicId: in.GetId(),
-			Order2:       time.Now().Unix() << 32,
-			Deleted:      false,
-		})
-		if err != nil {
-			c.Logger.Errorf("user.saveMusic - error: %v", err)
-			return mtproto.BoolFalse, nil
-		}
-
-		_, _, _ = c.svcCtx.Dao.CachedConn.Exec(
-			c.ctx,
-			func(ctx context.Context, conn *sqlx.DB) (int64, int64, error) {
-				_, err = c.svcCtx.Dao.UsersDAO.UpdateSavedMusicId(c.ctx, in.GetId(), in.GetUserId())
-				return 0, 0, err
-			},
-			dao.GenCacheUserDataCacheKey(in.GetUserId()))
+	if in == nil {
+		return mtproto.BoolFalse, mtproto.ErrInputRequestInvalid
 	}
-
-	return mtproto.BoolTrue, nil
+	err := c.svcCtx.Dao.SaveUserMusic(c.ctx, in.GetUserId(), in.GetId(), in.GetUnsave())
+	return mtproto.ToBool(err == nil), err
 }
 
 func savedMusicEntryMatches(entry *dataobject.UserSavedMusicDO, musicID int64) bool {

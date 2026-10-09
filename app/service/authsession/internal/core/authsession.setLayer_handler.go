@@ -26,6 +26,9 @@ import (
 // AuthsessionSetLayer
 // authsession.setLayer auth_key_id:long ip:string layer:int = Bool;
 func (c *AuthsessionCore) AuthsessionSetLayer(in *authsession.TLAuthsessionSetLayer) (*mtproto.Bool, error) {
+	if in == nil || in.GetAuthKeyId() == 0 {
+		return nil, mtproto.ErrAuthKeyInvalid
+	}
 	var (
 		setLayer = in
 		inKeyId  = in.GetAuthKeyId()

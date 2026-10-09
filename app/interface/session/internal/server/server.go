@@ -35,11 +35,15 @@ func New() *Server {
 
 func (s *Server) Initialize() error {
 	var c config.Config
-	conf.MustLoad(*configFile, &c)
+	conf.MustLoad(*configFile, &c, conf.UseEnv())
 
-	logx.Infov(c)
+	logx.Infof("session config loaded")
 
-	s.svcCtx = svc.NewServiceContext(c)
+	ctx, err := svc.NewServiceContext(c)
+	if err != nil {
+		return err
+	}
+	s.svcCtx = ctx
 	s.grpcSrv = grpc.New(s.svcCtx, c.RpcServerConf)
 
 	go func() {
@@ -53,8 +57,18 @@ func (s *Server) RunLoop() {
 
 func (s *Server) Destroy() {
 	// 优雅排空：先等待进行中的 RPC 请求处理完毕（最多 30s），再停止 gRPC 服务
+	if s.svcCtx == nil {
+		return
+	}
 	logx.Infof("session server destroying, draining auth wrappers...")
-	s.svcCtx.MainAuthMgr.Drain(30 * time.Second)
+	if s.svcCtx.MainAuthMgr != nil {
+		s.svcCtx.MainAuthMgr.Drain(30 * time.Second)
+	}
 
-	s.grpcSrv.Stop()
+	if s.grpcSrv != nil {
+		s.grpcSrv.Stop()
+	}
+	if s.svcCtx != nil && s.svcCtx.Dao != nil {
+		_ = s.svcCtx.Dao.Close()
+	}
 }

@@ -20,9 +20,11 @@ package core
 
 import (
 	"encoding/json"
-	"strconv"
+	"errors"
 
 	"github.com/teamgram/proto/mtproto"
+	"github.com/teamgram/teamgram-server/app/bff/apifull/channelview"
+	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/domain"
 	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/persist"
 )
 
@@ -41,8 +43,29 @@ type takeoutSession struct {
 	FileMaxSize       int64 `json:"file_max_size,omitempty"`
 }
 
-func takeoutUserKey(userID int64) string {
-	return takeoutKeyPrefix + strconv.FormatInt(userID, 10)
+// requireTakeoutSession validates the invokeWithTakeout metadata against the
+// caller-owned active session. The wrapper ID is untrusted input; accepting it
+// without checking the persisted record would let a finished or fabricated
+// takeout request reach export handlers.
+func (c *ApiFullCore) requireTakeoutSession(userID int64) (*takeoutSession, error) {
+	if c == nil || c.MD == nil || c.MD.Takeout == nil || c.MD.Takeout.Id <= 0 {
+		return nil, mtproto.ErrTakeoutRequired
+	}
+	raw, err := persist.LoadTakeout(userID)
+	if err != nil {
+		return nil, err
+	}
+	if raw == "" {
+		return nil, mtproto.ErrTakeoutRequired
+	}
+	var sess takeoutSession
+	if err := json.Unmarshal([]byte(raw), &sess); err != nil {
+		return nil, err
+	}
+	if sess.ID == 0 || sess.ID != c.MD.Takeout.Id {
+		return nil, mtproto.ErrTakeoutRequired
+	}
+	return &sess, nil
 }
 
 func allocTakeoutID() (int64, error) {
@@ -73,43 +96,47 @@ func (c *ApiFullCore) AccountInitTakeoutSession(in *mtproto.TLAccountInitTakeout
 	if err != nil {
 		return nil, err
 	}
-	raw, err := persist.Default.Get(takeoutUserKey(userID))
-	if err != nil {
-		return nil, err
-	}
 	var sess takeoutSession
-	if raw != "" {
-		if err = json.Unmarshal([]byte(raw), &sess); err != nil {
-			return nil, err
+	var sessionID int64
+	_, _, err = persist.MutateTakeout(userID, func(id int64, raw string) (string, error) {
+		if raw != "" {
+			if err := json.Unmarshal([]byte(raw), &sess); err != nil {
+				return "", err
+			}
 		}
-	}
-	if sess.ID == 0 {
-		sess.ID, err = allocTakeoutID()
+		if sess.ID == 0 {
+			sess.ID = id
+			if sess.ID == 0 {
+				sess.ID, err = allocTakeoutID()
+				if err != nil {
+					return "", err
+				}
+			}
+		}
+		if in != nil {
+			sess.Contacts = in.GetContacts()
+			sess.MessageUsers = in.GetMessageUsers()
+			sess.MessageChats = in.GetMessageChats()
+			sess.MessageMegagroups = in.GetMessageMegagroups()
+			sess.MessageChannels = in.GetMessageChannels()
+			sess.Files = in.GetFiles()
+			if v := in.GetFileMaxSize_FLAGINT64(); v != nil {
+				sess.FileMaxSize = v.GetValue()
+			} else if v := in.GetFileMaxSize_FLAGINT32(); v != nil {
+				sess.FileMaxSize = int64(v.GetValue())
+			}
+		}
+		sessionID = sess.ID
+		buf, err := json.Marshal(sess)
 		if err != nil {
-			return nil, err
+			return "", err
 		}
-	}
-	if in != nil {
-		sess.Contacts = in.GetContacts()
-		sess.MessageUsers = in.GetMessageUsers()
-		sess.MessageChats = in.GetMessageChats()
-		sess.MessageMegagroups = in.GetMessageMegagroups()
-		sess.MessageChannels = in.GetMessageChannels()
-		sess.Files = in.GetFiles()
-		if v := in.GetFileMaxSize_FLAGINT64(); v != nil {
-			sess.FileMaxSize = v.GetValue()
-		} else if v := in.GetFileMaxSize_FLAGINT32(); v != nil {
-			sess.FileMaxSize = int64(v.GetValue())
-		}
-	}
-	buf, err := json.Marshal(sess)
+		return string(buf), nil
+	})
 	if err != nil {
 		return nil, err
 	}
-	if err := persist.Default.Set(takeoutUserKey(userID), string(buf)); err != nil {
-		return nil, err
-	}
-	return mtproto.MakeTLAccountTakeout(&mtproto.Account_Takeout{Id: sess.ID}).To_Account_Takeout(), nil
+	return mtproto.MakeTLAccountTakeout(&mtproto.Account_Takeout{Id: sessionID}).To_Account_Takeout(), nil
 }
 
 func (c *ApiFullCore) AccountFinishTakeoutSession(in *mtproto.TLAccountFinishTakeoutSession) (*mtproto.Bool, error) {
@@ -118,44 +145,75 @@ func (c *ApiFullCore) AccountFinishTakeoutSession(in *mtproto.TLAccountFinishTak
 		return nil, err
 	}
 	_ = in
-	raw, err := persist.Default.Get(takeoutUserKey(userID))
+	consumed, err := persist.ConsumeTakeout(userID, func(raw string) error {
+		var sess takeoutSession
+		if err := json.Unmarshal([]byte(raw), &sess); err != nil {
+			return err
+		}
+		if sess.ID == 0 {
+			return mtproto.ErrTakeoutRequired
+		}
+		return nil
+	})
 	if err != nil {
 		return nil, err
 	}
-	if raw == "" {
+	if !consumed {
 		return nil, mtproto.ErrTakeoutRequired
-	}
-	var sess takeoutSession
-	if err := json.Unmarshal([]byte(raw), &sess); err != nil {
-		return nil, err
-	}
-	if sess.ID == 0 {
-		return nil, mtproto.ErrTakeoutRequired
-	}
-	if err := persist.Default.Set(takeoutUserKey(userID), ""); err != nil {
-		return nil, err
 	}
 	return mtproto.BoolTrue, nil
 }
 
 func (c *ApiFullCore) MessagesGetSplitRanges(in *mtproto.TLMessagesGetSplitRanges) (*mtproto.Vector_MessageRange, error) {
-	if _, err := c.requireUserId(); err != nil {
+	userID, err := c.requireUserId()
+	if err != nil {
+		return nil, err
+	}
+	if _, err := c.requireTakeoutSession(userID); err != nil {
 		return nil, err
 	}
 	_ = in
-	// APIFull has no authoritative export-range index. Returning an empty
-	// vector would make callers skip messages, so fail closed until the
-	// message service exposes the complete range query.
-	return nil, mtproto.ErrMethodNotImpl
+	ranges, err := persist.GetMessageSplitRanges(userID)
+	if errors.Is(err, persist.ErrMessageProviderUnavailable) {
+		// The in-memory Store is used by unit tests and cannot prove that an
+		// empty result means the account has no exportable messages.
+		return nil, mtproto.ErrMethodNotImpl
+	}
+	if err != nil {
+		return nil, err
+	}
+	result := make([]*mtproto.MessageRange, 0, len(ranges))
+	for _, item := range ranges {
+		result = append(result, &mtproto.MessageRange{MinId: item.MinID, MaxId: item.MaxID})
+	}
+	return &mtproto.Vector_MessageRange{Datas: result}, nil
 }
 
 func (c *ApiFullCore) ChannelsGetLeftChannels(in *mtproto.TLChannelsGetLeftChannels) (*mtproto.Messages_Chats, error) {
-	if _, err := c.requireUserId(); err != nil {
+	userID, err := c.requireUserId()
+	if err != nil {
 		return nil, err
 	}
-	_ = in
-	// APIFull has no authoritative left-channel membership/history store.
-	// Returning an empty chat list would make callers treat unknown history as
-	// complete, so fail closed until a provider exposes the full query.
-	return nil, mtproto.ErrMethodNotImpl
+	if _, err := c.requireTakeoutSession(userID); err != nil {
+		return nil, err
+	}
+	offset := int32(0)
+	if in != nil {
+		offset = in.GetOffset()
+	}
+	if offset < 0 {
+		return nil, mtproto.ErrOffsetInvalid
+	}
+	if !domain.Ready() {
+		return nil, mtproto.ErrMethodNotImpl
+	}
+	left, err := domain.ListLeftChannels(userID, offset, 100)
+	if err != nil {
+		return nil, mtproto.ErrInternalServerError
+	}
+	chats := make([]*mtproto.Chat, 0, len(left))
+	for _, channel := range left {
+		chats = append(chats, channelview.Chat(channel, false))
+	}
+	return mtproto.MakeTLMessagesChats(&mtproto.Messages_Chats{Chats: chats}).To_Messages_Chats(), nil
 }

@@ -156,6 +156,44 @@ type paymentValidationProviderResponse struct {
 	ShippingOptions   []*mtproto.ShippingOption `json:"shipping_options"`
 }
 
+// paymentBankCardProviderResponse is the signed, provider-owned BIN/card
+// metadata used by payments.getBankCardData. APIFull never stores the number
+// or any card data; it only validates and forwards the signed response.
+type paymentBankCardProviderResponse struct {
+	Verified bool                          `json:"verified"`
+	UserID   int64                         `json:"user_id"`
+	Number   string                        `json:"number"`
+	Data     *mtproto.Payments_BankCardData `json:"data"`
+}
+
+func normalizeBankCardData(data *mtproto.Payments_BankCardData) bool {
+	if data == nil {
+		return false
+	}
+	if data.GetPredicateName() == "" {
+		data.To_PaymentsBankCardData()
+	}
+	if data.GetPredicateName() != mtproto.Predicate_payments_bankCardData {
+		return false
+	}
+	for _, openURL := range data.GetOpenUrls() {
+		if openURL == nil || strings.TrimSpace(openURL.GetUrl()) == "" {
+			return false
+		}
+		parsed, err := url.Parse(strings.TrimSpace(openURL.GetUrl()))
+		if err != nil || parsed.Host == "" || (parsed.Scheme != "https" && parsed.Scheme != "http") {
+			return false
+		}
+		if openURL.GetPredicateName() == "" {
+			mtproto.MakeTLBankCardOpenUrl(openURL).To_BankCardOpenUrl()
+		}
+		if openURL.GetPredicateName() != mtproto.Predicate_bankCardOpenUrl {
+			return false
+		}
+	}
+	return true
+}
+
 func validPaymentShippingOptions(options []*mtproto.ShippingOption) bool {
 	seen := make(map[string]struct{}, len(options))
 	for _, option := range options {
@@ -323,9 +361,11 @@ func selfPremiumSubscriptionInvoice(invoice *mtproto.InputInvoice) bool {
 		return false
 	}
 	purpose := invoice.GetPurpose()
-	return purpose != nil &&
+	// Layer 229 inputInvoiceSlug carries only the slug. The signed provider
+	// response establishes the product and self-beneficiary for wire requests.
+	return purpose == nil ||
 		purpose.GetPredicateName() == mtproto.Predicate_inputStorePaymentPremiumSubscription &&
-		!purpose.GetRestore() && !purpose.GetUpgrade()
+			!purpose.GetRestore() && !purpose.GetUpgrade()
 }
 
 func validPremiumProviderProduct(product string, userID, beneficiaryUserID int64, months int32, expectedUserID int64) bool {
@@ -740,6 +780,13 @@ func (c *ApiFullCore) validateRequestedInfoWithProvider(ctx context.Context, uid
 }
 
 func loadSavedPayInfo(uid int64) (savedPayInfo, bool, error) {
+	if persist.PostgresEnabled() {
+		info, found, err := domain.LoadSavedPaymentInfo(uid)
+		if err != nil {
+			return savedPayInfo{}, false, err
+		}
+		return savedPayInfo{Name: info.Name, Phone: info.Phone, Email: info.Email}, found && (info.Name != "" || info.Phone != "" || info.Email != ""), nil
+	}
 	raw, err := persist.Default.Get(payInfoKey(uid))
 	if err != nil || raw == "" {
 		return savedPayInfo{}, false, err
@@ -769,11 +816,33 @@ func requestedFromSaved(info savedPayInfo) *mtproto.PaymentRequestedInfo {
 }
 
 func hasSavedCredentials(uid int64) (bool, error) {
+	if persist.PostgresEnabled() {
+		info, _, err := domain.LoadSavedPaymentInfo(uid)
+		if err != nil {
+			return false, err
+		}
+		return info.HasSavedCredentials, nil
+	}
 	raw, err := persist.Default.Get(payCredKey(uid))
 	if err != nil || raw == "" {
 		return false, err
 	}
 	return raw == "1", nil
+}
+
+// savePaymentCredentials records only the provider-issued reusable-credential
+// marker. Credential bytes never enter APIFull persistence. The marker is
+// written only after the provider settlement and entitlement grant have
+// succeeded, so a failed checkout cannot make an unsaved credential appear
+// reusable.
+func savePaymentCredentials(uid int64) error {
+	if persist.PostgresEnabled() {
+		if !domain.PostgresEnabled() {
+			return mtproto.ErrPaymentUnsupported
+		}
+		return domain.SetSavedPaymentCredentials(uid, true)
+	}
+	return persist.Default.Set(payCredKey(uid), "1")
 }
 
 func savePayReceipt(uid int64, rec payReceipt) error {
@@ -1012,12 +1081,21 @@ func (c *ApiFullCore) PaymentsValidateRequestedInfo(in *mtproto.TLPaymentsValida
 			Email: in.GetInfo().GetEmail().GetValue(),
 		}
 		if info.Name != "" || info.Phone != "" || info.Email != "" {
-			encoded, marshalErr := json.Marshal(info)
-			if marshalErr != nil {
-				return nil, mtproto.ErrInternalServerError
-			}
-			if err = persist.Default.Set(payInfoKey(uid), string(encoded)); err != nil {
-				return nil, err
+			if persist.PostgresEnabled() {
+				if !domain.PostgresEnabled() {
+					return nil, mtproto.ErrPaymentUnsupported
+				}
+				if err = domain.SaveSavedPaymentInfo(uid, info.Name, info.Phone, info.Email); err != nil {
+					return nil, err
+				}
+			} else {
+				encoded, marshalErr := json.Marshal(info)
+				if marshalErr != nil {
+					return nil, mtproto.ErrInternalServerError
+				}
+				if err = persist.Default.Set(payInfoKey(uid), string(encoded)); err != nil {
+					return nil, err
+				}
 			}
 		}
 	}
@@ -1094,6 +1172,11 @@ func (c *ApiFullCore) PaymentsSendPaymentForm(in *mtproto.TLPaymentsSendPaymentF
 		if err = c.grantPremiumForPayment(c.secretContext(), uid, in.GetFormId(), request, receipt); err != nil {
 			return nil, err
 		}
+		if in.GetCredentials().GetSave() {
+			if err = savePaymentCredentials(uid); err != nil {
+				return nil, err
+			}
+		}
 		return mtproto.MakeTLPaymentsPaymentResult(&mtproto.Payments_PaymentResult{
 			Updates: mtproto.MakeEmptyUpdates(),
 		}).To_Payments_PaymentResult(), nil
@@ -1110,6 +1193,11 @@ func (c *ApiFullCore) PaymentsSendPaymentForm(in *mtproto.TLPaymentsSendPaymentF
 	}
 	if err = c.grantPremiumForPayment(c.secretContext(), uid, in.GetFormId(), settled, receipt); err != nil {
 		return nil, err
+	}
+	if in.GetCredentials().GetSave() {
+		if err = savePaymentCredentials(uid); err != nil {
+			return nil, err
+		}
 	}
 	return mtproto.MakeTLPaymentsPaymentResult(&mtproto.Payments_PaymentResult{
 		Updates: mtproto.MakeEmptyUpdates(),
@@ -1146,25 +1234,75 @@ func (c *ApiFullCore) PaymentsClearSavedInfo(in *mtproto.TLPaymentsClearSavedInf
 	if in == nil {
 		return nil, mtproto.ErrInputConstructorInvalid
 	}
-	if in.GetInfo() {
-		if err = persist.Default.Set(payInfoKey(uid), ""); err != nil {
+	if persist.PostgresEnabled() {
+		if !domain.PostgresEnabled() {
+			return nil, mtproto.ErrPaymentUnsupported
+		}
+		if err = domain.ClearSavedPaymentInfo(uid, in.GetInfo(), in.GetCredentials()); err != nil {
 			return nil, err
 		}
-	}
-	if in.GetCredentials() {
-		if err = persist.Default.Set(payCredKey(uid), "0"); err != nil {
-			return nil, err
+	} else {
+		if in.GetInfo() {
+			if err = persist.Default.Set(payInfoKey(uid), ""); err != nil {
+				return nil, err
+			}
+		}
+		if in.GetCredentials() {
+			if err = persist.Default.Set(payCredKey(uid), "0"); err != nil {
+				return nil, err
+			}
 		}
 	}
 	return mtproto.BoolTrue, nil
 }
 
 func (c *ApiFullCore) PaymentsGetBankCardData(in *mtproto.TLPaymentsGetBankCardData) (*mtproto.Payments_BankCardData, error) {
-	_ = in
-	if _, err := c.requireUserId(); err != nil {
+	uid, err := c.requireUserId()
+	if err != nil {
 		return nil, err
 	}
-	return nil, mtproto.ErrMethodNotImpl
+	if in == nil || strings.TrimSpace(in.GetNumber()) == "" {
+		return nil, mtproto.ErrInputConstructorInvalid
+	}
+	client, endpoint, providerKey, err := c.configuredPaymentProvider()
+	if err != nil {
+		return nil, err
+	}
+	payload := struct {
+		Operation string `json:"operation"`
+		UserID    int64  `json:"user_id"`
+		Number    string `json:"number"`
+	}{"get_bank_card_data", uid, strings.TrimSpace(in.GetNumber())}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return nil, mtproto.ErrInternalServerError
+	}
+	req, err := http.NewRequestWithContext(c.secretContext(), http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return nil, mtproto.ErrPaymentProviderInvalid
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if providerKey != "" {
+		req.Header.Set("Authorization", "Bearer "+providerKey)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, mtproto.ErrPaymentUnsupported
+	}
+	defer resp.Body.Close()
+	responseBody, readErr := io.ReadAll(io.LimitReader(resp.Body, (1<<20)+1))
+	if readErr != nil || len(responseBody) > 1<<20 || resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return nil, mtproto.ErrPaymentUnsupported
+	}
+	if !c.paymentProviderResponseAuthenticated(resp, responseBody) {
+		return nil, mtproto.ErrPaymentProviderInvalid
+	}
+	var result paymentBankCardProviderResponse
+	if err = json.Unmarshal(responseBody, &result); err != nil || !result.Verified || result.UserID != uid ||
+		result.Number != strings.TrimSpace(in.GetNumber()) || !normalizeBankCardData(result.Data) {
+		return nil, mtproto.ErrPaymentProviderInvalid
+	}
+	return mtproto.MakeTLPaymentsBankCardData(result.Data).To_Payments_BankCardData(), nil
 }
 
 func (c *ApiFullCore) PaymentsExportInvoice(in *mtproto.TLPaymentsExportInvoice) (*mtproto.Payments_ExportedInvoice, error) {

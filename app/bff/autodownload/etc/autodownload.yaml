@@ -1,2 +1,3 @@
 Name: bff.autodownload
 ListenOn: 0.0.0.0:21540
+PostgresDSN: ${TEAMGRAM_POSTGRES_DSN}

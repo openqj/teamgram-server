@@ -19,7 +19,10 @@
 package core
 
 import (
+	"fmt"
 	"os"
+	"path/filepath"
+	"runtime"
 	"time"
 
 	"github.com/teamgram/proto/mtproto"
@@ -41,10 +44,9 @@ const (
 var config mtproto.TLConfig
 
 func init() {
-	configData, err := os.ReadFile(configFile)
+	configData, err := readConfigFile()
 	if err != nil {
 		panic(err)
-		return
 	}
 
 	err = jsonx.Unmarshal(configData, &config)
@@ -52,6 +54,33 @@ func init() {
 		panic(err)
 		return
 	}
+}
+
+func readConfigFile() ([]byte, error) {
+	paths := make([]string, 0, 4)
+	if configured := os.Getenv("TEAMGRAM_CONFIG_JSON"); configured != "" {
+		paths = append(paths, configured)
+	}
+	paths = append(paths, configFile)
+	if executable, err := os.Executable(); err == nil {
+		paths = append(paths, filepath.Join(filepath.Dir(executable), "config.json"))
+	}
+	if _, source, _, ok := runtime.Caller(0); ok {
+		paths = append(paths, filepath.Join(filepath.Dir(source), "../../../../..", "teamgramd", "bin", "config.json"))
+	}
+	// The repository deployment bundle keeps the default config beside the
+	// other runtime assets. This fallback also makes package-level checks
+	// independent of the caller's working directory.
+	paths = append(paths, filepath.Join("teamgramd", "bin", "config.json"))
+	var lastErr error
+	for _, path := range paths {
+		data, err := os.ReadFile(path)
+		if err == nil {
+			return data, nil
+		}
+		lastErr = err
+	}
+	return nil, fmt.Errorf("read configuration JSON: %w", lastErr)
 }
 
 // HelpGetConfig

@@ -503,13 +503,18 @@ func (c *session) sendPushRpcResultToQueue(gatewayId string, reqMsgId int64, res
 	// cb(rawMsg)
 }
 
-func (c *session) sendPushToQueue(ctx context.Context, gatewayId string, pushMsgId int64, pushMsg mtproto.TLObject) {
-	rawBytes := func() []byte {
+func (c *session) sendPushToQueue(ctx context.Context, gatewayId string, pushMsgId int64, pushMsg mtproto.TLObject) error {
+	rawBytes, err := func() ([]byte, error) {
 		x := mtproto.GetEncodeBuf()
 		defer mtproto.PutEncodeBuf(x)
-		pushMsg.Encode(x, c.sessList.cb.Layer())
-		return append([]byte(nil), x.GetBuf()...)
+		if err := pushMsg.Encode(x, c.sessList.cb.Layer()); err != nil {
+			return nil, err
+		}
+		return append([]byte(nil), x.GetBuf()...), nil
 	}()
+	if err != nil {
+		return err
+	}
 	if len(rawBytes) > 256 {
 		gzipPacked := &mtproto.TLGzipPacked{
 			PackedData: rawBytes,
@@ -529,6 +534,7 @@ func (c *session) sendPushToQueue(ctx context.Context, gatewayId string, pushMsg
 		Body:  rawBytes,
 	}
 	c.outQueue.AddPushUpdates(pushMsgId, rawMsg)
+	return nil
 }
 
 func (c *session) sendRawToQueue(ctx context.Context, gatewayId string, msgId int64, confirm bool, rawMsg mtproto.TLObject) {
@@ -675,13 +681,13 @@ func (c *session) sendRawDirectToGateway(ctx context.Context, gatewayId string, 
 	return rB, err
 }
 
-func (c *session) sendQueueToGateway(ctx context.Context, gatewayId string) {
+func (c *session) sendQueueToGateway(ctx context.Context, gatewayId string) error {
 	if gatewayId == "" {
-		return
+		return ErrPushNotDelivered
 	}
 
 	if c.outQueue.oMsgs.Len() == 0 {
-		return
+		return nil
 	}
 
 	var (
@@ -699,22 +705,24 @@ func (c *session) sendQueueToGateway(ctx context.Context, gatewayId string) {
 	}
 
 	if len(pendings) == 0 {
-		return
+		return ErrPushNotDelivered
 	}
 
 	if len(pendings) == 1 {
 		logx.WithContext(ctx).Infof("sess: %s >>> sendRawDirectToGateway - pendings[0]", c)
-		if ok, err := c.sendRawDirectToGateway(ctx, gatewayId, pendings[0].msg); err != nil || !ok {
-			return
+		if ok, err := c.sendRawDirectToGateway(ctx, gatewayId, pendings[0].msg); err != nil {
+			return err
+		} else if !ok {
+			return ErrPushNotDelivered
 		}
 		c.updatePendingStates(ctx, pendings, sentTime)
-		return
+		return nil
 	}
 
-	c.sendPendingInBatches(ctx, gatewayId, pendings, sentTime)
+	return c.sendPendingInBatches(ctx, gatewayId, pendings, sentTime)
 }
 
-func (c *session) sendPendingInBatches(ctx context.Context, gatewayId string, pendings []*outboxMsg, sentTime int64) {
+func (c *session) sendPendingInBatches(ctx context.Context, gatewayId string, pendings []*outboxMsg, sentTime int64) error {
 	const split = 16
 
 	fullBatches := len(pendings) / split
@@ -722,19 +730,20 @@ func (c *session) sendPendingInBatches(ctx context.Context, gatewayId string, pe
 		start := i * split
 		end := start + split
 		batch := pendings[start:end]
-		if !c.sendPendingBatch(ctx, gatewayId, batch, sentTime) {
-			continue
+		if err := c.sendPendingBatch(ctx, gatewayId, batch, sentTime); err != nil {
+			return err
 		}
 	}
 
 	if rem := len(pendings) % split; rem > 0 {
 		start := split * fullBatches
 		batch := pendings[start:]
-		_ = c.sendPendingBatch(ctx, gatewayId, batch, sentTime)
+		return c.sendPendingBatch(ctx, gatewayId, batch, sentTime)
 	}
+	return nil
 }
 
-func (c *session) sendPendingBatch(ctx context.Context, gatewayId string, batch []*outboxMsg, sentTime int64) bool {
+func (c *session) sendPendingBatch(ctx context.Context, gatewayId string, batch []*outboxMsg, sentTime int64) error {
 	msgContainer := &mtproto.TLMsgRawDataContainer{
 		Messages: make([]*mtproto.TLMessageRawData, 0, len(batch)),
 	}
@@ -746,12 +755,15 @@ func (c *session) sendPendingBatch(ctx context.Context, gatewayId string, batch 
 	ok, err := c.sendDirectToGateway(ctx, gatewayId, false, msgContainer, func(sentRaw *mtproto.TLMessageRawData) {
 		// nothing to do
 	})
-	if err != nil || !ok {
-		return false
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return ErrPushNotDelivered
 	}
 
 	c.updatePendingStates(ctx, batch, sentTime)
-	return true
+	return nil
 }
 
 func (c *session) updatePendingStates(ctx context.Context, pendings []*outboxMsg, sentTime int64) {

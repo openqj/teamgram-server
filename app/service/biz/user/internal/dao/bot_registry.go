@@ -48,6 +48,13 @@ func (d *Dao) CreateBot(ctx context.Context, creatorUserId, managerBotId, manage
 		return nil, err
 	}
 	phone := "bot-" + hex.EncodeToString(phoneBytes[:])
+	if d.Postgres != nil {
+		botID, err := d.pgCreateBot(ctx, creatorUserId, managerBotId, managerAccessHash, name, username, accessHash, phone)
+		if err != nil {
+			return nil, err
+		}
+		return d.GetImmutableUser(ctx, botID, true, creatorUserId)
+	}
 
 	var botId int64
 	txResult := sqlx.TxWrapper(ctx, d.DB, func(tx *sqlx.Tx, result *sqlx.StoreResult) {
@@ -64,7 +71,7 @@ func (d *Dao) CreateBot(ctx context.Context, creatorUserId, managerBotId, manage
 		if result.Err != nil {
 			return
 		}
-			if creator.Deleted || creator.UserType != user.UserTypeRegular {
+		if creator.Deleted || creator.UserType != user.UserTypeRegular {
 			result.Err = mtproto.ErrForbiddenUserBotInvalid
 			return
 		}
@@ -147,10 +154,13 @@ func (d *Dao) CreateBot(ctx context.Context, creatorUserId, managerBotId, manage
 		return nil, txResult.Err
 	}
 
-	return d.GetImmutableUser(ctx, botId, false)
+	return d.GetImmutableUser(ctx, botId, true, creatorUserId)
 }
 
 func (d *Dao) ExportBotToken(ctx context.Context, botId, creatorUserId int64, revoke bool) (string, error) {
+	if d.Postgres != nil {
+		return d.pgExportBotToken(ctx, botId, creatorUserId, revoke)
+	}
 	var token string
 	txResult := sqlx.TxWrapper(ctx, d.DB, func(tx *sqlx.Tx, result *sqlx.StoreResult) {
 		var bot struct {

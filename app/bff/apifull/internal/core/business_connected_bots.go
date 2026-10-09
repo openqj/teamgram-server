@@ -23,6 +23,7 @@ import (
 	"fmt"
 
 	"github.com/teamgram/proto/mtproto"
+	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/domain"
 	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/persist"
 )
 
@@ -61,6 +62,29 @@ func saveConnectedBots(userId int64, list []connectedBotJSON) error {
 		return err
 	}
 	return persist.Default.Set(connectedBotsKey(userId), string(b))
+}
+
+func marshalConnectedJSON(value any) ([]byte, error) {
+	if value == nil {
+		return []byte(`{}`), nil
+	}
+	return json.Marshal(value)
+}
+
+func connectedBotPeer(in *mtproto.InputPeer) (int64, int64, error) {
+	if in == nil {
+		return 0, 0, mtproto.ErrInputRequestInvalid
+	}
+	if id := in.GetUserId(); id > 0 {
+		return 0, id, nil
+	}
+	if id := in.GetChatId(); id > 0 {
+		return 1, id, nil
+	}
+	if id := in.GetChannelId(); id > 0 {
+		return 2, id, nil
+	}
+	return 0, 0, mtproto.ErrInputRequestInvalid
 }
 
 func inputUserIDs(users []*mtproto.InputUser) []int64 {
@@ -115,6 +139,41 @@ func (c *ApiFullCore) AccountUpdateConnectedBot(in *mtproto.TLAccountUpdateConne
 		if in.GetBot() != nil {
 			botId = in.GetBot().GetUserId()
 		}
+	}
+	if domain.Ready() {
+		if deleted {
+			if err := domain.DeleteConnectedBot(c.MD.UserId, botId); err != nil {
+				return nil, err
+			}
+			return mtproto.MakeEmptyUpdates(), nil
+		}
+		if botId <= 0 {
+			return nil, mtproto.ErrInputRequestInvalid
+		}
+		rights, err := marshalConnectedJSON(in.GetRights())
+		if err != nil {
+			return nil, err
+		}
+		recipientsBotValue := businessBotRecipientsFromInput(in.GetRecipients_INPUTBUSINESSBOTRECIPIENTS())
+		recipientsBot, err := marshalConnectedJSON(recipientsBotValue)
+		if err != nil {
+			return nil, err
+		}
+		recipientsValue := businessRecipientsFromInput(in.GetRecipients_INPUTBUSINESSRECIPIENTS())
+		recipients, err := marshalConnectedJSON(recipientsValue)
+		if err != nil {
+			return nil, err
+		}
+		if in.GetRecipients_INPUTBUSINESSRECIPIENTS() == nil {
+			recipients = nil
+		}
+		if err := domain.SetConnectedBot(c.MD.UserId, domain.ConnectedBotRecord{
+			BotID: botId, CanReply: canReply, Rights: rights,
+			RecipientsBot: recipientsBot, Recipients: recipients,
+		}); err != nil {
+			return nil, err
+		}
+		return mtproto.MakeEmptyUpdates(), nil
 	}
 	list, err := loadConnectedBots(c.MD.UserId)
 	if err != nil {
@@ -174,6 +233,39 @@ func (c *ApiFullCore) AccountGetConnectedBots(in *mtproto.TLAccountGetConnectedB
 		return nil, mtproto.ErrAuthKeyUnregistered
 	}
 	_ = in
+	if domain.Ready() {
+		rows, err := domain.ListConnectedBots(c.MD.UserId)
+		if err != nil {
+			return nil, err
+		}
+		bots := make([]*mtproto.ConnectedBot, 0, len(rows))
+		for _, row := range rows {
+			rights := mtproto.MakeTLBusinessBotRights(&mtproto.BusinessBotRights{}).To_BusinessBotRights()
+			if len(row.Rights) > 0 && string(row.Rights) != "null" {
+				if err := json.Unmarshal(row.Rights, rights); err != nil {
+					return nil, err
+				}
+			}
+			recipients := mtproto.MakeTLBusinessBotRecipients(&mtproto.BusinessBotRecipients{}).To_BusinessBotRecipients()
+			if len(row.RecipientsBot) > 0 && string(row.RecipientsBot) != "null" {
+				if err := json.Unmarshal(row.RecipientsBot, recipients); err != nil {
+					return nil, err
+				}
+			}
+			var direct *mtproto.BusinessRecipients
+			if len(row.Recipients) > 0 && string(row.Recipients) != "null" {
+				direct = mtproto.MakeTLBusinessRecipients(&mtproto.BusinessRecipients{}).To_BusinessRecipients()
+				if err := json.Unmarshal(row.Recipients, direct); err != nil {
+					return nil, err
+				}
+			}
+			bots = append(bots, mtproto.MakeTLConnectedBot(&mtproto.ConnectedBot{
+				BotId: row.BotID, CanReply: row.CanReply, Rights: rights,
+				Recipients_BUSINESSBOTRECIPIENTS: recipients, Recipients_BUSINESSRECIPIENTS: direct,
+			}).To_ConnectedBot())
+		}
+		return mtproto.MakeTLAccountConnectedBots(&mtproto.Account_ConnectedBots{ConnectedBots: bots, Users: []*mtproto.User{}}).To_Account_ConnectedBots(), nil
+	}
 	list, err := loadConnectedBots(c.MD.UserId)
 	if err != nil {
 		return nil, err
@@ -227,6 +319,16 @@ func (c *ApiFullCore) AccountToggleConnectedBotPaused(in *mtproto.TLAccountToggl
 			peerUser, peerChat, peerChannel = p.GetUserId(), p.GetChatId(), p.GetChannelId()
 		}
 	}
+	if domain.Ready() {
+		peerType, peerID, err := connectedBotPeer(in.GetPeer())
+		if err != nil {
+			return nil, err
+		}
+		if err := domain.SetConnectedBotPeerState(c.MD.UserId, peerType, peerID, &paused, nil); err != nil {
+			return nil, err
+		}
+		return mtproto.BoolTrue, nil
+	}
 	b, err := json.Marshal(struct {
 		Paused      bool  `json:"paused"`
 		PeerUser    int64 `json:"peer_user"`
@@ -251,6 +353,17 @@ func (c *ApiFullCore) AccountDisablePeerConnectedBot(in *mtproto.TLAccountDisabl
 		if p := in.GetPeer(); p != nil {
 			peerUser, peerChat, peerChannel = p.GetUserId(), p.GetChatId(), p.GetChannelId()
 		}
+	}
+	if domain.Ready() {
+		peerType, peerID, err := connectedBotPeer(in.GetPeer())
+		if err != nil {
+			return nil, err
+		}
+		disabled := true
+		if err := domain.SetConnectedBotPeerState(c.MD.UserId, peerType, peerID, nil, &disabled); err != nil {
+			return nil, err
+		}
+		return mtproto.BoolTrue, nil
 	}
 	b, err := json.Marshal(struct {
 		PeerUser    int64 `json:"peer_user"`

@@ -20,6 +20,9 @@ import (
 // AuthsessionGetAuthStateData
 // authsession.getAuthStateData auth_key_id:long = AuthKeyStateData;
 func (c *AuthsessionCore) AuthsessionGetAuthStateData(in *authsession.TLAuthsessionGetAuthStateData) (*authsession.AuthKeyStateData, error) {
+	if in == nil || in.GetAuthKeyId() == 0 {
+		return nil, mtproto.ErrAuthKeyInvalid
+	}
 	var (
 		inKeyId = in.GetAuthKeyId()
 	)

@@ -61,7 +61,7 @@ func (c *ChatsCore) createChat(iUsers []*mtproto.InputUser, chatTitle string, tt
 	// check len(users)
 	chatUserIdList = []int64{c.MD.UserId}
 	for _, u := range iUsers {
-		if u.PredicateName != mtproto.Predicate_inputUser {
+		if u == nil || u.PredicateName != mtproto.Predicate_inputUser || u.GetUserId() <= 0 || u.GetAccessHash() == 0 {
 			err := mtproto.ErrPeerIdInvalid
 			c.Logger.Errorf("messages.createChat - error: %v", err)
 			return nil, err
@@ -70,11 +70,22 @@ func (c *ChatsCore) createChat(iUsers []*mtproto.InputUser, chatTitle string, tt
 		}
 	}
 
-	users, _ := c.svcCtx.Dao.UserClient.UserGetMutableUsers(c.ctx, &userpb.TLUserGetMutableUsers{
+	users, err := c.svcCtx.Dao.UserClient.UserGetMutableUsers(c.ctx, &userpb.TLUserGetMutableUsers{
 		Id: chatUserIdList,
+		To: []int64{c.MD.UserId},
 	})
+	if err != nil {
+		return nil, err
+	}
+	if users == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
 
-	if me, _ := users.GetImmutableUser(c.MD.UserId); me.Restricted() {
+	me, _ := users.GetImmutableUser(c.MD.UserId)
+	if me == nil || me.GetUser() == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
+	if me.Restricted() {
 		err := mtproto.ErrUserRestricted
 		c.Logger.Errorf("messages.createChat - error: %v", err)
 		return nil, err
@@ -86,51 +97,45 @@ func (c *ChatsCore) createChat(iUsers []*mtproto.InputUser, chatTitle string, tt
 			c.Logger.Errorf("messages.createChat - error: %v", err)
 			return nil, err
 		} else {
+			if addUser.Deleted() || addUser.GetUser().GetUserType() == userpb.UserTypeDeleted {
+				return nil, mtproto.ErrInputUserDeactivated
+			}
+			if addUser.AccessHash() != u.GetAccessHash() {
+				return nil, mtproto.ErrUserIdInvalid
+			}
 			if addUser.IsBot() {
-				if !addUser.BotNochats() {
+				if addUser.BotNochats() {
 					c.Logger.Errorf("user is bot and nochats, ignore %d", u.UserId)
 					continue
 				} else {
 					botAddList = append(botAddList, addUser.Id())
 				}
 			} else {
-				rules, _ := c.svcCtx.Dao.UserClient.UserGetPrivacy(c.ctx, &userpb.TLUserGetPrivacy{
+				allowed, err := c.svcCtx.Dao.UserClient.UserCheckPrivacy(c.ctx, &userpb.TLUserCheckPrivacy{
 					UserId:  addUser.Id(),
 					KeyType: mtproto.CHAT_INVITE,
+					PeerId:  c.MD.UserId,
 				})
-				if len(rules.Datas) == 0 {
+				if err != nil {
+					return nil, err
+				}
+				if allowed == nil {
+					return nil, mtproto.ErrInternalServerError
+				}
+				if !mtproto.FromBool(allowed) {
 					missingInvitees = append(missingInvitees, mtproto.MakeTLMissingInvitee(&mtproto.MissingInvitee{
 						PremiumWouldAllowInvite: false,
 						PremiumRequiredForPm:    false,
 						UserId:                  u.UserId,
 					}).To_MissingInvitee())
-				} else {
-					allowAddChat := mtproto.CheckPrivacyIsAllow(
-						addUser.Id(),
-						rules.Datas,
-						c.MD.UserId,
-						func(id, checkId int64) bool {
-							contact, _ := c.svcCtx.Dao.UserClient.UserCheckContact(c.ctx, &userpb.TLUserCheckContact{
-								UserId: id,
-								Id:     checkId,
-							})
-							return mtproto.FromBool(contact)
-						},
-						func(checkId int64, idList []int64) bool {
-							chatIdList, _ := mtproto.SplitChatAndChannelIdList(idList)
-							return c.svcCtx.Dao.ChatClient.CheckParticipantIsExist(c.ctx, checkId, chatIdList)
-						})
-					if !allowAddChat {
-						c.Logger.Errorf("chatInvite privacy, ignore %d", u.UserId)
-						continue
-					}
+					continue
 				}
 				userAddList = append(userAddList, addUser.Id())
 			}
 		}
 	}
 
-	if len(userAddList) == 0 {
+	if len(userAddList)+len(botAddList) == 0 {
 		err := mtproto.ErrUsersTooFew
 		c.Logger.Errorf("messages.createChat - error: %v", err)
 		return nil, err

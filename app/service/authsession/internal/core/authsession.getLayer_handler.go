@@ -17,6 +17,9 @@ import (
 // AuthsessionGetLayer
 // authsession.getLayer auth_key_id:long = Int32;
 func (c *AuthsessionCore) AuthsessionGetLayer(in *authsession.TLAuthsessionGetLayer) (*mtproto.Int32, error) {
+	if in == nil || in.GetAuthKeyId() == 0 {
+		return nil, mtproto.ErrAuthKeyInvalid
+	}
 	var (
 		inKeyId = in.GetAuthKeyId()
 	)

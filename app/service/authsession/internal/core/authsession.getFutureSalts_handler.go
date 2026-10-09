@@ -21,6 +21,12 @@ const (
 // AuthsessionGetFutureSalts
 // authsession.getFutureSalts auth_key_id:long num:int = FutureSalts;
 func (c *AuthsessionCore) AuthsessionGetFutureSalts(in *authsession.TLAuthsessionGetFutureSalts) (*mtproto.FutureSalts, error) {
+	if in == nil || in.GetAuthKeyId() == 0 {
+		return nil, mtproto.ErrAuthKeyInvalid
+	}
+	if in.GetNum() < 0 {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
 	num := in.GetNum()
 	if num == 0 {
 		num = kDefaultSaltNum

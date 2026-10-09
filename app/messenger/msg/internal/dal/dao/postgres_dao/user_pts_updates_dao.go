@@ -2,6 +2,7 @@ package postgres_dao
 
 import (
 	"context"
+	"errors"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/teamgram/teamgram-server/app/messenger/msg/internal/dal/dataobject"
@@ -29,7 +30,16 @@ func (d *UserPtsUpdatesDAO) insert(ctx context.Context, db DB, do *dataobject.Us
  ON CONFLICT (user_id, pts) DO NOTHING RETURNING id`, do.UserId, do.Pts,
 		do.PtsCount, do.UpdateType, do.UpdateData, do.Date2).Scan(&id)
 	if err == pgx.ErrNoRows {
-		return 0, 0, nil
+		err = db.QueryRow(ctx, `SELECT id FROM user_pts_updates
+ WHERE user_id = $1 AND pts = $2 AND pts_count = $3 AND update_type = $4
+ AND update_data::jsonb = $5::jsonb`, do.UserId, do.Pts, do.PtsCount, do.UpdateType, do.UpdateData).Scan(&id)
+		if err == pgx.ErrNoRows {
+			return 0, 0, errors.New("messenger/msg: pts already belongs to a different update")
+		}
+		if err != nil {
+			return 0, 0, err
+		}
+		return id, 0, nil
 	}
 	if err != nil {
 		return 0, 0, err

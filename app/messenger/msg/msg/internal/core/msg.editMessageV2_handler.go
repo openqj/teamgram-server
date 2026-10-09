@@ -32,6 +32,9 @@ import (
 // MsgEditMessageV2
 // msg.editMessageV2 user_id:long auth_key_id:long peer_type:int peer_id:long edit_type:int new_message:OutboxMessage dst_message:Message = Updates;
 func (c *MsgCore) MsgEditMessageV2(in *msg.TLMsgEditMessageV2) (*mtproto.Updates, error) {
+	if in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
 	var (
 		err        error
 		rUpdates   *mtproto.Updates
@@ -118,6 +121,17 @@ func (c *MsgCore) editUserOutgoingMessageV2(fromUserId, fromAuthKeyId, toUserId 
 
 			return hasBot
 		})
+	if c.svcCtx.Dao.Postgres != nil {
+		var recipients []*inbox.TLInboxEditMessageToInboxV2
+		if fromUserId != toUserId {
+			recipients = append(recipients, &inbox.TLInboxEditMessageToInboxV2{UserId: toUserId, FromId: fromUserId, FromAuthKeyId: fromAuthKeyId, PeerType: mtproto.PEER_USER, PeerId: toUserId, Users: users.GetUserListByIdList(toUserId, idHelper.UserIdList...)})
+		}
+		outBox, err := c.svcCtx.Dao.EditMessageState(c.ctx, fromUserId, mtproto.MakePeerUtil(mtproto.PEER_USER, toUserId), dstMessage.MessageId, editBox.Message, recipients...)
+		if err != nil {
+			return nil, err
+		}
+		return mtproto.MakeUpdatesByUpdatesUsersChats(users.GetUserListByIdList(fromUserId, idHelper.UserIdList...), nil, mtproto.MakeTLUpdateEditMessage(&mtproto.Update{Pts_INT32: outBox.Pts, PtsCount: outBox.PtsCount, Message_MESSAGE: outBox.Message}).To_Update()), nil
+	}
 
 	outBox, err := c.svcCtx.Dao.EditUserOutboxMessageV2(c.ctx, fromUserId, toUserId, editBox, dstMessage)
 	if err != nil {
@@ -145,10 +159,13 @@ func (c *MsgCore) editUserOutgoingMessageV2(fromUserId, fromAuthKeyId, toUserId 
 	}
 
 	if fromUserId != toUserId {
-		blocked, _ := c.svcCtx.Dao.UserClient.UserBlockedByUser(c.ctx, &userpb.TLUserBlockedByUser{
+		blocked, err := c.svcCtx.Dao.UserClient.UserBlockedByUser(c.ctx, &userpb.TLUserBlockedByUser{
 			UserId:     toUserId,
 			PeerUserId: fromUserId,
 		})
+		if err != nil {
+			return nil, err
+		}
 
 		if !mtproto.FromBool(blocked) {
 			_, err2 = c.svcCtx.Dao.InboxClient.InboxEditMessageToInboxV2(
@@ -257,6 +274,20 @@ func (c *MsgCore) editChatOutgoingMessageV2(fromUserId, fromAuthKeyId, peerChatI
 
 			return hasBot
 		})
+	if c.svcCtx.Dao.Postgres != nil {
+		var recipients []*inbox.TLInboxEditMessageToInboxV2
+		chat.Walk(func(userID int64, participant *mtproto.ImmutableChatParticipant) error {
+			if participant.IsChatMemberStateNormal() && userID != fromUserId {
+				recipients = append(recipients, &inbox.TLInboxEditMessageToInboxV2{UserId: userID, FromId: fromUserId, FromAuthKeyId: fromAuthKeyId, PeerType: mtproto.PEER_CHAT, PeerId: peerChatId, Users: sUserList.GetUserListByIdList(userID, idHelper.UserIdList...), Chats: []*mtproto.Chat{chat.ToUnsafeChat(userID)}})
+			}
+			return nil
+		})
+		outBox, err := c.svcCtx.Dao.EditMessageState(c.ctx, fromUserId, mtproto.MakePeerUtil(mtproto.PEER_CHAT, peerChatId), dstMessage.MessageId, editBox.Message, recipients...)
+		if err != nil {
+			return nil, err
+		}
+		return mtproto.MakeUpdatesByUpdatesUsersChats(sUserList.GetUserListByIdList(fromUserId, idHelper.UserIdList...), []*mtproto.Chat{chat.ToUnsafeChat(fromUserId)}, mtproto.MakeTLUpdateEditMessage(&mtproto.Update{Pts_INT32: outBox.Pts, PtsCount: outBox.PtsCount, Message_MESSAGE: outBox.Message}).To_Update()), nil
+	}
 
 	outBox, err2 := c.svcCtx.Dao.EditChatOutboxMessageV2(c.ctx, fromUserId, peerChatId, editBox, dstMessage)
 	if err != nil {

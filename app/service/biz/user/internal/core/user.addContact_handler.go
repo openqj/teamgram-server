@@ -26,7 +26,10 @@ func (c *UserCore) UserAddContact(in *user.TLUserAddContact) (*mtproto.Bool, err
 	)
 
 	// 1. Check mutal_contact
-	meContact := c.svcCtx.Dao.GetUserContact(c.ctx, in.GetUserId(), in.GetId())
+	meContact, err := c.svcCtx.Dao.GetUserContact(c.ctx, in.GetUserId(), in.GetId())
+	if err != nil {
+		return nil, err
+	}
 	if meContact == nil {
 		needCheckMutual = true
 	}
@@ -47,7 +50,10 @@ func (c *UserCore) UserAddContact(in *user.TLUserAddContact) (*mtproto.Bool, err
 
 	// not contact
 	if needCheckMutual {
-		mutual := c.svcCtx.Dao.GetUserContact(c.ctx, in.Id, in.UserId)
+		mutual, err := c.svcCtx.Dao.GetUserContact(c.ctx, in.Id, in.UserId)
+		if err != nil {
+			return nil, err
+		}
 		c.Logger.Debugf("needCheckMutual - %s", mutual)
 		if mutual != nil {
 			meDO.Mutual = true
@@ -55,7 +61,7 @@ func (c *UserCore) UserAddContact(in *user.TLUserAddContact) (*mtproto.Bool, err
 		}
 	}
 
-	err := c.svcCtx.Dao.PutUserContact(c.ctx, changeMutual, meDO)
+	err = c.svcCtx.Dao.PutUserContact(c.ctx, changeMutual, meDO)
 	if err != nil {
 		c.Logger.Errorf(" - error: %v", err)
 		return nil, err

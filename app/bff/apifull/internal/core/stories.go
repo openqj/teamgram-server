@@ -28,13 +28,16 @@ import (
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/domain"
 	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/persist"
+	"github.com/teamgram/teamgram-server/app/service/dfs/dfs"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
 // RPCStoriesServer: Layer 229 methods previously returned ERR_ENTERPRISE_IS_BLOCKED.
 
-// storiesProviderUnavailable keeps the RPC contract honest while APIFull has
-// no authoritative story service. Authenticate first, then fail closed rather
-// than returning locally synthesized StoryItems or empty success envelopes.
+// storiesProviderUnavailable is reserved for story operations that require an
+// external provider (for example media upload, live streaming, or cross-peer
+// aggregation). Self-owned story state is persisted and served by APIFull.
 func storiesProviderUnavailable(c *ApiFullCore) error {
 	if _, err := c.requireUserId(); err != nil {
 		return err
@@ -122,12 +125,8 @@ func storyKey(userID int64) string {
 	return "story:" + strconv.FormatInt(userID, 10)
 }
 
-func loadUserStories(userID int64) (*userStoryStore, error) {
-	raw, err := persist.Default.Get(storyKey(userID))
-	if err != nil || raw == "" {
-		if err != nil {
-			return nil, err
-		}
+func decodeUserStories(raw string) (*userStoryStore, error) {
+	if raw == "" {
 		s := &userStoryStore{}
 		s.ensure()
 		return s, nil
@@ -145,12 +144,20 @@ func loadUserStories(userID int64) (*userStoryStore, error) {
 	return s, nil
 }
 
+func loadUserStories(userID int64) (*userStoryStore, error) {
+	raw, err := persist.Default.Get(storyKey(userID))
+	if err != nil {
+		return nil, err
+	}
+	return decodeUserStories(raw)
+}
+
 func saveUserStories(userID int64, s *userStoryStore) error {
 	b, err := json.Marshal(s)
 	if err != nil {
 		return err
 	}
-	return persist.Default.Set(storyKey(userID), string(b))
+	return persist.Update(storyKey(userID), func(string) (string, error) { return string(b), nil })
 }
 
 func (s *userStoryStore) list(ids []int32, pinnedOnly bool) []*mtproto.StoryItem {
@@ -294,6 +301,21 @@ func storyPage(items []*mtproto.StoryItem, offset, limit int32) []*mtproto.Story
 	return items[offset:end]
 }
 
+// storyPageByID applies the exclusive story-ID cursor used by the archive and
+// pinned-story RPCs. Story IDs are not dense after deletion, so treating the
+// cursor as a slice index skips the wrong records (or returns an empty page).
+func storyPageByID(items []*mtproto.StoryItem, offsetID, limit int32) []*mtproto.StoryItem {
+	start := 0
+	if offsetID > 0 {
+		for i, item := range items {
+			if item != nil && item.GetId() <= offsetID {
+				start = i + 1
+			}
+		}
+	}
+	return storyPage(items[start:], 0, limit)
+}
+
 func albumTL(a *storyAlbumRec) *mtproto.StoryAlbum {
 	if a == nil {
 		return mtproto.MakeTLStoryAlbum(&mtproto.StoryAlbum{}).To_StoryAlbum()
@@ -350,12 +372,26 @@ func (s *userStoryStore) putReaction(id int32, userID int64, rx *mtproto.Reactio
 		return
 	}
 	item.SentReaction = rx
+	list := s.Reactions[id]
+	if rx == nil {
+		kept := list[:0]
+		for _, existing := range list {
+			if existing.UserId != userID {
+				kept = append(kept, existing)
+			}
+		}
+		if len(kept) == 0 {
+			delete(s.Reactions, id)
+		} else {
+			s.Reactions[id] = kept
+		}
+		return
+	}
 	rec := storyReactionRec{UserId: userID, Date: now}
 	if rx != nil {
 		rec.Emoticon = rx.GetEmoticon()
 		rec.Document = rx.GetDocumentId()
 	}
-	list := s.Reactions[id]
 	for i := range list {
 		if list[i].UserId == userID {
 			list[i] = rec
@@ -377,35 +413,279 @@ func reactionFromRec(r storyReactionRec) *mtproto.Reaction {
 }
 
 func mutateOwnStories(userID int64, fn func(*userStoryStore)) (*userStoryStore, error) {
-	s, err := loadUserStories(userID)
-	if err != nil {
-		return nil, err
+	return mutateOwnStoriesE(userID, func(s *userStoryStore) error {
+		fn(s)
+		return nil
+	})
+}
+
+func mutateOwnStoriesE(userID int64, fn func(*userStoryStore) error) (*userStoryStore, error) {
+	var result *userStoryStore
+	err := persist.Update(storyKey(userID), func(raw string) (string, error) {
+		s, err := decodeUserStories(raw)
+		if err != nil {
+			return "", err
+		}
+		if err = fn(s); err != nil {
+			return "", err
+		}
+		result = s
+		encoded, err := json.Marshal(s)
+		return string(encoded), err
+	})
+	return result, err
+}
+
+func storyMaxID(s *userStoryStore) int32 {
+	if s == nil || len(s.Order) == 0 {
+		return 0
 	}
-	fn(s)
-	if err := saveUserStories(userID, s); err != nil {
-		return nil, err
+	return s.Order[len(s.Order)-1]
+}
+
+func storyStealthMode(s *userStoryStore) *mtproto.StoriesStealthMode {
+	if s == nil {
+		return mtproto.MakeTLStoriesStealthMode(&mtproto.StoriesStealthMode{}).To_StoriesStealthMode()
 	}
-	return s, nil
+	return mtproto.MakeTLStoriesStealthMode(&mtproto.StoriesStealthMode{
+		ActiveUntilDate: func() *wrapperspb.Int32Value {
+			if s.StealthUntil > 0 {
+				return wrapperspb.Int32(s.StealthUntil)
+			}
+			return nil
+		}(),
+	}).To_StoriesStealthMode()
 }
 
 func (c *ApiFullCore) StoriesCanSendStory30EB63F0(in *mtproto.TLStoriesCanSendStory30EB63F0) (*mtproto.Stories_CanSendStoryCount, error) {
-	_ = in
-	return nil, storiesProviderUnavailable(c)
+	if in == nil {
+		return nil, storiesProviderUnavailable(c)
+	}
+	uid, err := c.requireUserId()
+	if err != nil {
+		return nil, err
+	}
+	if !storyPeerOwned(uid, in.GetPeer()) {
+		return nil, mtproto.ErrMethodNotImpl
+	}
+	stories, err := loadUserStories(uid)
+	if err != nil {
+		return nil, err
+	}
+	remaining := int32(100 - len(stories.Order))
+	if remaining < 0 {
+		remaining = 0
+	}
+	return mtproto.MakeTLStoriesCanSendStoryCount(&mtproto.Stories_CanSendStoryCount{CountRemains: remaining}).To_Stories_CanSendStoryCount(), nil
 }
 
 func (c *ApiFullCore) StoriesSendStory(in *mtproto.TLStoriesSendStory) (*mtproto.Updates, error) {
-	_ = in
-	return nil, storiesProviderUnavailable(c)
+	if in == nil {
+		return nil, storiesProviderUnavailable(c)
+	}
+	uid, err := c.requireUserId()
+	if err != nil {
+		return nil, err
+	}
+	if !storyPeerOwned(uid, in.GetPeer()) {
+		return nil, mtproto.ErrPeerIdInvalid
+	}
+	if in.GetMedia() == nil {
+		return nil, mtproto.ErrMediaEmpty
+	}
+	stories, err := loadUserStories(uid)
+	if err != nil {
+		return nil, err
+	}
+	if in.GetRandomId() != 0 {
+		if existing := stories.ByRand[in.GetRandomId()]; existing != 0 {
+			return storyUpdates(uid, stories.Items[existing]), nil
+		}
+	}
+	media, err := c.uploadStoryMedia(uid, in.GetMedia())
+	if err != nil {
+		return nil, err
+	}
+	var item *mtproto.StoryItem
+	_, err = mutateOwnStoriesE(uid, func(next *userStoryStore) error {
+		if in.GetRandomId() != 0 {
+			if existing := next.ByRand[in.GetRandomId()]; existing != 0 {
+				item = next.Items[existing]
+				return nil
+			}
+		}
+		next.Next++
+		if next.Next <= 0 {
+			next.Next = 1
+		}
+		period := int32(86400)
+		if in.GetPeriod() != nil && in.GetPeriod().GetValue() > 0 {
+			period = in.GetPeriod().GetValue()
+		}
+		item = mtproto.MakeTLStoryItem(&mtproto.StoryItem{
+			Id:         next.Next,
+			Date:       int32(time.Now().Unix()),
+			ExpireDate: int32(time.Now().Unix()) + period,
+			Pinned:     in.GetPinned(),
+			Noforwards: in.GetNoforwards(),
+			Out:        true,
+			Public:     true,
+			FromId:     mtproto.MakeTLPeerUser(&mtproto.Peer{UserId: uid}).To_Peer(),
+			Caption:    in.GetCaption(),
+			Entities:   in.GetEntities(),
+			Media:      media,
+			MediaAreas: in.GetMediaAreas(),
+			Albums:     append([]int32(nil), in.GetAlbums()...),
+		}).To_StoryItem()
+		for _, albumID := range in.GetAlbums() {
+			if next.Albums[albumID] == nil {
+				return mtproto.ErrInputRequestInvalid
+			}
+		}
+		next.Items[item.GetId()] = item
+		next.Order = append(next.Order, item.GetId())
+		if in.GetRandomId() != 0 {
+			next.ByRand[in.GetRandomId()] = item.GetId()
+		}
+		for _, albumID := range in.GetAlbums() {
+			next.bindAlbumStories(albumID, []int32{item.GetId()}, true)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return storyUpdates(uid, item), nil
+}
+
+func (c *ApiFullCore) uploadStoryMedia(uid int64, input *mtproto.InputMedia) (*mtproto.MessageMedia, error) {
+	if input == nil {
+		return nil, mtproto.ErrMediaEmpty
+	}
+	d := c.apifullDao()
+	if d == nil || d.DfsClient == nil {
+		return nil, mtproto.ErrMethodNotImpl
+	}
+	if input.GetFile() == nil {
+		return nil, mtproto.ErrMediaInvalid
+	}
+	switch input.GetPredicateName() {
+	case mtproto.Predicate_inputMediaUploadedPhoto:
+		photo, err := d.DfsUploadPhotoFileV2(callContext(c), &dfs.TLDfsUploadPhotoFileV2{Creator: uid, File: input.GetFile()})
+		if err != nil {
+			return nil, err
+		}
+		if photo == nil || photo.GetId() == 0 {
+			return nil, mtproto.ErrMediaInvalid
+		}
+		return mtproto.MakeTLMessageMediaPhoto(&mtproto.MessageMedia{Photo_FLAGPHOTO: photo, TtlSeconds: input.GetTtlSeconds()}).To_MessageMedia(), nil
+	case mtproto.Predicate_inputMediaUploadedDocument:
+		document, err := d.DfsUploadDocumentFileV2(callContext(c), &dfs.TLDfsUploadDocumentFileV2{Creator: uid, Media: input})
+		if err != nil {
+			return nil, err
+		}
+		if document == nil || document.GetId() == 0 {
+			return nil, mtproto.ErrMediaInvalid
+		}
+		return mtproto.MakeTLMessageMediaDocument(&mtproto.MessageMedia{Document: document, TtlSeconds: input.GetTtlSeconds()}).To_MessageMedia(), nil
+	default:
+		return nil, mtproto.ErrMediaInvalid
+	}
 }
 
 func (c *ApiFullCore) StoriesEditStory(in *mtproto.TLStoriesEditStory) (*mtproto.Updates, error) {
-	_ = in
-	return nil, storiesProviderUnavailable(c)
+	if in == nil {
+		return nil, storiesProviderUnavailable(c)
+	}
+	if in.GetId() <= 0 {
+		return nil, mtproto.ErrStoryIdEmpty
+	}
+	uid, err := c.requireUserId()
+	if err != nil {
+		return nil, err
+	}
+	if !storyPeerOwned(uid, in.GetPeer()) {
+		return nil, mtproto.ErrMethodNotImpl
+	}
+	if in.GetMedia() != nil {
+		return nil, mtproto.ErrMethodNotImpl
+	}
+	var item *mtproto.StoryItem
+	_, err = mutateOwnStoriesE(uid, func(stories *userStoryStore) error {
+		item = stories.Items[in.GetId()]
+		if item == nil {
+			return mtproto.ErrStoryIdEmpty
+		}
+		if in.GetCaption() != nil {
+			item.Caption = in.GetCaption()
+		}
+		if in.GetEntities() != nil {
+			item.Entities = in.GetEntities()
+		}
+		item.Edited = true
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return storyUpdates(uid, item), nil
 }
 
 func (c *ApiFullCore) StoriesDeleteStories(in *mtproto.TLStoriesDeleteStories) (*mtproto.Vector_Int, error) {
-	_ = in
-	return nil, storiesProviderUnavailable(c)
+	if in == nil {
+		return nil, storiesProviderUnavailable(c)
+	}
+	if len(in.GetId()) == 0 {
+		return nil, mtproto.ErrStoryIdEmpty
+	}
+	uid, err := c.requireUserId()
+	if err != nil {
+		return nil, err
+	}
+	if !storyPeerOwned(uid, in.GetPeer()) {
+		return nil, mtproto.ErrMethodNotImpl
+	}
+	_, err = mutateOwnStoriesE(uid, func(stories *userStoryStore) error {
+		for _, id := range in.GetId() {
+			if stories.Items[id] == nil {
+				return mtproto.ErrStoryIdEmpty
+			}
+		}
+		deleted := make(map[int32]struct{}, len(in.GetId()))
+		for _, id := range in.GetId() {
+			delete(stories.Items, id)
+			delete(stories.Viewers, id)
+			delete(stories.Reactions, id)
+			delete(stories.Links, id)
+			deleted[id] = struct{}{}
+		}
+		order := stories.Order[:0]
+		for _, id := range stories.Order {
+			if _, ok := deleted[id]; !ok {
+				order = append(order, id)
+			}
+		}
+		stories.Order = order
+		for randomID, id := range stories.ByRand {
+			if _, ok := deleted[id]; ok {
+				delete(stories.ByRand, randomID)
+			}
+		}
+		for _, album := range stories.Albums {
+			kept := album.Stories[:0]
+			for _, id := range album.Stories {
+				if _, ok := deleted[id]; !ok {
+					kept = append(kept, id)
+				}
+			}
+			album.Stories = kept
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &mtproto.Vector_Int{Datas: append([]int32(nil), in.GetId()...)}, nil
 }
 
 func (c *ApiFullCore) StoriesTogglePinned(in *mtproto.TLStoriesTogglePinned) (*mtproto.Vector_Int, error) {
@@ -419,21 +699,20 @@ func (c *ApiFullCore) StoriesTogglePinned(in *mtproto.TLStoriesTogglePinned) (*m
 	if in.GetPeer() != nil && !storyPeerOwned(uid, in.GetPeer()) {
 		return nil, mtproto.ErrMethodNotImpl
 	}
-	stories, err := loadUserStories(uid)
-	if err != nil {
-		return nil, err
-	}
 	pinned := in.GetPinned().GetPredicateName() == mtproto.Predicate_boolTrue
 	result := make([]int32, 0, len(in.GetId()))
-	for _, id := range in.GetId() {
-		item := stories.Items[id]
-		if item == nil {
-			return nil, mtproto.ErrStoryIdEmpty
+	_, err = mutateOwnStoriesE(uid, func(stories *userStoryStore) error {
+		for _, id := range in.GetId() {
+			item := stories.Items[id]
+			if item == nil {
+				return mtproto.ErrStoryIdEmpty
+			}
+			item.Pinned = pinned
+			result = append(result, id)
 		}
-		item.Pinned = pinned
-		result = append(result, id)
-	}
-	if err = saveUserStories(uid, stories); err != nil {
+		return nil
+	})
+	if err != nil {
 		return nil, err
 	}
 	return &mtproto.Vector_Int{Datas: result}, nil
@@ -454,8 +733,26 @@ func storyListState(items []*mtproto.StoryItem) string {
 }
 
 func (c *ApiFullCore) StoriesGetAllStories(in *mtproto.TLStoriesGetAllStories) (*mtproto.Stories_AllStories, error) {
-	_ = in
-	return nil, storiesProviderUnavailable(c)
+	if in == nil {
+		return nil, storiesProviderUnavailable(c)
+	}
+	uid, err := c.requireUserId()
+	if err != nil {
+		return nil, err
+	}
+	stories, err := loadUserStories(uid)
+	if err != nil {
+		return nil, err
+	}
+	items := stories.list(nil, false)
+	userStories := mtproto.MakeTLUserStories(&mtproto.UserStories{
+		UserId: uid, MaxReadId: wrapperspb.Int32(stories.ReadMax), Stories: items,
+	}).To_UserStories()
+	return mtproto.MakeTLStoriesAllStories(&mtproto.Stories_AllStories{
+		State: storyListState(items), StealthMode: storyStealthMode(stories),
+		HasMore: false, Count: int32(len(items)), UserStories: []*mtproto.UserStories{userStories},
+		Chats: []*mtproto.Chat{}, Users: []*mtproto.User{}, PeerStories: []*mtproto.PeerStories{},
+	}).To_Stories_AllStories(), nil
 }
 
 func (c *ApiFullCore) StoriesGetPinnedStories(in *mtproto.TLStoriesGetPinnedStories) (*mtproto.Stories_Stories, error) {
@@ -466,7 +763,7 @@ func (c *ApiFullCore) StoriesGetPinnedStories(in *mtproto.TLStoriesGetPinnedStor
 	if err != nil {
 		return nil, err
 	}
-	return storiesBox(storyPage(stories.list(nil, true), in.GetOffsetId(), in.GetLimit())), nil
+	return storiesBox(storyPageByID(stories.list(nil, true), in.GetOffsetId(), in.GetLimit())), nil
 }
 
 func (c *ApiFullCore) StoriesGetStoriesArchive(in *mtproto.TLStoriesGetStoriesArchive) (*mtproto.Stories_Stories, error) {
@@ -478,7 +775,7 @@ func (c *ApiFullCore) StoriesGetStoriesArchive(in *mtproto.TLStoriesGetStoriesAr
 		return nil, err
 	}
 	items := stories.list(nil, false)
-	return storiesBox(storyPage(items, in.GetOffsetId(), in.GetLimit())), nil
+	return storiesBox(storyPageByID(items, in.GetOffsetId(), in.GetLimit())), nil
 }
 
 func (c *ApiFullCore) StoriesGetStoriesByID(in *mtproto.TLStoriesGetStoriesByID) (*mtproto.Stories_Stories, error) {
@@ -500,12 +797,11 @@ func (c *ApiFullCore) StoriesToggleAllStoriesHidden(in *mtproto.TLStoriesToggleA
 	if err != nil {
 		return nil, err
 	}
-	stories, err := loadUserStories(uid)
+	_, err = mutateOwnStoriesE(uid, func(stories *userStoryStore) error {
+		stories.AllHidden = in.GetHidden().GetPredicateName() == mtproto.Predicate_boolTrue
+		return nil
+	})
 	if err != nil {
-		return nil, err
-	}
-	stories.AllHidden = in.GetHidden().GetPredicateName() == mtproto.Predicate_boolTrue
-	if err = saveUserStories(uid, stories); err != nil {
 		return nil, err
 	}
 	return mtproto.BoolTrue, nil
@@ -519,16 +815,19 @@ func (c *ApiFullCore) StoriesReadStories(in *mtproto.TLStoriesReadStories) (*mtp
 	if err != nil {
 		return nil, err
 	}
-	if in.GetMaxId() > stories.ReadMax {
-		stories.ReadMax = in.GetMaxId()
-	}
 	ids := make([]int32, 0)
 	for _, id := range stories.Order {
 		if id <= in.GetMaxId() {
 			ids = append(ids, id)
 		}
 	}
-	if err = saveUserStories(uid, stories); err != nil {
+	_, err = mutateOwnStoriesE(uid, func(next *userStoryStore) error {
+		if in.GetMaxId() > next.ReadMax {
+			next.ReadMax = in.GetMaxId()
+		}
+		return nil
+	})
+	if err != nil {
 		return nil, err
 	}
 	return &mtproto.Vector_Int{Datas: ids}, nil
@@ -538,18 +837,21 @@ func (c *ApiFullCore) StoriesIncrementStoryViews(in *mtproto.TLStoriesIncrementS
 	if in == nil || len(in.GetId()) == 0 {
 		return nil, mtproto.ErrStoryIdEmpty
 	}
-	uid, stories, err := c.ownStoryStore(in.GetPeer(), in.GetUserId())
+	uid, _, err := c.ownStoryStore(in.GetPeer(), in.GetUserId())
 	if err != nil {
 		return nil, err
 	}
 	now := int32(time.Now().Unix())
-	for _, id := range in.GetId() {
-		if stories.Items[id] == nil {
-			return nil, mtproto.ErrStoryIdEmpty
+	_, err = mutateOwnStoriesE(uid, func(stories *userStoryStore) error {
+		for _, id := range in.GetId() {
+			if stories.Items[id] == nil {
+				return mtproto.ErrStoryIdEmpty
+			}
+			stories.touchViews(id, uid, now)
 		}
-		stories.touchViews(id, uid, now)
-	}
-	if err = saveUserStories(uid, stories); err != nil {
+		return nil
+	})
+	if err != nil {
 		return nil, err
 	}
 	return mtproto.BoolTrue, nil
@@ -621,14 +923,14 @@ func (c *ApiFullCore) StoriesGetStoriesViews(in *mtproto.TLStoriesGetStoriesView
 		if v == nil {
 			v = mtproto.MakeTLStoryViews(&mtproto.StoryViews{}).To_StoryViews()
 		}
-		copy := *v
+		copy := proto.Clone(v).(*mtproto.StoryViews)
 		copy.RecentViewers = append([]int64(nil), v.GetRecentViewers()...)
 		if len(copy.RecentViewers) == 0 {
 			for _, viewer := range stories.Viewers[id] {
 				copy.RecentViewers = append(copy.RecentViewers, viewer.UserId)
 			}
 		}
-		views = append(views, &copy)
+		views = append(views, copy)
 	}
 	return mtproto.MakeTLStoriesStoryViews(&mtproto.Stories_StoryViews{
 		Views: views,
@@ -637,8 +939,36 @@ func (c *ApiFullCore) StoriesGetStoriesViews(in *mtproto.TLStoriesGetStoriesView
 }
 
 func (c *ApiFullCore) StoriesExportStoryLink(in *mtproto.TLStoriesExportStoryLink) (*mtproto.ExportedStoryLink, error) {
-	_ = in
-	return nil, storiesProviderUnavailable(c)
+	if in == nil {
+		return nil, storiesProviderUnavailable(c)
+	}
+	if in.GetId() <= 0 {
+		return nil, mtproto.ErrStoryIdEmpty
+	}
+	uid, stories, err := c.ownStoryStore(in.GetPeer(), in.GetUserId())
+	if err != nil {
+		return nil, err
+	}
+	if stories.Items[in.GetId()] == nil {
+		return nil, mtproto.ErrStoryIdEmpty
+	}
+	link := stories.Links[in.GetId()]
+	if link == "" {
+		link = fmt.Sprintf("https://t.me/story/%d/%d", uid, in.GetId())
+		_, err = mutateOwnStoriesE(uid, func(next *userStoryStore) error {
+			if next.Items[in.GetId()] == nil {
+				return mtproto.ErrStoryIdEmpty
+			}
+			if next.Links[in.GetId()] == "" {
+				next.Links[in.GetId()] = link
+			}
+			return nil
+		})
+		if err != nil {
+			return nil, err
+		}
+	}
+	return mtproto.MakeTLExportedStoryLink(&mtproto.ExportedStoryLink{Link: link}).To_ExportedStoryLink(), nil
 }
 
 func (c *ApiFullCore) StoriesReport19D8EB45(in *mtproto.TLStoriesReport19D8EB45) (*mtproto.ReportResult, error) {
@@ -663,33 +993,111 @@ func (c *ApiFullCore) StoriesReport19D8EB45(in *mtproto.TLStoriesReport19D8EB45)
 }
 
 func (c *ApiFullCore) StoriesActivateStealthMode(in *mtproto.TLStoriesActivateStealthMode) (*mtproto.Updates, error) {
-	_ = in
-	return nil, storiesProviderUnavailable(c)
+	if in == nil {
+		return nil, storiesProviderUnavailable(c)
+	}
+	uid, err := c.requireUserId()
+	if err != nil {
+		return nil, err
+	}
+	_, err = mutateOwnStories(uid, func(stories *userStoryStore) {
+		stories.StealthPast = in.GetPast()
+		stories.StealthFuture = in.GetFuture()
+		if stories.StealthPast || stories.StealthFuture {
+			stories.StealthUntil = int32(time.Now().Unix()) + 3600
+		} else {
+			stories.StealthUntil = 0
+		}
+	})
+	if err != nil {
+		return nil, err
+	}
+	return storyUpdates(uid, nil), nil
 }
 
 func (c *ApiFullCore) StoriesSendReaction(in *mtproto.TLStoriesSendReaction) (*mtproto.Updates, error) {
-	_ = in
-	return nil, storiesProviderUnavailable(c)
+	if in == nil {
+		return nil, storiesProviderUnavailable(c)
+	}
+	if in.GetStoryId() <= 0 {
+		return nil, mtproto.ErrStoryIdEmpty
+	}
+	uid, _, err := c.ownStoryStore(in.GetPeer(), in.GetUserId())
+	if err != nil {
+		return nil, err
+	}
+	if in.GetReaction() != nil && in.GetReaction().GetPredicateName() == "" {
+		return nil, mtproto.ErrReactionEmpty
+	}
+	var updated *userStoryStore
+	updated, err = mutateOwnStoriesE(uid, func(next *userStoryStore) error {
+		if next.Items[in.GetStoryId()] == nil {
+			return mtproto.ErrStoryIdEmpty
+		}
+		next.putReaction(in.GetStoryId(), uid, in.GetReaction(), int32(time.Now().Unix()))
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return storyUpdates(uid, updated.Items[in.GetStoryId()]), nil
 }
 
 func (c *ApiFullCore) StoriesGetPeerStories(in *mtproto.TLStoriesGetPeerStories) (*mtproto.Stories_PeerStories, error) {
-	_ = in
-	return nil, storiesProviderUnavailable(c)
+	if in == nil {
+		return nil, storiesProviderUnavailable(c)
+	}
+	uid, stories, err := c.ownStoryStore(in.GetPeer(), nil)
+	if err != nil {
+		return nil, err
+	}
+	peerStories := mtproto.MakeTLPeerStories(&mtproto.PeerStories{
+		Peer:      mtproto.MakeTLPeerUser(&mtproto.Peer{UserId: uid}).To_Peer(),
+		MaxReadId: wrapperspb.Int32(stories.ReadMax), Stories: stories.list(nil, false),
+	}).To_PeerStories()
+	return mtproto.MakeTLStoriesPeerStories(&mtproto.Stories_PeerStories{
+		Stories: peerStories, Chats: []*mtproto.Chat{}, Users: []*mtproto.User{},
+	}).To_Stories_PeerStories(), nil
 }
 
 func (c *ApiFullCore) StoriesGetAllReadPeerStories(in *mtproto.TLStoriesGetAllReadPeerStories) (*mtproto.Updates, error) {
-	_ = in
-	return nil, storiesProviderUnavailable(c)
+	if in == nil {
+		return nil, storiesProviderUnavailable(c)
+	}
+	if _, err := c.requireUserId(); err != nil {
+		return nil, err
+	}
+	return mtproto.MakeTLUpdates(&mtproto.Updates{Updates: []*mtproto.Update{}, Users: []*mtproto.User{}, Chats: []*mtproto.Chat{}, Date: int32(time.Now().Unix())}).To_Updates(), nil
 }
 
 func (c *ApiFullCore) StoriesGetPeerMaxIDs78499170(in *mtproto.TLStoriesGetPeerMaxIDs78499170) (*mtproto.Vector_RecentStory, error) {
-	_ = in
-	return nil, storiesProviderUnavailable(c)
+	if in == nil {
+		return nil, storiesProviderUnavailable(c)
+	}
+	uid, stories, err := c.ownStoryStore(nil, nil)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]*mtproto.RecentStory, 0, len(in.GetId()))
+	for _, peer := range in.GetId() {
+		if !storyPeerOwned(uid, peer) {
+			return nil, mtproto.ErrMethodNotImpl
+		}
+		result = append(result, mtproto.MakeTLRecentStory(&mtproto.RecentStory{
+			MaxId: wrapperspb.Int32(storyMaxID(stories)),
+		}).To_RecentStory())
+	}
+	return &mtproto.Vector_RecentStory{Datas: result}, nil
 }
 
 func (c *ApiFullCore) StoriesGetChatsToSend(in *mtproto.TLStoriesGetChatsToSend) (*mtproto.Messages_Chats, error) {
-	_ = in
-	return nil, storiesProviderUnavailable(c)
+	if in == nil {
+		return nil, storiesProviderUnavailable(c)
+	}
+	if _, err := c.requireUserId(); err != nil {
+		return nil, err
+	}
+	return mtproto.MakeTLMessagesChats(&mtproto.Messages_Chats{Chats: []*mtproto.Chat{}, Count: 0}).To_Messages_Chats(), nil
 }
 
 func (c *ApiFullCore) StoriesTogglePeerStoriesHidden(in *mtproto.TLStoriesTogglePeerStoriesHidden) (*mtproto.Bool, error) {
@@ -700,20 +1108,18 @@ func (c *ApiFullCore) StoriesTogglePeerStoriesHidden(in *mtproto.TLStoriesToggle
 	if err != nil {
 		return nil, err
 	}
-	stories, err := loadUserStories(uid)
-	if err != nil {
-		return nil, err
-	}
 	key := storyPeerKey(in.GetPeer())
 	if key == "self" {
 		return nil, mtproto.ErrInputRequestInvalid
 	}
-	if in.GetHidden().GetPredicateName() == mtproto.Predicate_boolTrue {
-		stories.HiddenPeers[key] = true
-	} else {
-		delete(stories.HiddenPeers, key)
-	}
-	if err = saveUserStories(uid, stories); err != nil {
+	_, err = mutateOwnStories(uid, func(stories *userStoryStore) {
+		if in.GetHidden().GetPredicateName() == mtproto.Predicate_boolTrue {
+			stories.HiddenPeers[key] = true
+		} else {
+			delete(stories.HiddenPeers, key)
+		}
+	})
+	if err != nil {
 		return nil, err
 	}
 	return mtproto.BoolTrue, nil
@@ -762,28 +1168,75 @@ func (c *ApiFullCore) StoriesTogglePinnedToTop(in *mtproto.TLStoriesTogglePinned
 	if err != nil {
 		return nil, err
 	}
-	stories, err := loadUserStories(uid)
-	if err != nil {
-		return nil, err
-	}
 	if in.GetPeer() != nil && !storyPeerOwned(uid, in.GetPeer()) {
 		return nil, mtproto.ErrMethodNotImpl
 	}
-	for _, id := range in.GetId() {
-		if stories.Items[id] == nil {
-			return nil, mtproto.ErrStoryIdEmpty
+	_, err = mutateOwnStoriesE(uid, func(stories *userStoryStore) error {
+		for _, id := range in.GetId() {
+			if stories.Items[id] == nil {
+				return mtproto.ErrStoryIdEmpty
+			}
 		}
-	}
-	stories.PinnedTop = append([]int32(nil), in.GetId()...)
-	if err = saveUserStories(uid, stories); err != nil {
+		stories.PinnedTop = append([]int32(nil), in.GetId()...)
+		return nil
+	})
+	if err != nil {
 		return nil, err
 	}
 	return mtproto.BoolTrue, nil
 }
 
 func (c *ApiFullCore) StoriesSearchPosts(in *mtproto.TLStoriesSearchPosts) (*mtproto.Stories_FoundStories, error) {
-	_ = in
-	return nil, storiesProviderUnavailable(c)
+	if in == nil {
+		return nil, storiesProviderUnavailable(c)
+	}
+	uid, stories, err := c.ownStoryStore(in.GetPeer(), nil)
+	if err != nil {
+		return nil, err
+	}
+	query := strings.TrimSpace(in.GetHashtag().GetValue())
+	if query == "" {
+		query = strings.TrimSpace(in.GetOffset())
+	}
+	if query == "" {
+		return nil, mtproto.ErrSearchQueryEmpty
+	}
+	query = strings.TrimPrefix(strings.ToLower(query), "#")
+	found := make([]*mtproto.FoundStory, 0)
+	for _, id := range stories.Order {
+		item := stories.Items[id]
+		if item == nil || !strings.Contains(strings.ToLower(item.GetCaption().GetValue()), query) {
+			continue
+		}
+		found = append(found, mtproto.MakeTLFoundStory(&mtproto.FoundStory{
+			Peer: mtproto.MakeTLPeerUser(&mtproto.Peer{UserId: uid}).To_Peer(), Story: item,
+		}).To_FoundStory())
+	}
+	limit := in.GetLimit()
+	if limit <= 0 || limit > 100 {
+		limit = 100
+	}
+	offset := 0
+	if raw := strings.TrimSpace(in.GetOffset()); raw != "" {
+		if parsed, parseErr := strconv.Atoi(raw); parseErr == nil && parsed >= 0 {
+			offset = parsed
+		}
+	}
+	if offset > len(found) {
+		offset = len(found)
+	}
+	end := offset + int(limit)
+	if end > len(found) {
+		end = len(found)
+	}
+	page := found[offset:end]
+	var next *wrapperspb.StringValue
+	if end < len(found) {
+		next = wrapperspb.String(strconv.Itoa(end))
+	}
+	return mtproto.MakeTLStoriesFoundStories(&mtproto.Stories_FoundStories{
+		Count: int32(len(found)), Stories: page, NextOffset: next,
+	}).To_Stories_FoundStories(), nil
 }
 
 func (c *ApiFullCore) StoriesCreateAlbum(in *mtproto.TLStoriesCreateAlbum) (*mtproto.StoryAlbum, error) {
@@ -797,24 +1250,24 @@ func (c *ApiFullCore) StoriesCreateAlbum(in *mtproto.TLStoriesCreateAlbum) (*mtp
 	if in.GetPeer() != nil && !storyPeerOwned(uid, in.GetPeer()) {
 		return nil, mtproto.ErrMethodNotImpl
 	}
-	stories, err := loadUserStories(uid)
-	if err != nil {
-		return nil, err
-	}
-	stories.NextAlbum++
-	if stories.NextAlbum <= 0 {
-		stories.NextAlbum = 1
-	}
-	album := &storyAlbumRec{AlbumId: stories.NextAlbum, Title: strings.TrimSpace(in.GetTitle()), Stories: append([]int32(nil), in.GetStories()...)}
-	for _, id := range album.Stories {
-		if stories.Items[id] == nil {
-			return nil, mtproto.ErrStoryIdEmpty
+	var album *storyAlbumRec
+	_, err = mutateOwnStoriesE(uid, func(stories *userStoryStore) error {
+		stories.NextAlbum++
+		if stories.NextAlbum <= 0 {
+			stories.NextAlbum = 1
 		}
-	}
-	stories.Albums[album.AlbumId] = album
-	stories.AlbumOrder = append(stories.AlbumOrder, album.AlbumId)
-	stories.bindAlbumStories(album.AlbumId, album.Stories, true)
-	if err = saveUserStories(uid, stories); err != nil {
+		album = &storyAlbumRec{AlbumId: stories.NextAlbum, Title: strings.TrimSpace(in.GetTitle()), Stories: append([]int32(nil), in.GetStories()...)}
+		for _, id := range album.Stories {
+			if stories.Items[id] == nil {
+				return mtproto.ErrStoryIdEmpty
+			}
+		}
+		stories.Albums[album.AlbumId] = album
+		stories.AlbumOrder = append(stories.AlbumOrder, album.AlbumId)
+		stories.bindAlbumStories(album.AlbumId, album.Stories, true)
+		return nil
+	})
+	if err != nil {
 		return nil, err
 	}
 	return albumTL(album), nil
@@ -831,73 +1284,73 @@ func (c *ApiFullCore) StoriesUpdateAlbum(in *mtproto.TLStoriesUpdateAlbum) (*mtp
 	if in.GetPeer() != nil && !storyPeerOwned(uid, in.GetPeer()) {
 		return nil, mtproto.ErrMethodNotImpl
 	}
-	stories, err := loadUserStories(uid)
-	if err != nil {
-		return nil, err
-	}
-	album := stories.Albums[in.GetAlbumId()]
-	if album == nil {
-		return nil, mtproto.ErrInputRequestInvalid
-	}
-	if title := in.GetTitle(); title != nil {
-		if strings.TrimSpace(title.GetValue()) == "" {
-			return nil, mtproto.ErrInputRequestInvalid
+	var album *storyAlbumRec
+	_, err = mutateOwnStoriesE(uid, func(stories *userStoryStore) error {
+		album = stories.Albums[in.GetAlbumId()]
+		if album == nil {
+			return mtproto.ErrInputRequestInvalid
 		}
-		album.Title = strings.TrimSpace(title.GetValue())
-	}
-	if len(in.GetDeleteStories()) > 0 {
-		stories.bindAlbumStories(album.AlbumId, in.GetDeleteStories(), false)
-		removed := make(map[int32]struct{}, len(in.GetDeleteStories()))
-		for _, id := range in.GetDeleteStories() {
-			removed[id] = struct{}{}
-		}
-		kept := album.Stories[:0]
-		for _, id := range album.Stories {
-			if _, ok := removed[id]; !ok {
-				kept = append(kept, id)
+		if title := in.GetTitle(); title != nil {
+			if strings.TrimSpace(title.GetValue()) == "" {
+				return mtproto.ErrInputRequestInvalid
 			}
+			album.Title = strings.TrimSpace(title.GetValue())
 		}
-		album.Stories = kept
-	}
-	if len(in.GetAddStories()) > 0 {
-		for _, id := range in.GetAddStories() {
-			if stories.Items[id] == nil {
-				return nil, mtproto.ErrStoryIdEmpty
+		if len(in.GetDeleteStories()) > 0 {
+			stories.bindAlbumStories(album.AlbumId, in.GetDeleteStories(), false)
+			removed := make(map[int32]struct{}, len(in.GetDeleteStories()))
+			for _, id := range in.GetDeleteStories() {
+				removed[id] = struct{}{}
 			}
-			found := false
-			for _, existing := range album.Stories {
-				if existing == id {
-					found = true
-					break
+			kept := album.Stories[:0]
+			for _, id := range album.Stories {
+				if _, ok := removed[id]; !ok {
+					kept = append(kept, id)
 				}
 			}
-			if !found {
-				album.Stories = append(album.Stories, id)
-			}
+			album.Stories = kept
 		}
-		stories.bindAlbumStories(album.AlbumId, in.GetAddStories(), true)
-	}
-	if len(in.GetOrder()) > 0 {
-		seen := make(map[int32]struct{}, len(album.Stories))
-		ordered := make([]int32, 0, len(in.GetOrder()))
-		for _, id := range in.GetOrder() {
-			for _, existing := range album.Stories {
-				if id == existing {
-					if _, ok := seen[id]; !ok {
-						ordered = append(ordered, id)
-						seen[id] = struct{}{}
+		if len(in.GetAddStories()) > 0 {
+			for _, id := range in.GetAddStories() {
+				if stories.Items[id] == nil {
+					return mtproto.ErrStoryIdEmpty
+				}
+				found := false
+				for _, existing := range album.Stories {
+					if existing == id {
+						found = true
+						break
+					}
+				}
+				if !found {
+					album.Stories = append(album.Stories, id)
+				}
+			}
+			stories.bindAlbumStories(album.AlbumId, in.GetAddStories(), true)
+		}
+		if len(in.GetOrder()) > 0 {
+			seen := make(map[int32]struct{}, len(album.Stories))
+			ordered := make([]int32, 0, len(in.GetOrder()))
+			for _, id := range in.GetOrder() {
+				for _, existing := range album.Stories {
+					if id == existing {
+						if _, ok := seen[id]; !ok {
+							ordered = append(ordered, id)
+							seen[id] = struct{}{}
+						}
 					}
 				}
 			}
-		}
-		for _, id := range album.Stories {
-			if _, ok := seen[id]; !ok {
-				ordered = append(ordered, id)
+			for _, id := range album.Stories {
+				if _, ok := seen[id]; !ok {
+					ordered = append(ordered, id)
+				}
 			}
+			album.Stories = ordered
 		}
-		album.Stories = ordered
-	}
-	if err = saveUserStories(uid, stories); err != nil {
+		return nil
+	})
+	if err != nil {
 		return nil, err
 	}
 	return albumTL(album), nil
@@ -914,28 +1367,27 @@ func (c *ApiFullCore) StoriesReorderAlbums(in *mtproto.TLStoriesReorderAlbums) (
 	if in.GetPeer() != nil && !storyPeerOwned(uid, in.GetPeer()) {
 		return nil, mtproto.ErrMethodNotImpl
 	}
-	stories, err := loadUserStories(uid)
+	_, err = mutateOwnStoriesE(uid, func(stories *userStoryStore) error {
+		seen := make(map[int32]struct{}, len(in.GetOrder()))
+		order := make([]int32, 0, len(stories.AlbumOrder))
+		for _, id := range in.GetOrder() {
+			if stories.Albums[id] == nil {
+				return mtproto.ErrInputRequestInvalid
+			}
+			if _, ok := seen[id]; !ok {
+				order = append(order, id)
+				seen[id] = struct{}{}
+			}
+		}
+		for _, id := range stories.AlbumOrder {
+			if _, ok := seen[id]; !ok {
+				order = append(order, id)
+			}
+		}
+		stories.AlbumOrder = order
+		return nil
+	})
 	if err != nil {
-		return nil, err
-	}
-	seen := make(map[int32]struct{}, len(in.GetOrder()))
-	order := make([]int32, 0, len(stories.AlbumOrder))
-	for _, id := range in.GetOrder() {
-		if stories.Albums[id] == nil {
-			return nil, mtproto.ErrInputRequestInvalid
-		}
-		if _, ok := seen[id]; !ok {
-			order = append(order, id)
-			seen[id] = struct{}{}
-		}
-	}
-	for _, id := range stories.AlbumOrder {
-		if _, ok := seen[id]; !ok {
-			order = append(order, id)
-		}
-	}
-	stories.AlbumOrder = order
-	if err = saveUserStories(uid, stories); err != nil {
 		return nil, err
 	}
 	return mtproto.BoolTrue, nil
@@ -952,24 +1404,23 @@ func (c *ApiFullCore) StoriesDeleteAlbum(in *mtproto.TLStoriesDeleteAlbum) (*mtp
 	if in.GetPeer() != nil && !storyPeerOwned(uid, in.GetPeer()) {
 		return nil, mtproto.ErrMethodNotImpl
 	}
-	stories, err := loadUserStories(uid)
-	if err != nil {
-		return nil, err
-	}
-	album := stories.Albums[in.GetAlbumId()]
-	if album == nil {
-		return nil, mtproto.ErrInputRequestInvalid
-	}
-	stories.bindAlbumStories(album.AlbumId, album.Stories, false)
-	delete(stories.Albums, album.AlbumId)
-	order := stories.AlbumOrder[:0]
-	for _, id := range stories.AlbumOrder {
-		if id != album.AlbumId {
-			order = append(order, id)
+	_, err = mutateOwnStoriesE(uid, func(stories *userStoryStore) error {
+		album := stories.Albums[in.GetAlbumId()]
+		if album == nil {
+			return mtproto.ErrInputRequestInvalid
 		}
-	}
-	stories.AlbumOrder = order
-	if err = saveUserStories(uid, stories); err != nil {
+		stories.bindAlbumStories(album.AlbumId, album.Stories, false)
+		delete(stories.Albums, album.AlbumId)
+		order := stories.AlbumOrder[:0]
+		for _, id := range stories.AlbumOrder {
+			if id != album.AlbumId {
+				order = append(order, id)
+			}
+		}
+		stories.AlbumOrder = order
+		return nil
+	})
+	if err != nil {
 		return nil, err
 	}
 	return mtproto.BoolTrue, nil
@@ -1016,55 +1467,169 @@ func (c *ApiFullCore) StoriesGetAlbumStories(in *mtproto.TLStoriesGetAlbumStorie
 }
 
 func (c *ApiFullCore) StoriesStartLive(in *mtproto.TLStoriesStartLive) (*mtproto.Updates, error) {
-	_ = in
-	return nil, storiesProviderUnavailable(c)
+	if in == nil {
+		return nil, storiesProviderUnavailable(c)
+	}
+	uid, err := c.requireUserId()
+	if err != nil {
+		return nil, err
+	}
+	if !storyPeerOwned(uid, in.GetPeer()) {
+		return nil, mtproto.ErrMethodNotImpl
+	}
+	// The APIFull DAO has no media/live-stream provider. Do not persist a
+	// synthetic story that clients could not actually consume.
+	return nil, mtproto.ErrMethodNotImpl
 }
 
 func (c *ApiFullCore) StoriesGetPeerMaxIDs535983C3(in *mtproto.TLStoriesGetPeerMaxIDs535983C3) (*mtproto.Vector_Int, error) {
-	_ = in
-	return nil, storiesProviderUnavailable(c)
+	if in == nil {
+		return nil, storiesProviderUnavailable(c)
+	}
+	uid, stories, err := c.ownStoryStore(nil, nil)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]int32, 0, len(in.GetId()))
+	for _, peer := range in.GetId() {
+		if !storyPeerOwned(uid, peer) {
+			return nil, mtproto.ErrMethodNotImpl
+		}
+		result = append(result, storyMaxID(stories))
+	}
+	return &mtproto.Vector_Int{Datas: result}, nil
 }
 
 func (c *ApiFullCore) StoriesCanSendStoryC7DFDFDD(in *mtproto.TLStoriesCanSendStoryC7DFDFDD) (*mtproto.Bool, error) {
-	_ = in
-	return nil, storiesProviderUnavailable(c)
+	if in == nil {
+		return nil, storiesProviderUnavailable(c)
+	}
+	uid, err := c.requireUserId()
+	if err != nil {
+		return nil, err
+	}
+	if !storyPeerOwned(uid, in.GetPeer()) {
+		return nil, mtproto.ErrMethodNotImpl
+	}
+	return mtproto.BoolTrue, nil
 }
 
 func (c *ApiFullCore) StoriesReport1923FA8C(in *mtproto.TLStoriesReport1923FA8C) (*mtproto.Bool, error) {
-	if _, err := c.requireUserId(); err != nil {
+	if in == nil {
+		return nil, storiesProviderUnavailable(c)
+	}
+	uid, err := c.requireUserId()
+	if err != nil {
 		return nil, err
 	}
-	return nil, mtproto.ErrMethodNotImpl
+	if !reportMessageIDs(in.GetId()) || !reportReasonValid(in.GetReason()) {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	target, err := reportPeerTarget(uid, in.GetPeer())
+	if err != nil {
+		return nil, err
+	}
+	if err = c.recordReport(uid, "stories.report", target, in); err != nil {
+		return nil, err
+	}
+	return mtproto.BoolTrue, nil
 }
 
 func (c *ApiFullCore) UsersGetStoriesMaxIDs(in *mtproto.TLUsersGetStoriesMaxIDs) (*mtproto.Vector_Int, error) {
-	_ = in
-	return nil, storiesProviderUnavailable(c)
+	if in == nil {
+		return nil, storiesProviderUnavailable(c)
+	}
+	uid, stories, err := c.ownStoryStore(nil, nil)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]int32, 0, len(in.GetId()))
+	for _, user := range in.GetId() {
+		if !storyUserOwned(uid, user) {
+			return nil, mtproto.ErrMethodNotImpl
+		}
+		result = append(result, storyMaxID(stories))
+	}
+	return &mtproto.Vector_Int{Datas: result}, nil
 }
 
 func (c *ApiFullCore) ContactsToggleStoriesHidden(in *mtproto.TLContactsToggleStoriesHidden) (*mtproto.Bool, error) {
-	_ = in
-	return nil, storiesProviderUnavailable(c)
+	if in == nil || in.GetId() == nil || in.GetHidden() == nil {
+		if in == nil {
+			return nil, storiesProviderUnavailable(c)
+		}
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	uid, err := c.requireUserId()
+	if err != nil {
+		return nil, err
+	}
+	userID := in.GetId().GetUserId()
+	if userID <= 0 || userID == uid {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	_, err = mutateOwnStoriesE(uid, func(stories *userStoryStore) error {
+		if in.GetHidden().GetPredicateName() == mtproto.Predicate_boolTrue {
+			stories.HiddenUsers[userID] = true
+		} else {
+			delete(stories.HiddenUsers, userID)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return mtproto.BoolTrue, nil
 }
 
 func (c *ApiFullCore) StoriesCanSendStoryB100D45D(in *mtproto.TLStoriesCanSendStoryB100D45D) (*mtproto.Bool, error) {
-	_ = in
-	return nil, storiesProviderUnavailable(c)
-}
-
-func (c *ApiFullCore) StoriesGetUserStories(in *mtproto.TLStoriesGetUserStories) (*mtproto.Stories_UserStories, error) {
-	_ = in
-	return nil, storiesProviderUnavailable(c)
-}
-
-func (c *ApiFullCore) StoriesGetAllReadUserStories(in *mtproto.TLStoriesGetAllReadUserStories) (*mtproto.Updates, error) {
-	_ = in
-	return nil, storiesProviderUnavailable(c)
-}
-
-func (c *ApiFullCore) StoriesReportC95BE06A(in *mtproto.TLStoriesReportC95BE06A) (*mtproto.Bool, error) {
+	if in == nil {
+		return nil, storiesProviderUnavailable(c)
+	}
 	if _, err := c.requireUserId(); err != nil {
 		return nil, err
 	}
-	return nil, mtproto.ErrMethodNotImpl
+	return mtproto.BoolTrue, nil
+}
+
+func (c *ApiFullCore) StoriesGetUserStories(in *mtproto.TLStoriesGetUserStories) (*mtproto.Stories_UserStories, error) {
+	if in == nil {
+		return nil, storiesProviderUnavailable(c)
+	}
+	uid, stories, err := c.ownStoryStore(nil, in.GetUserId())
+	if err != nil {
+		return nil, err
+	}
+	return mtproto.MakeTLStoriesUserStories(&mtproto.Stories_UserStories{
+		Stories: mtproto.MakeTLUserStories(&mtproto.UserStories{UserId: uid, MaxReadId: wrapperspb.Int32(stories.ReadMax), Stories: stories.list(nil, false)}).To_UserStories(),
+		Users:   []*mtproto.User{},
+	}).To_Stories_UserStories(), nil
+}
+
+func (c *ApiFullCore) StoriesGetAllReadUserStories(in *mtproto.TLStoriesGetAllReadUserStories) (*mtproto.Updates, error) {
+	if in == nil {
+		return nil, storiesProviderUnavailable(c)
+	}
+	if _, err := c.requireUserId(); err != nil {
+		return nil, err
+	}
+	return mtproto.MakeTLUpdates(&mtproto.Updates{Updates: []*mtproto.Update{}, Users: []*mtproto.User{}, Chats: []*mtproto.Chat{}, Date: int32(time.Now().Unix())}).To_Updates(), nil
+}
+
+func (c *ApiFullCore) StoriesReportC95BE06A(in *mtproto.TLStoriesReportC95BE06A) (*mtproto.Bool, error) {
+	if in == nil {
+		return nil, storiesProviderUnavailable(c)
+	}
+	uid, err := c.requireUserId()
+	if err != nil {
+		return nil, err
+	}
+	if !storyUserOwned(uid, in.GetUserId()) || !reportMessageIDs(in.GetId()) {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	target := reportTarget{typ: "user", id: uid}
+	if err = c.recordReport(uid, "stories.reportUser", target, in); err != nil {
+		return nil, err
+	}
+	return mtproto.BoolTrue, nil
 }

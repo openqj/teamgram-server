@@ -19,6 +19,9 @@
 package svc
 
 import (
+	"strings"
+
+	sharedpersist "github.com/teamgram/teamgram-server/app/bff/apifull/persist"
 	"github.com/teamgram/teamgram-server/app/bff/configuration/internal/config"
 )
 
@@ -27,6 +30,12 @@ type ServiceContext struct {
 }
 
 func NewServiceContext(c config.Config) *ServiceContext {
+	if strings.TrimSpace(c.PostgresDSN) == "" {
+		panic("configuration: PostgresDSN is required")
+	}
+	if err := sharedpersist.OpenPostgresReadOnly(c.PostgresDSN); err != nil {
+		panic(err)
+	}
 	return &ServiceContext{
 		Config: c,
 	}

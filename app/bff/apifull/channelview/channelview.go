@@ -19,6 +19,7 @@ func Chat(ch domain.Channel, creator bool) *mtproto.Chat {
 		Megagroup:                   ch.Megagroup,
 		Signatures:                  ch.Signatures,
 		SignatureProfiles:           ch.SignatureProfiles,
+		Autotranslation:             ch.Autotranslation,
 		SlowmodeEnabled:             ch.SlowmodeSeconds > 0,
 		Creator:                     creator,
 		Date:                        int32(ch.CreatedAt),

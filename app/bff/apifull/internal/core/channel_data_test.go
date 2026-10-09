@@ -75,7 +75,7 @@ func TestChannelsUnsupportedDataMethodsFailClosed(t *testing.T) {
 
 func TestChannelsGetInactiveChannelsReturnsTypedEmptyResult(t *testing.T) {
 	if !domain.Ready() {
-		t.Skip("APIFULL_MYSQL_DSN is required for canonical channel storage")
+		t.Skip("APIFULL_POSTGRES_DSN is required for canonical channel storage")
 	}
 	core := &ApiFullCore{MD: &metadata.RpcMetadata{UserId: 98311}}
 	result, err := core.ChannelsGetInactiveChannels(nil)
@@ -92,7 +92,7 @@ func TestChannelsGetInactiveChannelsReturnsTypedEmptyResult(t *testing.T) {
 
 func TestChannelsGetAdminLogRoundTrip(t *testing.T) {
 	if !domain.Ready() {
-		t.Skip("APIFULL_MYSQL_DSN is required for canonical channel storage")
+		t.Skip("APIFULL_POSTGRES_DSN is required for canonical channel storage")
 	}
 	const owner, member int64 = 98312, 98313
 	channelID := time.Now().UnixNano()

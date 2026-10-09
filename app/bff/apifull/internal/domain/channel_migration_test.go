@@ -3,7 +3,6 @@ package domain
 import (
 	"errors"
 	"fmt"
-	"os"
 	"sync"
 	"testing"
 	"time"
@@ -11,13 +10,7 @@ import (
 
 func requireMigrationDB(t *testing.T) {
 	t.Helper()
-	dsn := os.Getenv("APIFULL_MYSQL_DSN")
-	if dsn == "" {
-		t.Skip("APIFULL_MYSQL_DSN is not configured")
-	}
-	if err := Open(dsn); err != nil {
-		t.Fatal(err)
-	}
+	requirePaymentLedgerDB(t)
 }
 
 func cleanupMigrationChannel(t *testing.T, channelID int64) {
@@ -27,6 +20,12 @@ func cleanupMigrationChannel(t *testing.T, channelID int64) {
 			return
 		}
 		for _, query := range []string{
+			`DELETE FROM apifull_channel_delivery_recipient WHERE delivery_id IN (SELECT id FROM apifull_channel_delivery_outbox WHERE channel_id=?)`,
+			`DELETE FROM apifull_channel_delivery_outbox WHERE channel_id=?`,
+			`DELETE FROM apifull_channel_event WHERE channel_id=?`,
+			`DELETE FROM apifull_channel_admin_log WHERE channel_id=?`,
+			`DELETE FROM apifull_channel_message_request WHERE channel_id=?`,
+			`DELETE FROM apifull_channel_message_content_read WHERE channel_id=?`,
 			`DELETE FROM apifull_channel_message_hidden WHERE channel_id=?`,
 			`DELETE FROM apifull_channel_message WHERE channel_id=?`,
 			`DELETE FROM apifull_channel_message_seq WHERE channel_id=?`,

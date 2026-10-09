@@ -1,21 +1,3 @@
-// Copyright 2022 Teamgram Authors
-//  All rights reserved.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//   http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-//
-// Author: teamgramio (teamgram.io@gmail.com)
-//
-
 package mq
 
 import (
@@ -24,236 +6,67 @@ import (
 	"fmt"
 
 	kafka "github.com/teamgram/marmota/pkg/mq"
+	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/messenger/msg/inbox/inbox"
 	"github.com/teamgram/teamgram-server/app/messenger/msg/inbox/internal/core"
 	"github.com/teamgram/teamgram-server/app/messenger/msg/inbox/internal/svc"
-
-	"github.com/zeromicro/go-zero/core/logx"
+	"github.com/teamgram/teamgram-server/pkg/mqconsumer"
 	"google.golang.org/protobuf/proto"
-	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
-// New new a grpc server.
-func New(svcCtx *svc.ServiceContext, conf kafka.KafkaConsumerConf) *kafka.ConsumerGroup {
-	s := kafka.MustKafkaConsumer(&conf)
-	s.RegisterHandlers(
-		conf.Topics[0],
-		func(ctx context.Context, method, key string, value []byte) {
-			logx.WithContext(ctx).Debugf("method: %s, key: %s, value: %s", method, key, value)
+func New(svcCtx *svc.ServiceContext, conf kafka.KafkaConsumerConf) *mqconsumer.Consumer {
+	consumer, err := mqconsumer.New(conf, func(ctx context.Context, method, _ string, value []byte) error {
+		c := core.New(ctx, svcCtx)
+		switch method {
+		case string(proto.MessageName((*inbox.TLInboxEditUserMessageToInbox)(nil))):
+			return dispatch(value, new(inbox.TLInboxEditUserMessageToInbox), c.InboxEditUserMessageToInbox)
+		case string(proto.MessageName((*inbox.TLInboxEditChatMessageToInbox)(nil))):
+			return dispatch(value, new(inbox.TLInboxEditChatMessageToInbox), c.InboxEditChatMessageToInbox)
+		case string(proto.MessageName((*inbox.TLInboxDeleteMessagesToInbox)(nil))):
+			return dispatch(value, new(inbox.TLInboxDeleteMessagesToInbox), c.InboxDeleteMessagesToInbox)
+		case string(proto.MessageName((*inbox.TLInboxDeleteUserHistoryToInbox)(nil))):
+			return dispatch(value, new(inbox.TLInboxDeleteUserHistoryToInbox), c.InboxDeleteUserHistoryToInbox)
+		case string(proto.MessageName((*inbox.TLInboxDeleteChatHistoryToInbox)(nil))):
+			return dispatch(value, new(inbox.TLInboxDeleteChatHistoryToInbox), c.InboxDeleteChatHistoryToInbox)
+		case string(proto.MessageName((*inbox.TLInboxReadUserMediaUnreadToInbox)(nil))):
+			return dispatch(value, new(inbox.TLInboxReadUserMediaUnreadToInbox), c.InboxReadUserMediaUnreadToInbox)
+		case string(proto.MessageName((*inbox.TLInboxReadChatMediaUnreadToInbox)(nil))):
+			return dispatch(value, new(inbox.TLInboxReadChatMediaUnreadToInbox), c.InboxReadChatMediaUnreadToInbox)
+		case string(proto.MessageName((*inbox.TLInboxUpdateHistoryReaded)(nil))):
+			return dispatch(value, new(inbox.TLInboxUpdateHistoryReaded), c.InboxUpdateHistoryReaded)
+		case string(proto.MessageName((*inbox.TLInboxUpdatePinnedMessage)(nil))):
+			return dispatch(value, new(inbox.TLInboxUpdatePinnedMessage), c.InboxUpdatePinnedMessage)
+		case string(proto.MessageName((*inbox.TLInboxUnpinAllMessages)(nil))):
+			return dispatch(value, new(inbox.TLInboxUnpinAllMessages), c.InboxUnpinAllMessages)
+		case string(proto.MessageName((*inbox.TLInboxSendUserMessageToInboxV2)(nil))):
+			return dispatch(value, new(inbox.TLInboxSendUserMessageToInboxV2), c.InboxSendUserMessageToInboxV2)
+		case string(proto.MessageName((*inbox.TLInboxEditMessageToInboxV2)(nil))):
+			return dispatch(value, new(inbox.TLInboxEditMessageToInboxV2), c.InboxEditMessageToInboxV2)
+		case string(proto.MessageName((*inbox.TLInboxReadInboxHistory)(nil))):
+			return dispatch(value, new(inbox.TLInboxReadInboxHistory), c.InboxReadInboxHistory)
+		case string(proto.MessageName((*inbox.TLInboxReadOutboxHistory)(nil))):
+			return dispatch(value, new(inbox.TLInboxReadOutboxHistory), c.InboxReadOutboxHistory)
+		case string(proto.MessageName((*inbox.TLInboxReadMediaUnreadToInboxV2)(nil))):
+			return dispatch(value, new(inbox.TLInboxReadMediaUnreadToInboxV2), c.InboxReadMediaUnreadToInboxV2)
+		case string(proto.MessageName((*inbox.TLInboxUpdatePinnedMessageV2)(nil))):
+			return dispatch(value, new(inbox.TLInboxUpdatePinnedMessageV2), c.InboxUpdatePinnedMessageV2)
+		default:
+			return fmt.Errorf("inbox: unknown Kafka method %q", method)
+		}
+	})
+	if err != nil {
+		panic(err)
+	}
+	return consumer
+}
 
-			switch protoreflect.FullName(method) {
-			case proto.MessageName((*inbox.TLInboxEditUserMessageToInbox)(nil)):
-				c := core.New(ctx, svcCtx)
-
-				r := new(inbox.TLInboxEditUserMessageToInbox)
-				if err := json.Unmarshal(value, r); err != nil {
-					c.Logger.Errorf("inbox.editUserMessageToInbox - error: %v", err)
-					return
-				}
-				c.Logger.Debugf("inbox.editUserMessageToInbox - request: %s", r)
-
-				if _, err := c.InboxEditUserMessageToInbox(r); err != nil {
-					c.Logger.Errorf("inbox.editUserMessageToInbox - handler error: %v", err)
-				}
-			case proto.MessageName((*inbox.TLInboxEditChatMessageToInbox)(nil)):
-				c := core.New(ctx, svcCtx)
-
-				r := new(inbox.TLInboxEditChatMessageToInbox)
-				if err := json.Unmarshal(value, r); err != nil {
-					c.Logger.Errorf("inbox.editChatMessageToInbox - error: %v", err)
-					return
-				}
-				c.Logger.Debugf("inbox.editChatMessageToInbox - request: %s", r)
-
-				if _, err := c.InboxEditChatMessageToInbox(r); err != nil {
-					c.Logger.Errorf("inbox.editChatMessageToInbox - handler error: %v", err)
-				}
-			case proto.MessageName((*inbox.TLInboxDeleteMessagesToInbox)(nil)):
-				c := core.New(ctx, svcCtx)
-
-				r := new(inbox.TLInboxDeleteMessagesToInbox)
-				if err := json.Unmarshal(value, r); err != nil {
-					c.Logger.Errorf("inbox.deleteMessagesToInbox - error: %v", err)
-					return
-				}
-				c.Logger.Debugf("inbox.deleteMessagesToInbox - request: %s", r)
-
-				if _, err := c.InboxDeleteMessagesToInbox(r); err != nil {
-					c.Logger.Errorf("inbox.deleteMessagesToInbox - handler error: %v", err)
-				}
-			case proto.MessageName((*inbox.TLInboxDeleteUserHistoryToInbox)(nil)):
-				c := core.New(ctx, svcCtx)
-
-				r := new(inbox.TLInboxDeleteUserHistoryToInbox)
-				if err := json.Unmarshal(value, r); err != nil {
-					c.Logger.Errorf("inbox.deleteUserHistoryToInbox - error: %v", err)
-					return
-				}
-				c.Logger.Debugf("inbox.deleteUserHistoryToInbox - request: %s", r)
-
-				if _, err := c.InboxDeleteUserHistoryToInbox(r); err != nil {
-					c.Logger.Errorf("inbox.deleteUserHistoryToInbox - handler error: %v", err)
-				}
-			case proto.MessageName((*inbox.TLInboxDeleteChatHistoryToInbox)(nil)):
-				c := core.New(ctx, svcCtx)
-
-				r := new(inbox.TLInboxDeleteChatHistoryToInbox)
-				if err := json.Unmarshal(value, r); err != nil {
-					c.Logger.Errorf("inbox.deleteChatHistoryToInbox - error: %v", err)
-					return
-				}
-				c.Logger.Debugf("inbox.deleteChatHistoryToInbox - request: %s", r)
-
-				if _, err := c.InboxDeleteChatHistoryToInbox(r); err != nil {
-					c.Logger.Errorf("inbox.deleteChatHistoryToInbox - handler error: %v", err)
-				}
-			case proto.MessageName((*inbox.TLInboxReadUserMediaUnreadToInbox)(nil)):
-				c := core.New(ctx, svcCtx)
-
-				r := new(inbox.TLInboxReadUserMediaUnreadToInbox)
-				if err := json.Unmarshal(value, r); err != nil {
-					c.Logger.Errorf("inbox.readUserMediaUnreadToInbox - error: %v", err)
-					return
-				}
-				c.Logger.Debugf("inbox.readUserMediaUnreadToInbox - request: %s", r)
-
-				if _, err := c.InboxReadUserMediaUnreadToInbox(r); err != nil {
-					c.Logger.Errorf("inbox.readUserMediaUnreadToInbox - handler error: %v", err)
-				}
-			case proto.MessageName((*inbox.TLInboxReadChatMediaUnreadToInbox)(nil)):
-				c := core.New(ctx, svcCtx)
-
-				r := new(inbox.TLInboxReadChatMediaUnreadToInbox)
-				if err := json.Unmarshal(value, r); err != nil {
-					c.Logger.Errorf("inbox.readChatMediaUnreadToInbox - error: %v", err)
-					return
-				}
-				c.Logger.Debugf("inbox.readChatMediaUnreadToInbox - request: %s", r)
-
-				if _, err := c.InboxReadChatMediaUnreadToInbox(r); err != nil {
-					c.Logger.Errorf("inbox.readChatMediaUnreadToInbox - handler error: %v", err)
-				}
-			case proto.MessageName((*inbox.TLInboxUpdateHistoryReaded)(nil)):
-				c := core.New(ctx, svcCtx)
-
-				r := new(inbox.TLInboxUpdateHistoryReaded)
-				if err := json.Unmarshal(value, r); err != nil {
-					c.Logger.Errorf("inbox.updateHistoryReaded - error: %v", err)
-					return
-				}
-				c.Logger.Debugf("inbox.updateHistoryReaded - request: %s", r)
-
-				if _, err := c.InboxUpdateHistoryReaded(r); err != nil {
-					c.Logger.Errorf("inbox.updateHistoryReaded - handler error: %v", err)
-				}
-			case proto.MessageName((*inbox.TLInboxUpdatePinnedMessage)(nil)):
-				c := core.New(ctx, svcCtx)
-
-				r := new(inbox.TLInboxUpdatePinnedMessage)
-				if err := json.Unmarshal(value, r); err != nil {
-					c.Logger.Errorf("inbox.updatePinnedMessage - error: %v", err)
-					return
-				}
-				c.Logger.Debugf("inbox.updatePinnedMessage - request: %s", r)
-
-				if _, err := c.InboxUpdatePinnedMessage(r); err != nil {
-					c.Logger.Errorf("inbox.updatePinnedMessage - handler error: %v", err)
-				}
-			case proto.MessageName((*inbox.TLInboxUnpinAllMessages)(nil)):
-				c := core.New(ctx, svcCtx)
-
-				r := new(inbox.TLInboxUnpinAllMessages)
-				if err := json.Unmarshal(value, r); err != nil {
-					c.Logger.Errorf("inbox.unpinAllMessages - error: %v", err)
-					return
-				}
-				c.Logger.Debugf("inbox.unpinAllMessages - request: %s", r)
-
-				if _, err := c.InboxUnpinAllMessages(r); err != nil {
-					c.Logger.Errorf("inbox.unpinAllMessages - handler error: %v", err)
-				}
-			case proto.MessageName((*inbox.TLInboxSendUserMessageToInboxV2)(nil)):
-				c := core.New(ctx, svcCtx)
-
-				r := new(inbox.TLInboxSendUserMessageToInboxV2)
-				if err := json.Unmarshal(value, r); err != nil {
-					c.Logger.Errorf("inbox.sendUserMessageToInboxV2 - error: %v", err)
-					return
-				}
-				c.Logger.Debugf("inbox.sendUserMessageToInboxV2 - request: %s", r)
-
-				if _, err := c.InboxSendUserMessageToInboxV2(r); err != nil {
-					c.Logger.Errorf("inbox.sendUserMessageToInboxV2 - handler error: %v", err)
-				}
-			case proto.MessageName((*inbox.TLInboxEditMessageToInboxV2)(nil)):
-				c := core.New(ctx, svcCtx)
-
-				r := new(inbox.TLInboxEditMessageToInboxV2)
-				if err := json.Unmarshal(value, r); err != nil {
-					c.Logger.Errorf("inbox.editMessageToInboxV2 - error: %v", err)
-					return
-				}
-				c.Logger.Debugf("inbox.editMessageToInboxV2 - request: %s", r)
-
-				if _, err := c.InboxEditMessageToInboxV2(r); err != nil {
-					c.Logger.Errorf("inbox.editMessageToInboxV2 - handler error: %v", err)
-				}
-			case proto.MessageName((*inbox.TLInboxReadInboxHistory)(nil)):
-				c := core.New(ctx, svcCtx)
-
-				r := new(inbox.TLInboxReadInboxHistory)
-				if err := json.Unmarshal(value, r); err != nil {
-					c.Logger.Errorf("inbox.readInboxHistory - error: %v", err)
-					return
-				}
-				c.Logger.Debugf("inbox.readInboxHistory - request: %s", r)
-
-				if _, err := c.InboxReadInboxHistory(r); err != nil {
-					c.Logger.Errorf("inbox.readInboxHistory - handler error: %v", err)
-				}
-			case proto.MessageName((*inbox.TLInboxReadOutboxHistory)(nil)):
-				c := core.New(ctx, svcCtx)
-
-				r := new(inbox.TLInboxReadOutboxHistory)
-				if err := json.Unmarshal(value, r); err != nil {
-					c.Logger.Errorf("inbox.readOutboxHistory - error: %v", err)
-					return
-				}
-				c.Logger.Debugf("inbox.readOutboxHistory - request: %s", r)
-
-				if _, err := c.InboxReadOutboxHistory(r); err != nil {
-					c.Logger.Errorf("inbox.readOutboxHistory - handler error: %v", err)
-				}
-			case proto.MessageName((*inbox.TLInboxReadMediaUnreadToInboxV2)(nil)):
-				c := core.New(ctx, svcCtx)
-
-				r := new(inbox.TLInboxReadMediaUnreadToInboxV2)
-				if err := json.Unmarshal(value, r); err != nil {
-					c.Logger.Errorf("inbox.readMediaUnreadToInboxV2 - error: %v", err)
-					return
-				}
-				c.Logger.Debugf("inbox.readMediaUnreadToInboxV2 - request: %s", r)
-
-				if _, err := c.InboxReadMediaUnreadToInboxV2(r); err != nil {
-					c.Logger.Errorf("inbox.readMediaUnreadToInboxV2 - handler error: %v", err)
-				}
-			case proto.MessageName((*inbox.TLInboxUpdatePinnedMessageV2)(nil)):
-				c := core.New(ctx, svcCtx)
-
-				r := new(inbox.TLInboxUpdatePinnedMessageV2)
-				if err := json.Unmarshal(value, r); err != nil {
-					c.Logger.Errorf("inbox.updatePinnedMessageV2 - error: %v", err)
-					return
-				}
-				c.Logger.Debugf("inbox.updatePinnedMessageV2 - request: %s", r)
-
-				if _, err := c.InboxUpdatePinnedMessageV2(r); err != nil {
-					c.Logger.Errorf("inbox.updatePinnedMessageV2 - handler error: %v", err)
-				}
-			default:
-				err := fmt.Errorf("invalid key: %s", key)
-				logx.Error(err.Error())
-			}
-		})
-	return s
+func dispatch[T proto.Message](value []byte, request T, handler func(T) (*mtproto.Void, error)) error {
+	if err := json.Unmarshal(value, request); err != nil {
+		return err
+	}
+	result, err := handler(request)
+	if err == nil && result == nil {
+		return fmt.Errorf("inbox: handler returned no result")
+	}
+	return err
 }

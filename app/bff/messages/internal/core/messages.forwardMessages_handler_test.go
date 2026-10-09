@@ -30,12 +30,14 @@ func (s *forwardMessageClientStub) MessageGetUserMessageList(_ context.Context, 
 
 type forwardUserClientStub struct {
 	userclient.UserClient
-	privacy *userpb.Vector_PrivacyRule
+	allowed *mtproto.Bool
+	request *userpb.TLUserCheckPrivacy
 	err     error
 }
 
-func (s *forwardUserClientStub) UserGetPrivacy(_ context.Context, _ *userpb.TLUserGetPrivacy) (*userpb.Vector_PrivacyRule, error) {
-	return s.privacy, s.err
+func (s *forwardUserClientStub) UserCheckPrivacy(_ context.Context, in *userpb.TLUserCheckPrivacy) (*mtproto.Bool, error) {
+	s.request = in
+	return s.allowed, s.err
 }
 
 type forwardMsgClientStub struct {
@@ -94,7 +96,7 @@ func TestMessagesForwardMessagesSendsStoredMessageAndReturnsUpdates(t *testing.T
 	sender := &forwardMsgClientStub{response: mtproto.MakeEmptyUpdates()}
 	core := newForwardTestCore(
 		&forwardMessageClientStub{response: &messagepb.Vector_MessageBox{Datas: []*mtproto.MessageBox{forwardSelfBox(100)}}},
-		&forwardUserClientStub{privacy: &userpb.Vector_PrivacyRule{}},
+		&forwardUserClientStub{allowed: mtproto.BoolTrue},
 		sender,
 	)
 
@@ -115,7 +117,7 @@ func TestMessagesForwardMessagesFailsClosedOnNilSendResponse(t *testing.T) {
 	sender := &forwardMsgClientStub{}
 	core := newForwardTestCore(
 		&forwardMessageClientStub{response: &messagepb.Vector_MessageBox{Datas: []*mtproto.MessageBox{forwardSelfBox(100)}}},
-		&forwardUserClientStub{privacy: &userpb.Vector_PrivacyRule{}},
+		&forwardUserClientStub{allowed: mtproto.BoolTrue},
 		sender,
 	)
 
@@ -128,12 +130,48 @@ func TestMessagesForwardMessagesFailsClosedOnNilSendResponse(t *testing.T) {
 func TestMessagesForwardMessagesFailsClosedOnNilMessageList(t *testing.T) {
 	core := newForwardTestCore(
 		&forwardMessageClientStub{},
-		&forwardUserClientStub{privacy: &userpb.Vector_PrivacyRule{}},
+		&forwardUserClientStub{allowed: mtproto.BoolTrue},
 		&forwardMsgClientStub{response: mtproto.MakeEmptyUpdates()},
 	)
 
 	got, err := core.MessagesForwardMessages(forwardSelfRequest())
 	if got != nil || !errors.Is(err, mtproto.ErrInternalServerError) {
 		t.Fatalf("MessagesForwardMessages(nil message list) = (%v, %v), want (nil, INTERNAL_SERVER_ERROR)", got, err)
+	}
+}
+
+func TestForwardPrivacyUsesAuthoritativeUserService(t *testing.T) {
+	wantErr := errors.New("postgres privacy unavailable")
+	for _, tc := range []struct {
+		name         string
+		allowed      *mtproto.Bool
+		err, wantErr error
+		want         bool
+	}{
+		{name: "allowed", allowed: mtproto.BoolTrue, want: true},
+		{name: "denied", allowed: mtproto.BoolFalse},
+		{name: "query failure", err: wantErr, wantErr: wantErr},
+		{name: "nil response", wantErr: mtproto.ErrInternalServerError},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			users := &forwardUserClientStub{allowed: tc.allowed, err: tc.err}
+			c := newForwardTestCore(nil, users, nil)
+			got, err := c.checkForwardPrivacy(context.Background(), 7, 42)
+			if got != tc.want || !errors.Is(err, tc.wantErr) {
+				t.Fatalf("privacy = (%v, %v), want (%v, %v)", got, err, tc.want, tc.wantErr)
+			}
+			if in := users.request; in.GetUserId() != 7 || in.GetPeerId() != 42 || in.GetKeyType() != mtproto.FORWARDS {
+				t.Fatalf("forward privacy request = %v", in)
+			}
+		})
+	}
+}
+
+func TestMessagesForwardPrivacyFailurePreventsSend(t *testing.T) {
+	wantErr := errors.New("postgres privacy unavailable")
+	sender := &forwardMsgClientStub{}
+	c := newForwardTestCore(&forwardMessageClientStub{response: &messagepb.Vector_MessageBox{Datas: []*mtproto.MessageBox{forwardSelfBox(100)}}}, &forwardUserClientStub{err: wantErr}, sender)
+	if got, err := c.MessagesForwardMessages(forwardSelfRequest()); got != nil || !errors.Is(err, wantErr) || sender.request != nil {
+		t.Fatalf("forward = (%v, %v), sent=%v", got, err, sender.request)
 	}
 }

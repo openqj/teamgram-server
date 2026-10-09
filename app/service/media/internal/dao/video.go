@@ -106,38 +106,37 @@ func getVideoSize(sz *dataobject.VideoSizesDO) *mtproto.VideoSize {
 }
 
 func (m *Dao) SaveVideoSizeV2(ctx context.Context, szId int64, szList []*mtproto.VideoSize) error {
-	if len(szList) == 0 {
-		return nil
+	sizeDOList, err := makeVideoSizesDO(szId, szList)
+	if err != nil {
+		return err
+	}
+	for _, szDO := range sizeDOList {
+		if _, _, err := m.videoSizesStore().Insert(ctx, szDO); err != nil {
+			return err
+		}
 	}
 
-	for _, sz := range szList {
-		var (
-			szDO *dataobject.VideoSizesDO
-		)
+	return nil
+}
 
+func makeVideoSizesDO(szId int64, szList []*mtproto.VideoSize) ([]*dataobject.VideoSizesDO, error) {
+	result := make([]*dataobject.VideoSizesDO, 0, len(szList))
+	for _, sz := range szList {
+		if sz == nil {
+			continue
+		}
+		var szDO *dataobject.VideoSizesDO
 		switch sz.GetPredicateName() {
-		case "videoSizeEmojiMarkup":
-			data, _ := json.Marshal(sz)
-			szDO = &dataobject.VideoSizesDO{
-				VideoSizeId:  szId,
-				SizeType:     "e",
-				Width:        0,
-				Height:       0,
-				FileSize:     0,
-				VideoStartTs: 0,
-				FilePath:     string(data),
+		case "videoSizeEmojiMarkup", "videoSizeStickerMarkup":
+			data, err := json.Marshal(sz)
+			if err != nil {
+				return nil, err
 			}
-		case "videoSizeStickerMarkup":
-			data, _ := json.Marshal(sz)
-			szDO = &dataobject.VideoSizesDO{
-				VideoSizeId:  szId,
-				SizeType:     "s",
-				Width:        0,
-				Height:       0,
-				FileSize:     0,
-				VideoStartTs: 0,
-				FilePath:     string(data),
+			sizeType := "e"
+			if sz.GetPredicateName() == "videoSizeStickerMarkup" {
+				sizeType = "s"
 			}
+			szDO = &dataobject.VideoSizesDO{VideoSizeId: szId, SizeType: sizeType, FilePath: string(data)}
 		default:
 			szDO = &dataobject.VideoSizesDO{
 				VideoSizeId:  szId,
@@ -149,10 +148,7 @@ func (m *Dao) SaveVideoSizeV2(ctx context.Context, szId int64, szList []*mtproto
 				FilePath:     fmt.Sprintf("%s/%d.dat", sz.Type, szId),
 			}
 		}
-		if _, _, err := m.videoSizesStore().Insert(ctx, szDO); err != nil {
-			return err
-		}
+		result = append(result, szDO)
 	}
-
-	return nil
+	return result, nil
 }

@@ -42,7 +42,6 @@ type Config struct {
 	DfsClient                     zrpc.RpcClientConf
 	StatusClient                  zrpc.RpcClientConf
 	PostgresDSN                   string                       `json:",optional"`
-	MysqlDSN                      string                       `json:",optional"` // legacy test-only alias
 	PaymentProviderEndpoint       string                       `json:",optional"`
 	PaymentProviderKey            string                       `json:",optional"`
 	PaymentProviderSigningKey     string                       `json:",optional"`

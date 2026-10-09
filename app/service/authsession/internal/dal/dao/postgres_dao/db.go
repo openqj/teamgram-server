@@ -121,7 +121,7 @@ func scanAuthUsers(row pgx.Row) (*dataobject.AuthUsersDO, error) {
 
 func scanAuthKeyInfos(row pgx.Row) (*dataobject.AuthKeyInfosDO, error) {
 	do := new(dataobject.AuthKeyInfosDO)
-	err := row.Scan(&do.AuthKeyId, &do.AuthKeyType, &do.PermAuthKeyId, &do.TempAuthKeyId, &do.MediaTempAuthKeyId)
+	err := row.Scan(&do.AuthKeyId, &do.AuthKeyType, &do.PermAuthKeyId, &do.TempAuthKeyId, &do.MediaTempAuthKeyId, &do.ExpiresAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}

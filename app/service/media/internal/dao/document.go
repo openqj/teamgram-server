@@ -20,6 +20,7 @@ package dao
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"strconv"
 	"strings"
@@ -27,6 +28,8 @@ import (
 
 	"github.com/teamgram/marmota/pkg/hack"
 	"github.com/teamgram/proto/mtproto"
+	dfs_client "github.com/teamgram/teamgram-server/app/service/dfs/client"
+	"github.com/teamgram/teamgram-server/app/service/dfs/dfs"
 	"github.com/teamgram/teamgram-server/app/service/media/internal/dal/dataobject"
 
 	"github.com/zeromicro/go-zero/core/jsonx"
@@ -73,16 +76,15 @@ func (m *Dao) MakeDocumentByDO(
 	id int64,
 	do *dataobject.DocumentsDO,
 	thumbs []*mtproto.PhotoSize,
-	videoThumbs []*mtproto.VideoSize) {
-	document.Id = do.DocumentId
-
+	videoThumbs []*mtproto.VideoSize) error {
 	if do == nil {
 		document.Id = id
 		mtproto.MakeTLDocumentEmpty(&mtproto.Document{
 			Id: id,
 		})
-		return
+		return nil
 	}
+	document.Id = do.DocumentId
 
 	mtproto.MakeTLDocument(document)
 	document.AccessHash = do.AccessHash
@@ -94,6 +96,7 @@ func (m *Dao) MakeDocumentByDO(
 	document.MimeType = do.MimeType
 	document.Size2_INT32 = int32(do.FileSize)
 	document.Size2_INT64 = do.FileSize
+	var photoSizeErr error
 
 	if do.ThumbId != 0 && do.VideoThumbId != 0 {
 		if len(thumbs) > 0 && len(videoThumbs) > 0 {
@@ -102,11 +105,14 @@ func (m *Dao) MakeDocumentByDO(
 		} else {
 			mr.FinishVoid(
 				func() {
-					document.Thumbs = m.GetPhotoSizeListV2(ctx, do.ThumbId)
+					document.Thumbs, photoSizeErr = m.GetPhotoSizeListV2(ctx, do.ThumbId)
 				},
 				func() {
 					document.VideoThumbs = m.GetVideoSizeList(ctx, do.VideoThumbId)
 				})
+			if photoSizeErr != nil {
+				return photoSizeErr
+			}
 		}
 	} else {
 		// thumbs
@@ -114,7 +120,11 @@ func (m *Dao) MakeDocumentByDO(
 			if len(thumbs) > 0 {
 				document.Thumbs = thumbs
 			} else {
-				document.Thumbs = m.GetPhotoSizeListV2(ctx, do.ThumbId)
+				var err error
+				document.Thumbs, err = m.GetPhotoSizeListV2(ctx, do.ThumbId)
+				if err != nil {
+					return err
+				}
 			}
 		}
 
@@ -137,31 +147,57 @@ func (m *Dao) MakeDocumentByDO(
 		document.Attributes = []*mtproto.DocumentAttribute{}
 	}
 	document = document.FixData()
+	return nil
 }
 
-func (m *Dao) GetDocumentById(ctx context.Context, id int64) *mtproto.Document {
+func (m *Dao) GetDocumentById(ctx context.Context, id int64) (*mtproto.Document, error) {
 	do, err := m.documentsStore().SelectByDocumentId(ctx, id)
 	if err != nil {
 		logx.WithContext(ctx).Errorf("GetDocumentById(%d) - error: %v", id, err)
-		return mtproto.MakeTLDocumentEmpty(&mtproto.Document{Id: id}).To_Document()
+		return nil, err
 	}
 	if do == nil {
 		logx.WithContext(ctx).Infof("not found document by id: %d", id)
-		return mtproto.MakeTLDocumentEmpty(&mtproto.Document{Id: id}).To_Document()
+		return mtproto.MakeTLDocumentEmpty(&mtproto.Document{Id: id}).To_Document(), nil
 	}
 	document := new(mtproto.Document)
-	m.MakeDocumentByDO(ctx, document, id, do, nil, nil)
-	return document.FixData()
+	if err := m.MakeDocumentByDO(ctx, document, id, do, nil, nil); err != nil {
+		return nil, err
+	}
+	return document.FixData(), nil
 }
 
-func (m *Dao) GetDocumentListByIdList(ctx context.Context, idList []int64) []*mtproto.Document {
+// GetDocumentByHash resolves the canonical Telegram document hash identity.
+func (m *Dao) GetDocumentByHash(ctx context.Context, hash []byte, size int64, mimeType string) (*mtproto.Document, error) {
+	return m.LookupDocumentByHash(ctx, hash, size, mimeType)
+}
+
+func (m *Dao) LookupDocumentByHash(ctx context.Context, hash []byte, size int64, mimeType string) (*mtproto.Document, error) {
+	if len(hash) != sha256.Size || size < 0 || mimeType == "" {
+		return nil, mtproto.ErrDocumentInvalid
+	}
+	do, err := m.documentsStore().SelectByHash(ctx, hash, size, mimeType)
+	if err != nil {
+		return nil, err
+	}
+	if do == nil {
+		return nil, nil
+	}
+	document := new(mtproto.Document)
+	if err := m.MakeDocumentByDO(ctx, document, do.DocumentId, do, nil, nil); err != nil {
+		return nil, err
+	}
+	return document.FixData(), nil
+}
+
+func (m *Dao) GetDocumentListByIdList(ctx context.Context, idList []int64) ([]*mtproto.Document, error) {
 	if len(idList) == 0 {
-		return []*mtproto.Document{}
+		return []*mtproto.Document{}, nil
 	}
 	doList, err := m.documentsStore().SelectByDocumentIdListWithCB(ctx, idList, nil)
 	if err != nil {
 		logx.WithContext(ctx).Errorf("findListByIdList - %v", err)
-		return []*mtproto.Document{}
+		return nil, err
 	}
 	var (
 		thumbSizeIdList      = make([]int64, 0)
@@ -182,22 +218,26 @@ func (m *Dao) GetDocumentListByIdList(ctx context.Context, idList []int64) []*mt
 	var (
 		thumbSizeListList      map[int64][]*mtproto.PhotoSize
 		videoThumbSizeListList map[int64][]*mtproto.VideoSize
+		photoSizeErr           error
 	)
 	if len(thumbSizeIdList) > 0 && len(videoThumbSizeIdList) > 0 {
 		mr.FinishVoid(
 			func() {
-				thumbSizeListList = m.GetPhotoSizeListList(ctx, thumbSizeIdList)
+				thumbSizeListList, photoSizeErr = m.GetPhotoSizeListListE(ctx, thumbSizeIdList)
 			},
 			func() {
 				videoThumbSizeListList = m.GetVideoSizeListList(ctx, videoThumbSizeIdList)
 			})
 	} else {
 		if len(thumbSizeIdList) != 0 {
-			thumbSizeListList = m.GetPhotoSizeListList(ctx, thumbSizeIdList)
+			thumbSizeListList, photoSizeErr = m.GetPhotoSizeListListE(ctx, thumbSizeIdList)
 		}
 		if len(videoThumbSizeIdList) != 0 {
 			videoThumbSizeListList = m.GetVideoSizeListList(ctx, videoThumbSizeIdList)
 		}
+	}
+	if photoSizeErr != nil {
+		return nil, photoSizeErr
 	}
 
 	documents := make([]*mtproto.Document, 0, len(idList))
@@ -207,10 +247,51 @@ func (m *Dao) GetDocumentListByIdList(ctx context.Context, idList []int64) []*mt
 			continue
 		}
 		document := new(mtproto.Document)
-		m.MakeDocumentByDO(ctx, document, do.DocumentId, do, thumbSizeListList[do.ThumbId], videoThumbSizeListList[do.VideoThumbId])
+		if err := m.MakeDocumentByDO(ctx, document, do.DocumentId, do, thumbSizeListList[do.ThumbId], videoThumbSizeListList[do.VideoThumbId]); err != nil {
+			return nil, err
+		}
 		documents = append(documents, document.FixData())
 	}
-	return documents
+	return documents, nil
+}
+
+func hashDocumentContent(ctx context.Context, client dfs_client.DfsClient, document *mtproto.Document, size int64) ([]byte, error) {
+	if document == nil || document.GetId() <= 0 || size < 0 || client == nil {
+		return nil, mtproto.ErrMediaInvalid
+	}
+	hasher := sha256.New()
+	for offset := int64(0); offset < size; {
+		remaining := size - offset
+		limit := int32(128 * 1024)
+		if remaining < int64(limit) {
+			limit = int32(remaining)
+		}
+		part, err := client.DfsDownloadFile(ctx, &dfs.TLDfsDownloadFile{
+			Location: mtproto.MakeTLInputDocumentFileLocation(&mtproto.InputFileLocation{
+				Id: document.Id, AccessHash: document.AccessHash,
+			}).To_InputFileLocation(),
+			Offset: offset,
+			Limit:  limit,
+		})
+		if err != nil || part == nil {
+			if err == nil {
+				err = mtproto.ErrMediaInvalid
+			}
+			return nil, err
+		}
+		bytes := part.GetBytes()
+		if len(bytes) == 0 {
+			return nil, mtproto.ErrMediaInvalid
+		}
+		if int64(len(bytes)) > remaining {
+			bytes = bytes[:remaining]
+		}
+		if _, err = hasher.Write(bytes); err != nil {
+			return nil, err
+		}
+		offset += int64(len(bytes))
+	}
+	return hasher.Sum(nil), nil
 }
 
 func (m *Dao) SaveDocumentV2(ctx context.Context, fileName string, document *mtproto.Document) error {
@@ -250,8 +331,12 @@ func (m *Dao) SaveDocumentV2(ctx context.Context, fileName string, document *mtp
 	if len(document.GetVideoThumbs()) > 0 {
 		data.VideoThumbId = document.Id
 	}
+	hash, err := hashDocumentContent(ctx, m.DfsClient, document, data.FileSize)
+	if err != nil {
+		return err
+	}
+	data.Sha256 = hash
 
-	var err error
 	data.Id, _, err = m.documentsStore().Insert(ctx, data)
 	return err
 }

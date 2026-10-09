@@ -26,7 +26,7 @@ import (
 // UserDeleteUsername
 // user.deleteUsername username:string = Bool;
 func (c *UserCore) UserDeleteUsername(in *user.TLUserDeleteUsername) (*mtproto.Bool, error) {
-	_, err := c.svcCtx.Dao.UsernameDAO.Delete(c.ctx, in.Username)
+	_, err := c.svcCtx.Dao.DeleteUsername(c.ctx, in.Username)
 	if err != nil {
 		return mtproto.BoolFalse, nil
 	}

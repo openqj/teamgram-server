@@ -26,10 +26,7 @@ import (
 // UserSetAuthorizationTTL
 // user.setAuthorizationTTL user_id:long ttl:int = Bool;
 func (c *UserCore) UserSetAuthorizationTTL(in *user.TLUserSetAuthorizationTTL) (*mtproto.Bool, error) {
-	if _, err := c.svcCtx.Dao.UsersDAO.UpdateAuthorizationTTL(
-		c.ctx,
-		in.Ttl,
-		in.UserId); err != nil {
+	if _, err := c.svcCtx.Dao.UpdateUserFields(c.ctx, in.UserId, map[string]any{"authorization_ttl_days": in.Ttl}); err != nil {
 		c.Logger.Errorf("user.setAuthorizationTTL - error: %v", err)
 		return nil, err
 	}

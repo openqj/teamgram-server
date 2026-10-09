@@ -111,14 +111,57 @@ func TestChatlistJoinUpdatesRejectsPeersOutsideInvite(t *testing.T) {
 	}
 }
 
-func TestChatlistLeaveSuggestionsUnavailable(t *testing.T) {
+func TestChatlistJoinAndLeaveUpdatesPersistPostgresState(t *testing.T) {
+	_ = isolatedAuditDSN(t)
+	uid := time.Now().UnixNano()
+	channelID := uid + 1
+	peer := mtproto.MakeInputPeerChannel(channelID)
+	state := &clState{Invites: []clInvite{{FilterID: 2, Slug: "join-leave-invite", Peers: []*mtproto.InputPeer{peer}}}}
+	chatlist := seedChatlistTestState(t, uid, 2, state)
+	if err := domain.SaveChannel(domain.Channel{ID: channelID, AccessHash: channelID, Creator: uid, Title: "join leave channel"}); err != nil {
+		t.Fatal(err)
+	}
+	client := &folderArchiveDialogClient{}
+	c := &ApiFullCore{MD: &metadata.RpcMetadata{UserId: uid}, svcCtx: &svc.ServiceContext{Dao: &dao.Dao{DialogClient: client}}}
+	t.Cleanup(func() {
+		_ = persist.Default.Set(clistKey(uid), "")
+		_ = persist.Default.Set(dialogFiltersKey(uid), "")
+		_ = domain.DeleteChannel(uid, channelID)
+	})
+
+	if updates, err := c.ChatlistsJoinChatlistUpdates(&mtproto.TLChatlistsJoinChatlistUpdates{Chatlist: chatlist, Peers: []*mtproto.InputPeer{peer}}); err != nil || updates == nil {
+		t.Fatalf("join updates=(%v, %v)", updates, err)
+	}
+	joined, err := loadClist(uid)
+	if err != nil || len(joined.Joined) != 1 || len(joined.Joined[0].Peers) != 1 {
+		t.Fatalf("joined state=%+v err=%v", joined, err)
+	}
+	if updates, err := c.ChatlistsLeaveChatlist(&mtproto.TLChatlistsLeaveChatlist{Chatlist: chatlist, Peers: []*mtproto.InputPeer{peer}}); err != nil || updates == nil {
+		t.Fatalf("leave updates=(%v, %v)", updates, err)
+	}
+	left, err := loadClist(uid)
+	if err != nil || len(left.Joined) != 0 {
+		t.Fatalf("left state=%+v err=%v", left, err)
+	}
+}
+
+func TestChatlistLeaveSuggestionsReturnsJoinedPeers(t *testing.T) {
 	_ = isolatedAuditDSN(t)
 	if result, err := (&ApiFullCore{}).ChatlistsGetLeaveChatlistSuggestions(nil); result != nil || !errors.Is(err, mtproto.ErrAuthKeyUnregistered) {
 		t.Fatalf("unauthenticated leave suggestions: result=%+v err=%v", result, err)
 	}
-	c := &ApiFullCore{MD: &metadata.RpcMetadata{UserId: time.Now().UnixNano()}}
-	if result, err := c.ChatlistsGetLeaveChatlistSuggestions(nil); result != nil || !errors.Is(err, mtproto.ErrMethodNotImpl) {
-		t.Fatalf("leave suggestions without a suggestion source: result=%+v err=%v", result, err)
+	uid := time.Now().UnixNano()
+	peer := mtproto.MakeInputPeerChannel(uid + 1)
+	chatlist := seedChatlistTestState(t, uid, 2, &clState{
+		Joined: []clJoin{{FilterID: 2, Peers: []*mtproto.InputPeer{peer}}},
+	})
+	c := &ApiFullCore{MD: &metadata.RpcMetadata{UserId: uid}}
+	result, err := c.ChatlistsGetLeaveChatlistSuggestions(&mtproto.TLChatlistsGetLeaveChatlistSuggestions{Chatlist: chatlist})
+	if err != nil || result == nil || len(result.GetDatas()) != 1 {
+		t.Fatalf("leave suggestions: result=%+v err=%v", result, err)
+	}
+	if result.GetDatas()[0].GetPredicateName() != mtproto.Predicate_peerChannel || result.GetDatas()[0].GetChannelId() != uid+1 {
+		t.Fatalf("leave suggestion=%+v, want channel %d", result.GetDatas()[0], uid+1)
 	}
 }
 

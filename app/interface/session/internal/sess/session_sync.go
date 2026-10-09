@@ -26,7 +26,7 @@ import (
 	"github.com/zeromicro/go-zero/core/logx"
 )
 
-func (c *session) onSyncData(ctx context.Context, obj mtproto.TLObject) {
+func (c *session) onSyncData(ctx context.Context, obj mtproto.TLObject) error {
 	// for android, obj maybe is nil
 	if obj != nil {
 		logx.WithContext(ctx).Infof("session]]>> - session: %s, syncData: %s", c, obj)
@@ -38,34 +38,47 @@ func (c *session) onSyncData(ctx context.Context, obj mtproto.TLObject) {
 
 	if c.isAndroidPush {
 		pusMsgId := c.sessList.cb.getNextNotifyId()
-		c.sendPushToQueue(ctx, gatewayId, pusMsgId, androidPushTooLong)
+		if err := c.sendPushToQueue(ctx, gatewayId, pusMsgId, androidPushTooLong); err != nil {
+			return err
+		}
 	} else {
 		pusMsgId := c.sessList.cb.getNextPushId()
-		c.sendPushToQueue(ctx, gatewayId, pusMsgId, obj)
-	}
-
-	if c.sessionOnline() {
-		if gatewayId == "" {
-			logx.WithContext(ctx).Errorf("gatewayId is empty, send delay...")
-		} else {
-			c.sendQueueToGateway(ctx, gatewayId)
+		if err := c.sendPushToQueue(ctx, gatewayId, pusMsgId, obj); err != nil {
+			return err
 		}
 	}
+
+	if !c.sessionOnline() {
+		return ErrPushNotDelivered
+	}
+	if !c.canSync && c.sessList.state == mtproto.AuthStateNormal {
+		return ErrPushNotDelivered
+	}
+	return c.sendQueueToGateway(ctx, gatewayId)
 }
 
-func (c *session) onSyncRpcResultData(ctx context.Context, reqMsgId int64, data []byte) {
+func (c *session) onSyncRpcResultData(ctx context.Context, reqMsgId int64, data []byte) error {
 	// TODO(@benqi):
 	logx.WithContext(ctx).Debugf("onSyncRpcResultData]]>> - %s", data)
 	c.pendingQueue.Remove(reqMsgId)
 	gatewayId := c.getGatewayId()
 	c.sendPushRpcResultToQueue(gatewayId, reqMsgId, data)
+	if message := c.outQueue.Lookup(reqMsgId); message != nil && message.sent > 0 {
+		return nil
+	}
+	return c.sendQueueToGateway(ctx, gatewayId)
 }
 
-func (c *session) onSyncSessionData(ctx context.Context, obj mtproto.TLObject) {
+func (c *session) onSyncSessionData(ctx context.Context, obj mtproto.TLObject) error {
 	// TODO(@benqi):
 	gatewayId := c.getGatewayId()
 	pusMsgId := c.sessList.cb.getNextPushId()
 
-	c.sendPushToQueue(ctx, gatewayId, pusMsgId, obj)
-	c.sendQueueToGateway(ctx, gatewayId)
+	if err := c.sendPushToQueue(ctx, gatewayId, pusMsgId, obj); err != nil {
+		return err
+	}
+	if !c.canSync && c.sessList.state == mtproto.AuthStateNormal {
+		return ErrPushNotDelivered
+	}
+	return c.sendQueueToGateway(ctx, gatewayId)
 }

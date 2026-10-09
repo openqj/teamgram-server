@@ -19,14 +19,14 @@ func (c *UserCore) UserGetCreatedBots(in *user.BotRegistryGetCreatedBotsRequest)
 	}
 	creatorUserId := c.MD.GetUserId()
 
-	botIds, err := c.svcCtx.BotsDAO.SelectBotIdsByCreatorUserId(c.ctx, creatorUserId)
+	botIds, err := c.svcCtx.Dao.SelectBotIdsByCreatorUserID(c.ctx, creatorUserId)
 	if err != nil {
 		return nil, err
 	}
 
 	bots := &user.Vector_ImmutableUser{Datas: make([]*mtproto.ImmutableUser, 0, len(botIds))}
 	for _, botId := range botIds {
-		bot, err := c.svcCtx.Dao.GetImmutableUser(c.ctx, botId, false)
+		bot, err := c.svcCtx.Dao.GetImmutableUser(c.ctx, botId, true, creatorUserId)
 		if err != nil {
 			return nil, err
 		}
@@ -46,14 +46,14 @@ func (c *UserCore) UserGetAdminedBots(in *user.BotRegistryGetAdminedBotsRequest)
 		return nil, mtproto.ErrAuthKeyUnregistered
 	}
 
-	botIds, err := c.svcCtx.BotsDAO.SelectBotIdsByCreatorUserId(c.ctx, c.MD.GetUserId())
+	botIds, err := c.svcCtx.Dao.SelectBotIdsByCreatorUserID(c.ctx, c.MD.GetUserId())
 	if err != nil {
 		return nil, err
 	}
 
 	bots := &user.Vector_ImmutableUser{Datas: make([]*mtproto.ImmutableUser, 0, len(botIds))}
 	for _, botId := range botIds {
-		bot, err := c.svcCtx.Dao.GetImmutableUser(c.ctx, botId, false)
+		bot, err := c.svcCtx.Dao.GetImmutableUser(c.ctx, botId, true, c.MD.GetUserId())
 		if err != nil {
 			return nil, err
 		}

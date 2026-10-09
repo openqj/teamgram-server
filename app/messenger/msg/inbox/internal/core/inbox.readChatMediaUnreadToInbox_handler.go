@@ -28,6 +28,15 @@ import (
 // InboxReadChatMediaUnreadToInbox
 // inbox.readChatMediaUnreadToInbox from_id:long peer_chat_id:long id:Vector<int> = Void;
 func (c *InboxCore) InboxReadChatMediaUnreadToInbox(in *inbox.TLInboxReadChatMediaUnreadToInbox) (*mtproto.Void, error) {
+	if in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if c.svcCtx.Dao.Postgres != nil {
+		if err := c.readLegacyInboxMedia(in.FromId, mtproto.PEER_CHAT, in.PeerChatId, in.Id); err != nil {
+			return nil, err
+		}
+		return mtproto.EmptyVoid, nil
+	}
 	var (
 		idList = make([]int64, 0, len(in.GetId()))
 	)

@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/teamgram/marmota/pkg/container2"
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/service/biz/user/internal/dal/dataobject"
@@ -46,20 +47,29 @@ func (c *UserCore) UserImportContacts(in *user.TLUserImportContacts) (*user.User
 			UpdateIdList:   []int64{},
 		}).To_UserImportedContacts(), nil
 	}
+	if err := c.requirePostgres(); err != nil {
+		return nil, err
+	}
 
-	myUserData := c.svcCtx.Dao.GetCacheUserData(c.ctx, in.GetUserId())
+	myUserData, err := c.svcCtx.Dao.GetCacheUserDataWithError(c.ctx, in.GetUserId())
+	if err != nil {
+		return nil, err
+	}
 	if myUserData == nil {
 		c.Logger.Errorf("UserImportContacts - myUserData == nil")
 		return nil, mtproto.ErrInternalServerError
 	}
 
-	if _, err := c.svcCtx.Dao.UsersDAO.SelectUsersByPhoneListWithCB(c.ctx, phones, func(_ int, _ int, row *dataobject.UsersDO) {
-		if row == nil {
-			return
-		}
+	rows, err := c.svcCtx.Dao.SelectUsersByPhones(c.ctx, phones)
+	if err != nil {
+		c.Logger.Errorf("UserImportContacts - select users by phone error: %v", err)
+		return nil, err
+	}
+	for i := range rows {
+		row := &rows[i]
 		item, ok := itemByPhone[row.Phone]
 		if !ok {
-			return
+			continue
 		}
 		item.Unregistered = false
 		item.UserId = row.Id
@@ -69,62 +79,61 @@ func (c *UserCore) UserImportContacts(in *user.TLUserImportContacts) (*user.User
 		if container2.ContainsInt64(myUserData.ReverseContactIdList, row.Id) {
 			item.ImportContactId = row.Id
 		}
-	}); err != nil {
-		c.Logger.Errorf("UserImportContacts - select users by phone error: %v", err)
-		return nil, err
 	}
 
 	importedContacts := make([]*mtproto.ImportedContact, 0, len(contacts))
 	updateIDs := make([]int64, 0, len(contacts))
 	userIDs := make([]int64, 0, len(contacts))
-	for _, item := range items {
-		if item.Unregistered {
-			continue
-		}
-		contact := &dataobject.UserContactsDO{
-			OwnerUserId:      in.GetUserId(),
-			ContactUserId:    item.UserId,
-			ContactPhone:     item.C.GetPhone(),
-			ContactFirstName: item.C.GetFirstName(),
-			ContactLastName:  item.C.GetLastName(),
-			Mutual:           item.ImportContactId > 0,
-			CloseFriend:      false,
-			StoriesHidden:    false,
-			IsDeleted:        false,
-			Date2:            time.Now().Unix(),
-		}
-
-		if item.ContactId > 0 {
-			if item.ImportContactId > 0 {
-				updateIDs = append(updateIDs, item.ImportContactId)
-			}
-			if _, err := c.svcCtx.Dao.UserContactsDAO.UpdateContactName(c.ctx, contact.ContactFirstName, contact.ContactLastName, contact.OwnerUserId, contact.ContactUserId); err != nil {
-				return nil, err
-			}
-		} else {
-			if item.ImportContactId > 0 {
-				if _, err := c.svcCtx.Dao.UserContactsDAO.UpdateMutual(c.ctx, true, contact.ContactUserId, contact.OwnerUserId); err != nil {
-					return nil, err
+	err = c.svcCtx.Dao.Postgres.InTx(c.ctx, func(tx pgx.Tx) error {
+		for _, item := range items {
+			if item.Unregistered {
+				_, _, err := c.svcCtx.Dao.Postgres.Store.Unregistered.InsertOrUpdateTx(c.ctx, tx, &dataobject.UnregisteredContactsDO{
+					Phone: item.C.GetPhone(), ImporterUserId: in.GetUserId(),
+					ImportFirstName: item.C.GetFirstName(), ImportLastName: item.C.GetLastName(),
+				})
+				if err != nil {
+					return err
 				}
-				updateIDs = append(updateIDs, item.ImportContactId)
+				continue
+			}
+
+			contact := &dataobject.UserContactsDO{
+				OwnerUserId: in.GetUserId(), ContactUserId: item.UserId, ContactPhone: item.C.GetPhone(),
+				ContactFirstName: item.C.GetFirstName(), ContactLastName: item.C.GetLastName(),
+				Mutual: item.ImportContactId > 0, Date2: time.Now().Unix(),
+			}
+			if item.ContactId > 0 {
+				if item.ImportContactId > 0 {
+					updateIDs = append(updateIDs, item.ImportContactId)
+				}
+				if _, err := c.svcCtx.Dao.Postgres.Store.Contacts.UpdateContactNameTx(c.ctx, tx, contact.ContactFirstName, contact.ContactLastName, contact.OwnerUserId, contact.ContactUserId); err != nil {
+					return err
+				}
 			} else {
-				if _, _, err := c.svcCtx.Dao.ImportedContactsDAO.InsertOrUpdate(c.ctx, &dataobject.ImportedContactsDO{
-					UserId:         contact.ContactUserId,
-					ImportedUserId: contact.OwnerUserId,
+				if item.ImportContactId > 0 {
+					if _, err := c.svcCtx.Dao.Postgres.Store.Contacts.UpdateMutualTx(c.ctx, tx, true, contact.ContactUserId, contact.OwnerUserId); err != nil {
+						return err
+					}
+					updateIDs = append(updateIDs, item.ImportContactId)
+				} else if _, _, err := c.svcCtx.Dao.Postgres.Store.Imported.InsertOrUpdateTx(c.ctx, tx, &dataobject.ImportedContactsDO{
+					UserId: contact.ContactUserId, ImportedUserId: contact.OwnerUserId,
 				}); err != nil {
-					return nil, err
+					return err
+				}
+				if _, _, err := c.svcCtx.Dao.Postgres.Store.Contacts.InsertOrUpdateTx(c.ctx, tx, contact); err != nil {
+					return err
 				}
 			}
-			if _, _, err := c.svcCtx.Dao.UserContactsDAO.InsertOrUpdate(c.ctx, contact); err != nil {
-				return nil, err
-			}
-		}
 
-		importedContacts = append(importedContacts, mtproto.MakeTLImportedContact(&mtproto.ImportedContact{
-			UserId:   item.UserId,
-			ClientId: item.C.GetClientId(),
-		}).To_ImportedContact())
-		userIDs = append(userIDs, item.UserId)
+			importedContacts = append(importedContacts, mtproto.MakeTLImportedContact(&mtproto.ImportedContact{
+				UserId: item.UserId, ClientId: item.C.GetClientId(),
+			}).To_ImportedContact())
+			userIDs = append(userIDs, item.UserId)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
 
 	if err := c.svcCtx.Dao.ClearContactCaches(c.ctx, in.GetUserId(), userIDs...); err != nil {
@@ -140,20 +149,6 @@ func (c *UserCore) UserImportContacts(in *user.TLUserImportContacts) (*user.User
 		return nil, mtproto.ErrInternalServerError
 	}
 
-	for _, item := range items {
-		if !item.Unregistered {
-			continue
-		}
-		if _, _, err := c.svcCtx.Dao.UnregisteredContactsDAO.InsertOrUpdate(c.ctx, &dataobject.UnregisteredContactsDO{
-			Phone:           item.C.GetPhone(),
-			ImporterUserId:  in.GetUserId(),
-			ImportFirstName: item.C.GetFirstName(),
-			ImportLastName:  item.C.GetLastName(),
-		}); err != nil {
-			c.Logger.Errorf("UserImportContacts - save unregistered contact error: %v", err)
-			return nil, err
-		}
-	}
 	popularInvites, err := c.getPopularInvites(items)
 	if err != nil {
 		return nil, err
@@ -208,7 +203,10 @@ func (c *UserCore) getPopularInvites(items []*contactItem) ([]*mtproto.PopularCo
 		return []*mtproto.PopularContact{}, nil
 	}
 
-	importersByPhone, err := c.svcCtx.Dao.UnregisteredContactsDAO.SelectDistinctImporterCountsByPhoneList(c.ctx, phones)
+	if err := c.requirePostgres(); err != nil {
+		return nil, err
+	}
+	importersByPhone, err := c.svcCtx.Dao.Postgres.Store.Unregistered.SelectDistinctImporterCountsByPhoneList(c.ctx, phones)
 	if err != nil {
 		c.Logger.Errorf("UserImportContacts - select unregistered contact importers error: %v", err)
 		return nil, err

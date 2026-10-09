@@ -23,3 +23,7 @@ func New(ctx *svc.ServiceContext) *Service {
 		svcCtx: ctx,
 	}
 }
+
+func (s *Service) GetServiceContext() *svc.ServiceContext {
+	return s.svcCtx
+}

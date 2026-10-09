@@ -23,16 +23,6 @@ var (
 	configuredDSN string
 )
 
-// UseMySQL is retained for isolated legacy tests only. Production callers must
-// use UsePostgres so the session process shares the PostgreSQL 18 domain store.
-func UseMySQL(dsn string) error {
-	if dsn == "" || domain.Ready() {
-		return nil
-	}
-	configuredDSN = dsn
-	return domain.Open(dsn)
-}
-
 // UsePostgres opens the Layer 229 domain store in the session process. The
 // session process does not share the BFF DAO, so it owns its own PG handle.
 func UsePostgres(dsn string) error {
@@ -43,7 +33,15 @@ func UsePostgres(dsn string) error {
 		return nil
 	}
 	configuredDSN = dsn
-	return domain.OpenPostgres(dsn)
+	// Layer 229 runs inside the production session process. Its schema is
+	// owned by the deployment migration runner, so this path must never issue
+	// application DDL or silently create a partial schema.
+	return domain.OpenPostgresReadOnly(dsn)
+}
+
+// Close releases the Layer 229 PostgreSQL store owned by the session process.
+func Close() error {
+	return domain.Close()
 }
 
 func ensure() error {
@@ -55,7 +53,7 @@ func ensure() error {
 			openErr = errors.New("layer229: PostgresDSN is required")
 			return
 		}
-		openErr = domain.OpenPostgres(configuredDSN)
+		openErr = domain.OpenPostgresReadOnly(configuredDSN)
 	})
 	return openErr
 }

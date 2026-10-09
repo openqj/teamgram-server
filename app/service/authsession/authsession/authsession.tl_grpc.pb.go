@@ -44,6 +44,7 @@ const (
 	RPCAuthsession_AuthsessionUnbindAuthKeyUser_FullMethodName       = "/authsession.RPCAuthsession/authsession_unbindAuthKeyUser"
 	RPCAuthsession_AuthsessionGetPermAuthKeyId_FullMethodName        = "/authsession.RPCAuthsession/authsession_getPermAuthKeyId"
 	RPCAuthsession_AuthsessionBindTempAuthKey_FullMethodName         = "/authsession.RPCAuthsession/authsession_bindTempAuthKey"
+	RPCAuthsession_AuthsessionDropTempAuthKeys_FullMethodName        = "/authsession.RPCAuthsession/authsession_dropTempAuthKeys"
 	RPCAuthsession_AuthsessionSetClientSessionInfo_FullMethodName    = "/authsession.RPCAuthsession/authsession_setClientSessionInfo"
 	RPCAuthsession_AuthsessionGetAuthorization_FullMethodName        = "/authsession.RPCAuthsession/authsession_getAuthorization"
 	RPCAuthsession_AuthsessionGetAuthStateData_FullMethodName        = "/authsession.RPCAuthsession/authsession_getAuthStateData"
@@ -71,6 +72,7 @@ type RPCAuthsessionClient interface {
 	AuthsessionUnbindAuthKeyUser(ctx context.Context, in *TLAuthsessionUnbindAuthKeyUser, opts ...grpc.CallOption) (*mtproto.Bool, error)
 	AuthsessionGetPermAuthKeyId(ctx context.Context, in *TLAuthsessionGetPermAuthKeyId, opts ...grpc.CallOption) (*mtproto.Int64, error)
 	AuthsessionBindTempAuthKey(ctx context.Context, in *TLAuthsessionBindTempAuthKey, opts ...grpc.CallOption) (*mtproto.Bool, error)
+	AuthsessionDropTempAuthKeys(ctx context.Context, in *TLAuthsessionDropTempAuthKeys, opts ...grpc.CallOption) (*mtproto.Bool, error)
 	AuthsessionSetClientSessionInfo(ctx context.Context, in *TLAuthsessionSetClientSessionInfo, opts ...grpc.CallOption) (*mtproto.Bool, error)
 	AuthsessionGetAuthorization(ctx context.Context, in *TLAuthsessionGetAuthorization, opts ...grpc.CallOption) (*mtproto.Authorization, error)
 	AuthsessionGetAuthStateData(ctx context.Context, in *TLAuthsessionGetAuthStateData, opts ...grpc.CallOption) (*AuthKeyStateData, error)
@@ -222,6 +224,15 @@ func (c *rPCAuthsessionClient) AuthsessionBindTempAuthKey(ctx context.Context, i
 	return out, nil
 }
 
+func (c *rPCAuthsessionClient) AuthsessionDropTempAuthKeys(ctx context.Context, in *TLAuthsessionDropTempAuthKeys, opts ...grpc.CallOption) (*mtproto.Bool, error) {
+	out := new(mtproto.Bool)
+	err := c.cc.Invoke(ctx, RPCAuthsession_AuthsessionDropTempAuthKeys_FullMethodName, in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *rPCAuthsessionClient) AuthsessionSetClientSessionInfo(ctx context.Context, in *TLAuthsessionSetClientSessionInfo, opts ...grpc.CallOption) (*mtproto.Bool, error) {
 	out := new(mtproto.Bool)
 	err := c.cc.Invoke(ctx, RPCAuthsession_AuthsessionSetClientSessionInfo_FullMethodName, in, out, opts...)
@@ -295,6 +306,7 @@ type RPCAuthsessionServer interface {
 	AuthsessionUnbindAuthKeyUser(context.Context, *TLAuthsessionUnbindAuthKeyUser) (*mtproto.Bool, error)
 	AuthsessionGetPermAuthKeyId(context.Context, *TLAuthsessionGetPermAuthKeyId) (*mtproto.Int64, error)
 	AuthsessionBindTempAuthKey(context.Context, *TLAuthsessionBindTempAuthKey) (*mtproto.Bool, error)
+	AuthsessionDropTempAuthKeys(context.Context, *TLAuthsessionDropTempAuthKeys) (*mtproto.Bool, error)
 	AuthsessionSetClientSessionInfo(context.Context, *TLAuthsessionSetClientSessionInfo) (*mtproto.Bool, error)
 	AuthsessionGetAuthorization(context.Context, *TLAuthsessionGetAuthorization) (*mtproto.Authorization, error)
 	AuthsessionGetAuthStateData(context.Context, *TLAuthsessionGetAuthStateData) (*AuthKeyStateData, error)
@@ -351,6 +363,9 @@ func (UnimplementedRPCAuthsessionServer) AuthsessionGetPermAuthKeyId(context.Con
 }
 func (UnimplementedRPCAuthsessionServer) AuthsessionBindTempAuthKey(context.Context, *TLAuthsessionBindTempAuthKey) (*mtproto.Bool, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method AuthsessionBindTempAuthKey not implemented")
+}
+func (UnimplementedRPCAuthsessionServer) AuthsessionDropTempAuthKeys(context.Context, *TLAuthsessionDropTempAuthKeys) (*mtproto.Bool, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method AuthsessionDropTempAuthKeys not implemented")
 }
 func (UnimplementedRPCAuthsessionServer) AuthsessionSetClientSessionInfo(context.Context, *TLAuthsessionSetClientSessionInfo) (*mtproto.Bool, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method AuthsessionSetClientSessionInfo not implemented")
@@ -652,6 +667,24 @@ func _RPCAuthsession_AuthsessionBindTempAuthKey_Handler(srv interface{}, ctx con
 	return interceptor(ctx, in, info, handler)
 }
 
+func _RPCAuthsession_AuthsessionDropTempAuthKeys_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(TLAuthsessionDropTempAuthKeys)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RPCAuthsessionServer).AuthsessionDropTempAuthKeys(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RPCAuthsession_AuthsessionDropTempAuthKeys_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RPCAuthsessionServer).AuthsessionDropTempAuthKeys(ctx, req.(*TLAuthsessionDropTempAuthKeys))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _RPCAuthsession_AuthsessionSetClientSessionInfo_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(TLAuthsessionSetClientSessionInfo)
 	if err := dec(in); err != nil {
@@ -826,6 +859,10 @@ var RPCAuthsession_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "authsession_bindTempAuthKey",
 			Handler:    _RPCAuthsession_AuthsessionBindTempAuthKey_Handler,
+		},
+		{
+			MethodName: "authsession_dropTempAuthKeys",
+			Handler:    _RPCAuthsession_AuthsessionDropTempAuthKeys_Handler,
 		},
 		{
 			MethodName: "authsession_setClientSessionInfo",

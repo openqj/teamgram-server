@@ -22,6 +22,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/teamgram/marmota/pkg/stores/sqlx"
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/messenger/msg/internal/dal/dataobject"
@@ -34,6 +35,35 @@ import (
 // ClearMentions clears only the mentioned marker for a basic-group dialog and
 // refreshes the dialog's persisted unread mention count in the same transaction.
 func (d *Dao) ClearMentions(ctx context.Context, userId, peerId int64, topMsgId int32, hasTopMsgId bool) (int32, error) {
+	if d.Postgres != nil && d.Postgres.Store != nil {
+		var cleared int32
+		err := d.Postgres.InTx(ctx, func(tx pgx.Tx) error {
+			if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('messenger-user:' || $1::bigint::text, 0))`, userId); err != nil {
+				return err
+			}
+			query := `UPDATE messages SET mentioned = FALSE WHERE user_id = $1 AND peer_type = $2 AND peer_id = $3 AND mentioned = TRUE AND deleted = FALSE`
+			args := []any{userId, mtproto.PEER_CHAT, peerId}
+			if hasTopMsgId {
+				query += " AND user_message_box_id <= $4"
+				args = append(args, topMsgId)
+			}
+			tag, err := tx.Exec(ctx, query, args...)
+			if err != nil {
+				return err
+			}
+			cleared = int32(tag.RowsAffected())
+			var unread int32
+			if err = tx.QueryRow(ctx, `SELECT count(*) FROM messages WHERE user_id = $1 AND peer_type = $2 AND peer_id = $3 AND mentioned = TRUE AND deleted = FALSE`, userId, mtproto.PEER_CHAT, peerId).Scan(&unread); err != nil {
+				return err
+			}
+			_, err = d.Postgres.Store.Dialogs.UpdateCustomMapOn(ctx, tx, map[string]any{"unread_mentions_count": unread}, userId, mtproto.PEER_CHAT, peerId)
+			return err
+		})
+		if err != nil {
+			return 0, err
+		}
+		return cleared, nil
+	}
 	var cleared int32
 	table := d.MessagesDAO.CalcTableName(userId)
 	result := sqlx.TxWrapper(ctx, d.DB, func(tx *sqlx.Tx, storeResult *sqlx.StoreResult) {

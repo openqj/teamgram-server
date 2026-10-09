@@ -17,6 +17,10 @@ type evalStore interface {
 	Eval(script, key string, args ...any) (any, error)
 }
 
+type updater interface {
+	Update(key string, fn func(string) (string, error)) error
+}
+
 // Store is the process-wide blob store. Tests keep the memory default.
 // The BFF process switches it to Redis in dao.New.
 type Store interface {
@@ -45,6 +49,24 @@ func (s *mem) Set(key, value string) error {
 		s.m = map[string]string{}
 	}
 	s.m[key] = value
+	return nil
+}
+
+func (s *mem) Update(key string, fn func(string) (string, error)) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	current := ""
+	if s.m != nil {
+		current = s.m[key]
+	}
+	next, err := fn(current)
+	if err != nil {
+		return err
+	}
+	if s.m == nil {
+		s.m = map[string]string{}
+	}
+	s.m[key] = next
 	return nil
 }
 
@@ -136,4 +158,31 @@ func CompareAndSwap(key, expected, replacement string) (bool, error) {
 		return false, nil
 	}
 	return true, Default.Set(key, replacement)
+}
+
+// Update executes a read/modify/write operation under the store's
+// transaction boundary. PostgreSQL and the in-memory test store implement the
+// operation atomically; legacy stores fall back to a compare-and-swap loop.
+func Update(key string, fn func(string) (string, error)) error {
+	if s, ok := Default.(updater); ok {
+		return s.Update(key, fn)
+	}
+	for attempt := 0; attempt < 8; attempt++ {
+		current, err := Default.Get(key)
+		if err != nil {
+			return err
+		}
+		next, err := fn(current)
+		if err != nil {
+			return err
+		}
+		ok, err := CompareAndSwap(key, current, next)
+		if err != nil {
+			return err
+		}
+		if ok {
+			return nil
+		}
+	}
+	return errors.New("apifull: concurrent state update failed")
 }

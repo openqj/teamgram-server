@@ -13,7 +13,6 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/teamgram/marmota/pkg/stores/sqlx"
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/service/biz/user/internal/dal/dataobject"
 	"github.com/teamgram/teamgram-server/app/service/biz/user/user"
@@ -39,9 +38,8 @@ func (c *UserCore) UserSetBotCommands(in *user.TLUserSetBotCommands) (*mtproto.B
 		}
 		return nil, mtproto.ErrMethodNotImpl
 	}
-	hasPostgres := c.svcCtx.Dao.Postgres != nil && c.svcCtx.Dao.Postgres.Pool != nil && c.svcCtx.Dao.Postgres.Store != nil && c.svcCtx.Dao.Postgres.Store.Bots != nil && c.svcCtx.Dao.Postgres.Store.BotCommands != nil
-	hasMysql := c.svcCtx.Dao.Mysql != nil && c.svcCtx.Dao.Mysql.DB != nil && c.svcCtx.Dao.BotsDAO != nil && c.svcCtx.Dao.BotCommandsDAO != nil
-	if !hasPostgres && !hasMysql {
+	if c.svcCtx.Dao.Postgres == nil || c.svcCtx.Dao.Postgres.Pool == nil || c.svcCtx.Dao.Postgres.Store == nil ||
+		c.svcCtx.Dao.Postgres.Store.Bots == nil || c.svcCtx.Dao.Postgres.Store.BotCommands == nil {
 		if c.Logger != nil {
 			c.Logger.Errorf("user.setBotCommands - error: bot command storage is not configured")
 		}
@@ -63,61 +61,39 @@ func (c *UserCore) UserSetBotCommands(in *user.TLUserSetBotCommands) (*mtproto.B
 		}
 	}
 
-	var botDO *dataobject.BotsDO
-	if hasPostgres {
-		botDO, err = c.svcCtx.Dao.Postgres.Store.Bots.Select(c.ctx, in.GetBotId())
-	} else {
-		botDO, err = c.svcCtx.Dao.BotsDAO.Select(c.ctx, in.GetBotId())
-	}
-	if err != nil {
-		if c.Logger != nil {
-			c.Logger.Errorf("user.setBotCommands - select bot(%d) error: %v", in.GetBotId(), err)
-		}
-		return nil, err
-	}
-	if botDO == nil || botDO.BotId != in.GetBotId() {
-		return nil, mtproto.ErrBotInvalid
-	}
-	if botDO.BotId != in.GetUserId() {
-		if botDO.CreatorUserId <= 0 {
-			if c.Logger != nil {
-				c.Logger.Errorf("user.setBotCommands - bot(%d) has no authoritative creator", in.GetBotId())
-			}
-			return nil, mtproto.ErrMethodNotImpl
-		}
-		if botDO.CreatorUserId != in.GetUserId() {
-			if c.Logger != nil {
-				c.Logger.Errorf("user.setBotCommands - user(%d) is not creator or bot owner of bot(%d)", in.GetUserId(), in.GetBotId())
-			}
-			return nil, mtproto.ErrForbiddenUserBotInvalid
-		}
-	}
-
 	var txErr error
-	if hasPostgres {
-		tx, err := c.svcCtx.Dao.Postgres.Pool.Begin(c.ctx)
-		if err == nil {
-			defer func() { _ = tx.Rollback(c.ctx) }()
+	tx, err := c.svcCtx.Dao.Postgres.Pool.Begin(c.ctx)
+	if err == nil {
+		defer func() { _ = tx.Rollback(c.ctx) }()
+		var botDO *dataobject.BotsDO
+		botDO, txErr = c.svcCtx.Dao.Postgres.Store.Bots.SelectForUpdateTx(c.ctx, tx, in.GetBotId())
+		if txErr == nil && (botDO == nil || botDO.BotId != in.GetBotId()) {
+			txErr = mtproto.ErrBotInvalid
+		}
+		if txErr == nil && botDO.BotId != in.GetUserId() {
+			if botDO.CreatorUserId <= 0 {
+				if c.Logger != nil {
+					c.Logger.Errorf("user.setBotCommands - bot(%d) has no authoritative creator", in.GetBotId())
+				}
+				txErr = mtproto.ErrMethodNotImpl
+			} else if botDO.CreatorUserId != in.GetUserId() {
+				if c.Logger != nil {
+					c.Logger.Errorf("user.setBotCommands - user(%d) is not creator or bot owner of bot(%d)", in.GetUserId(), in.GetBotId())
+				}
+				txErr = mtproto.ErrForbiddenUserBotInvalid
+			}
+		}
+		if txErr == nil {
 			_, txErr = c.svcCtx.Dao.Postgres.Store.BotCommands.DeleteTx(c.ctx, tx, in.GetBotId())
-			if txErr == nil && len(doList) > 0 {
-				_, _, txErr = c.svcCtx.Dao.Postgres.Store.BotCommands.InsertBulkTx(c.ctx, tx, doList)
-			}
-			if txErr == nil {
-				txErr = tx.Commit(c.ctx)
-			}
-		} else {
-			txErr = err
+		}
+		if txErr == nil && len(doList) > 0 {
+			_, _, txErr = c.svcCtx.Dao.Postgres.Store.BotCommands.InsertBulkTx(c.ctx, tx, doList)
+		}
+		if txErr == nil {
+			txErr = tx.Commit(c.ctx)
 		}
 	} else {
-		result := sqlx.TxWrapper(c.ctx, c.svcCtx.Dao.DB, func(tx *sqlx.Tx, storeResult *sqlx.StoreResult) {
-			if _, storeResult.Err = c.svcCtx.Dao.BotCommandsDAO.DeleteTx(tx, in.GetBotId()); storeResult.Err != nil {
-				return
-			}
-			if len(doList) > 0 {
-				_, _, storeResult.Err = c.svcCtx.Dao.BotCommandsDAO.InsertBulkTx(tx, doList)
-			}
-		})
-		txErr = result.Err
+		txErr = err
 	}
 	if txErr != nil {
 		if c.Logger != nil {

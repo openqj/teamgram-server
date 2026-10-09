@@ -27,8 +27,8 @@ func TestEmojiKeywordsLanguagesReturnsSupportedSubset(t *testing.T) {
 	}
 
 	url, err := c.MessagesGetEmojiURL(&mtproto.TLMessagesGetEmojiURL{})
-	if url != nil || !errors.Is(err, mtproto.ErrMethodNotImpl) {
-		t.Fatalf("emoji URL: result=%v err=%v, want nil result and METHOD_NOT_IMPL", url, err)
+	if url != nil || !errors.Is(err, mtproto.ErrLangCodeNotSupported) {
+		t.Fatalf("emoji URL: result=%v err=%v, want nil result and LANG_CODE_NOT_SUPPORTED", url, err)
 	}
 }
 

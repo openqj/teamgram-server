@@ -23,13 +23,13 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/teamgram/marmota/pkg/hack"
 	"github.com/teamgram/marmota/pkg/stores/sqlc"
 	"github.com/teamgram/marmota/pkg/stores/sqlx"
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/service/biz/user/internal/dal/dataobject"
 	"github.com/zeromicro/go-zero/core/jsonx"
-	"github.com/zeromicro/go-zero/core/mr"
 )
 
 var (
@@ -143,40 +143,51 @@ func genUserPrivacyKeySavedMusicPrefix(id int64) string {
 	return fmt.Sprintf("%s_%d", userPrivacyKeySavedMusicPrefix, id)
 }
 
-func (d *Dao) GetUserPrivacyRulesListByKeys(ctx context.Context, id int64, keys ...int32) []*mtproto.PrivacyKeyRules {
-	var (
-		cacheRules []*mtproto.PrivacyKeyRules
-		// cacheKey   string
-	)
-
-	if len(keys) == 1 {
-		rules, _ := d.GetUserPrivacyRules(ctx, id, keys[0])
-		if rules != nil {
-			cacheRules = append(cacheRules, rules)
-		}
-	} else if len(keys) > 1 {
-		cacheRules2 := make([]*mtproto.PrivacyKeyRules, len(keys))
-		mr.ForEach(
-			func(source chan<- interface{}) {
-				for i := 0; i < len(keys); i++ {
-					source <- i
-				}
-			},
-			func(item interface{}) {
-				idx := item.(int)
-				rules, _ := d.GetUserPrivacyRules(ctx, id, keys[idx])
-				if rules != nil {
-					cacheRules2[idx] = rules
-				}
-			})
-		for _, v := range cacheRules2 {
-			if v != nil {
-				cacheRules = append(cacheRules, v)
-			}
+func (d *Dao) GetUserPrivacyRulesListByKeys(ctx context.Context, id int64, keys ...int32) ([]*mtproto.PrivacyKeyRules, error) {
+	for _, key := range keys {
+		if genUserPrivacyKeyPrefix(id, key) == "" {
+			return nil, mtproto.ErrPrivacyKeyInvalid
 		}
 	}
-
-	return cacheRules
+	result := make([]*mtproto.PrivacyKeyRules, 0, len(keys))
+	if d.Postgres != nil {
+		stored, err := d.Postgres.Store.Privacies.SelectPrivacyList(ctx, id, keys)
+		if err != nil {
+			return nil, err
+		}
+		rulesByKey := make(map[int32][]*mtproto.PrivacyRule, len(stored))
+		for _, entry := range stored {
+			var rules []*mtproto.PrivacyRule
+			if err := jsonx.UnmarshalFromString(entry.Rules, &rules); err != nil {
+				return nil, fmt.Errorf("decode user privacy rules: %w", err)
+			}
+			if rules == nil {
+				return nil, mtproto.ErrPrivacyValueInvalid
+			}
+			if _, err := mtproto.NormalizePrivacyRules(rules); err != nil {
+				return nil, err
+			}
+			rulesByKey[entry.KeyType] = rules
+		}
+		for _, key := range keys {
+			rules, stored := rulesByKey[key]
+			if !stored {
+				rules = makeDefaultPrivacyRules(key)
+			}
+			result = append(result, mtproto.MakeTLPrivacyKeyRules(&mtproto.PrivacyKeyRules{Key: key, Rules: rules}).To_PrivacyKeyRules())
+		}
+		return result, nil
+	}
+	for _, key := range keys {
+		rules, err := d.GetUserPrivacyRules(ctx, id, key)
+		if err != nil {
+			return nil, err
+		}
+		if rules != nil {
+			result = append(result, rules)
+		}
+	}
+	return result, nil
 }
 
 func (d *Dao) GetUserPrivacyRules(ctx context.Context, id int64, key int32) (*mtproto.PrivacyKeyRules, error) {
@@ -189,6 +200,26 @@ func (d *Dao) GetUserPrivacyRules(ctx context.Context, id int64, key int32) (*mt
 		Key:   key,
 		Rules: nil,
 	}).To_PrivacyKeyRules()
+	if d.Postgres != nil {
+		do, err := d.Postgres.Store.Privacies.SelectPrivacy(ctx, id, key)
+		if err != nil {
+			return nil, err
+		}
+		if do != nil {
+			if err := jsonx.UnmarshalFromString(do.Rules, &rules.Rules); err != nil {
+				return nil, fmt.Errorf("decode user privacy rules: %w", err)
+			}
+			if rules.Rules == nil {
+				return nil, mtproto.ErrPrivacyValueInvalid
+			}
+			if _, err := mtproto.NormalizePrivacyRules(rules.Rules); err != nil {
+				return nil, err
+			}
+		} else {
+			rules.Rules = makeDefaultPrivacyRules(key)
+		}
+		return rules, nil
+	}
 	err := d.CachedConn.QueryRow(
 		ctx,
 		rules,
@@ -221,10 +252,19 @@ func (d *Dao) GetUserPrivacyRules(ctx context.Context, id int64, key int32) (*mt
 	return rules, nil
 }
 
-func (d *Dao) SetUserPrivacyRules(ctx context.Context, id int64, key int32, rules []*mtproto.PrivacyRule) bool {
+func (d *Dao) SetUserPrivacyRules(ctx context.Context, id int64, key int32, rules []*mtproto.PrivacyRule) error {
 	cacheKey := genUserPrivacyKeyPrefix(id, key)
 	if cacheKey == "" {
-		return false
+		return mtproto.ErrPrivacyKeyInvalid
+	}
+	if id <= 0 {
+		return mtproto.ErrUserIdInvalid
+	}
+	if len(rules) == 0 {
+		return mtproto.ErrPrivacyValueInvalid
+	}
+	if _, err := mtproto.NormalizePrivacyRules(rules); err != nil {
+		return err
 	}
 
 	cacheKeys := []string{cacheKey}
@@ -234,8 +274,26 @@ func (d *Dao) SetUserPrivacyRules(ctx context.Context, id int64, key int32, rule
 		mtproto.PHONE_NUMBER:
 		cacheKeys = append(cacheKeys, genCacheUserDataCacheKey(id))
 	}
+	if d.Postgres != nil {
+		rulesData, err := jsonx.Marshal(rules)
+		if err != nil {
+			return err
+		}
+		return d.Postgres.InTx(ctx, func(tx pgx.Tx) error {
+			var ownerID int64
+			err := tx.QueryRow(ctx, `SELECT id FROM users WHERE id=$1 AND deleted=FALSE AND user_type NOT IN(0,1) FOR UPDATE`, id).Scan(&ownerID)
+			if errors.Is(err, pgx.ErrNoRows) {
+				return mtproto.ErrUserIdInvalid
+			}
+			if err != nil {
+				return err
+			}
+			_, _, err = d.Postgres.Store.Privacies.InsertOrUpdateTx(ctx, tx, &dataobject.UserPrivaciesDO{UserId: id, KeyType: key, Rules: string(rulesData)})
+			return err
+		})
+	}
 
-	d.CachedConn.Exec(
+	_, _, err := d.CachedConn.Exec(
 		ctx,
 		func(ctx context.Context, conn *sqlx.DB) (int64, int64, error) {
 			rulesData, _ := jsonx.Marshal(rules)
@@ -247,5 +305,5 @@ func (d *Dao) SetUserPrivacyRules(ctx context.Context, id int64, key int32, rule
 		},
 		cacheKeys...)
 
-	return true
+	return err
 }

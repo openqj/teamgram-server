@@ -110,11 +110,20 @@ func validBotStartParam(param string) bool {
 }
 
 func (c *ApiFullCore) HelpGetRecentMeUrls(in *mtproto.TLHelpGetRecentMeUrls) (*mtproto.Help_RecentMeUrls, error) {
-	_ = in
 	if _, err := c.requireUserId(); err != nil {
 		return nil, err
 	}
-	return nil, mtproto.ErrMethodNotImpl
+	if in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	// There is no recent-me URL producer in the canonical user/chat services
+	// yet.  An empty result is the protocol representation for a user with no
+	// recorded recent links; do not invent URLs or entities locally.
+	return mtproto.MakeTLHelpRecentMeUrls(&mtproto.Help_RecentMeUrls{
+		Urls:  []*mtproto.RecentMeUrl{},
+		Chats: []*mtproto.Chat{},
+		Users: []*mtproto.User{},
+	}).To_Help_RecentMeUrls(), nil
 }
 
 func (c *ApiFullCore) HelpGetDeepLinkInfo(in *mtproto.TLHelpGetDeepLinkInfo) (*mtproto.Help_DeepLinkInfo, error) {
@@ -124,5 +133,9 @@ func (c *ApiFullCore) HelpGetDeepLinkInfo(in *mtproto.TLHelpGetDeepLinkInfo) (*m
 	if in == nil || in.GetPath() == "" {
 		return nil, mtproto.ErrInputRequestInvalid
 	}
-	return nil, mtproto.ErrMethodNotImpl
+	// Deep-link resolution belongs to the authoritative bot/link registry.
+	// Until that registry is wired, report the standard empty constructor for
+	// an otherwise valid path instead of returning an unrelated error or
+	// fabricating a message preview.
+	return mtproto.MakeTLHelpDeepLinkInfoEmpty(nil).To_Help_DeepLinkInfo(), nil
 }

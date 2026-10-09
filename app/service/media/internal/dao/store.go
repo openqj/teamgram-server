@@ -9,6 +9,7 @@ import (
 type documentStore interface {
 	Insert(context.Context, *dataobject.DocumentsDO) (int64, int64, error)
 	SelectByDocumentId(context.Context, int64) (*dataobject.DocumentsDO, error)
+	SelectByHash(context.Context, []byte, int64, string) (*dataobject.DocumentsDO, error)
 	SelectByDocumentIdListWithCB(context.Context, []int64, func(int, int, *dataobject.DocumentsDO)) ([]dataobject.DocumentsDO, error)
 }
 

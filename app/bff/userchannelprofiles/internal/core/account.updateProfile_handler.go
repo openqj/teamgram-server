@@ -27,6 +27,15 @@ import (
 // AccountUpdateProfile
 // account.updateProfile#78515775 flags:# first_name:flags.0?string last_name:flags.1?string about:flags.2?string = User;
 func (c *UserChannelProfilesCore) AccountUpdateProfile(in *mtproto.TLAccountUpdateProfile) (*mtproto.User, error) {
+	if c == nil || c.MD == nil || c.MD.UserId <= 0 {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
+	if in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.UserClient == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
 	me, err := c.svcCtx.Dao.UserClient.UserGetImmutableUser(c.ctx, &userpb.TLUserGetImmutableUser{
 		Id: c.MD.UserId,
 	})
@@ -35,6 +44,18 @@ func (c *UserChannelProfilesCore) AccountUpdateProfile(in *mtproto.TLAccountUpda
 		return nil, mtproto.ErrUserInvalid
 	}
 	if me == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
+
+	firstName, lastName := me.FirstName(), me.LastName()
+	if in.GetFirstName() != nil {
+		firstName = in.GetFirstName().GetValue()
+	}
+	if in.GetLastName() != nil {
+		lastName = in.GetLastName().GetValue()
+	}
+	nameChanged := firstName != me.FirstName() || lastName != me.LastName()
+	if nameChanged && c.svcCtx.Dao.SyncClient == nil {
 		return nil, mtproto.ErrInternalServerError
 	}
 
@@ -59,26 +80,25 @@ func (c *UserChannelProfilesCore) AccountUpdateProfile(in *mtproto.TLAccountUpda
 		}
 	}
 
-	if in.GetFirstName().GetValue() != me.FirstName() ||
-		in.GetLastName().GetValue() != me.LastName() {
+	if nameChanged {
 		if _, err = c.svcCtx.Dao.UserClient.UserUpdateFirstAndLastName(c.ctx, &userpb.TLUserUpdateFirstAndLastName{
 			UserId:    c.MD.UserId,
-			FirstName: in.GetFirstName().GetValue(),
-			LastName:  in.GetLastName().GetValue(),
+			FirstName: firstName,
+			LastName:  lastName,
 		}); err != nil {
 			c.Logger.Errorf("account.updateProfile - error: %v", err)
 			return nil, err
 		}
-		me.SetFirstName(in.GetFirstName().GetValue())
-		me.SetLastName(in.GetLastName().GetValue())
+		me.SetFirstName(firstName)
+		me.SetLastName(lastName)
 
 		if _, err = c.svcCtx.Dao.SyncClient.SyncUpdatesNotMe(c.ctx, &sync.TLSyncUpdatesNotMe{
 			UserId:        c.MD.UserId,
 			PermAuthKeyId: c.MD.PermAuthKeyId,
 			Updates: mtproto.MakeUpdatesByUpdates(mtproto.MakeTLUpdateUserName(&mtproto.Update{
 				UserId:    c.MD.UserId,
-				FirstName: in.GetFirstName().GetValue(),
-				LastName:  in.GetLastName().GetValue(),
+				FirstName: firstName,
+				LastName:  lastName,
 				Username:  me.Username(),
 			}).To_Update()),
 		}); err != nil {

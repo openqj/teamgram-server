@@ -31,6 +31,9 @@ import (
 // InboxSendUserMessageToInboxV2
 // inbox.sendUserMessageToInboxV2 flags:# user_id:long out:flags.0?true from_id:long peer_user_id:long inbox:MessageBox users:flags.1?Vector<ImmutableUser> = Void;
 func (c *InboxCore) InboxSendUserMessageToInboxV2(in *inbox.TLInboxSendUserMessageToInboxV2) (*mtproto.Void, error) {
+	if in == nil || in.UserId <= 0 || in.FromId <= 0 || in.PeerId <= 0 {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
 	if in.Out {
 		isUseV3 := false
 		if in.GetLayer() != nil {
@@ -47,13 +50,16 @@ func (c *InboxCore) InboxSendUserMessageToInboxV2(in *inbox.TLInboxSendUserMessa
 		}
 
 		for _, inBox := range in.GetBoxList() {
+			var (
+				inserted bool
+				err      error
+			)
 			if isUseV3 {
-				// V3: pts allocated here in inbox consumer
-				inBox.Pts = c.svcCtx.Dao.IDGenClient2.NextPtsId(c.ctx, in.FromId)
-				inBox.PtsCount = 1
-
-				// V3: write outbox + user_pts_updates together (pts allocated above)
-				err := c.svcCtx.Dao.SendMessageToOutboxV1(
+				if c.svcCtx.Dao.Postgres == nil {
+					inBox.Pts = c.svcCtx.Dao.IDGenClient2.NextPtsId(c.ctx, in.FromId)
+					inBox.PtsCount = 1
+				}
+				inserted, err = c.svcCtx.Dao.SendMessageToOutboxV1(
 					c.ctx,
 					in.FromId,
 					mtproto.MakePeerUtil(in.PeerType, in.PeerId),
@@ -65,13 +71,28 @@ func (c *InboxCore) InboxSendUserMessageToInboxV2(in *inbox.TLInboxSendUserMessa
 			} else {
 				// V2: user_pts_updates already written by msg service before RPC return,
 				// only write outbox message to DB here (skip pts write to avoid duplicates).
-				err := c.svcCtx.Dao.SendMessageToOutboxV1NoPts(
+				inserted, err = c.svcCtx.Dao.SendMessageToOutboxV1NoPts(
 					c.ctx,
 					in.FromId,
 					mtproto.MakePeerUtil(in.PeerType, in.PeerId),
 					inBox)
 				if err != nil {
 					c.Logger.Errorf("inbox.sendUserMessageToInboxV2 - error: %v", err)
+					return nil, err
+				}
+			}
+			if !inserted {
+				if c.svcCtx.Dao.Postgres == nil {
+					continue
+				}
+				pending, err := c.svcCtx.Dao.HasPendingInboxDelivery(c.ctx, in.FromId, inBox.DialogMessageId, inBox.UserId)
+				if err != nil {
+					return nil, err
+				}
+				if !pending {
+					continue
+				}
+				if err := c.svcCtx.Dao.RestoreMessagePts(c.ctx, inBox); err != nil {
 					return nil, err
 				}
 			}
@@ -83,7 +104,7 @@ func (c *InboxCore) InboxSendUserMessageToInboxV2(in *inbox.TLInboxSendUserMessa
 					c.Logger.Errorf("inbox.sendUserMessageToInboxV2 - error: sendToSelfUser")
 				} else {
 					peer := mtproto.FromPeer(peer2)
-					_, _, _ = c.svcCtx.Dao.InsertOrUpdateSavedDialog(
+					_, _, err = c.svcCtx.Dao.InsertOrUpdateSavedDialog(
 						c.ctx,
 						&dataobject.SavedDialogsDO{
 							UserId:     in.FromId,
@@ -92,6 +113,9 @@ func (c *InboxCore) InboxSendUserMessageToInboxV2(in *inbox.TLInboxSendUserMessa
 							Pinned:     0,
 							TopMessage: inBox.GetMessageId(),
 						})
+					if err != nil {
+						return nil, err
+					}
 				}
 			}
 
@@ -101,7 +125,10 @@ func (c *InboxCore) InboxSendUserMessageToInboxV2(in *inbox.TLInboxSendUserMessa
 				PtsCount:        inBox.PtsCount,
 			}).To_Update()
 
-			_, err := c.svcCtx.Dao.SyncClient.SyncUpdatesNotMe(c.ctx, &sync.TLSyncUpdatesNotMe{
+			if c.svcCtx.Dao.SyncClient == nil {
+				return nil, mtproto.ErrInternalServerError
+			}
+			syncResult, err := c.svcCtx.Dao.SyncClient.SyncUpdatesNotMe(c.ctx, &sync.TLSyncUpdatesNotMe{
 				UserId:        inBox.UserId,
 				PermAuthKeyId: in.FromAuthKeyId,
 				Updates: mtproto.MakeUpdatesByUpdatesUsersChats(
@@ -111,6 +138,15 @@ func (c *InboxCore) InboxSendUserMessageToInboxV2(in *inbox.TLInboxSendUserMessa
 			})
 			if err != nil {
 				c.Logger.Errorf("inbox.sendUserMessageToInboxV2 - SyncUpdatesNotMe error: %v", err)
+				return nil, err
+			}
+			if syncResult == nil {
+				return nil, mtproto.ErrInternalServerError
+			}
+			if c.svcCtx.Dao.Postgres != nil {
+				if err := c.svcCtx.Dao.CompleteInboxDelivery(c.ctx, in.FromId, inBox.DialogMessageId, inBox.UserId); err != nil {
+					return nil, err
+				}
 			}
 		}
 
@@ -193,6 +229,18 @@ func (c *InboxCore) InboxSendUserMessageToInboxV2(in *inbox.TLInboxSendUserMessa
 				return mtproto.EmptyVoid, nil
 
 			}
+			if inBox.GetPtsCount() == 0 {
+				pending, err := c.svcCtx.Dao.HasPendingInboxDelivery(c.ctx, in.FromId, inbox2.DialogMessageId, in.UserId)
+				if err != nil {
+					return nil, err
+				}
+				if !pending {
+					continue
+				}
+				if err := c.svcCtx.Dao.RestoreMessagePts(c.ctx, inBox); err != nil {
+					return nil, err
+				}
+			}
 
 			if inBox.DialogMessageId == 1 &&
 				(in.FromId != 42777 && in.FromId != 424000) {
@@ -219,6 +267,14 @@ func (c *InboxCore) InboxSendUserMessageToInboxV2(in *inbox.TLInboxSendUserMessa
 			if in.PeerType == mtproto.PEER_CHAT {
 				switch inBox.GetMessage().GetAction().GetPredicateName() {
 				case mtproto.Predicate_messageActionChatMigrateTo:
+					if c.svcCtx.Dao.Postgres != nil {
+						update, err := c.svcCtx.Dao.LoadMessageReadHistoryUpdate(c.ctx, inBox)
+						if err != nil {
+							return nil, err
+						}
+						pushUpdates.Updates = append(pushUpdates.Updates, update)
+						break
+					}
 					_, _ = c.svcCtx.Dao.DialogClient.DialogInsertOrUpdateDialog(
 						c.ctx,
 						&dialog.TLDialogInsertOrUpdateDialog{
@@ -258,25 +314,40 @@ func (c *InboxCore) InboxSendUserMessageToInboxV2(in *inbox.TLInboxSendUserMessa
 				}
 			}
 
-			c.persistPtsUpdate(c.ctx, inBox.UserId, updateNewMessage)
+			if c.svcCtx.Dao.Postgres == nil {
+				c.persistPtsUpdate(c.ctx, inBox.UserId, updateNewMessage)
+			}
 
+			var syncResult *mtproto.Void
 			if isBot {
 				if c.svcCtx.Dao.BotSyncClient != nil {
-					_, err = c.svcCtx.Dao.BotSyncClient.SyncPushBotUpdates(c.ctx, &sync.TLSyncPushBotUpdates{
+					syncResult, err = c.svcCtx.Dao.BotSyncClient.SyncPushBotUpdates(c.ctx, &sync.TLSyncPushBotUpdates{
 						UserId:  inBox.UserId,
 						Updates: pushUpdates,
 					})
 				} else {
-					// TODO: log
+					return nil, mtproto.ErrInternalServerError
 				}
 			} else {
-				_, err = c.svcCtx.Dao.SyncClient.SyncPushUpdates(c.ctx, &sync.TLSyncPushUpdates{
+				if c.svcCtx.Dao.SyncClient == nil {
+					return nil, mtproto.ErrInternalServerError
+				}
+				syncResult, err = c.svcCtx.Dao.SyncClient.SyncPushUpdates(c.ctx, &sync.TLSyncPushUpdates{
 					UserId:  inBox.UserId,
 					Updates: pushUpdates,
 				})
 			}
 			if err != nil {
 				c.Logger.Errorf("inbox.sendUserMessageToInboxV2 - error: %v", err)
+				return nil, err
+			}
+			if syncResult == nil {
+				return nil, mtproto.ErrInternalServerError
+			}
+			if c.svcCtx.Dao.Postgres != nil {
+				if err := c.svcCtx.Dao.CompleteInboxDelivery(c.ctx, in.FromId, inbox2.DialogMessageId, in.UserId); err != nil {
+					return nil, err
+				}
 			}
 		}
 	}

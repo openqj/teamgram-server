@@ -23,14 +23,15 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/teamgram/marmota/pkg/container2"
-	"github.com/teamgram/marmota/pkg/container2/sets"
 	"github.com/teamgram/marmota/pkg/stores/sqlx"
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/messenger/msg/inbox/inbox"
 	"github.com/teamgram/teamgram-server/app/messenger/msg/internal/dal/dataobject"
 	chatpb "github.com/teamgram/teamgram-server/app/service/biz/chat/chat"
 	"github.com/teamgram/teamgram-server/app/service/biz/dialog/dialog"
+	"github.com/teamgram/teamgram-server/app/service/idgen/counter"
 
 	"github.com/zeromicro/go-zero/core/jsonx"
 	"github.com/zeromicro/go-zero/core/logx"
@@ -73,14 +74,37 @@ func replyPeerMatchesCurrentDialog(peer *mtproto.PeerUtil, replyPeer *mtproto.Pe
 }
 
 func (d *Dao) sendMessageToInbox(ctx context.Context, fromId int64, peer *mtproto.PeerUtil, toUserId int64, dialogMessageId, clientRandomId int64, message2 *mtproto.Message) (*mtproto.MessageBox, error) {
+	if d.Postgres != nil {
+		var existing *dataobject.MessagesDO
+		var err error
+		if clientRandomId != 0 {
+			existing, err = d.Postgres.Store.Messages.SelectByRandomIdOn(ctx, d.Postgres.Pool, toUserId, fromId, clientRandomId)
+		} else if dialogMessageId != 0 {
+			existing, err = d.Postgres.Store.Messages.SelectByDeliveryIDOn(ctx, d.Postgres.Pool, toUserId, fromId, dialogMessageId)
+		}
+		if err != nil {
+			return nil, err
+		}
+		if existing != nil {
+			box := makeMessageBoxByDO(existing)
+			if err := d.RestoreMessagePts(ctx, box); err != nil {
+				return nil, err
+			}
+			box.PtsCount = 0
+			return box, nil
+		}
+	}
 	var (
-		inBoxMsgId = d.IDGenClient2.NextMessageBoxId(ctx, toUserId)
+		inBoxMsgId int32
 		dialogId   = mtproto.MakeDialogId(fromId, peer.PeerType, peer.PeerId)
 		date       = time.Now().Unix()
 		message    = proto.Clone(message2).(*mtproto.Message)
 
 		dialogDO *dataobject.DialogsDO
 	)
+	if d.Postgres == nil {
+		inBoxMsgId = d.IDGenClient2.NextMessageBoxId(ctx, toUserId)
+	}
 
 	if peer.PeerType == mtproto.PEER_USER {
 		if dialogMessageId == 0 {
@@ -97,7 +121,7 @@ func (d *Dao) sendMessageToInbox(ctx context.Context, fromId int64, peer *mtprot
 		if replyToPeer != nil && !replyPeerMatchesCurrentDialog(peer, replyToPeer) {
 			break
 		}
-		if replyId, _ := d.MessagesDAO.SelectPeerUserMessage(ctx, toUserId, fromId, message.GetReplyTo().GetFixedReplyToMsgId()); replyId != nil {
+		if replyId, _ := d.SelectPeerUserMessage(ctx, toUserId, fromId, message.GetReplyTo().GetFixedReplyToMsgId()); replyId != nil {
 			// message.ReplyToMsgId.Value = replyId.UserMessageBoxId
 			if message.ReplyTo != nil {
 				message.ReplyTo.ReplyToMsgId = replyId.UserMessageBoxId
@@ -149,7 +173,10 @@ func (d *Dao) sendMessageToInbox(ctx context.Context, fromId int64, peer *mtprot
 		}
 	}
 
-	mData, _ := jsonx.Marshal(message)
+	mData, err := jsonx.Marshal(message)
+	if err != nil {
+		return nil, err
+	}
 	// mType, mData := mtproto.EncodeMessage(message)
 	inBox := &mtproto.MessageBox{
 		UserId:            toUserId,
@@ -167,6 +194,9 @@ func (d *Dao) sendMessageToInbox(ctx context.Context, fromId int64, peer *mtprot
 		Message:           message,
 		Mentioned:         message.Mentioned,
 		MediaUnread:       message.MediaUnread,
+	}
+	if d.Postgres != nil && d.Postgres.Store != nil {
+		return d.persistInboxPostgres(ctx, fromId, peer, toUserId, inBox, message, mData, date)
 	}
 
 	tR := sqlx.TxWrapper(ctx, d.DB, func(tx *sqlx.Tx, result *sqlx.StoreResult) {
@@ -284,12 +314,119 @@ func (d *Dao) sendMessageToInbox(ctx context.Context, fromId int64, peer *mtprot
 	return inBox, nil
 }
 
+func (d *Dao) persistInboxPostgres(ctx context.Context, fromID int64, peer *mtproto.PeerUtil, toUserID int64, inBox *mtproto.MessageBox, message *mtproto.Message, messageData []byte, date int64) (*mtproto.MessageBox, error) {
+	var dialogDO *dataobject.DialogsDO
+	var duplicate *mtproto.MessageBox
+	switch peer.PeerType {
+	case mtproto.PEER_USER:
+		dialogDO = &dataobject.DialogsDO{UserId: toUserID, PeerType: peer.PeerType, PeerId: fromID,
+			PeerDialogId: mtproto.MakePeerDialogId(mtproto.PEER_USER, fromID), TopMessage: inBox.MessageId,
+			UnreadCount: 1, DraftMessageData: "null", Date2: date}
+	case mtproto.PEER_CHAT:
+		dialogDO = &dataobject.DialogsDO{UserId: toUserID, PeerType: peer.PeerType, PeerId: peer.PeerId,
+			PeerDialogId: mtproto.MakePeerDialogId(peer.PeerType, peer.PeerId), TopMessage: inBox.MessageId,
+			UnreadCount: 1, UnreadMentionsCount: 0, DraftMessageData: "null", Date2: date}
+		if inBox.Mentioned {
+			dialogDO.UnreadMentionsCount = 1
+		}
+	default:
+		return nil, mtproto.ErrPeerIdInvalid
+	}
+	err := d.Postgres.InTx(ctx, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('messenger-user:' || $1::bigint::text, 0))`, toUserID); err != nil {
+			return err
+		}
+		if inBox.MessageId == 0 {
+			messageID, err := counter.NextOn(ctx, tx, counter.MessageBoxKey(toUserID), 1)
+			if err != nil {
+				return err
+			}
+			inBox.MessageId = int32(messageID)
+			message.Id = inBox.MessageId
+			dialogDO.TopMessage = inBox.MessageId
+			messageData, err = jsonx.Marshal(message)
+			if err != nil {
+				return err
+			}
+		}
+		storageID, rowsAffected, err := d.Postgres.Store.Messages.InsertOrReturnIdOn(ctx, tx, &dataobject.MessagesDO{
+			UserId: inBox.UserId, UserMessageBoxId: inBox.MessageId, DialogId1: inBox.DialogId1, DialogId2: inBox.DialogId2,
+			SenderUserId: fromID, PeerType: peer.PeerType, PeerId: inBox.PeerId, RandomId: inBox.RandomId,
+			DialogMessageId: inBox.DialogMessageId, MessageData: string(messageData), MessageFilterType: inBox.MessageFilterType,
+			Message: message.Message, Mentioned: inBox.Mentioned, MediaUnread: inBox.MediaUnread, Date2: date,
+		})
+		if err != nil {
+			return err
+		}
+		if rowsAffected == 0 {
+			existing, err := d.Postgres.Store.Messages.SelectByStorageIDOn(ctx, tx, toUserID, storageID)
+			if err != nil {
+				return err
+			}
+			if existing == nil {
+				return fmt.Errorf("conflicting inbox message has no stored record")
+			}
+			duplicate = makeMessageBoxByDO(existing)
+			return nil
+		}
+		if _, _, err = d.Postgres.Store.Dialogs.InsertOrUpdateOn(ctx, tx, dialogDO); err != nil {
+			return err
+		}
+		for _, entity := range message.GetEntities() {
+			if entity.GetPredicateName() == mtproto.Predicate_messageEntityHashtag && entity.GetUrl() != "" {
+				if _, _, err = d.Postgres.Store.HashTags.InsertOrUpdateOn(ctx, tx, &dataobject.HashTagsDO{
+					UserId: inBox.UserId, PeerType: peer.PeerType, PeerId: peer.PeerId,
+					HashTag: entity.GetUrl(), HashTagMessageId: inBox.MessageId,
+				}); err != nil {
+					return err
+				}
+			}
+		}
+		pts, err := counter.NextOn(ctx, tx, counter.PtsKey(toUserID), 1)
+		if err != nil {
+			return err
+		}
+		inBox.Pts, inBox.PtsCount = int32(pts), 1
+		_, err = d.AddToPtsQueueOn(ctx, tx, toUserID, inBox.Pts, inBox.PtsCount, mtproto.MakeTLUpdateNewMessage(&mtproto.Update{
+			Message_MESSAGE: message, Pts_INT32: inBox.Pts, PtsCount: inBox.PtsCount,
+		}).To_Update())
+		if err != nil {
+			return err
+		}
+		if peer.PeerType == mtproto.PEER_CHAT && message.GetAction().GetPredicateName() == mtproto.Predicate_messageActionChatMigrateTo {
+			if _, err := d.Postgres.Store.Dialogs.UpdateCustomMapOn(ctx, tx, map[string]any{"read_inbox_max_id": inBox.MessageId, "unread_count": 0}, toUserID, peer.PeerType, peer.PeerId); err != nil {
+				return err
+			}
+			pts, err := counter.NextOn(ctx, tx, counter.PtsKey(toUserID), 1)
+			if err != nil {
+				return err
+			}
+			_, err = d.AddToPtsQueueOn(ctx, tx, toUserID, int32(pts), 1, mtproto.MakeTLUpdateReadHistoryInbox(&mtproto.Update{
+				Peer_PEER: mtproto.MakePeerChat(peer.PeerId), MaxId: inBox.MessageId,
+				StillUnreadCount: 0, Pts_INT32: int32(pts), PtsCount: 1,
+			}).To_Update())
+			return err
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	if duplicate != nil {
+		if err := d.RestoreMessagePts(ctx, duplicate); err != nil {
+			return nil, err
+		}
+		duplicate.PtsCount = 0
+		return duplicate, nil
+	}
+	return inBox, nil
+}
+
 func (d *Dao) SendUserMessageToInbox(ctx context.Context, fromId, toId int64, dialogMessageId, clientRandomId int64, message *mtproto.Message) (*mtproto.MessageBox, error) {
 	peer := &mtproto.PeerUtil{
 		PeerType: mtproto.PEER_USER,
 		PeerId:   toId,
 	}
-	message.Out = false
 	return d.sendMessageToInbox(ctx, fromId, peer, toId, dialogMessageId, clientRandomId, message)
 }
 
@@ -298,7 +435,6 @@ func (d *Dao) SendChatMessageToInbox(ctx context.Context, fromId, chatId, toId i
 		PeerType: mtproto.PEER_CHAT,
 		PeerId:   chatId,
 	}
-	message.Out = false
 	return d.sendMessageToInbox(ctx, fromId, peer, toId, dialogMessageId, clientRandomId, message)
 }
 
@@ -312,8 +448,10 @@ func (d *Dao) SendUserMultiMessageToInbox(ctx context.Context, fromId, toId int6
 			PeerType: mtproto.PEER_USER,
 			PeerId:   toId,
 		}
-		box.Message.Out = false
-		inBox, _ := d.sendMessageToInbox(ctx, fromId, peer, toId, box.DialogMessageId, box.RandomId, box.Message)
+		inBox, err := d.sendMessageToInbox(ctx, fromId, peer, toId, box.DialogMessageId, box.RandomId, box.Message)
+		if err != nil {
+			return nil, err
+		}
 		boxList = append(boxList, inBox)
 	}
 
@@ -329,8 +467,10 @@ func (d *Dao) SendChatMultiMessageToInbox(ctx context.Context, fromId, chatId, t
 			PeerType: mtproto.PEER_CHAT,
 			PeerId:   chatId,
 		}
-		box.Message.Out = false
-		inBox, _ := d.sendMessageToInbox(ctx, fromId, peer, toId, box.DialogMessageId, box.RandomId, box.Message)
+		inBox, err := d.sendMessageToInbox(ctx, fromId, peer, toId, box.DialogMessageId, box.RandomId, box.Message)
+		if err != nil {
+			return nil, err
+		}
 		boxList = append(boxList, inBox)
 	}
 
@@ -356,21 +496,16 @@ func (d *Dao) DeleteInboxMessages(ctx context.Context, deleteUserId int64, peer 
 
 	switch peer.PeerType {
 	case mtproto.PEER_USER:
-		_, err := d.MessagesDAO.SelectByMessageDataIdListWithCB(
-			ctx,
-			d.MessagesDAO.CalcTableName(peer.PeerId),
-			deleteMsgDataIds,
-			func(sz, i int, v *dataobject.MessagesDO) {
-				doDeleteMessageF(v)
-			})
+		var err error
+		if d.Postgres != nil && d.Postgres.Store != nil {
+			_, err = d.SelectMessageByDataIDList(ctx, peer.PeerId, deleteMsgDataIds, func(sz, i int, v *dataobject.MessagesDO) { doDeleteMessageF(v) })
+		} else {
+			_, err = d.MessagesDAO.SelectByMessageDataIdListWithCB(ctx, d.MessagesDAO.CalcTableName(peer.PeerId), deleteMsgDataIds, func(sz, i int, v *dataobject.MessagesDO) { doDeleteMessageF(v) })
+		}
 		if err != nil {
 			return err
 		}
 	case mtproto.PEER_CHAT:
-		var (
-			tables = sets.NewWithLength(1)
-		)
-
 		pUserIdList, _ := d.ChatClient.ChatGetChatParticipantIdList(ctx, &chatpb.TLChatGetChatParticipantIdList{
 			ChatId: peer.PeerId,
 		})
@@ -378,18 +513,11 @@ func (d *Dao) DeleteInboxMessages(ctx context.Context, deleteUserId int64, peer 
 		logx.WithContext(ctx).Debugf("pUserIdList: %s", pUserIdList)
 
 		for _, uId := range pUserIdList.GetDatas() {
-			tables.Insert(d.MessagesDAO.CalcTableName(uId))
-		}
-		logx.WithContext(ctx).Debugf("tables: %s", tables)
-
-		for tableName, _ := range tables {
-			d.MessagesDAO.SelectByMessageDataIdListWithCB(
-				ctx,
-				tableName,
-				deleteMsgDataIds,
-				func(sz, i int, v *dataobject.MessagesDO) {
-					doDeleteMessageF(v)
-				})
+			if d.Postgres != nil && d.Postgres.Store != nil {
+				_, _ = d.SelectMessageByDataIDList(ctx, uId, deleteMsgDataIds, func(sz, i int, v *dataobject.MessagesDO) { doDeleteMessageF(v) })
+			} else {
+				d.MessagesDAO.SelectByMessageDataIdListWithCB(ctx, d.MessagesDAO.CalcTableName(uId), deleteMsgDataIds, func(sz, i int, v *dataobject.MessagesDO) { doDeleteMessageF(v) })
+			}
 		}
 	}
 
@@ -442,7 +570,7 @@ func (d *Dao) DeleteInboxMessages(ctx context.Context, deleteUserId int64, peer 
 			if !(topMessage == dlgDO.TopMessage ||
 				dlgDO.TopMessage == msgDOList[len(msgDOList)-1].UserMessageBoxId) {
 
-				dlgDO.TopMessage, _ = d.MessagesDAO.SelectDialogLastMessageIdNotIdList(ctx, userId, dialogId.A, dialogId.B, msgIds)
+				dlgDO.TopMessage, _ = d.SelectDialogLastMessageIDNotIDList(ctx, userId, dialogId.A, dialogId.B, msgIds)
 			}
 
 			if dlgDO.UnreadCount < 0 {
@@ -455,7 +583,9 @@ func (d *Dao) DeleteInboxMessages(ctx context.Context, deleteUserId int64, peer 
 		if err2 != nil {
 			// return
 		}
-		if dlgDO != nil {
+		if dlgDO != nil && d.Postgres != nil && d.Postgres.Store != nil {
+			_, err2 = d.Postgres.Store.Dialogs.UpdateCustomMap(ctx, map[string]any{"top_message": dlgDO.TopMessage, "unread_count": dlgDO.UnreadCount}, userId, dlgDO.PeerType, dlgDO.PeerId)
+		} else if dlgDO != nil {
 			d.CachedConn.Exec(
 				ctx,
 				func(ctx context.Context, conn *sqlx.DB) (int64, int64, error) {
@@ -488,7 +618,7 @@ func (d *Dao) DeleteInboxMessages(ctx context.Context, deleteUserId int64, peer 
 func (d *Dao) EditUserInboxMessage(ctx context.Context, fromId, peerId int64, message *mtproto.Message) (box *mtproto.MessageBox, err error) {
 	var peerMsgDO *dataobject.MessagesDO
 
-	peerMsgDO, err = d.MessagesDAO.SelectPeerUserMessage(ctx, peerId, fromId, message.Id)
+	peerMsgDO, err = d.SelectPeerUserMessage(ctx, peerId, fromId, message.Id)
 	if err != nil {
 		return
 	} else if peerMsgDO == nil {
@@ -532,7 +662,7 @@ func (d *Dao) EditUserInboxMessage(ctx context.Context, fromId, peerId int64, me
 func (d *Dao) EditChatInboxMessage(ctx context.Context, fromId int64, peerChatId, toId int64, message *mtproto.Message) (box *mtproto.MessageBox, err error) {
 	var peerMsgDO *dataobject.MessagesDO
 
-	peerMsgDO, err = d.MessagesDAO.SelectPeerUserMessage(ctx, toId, fromId, message.Id)
+	peerMsgDO, err = d.SelectPeerUserMessage(ctx, toId, fromId, message.Id)
 	if err != nil {
 		return
 	} else if peerMsgDO == nil {

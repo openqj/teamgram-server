@@ -61,6 +61,9 @@ func (c *PrivacySettingsCore) selfPremiumKnown() (premium bool, known bool, err 
 	if me == nil {
 		return false, false, mtproto.ErrInternalServerError
 	}
+	if me.GetId() != c.MD.UserId || me.GetDeleted() {
+		return false, false, mtproto.ErrUserIdInvalid
+	}
 	if !me.GetPremium() {
 		return false, true, nil
 	}
@@ -76,21 +79,29 @@ func (c *PrivacySettingsCore) requirementToContact(id *mtproto.InputUser, selfPr
 	if id == nil {
 		return nil, mtproto.ErrUserIdInvalid
 	}
-	peer := mtproto.FromInputUser(c.MD.UserId, id)
-	if peer == nil || !peer.IsUser() || peer.IsSelf() || peer.PeerId == 0 || peer.PeerId == c.MD.UserId {
+	if id.GetPredicateName() == mtproto.Predicate_inputUserSelf {
+		if id.GetUserId() != 0 || id.GetAccessHash() != 0 {
+			return nil, mtproto.ErrUserIdInvalid
+		}
 		return empty, nil
 	}
-
-	// Same getPrivacy path as account.getPrivacy (user.getPrivacy).
-	rules, err := c.svcCtx.Dao.UserClient.UserGetPrivacy(c.ctx, &userpb.TLUserGetPrivacy{
-		UserId:  peer.PeerId,
-		KeyType: int32(mtproto.NO_PAID_MESSAGES),
+	if id.GetPredicateName() != mtproto.Predicate_inputUser || id.GetUserId() <= 0 || id.GetAccessHash() == 0 {
+		return nil, mtproto.ErrUserIdInvalid
+	}
+	owner, err := c.svcCtx.Dao.UserGetUserDataById(c.ctx, &userpb.TLUserGetUserDataById{
+		UserId: id.GetUserId(),
 	})
 	if err != nil {
 		return nil, err
 	}
+	if owner == nil || owner.GetId() != id.GetUserId() || owner.GetDeleted() || owner.GetAccessHash() != id.GetAccessHash() {
+		return nil, mtproto.ErrUserIdInvalid
+	}
+	if owner.GetId() == c.MD.UserId {
+		return empty, nil
+	}
 	settings, err := c.svcCtx.Dao.UserGetGlobalPrivacySettings(c.ctx, &userpb.TLUserGetGlobalPrivacySettings{
-		UserId: peer.PeerId,
+		UserId: owner.GetId(),
 	})
 	if err != nil {
 		return nil, err
@@ -106,7 +117,7 @@ func (c *PrivacySettingsCore) requirementToContact(id *mtproto.InputUser, selfPr
 	}
 
 	contact, err := c.svcCtx.Dao.UserCheckContact(c.ctx, &userpb.TLUserCheckContact{
-		UserId: peer.PeerId,
+		UserId: owner.GetId(),
 		Id:     c.MD.UserId,
 	})
 	if err != nil {
@@ -120,10 +131,16 @@ func (c *PrivacySettingsCore) requirementToContact(id *mtproto.InputUser, selfPr
 	}
 
 	if stars > 0 {
-		if paidRulesNeedPremium(rules.GetDatas()) && !premiumKnown {
-			return empty, nil
+		allowed, err := c.svcCtx.Dao.UserCheckPrivacy(c.ctx, &userpb.TLUserCheckPrivacy{
+			UserId: owner.GetId(), KeyType: mtproto.NO_PAID_MESSAGES, PeerId: c.MD.UserId,
+		})
+		if err != nil {
+			return nil, err
 		}
-		if paidMessagesExempt(rules.GetDatas(), c.MD.UserId, selfPremium) {
+		if allowed == nil {
+			return nil, mtproto.ErrInternalServerError
+		}
+		if mtproto.FromBool(allowed) {
 			return empty, nil
 		}
 		return mtproto.MakeTLRequirementToContactPaidMessages(&mtproto.RequirementToContact{
@@ -133,40 +150,11 @@ func (c *PrivacySettingsCore) requirementToContact(id *mtproto.InputUser, selfPr
 
 	if needPremium {
 		if !premiumKnown {
-			return empty, nil
+			return nil, mtproto.ErrInternalServerError
 		}
 		if !selfPremium {
 			return mtproto.MakeTLRequirementToContactPremium(&mtproto.RequirementToContact{}).To_RequirementToContact(), nil
 		}
 	}
 	return empty, nil
-}
-
-func paidRulesNeedPremium(rules []*mtproto.PrivacyRule) bool {
-	for _, r := range rules {
-		if r.GetPredicateName() == mtproto.Predicate_privacyValueAllowPremium {
-			return true
-		}
-	}
-	return false
-}
-
-func paidMessagesExempt(rules []*mtproto.PrivacyRule, selfId int64, selfPremium bool) bool {
-	for _, r := range rules {
-		switch r.GetPredicateName() {
-		case mtproto.Predicate_privacyValueAllowAll:
-			return true
-		case mtproto.Predicate_privacyValueAllowPremium:
-			if selfPremium {
-				return true
-			}
-		case mtproto.Predicate_privacyValueAllowUsers:
-			for _, id := range r.GetUsers() {
-				if id == selfId {
-					return true
-				}
-			}
-		}
-	}
-	return false
 }

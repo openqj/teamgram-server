@@ -252,6 +252,18 @@ func (s *Service) AuthsessionBindTempAuthKey(ctx context.Context, request *auths
 	return r, err
 }
 
+// AuthsessionDropTempAuthKeys
+// authsession.dropTempAuthKeys except_auth_keys:Vector<long> = Bool;
+func (s *Service) AuthsessionDropTempAuthKeys(ctx context.Context, request *authsession.TLAuthsessionDropTempAuthKeys) (*mtproto.Bool, error) {
+	c := core.New(ctx, s.svcCtx)
+	c.Logger.Debugf("authsession.dropTempAuthKeys - metadata: {%s}, request: {%s}", c.MD, request)
+	r, err := c.AuthsessionDropTempAuthKeys(request)
+	if err != nil {
+		return nil, err
+	}
+	return r, nil
+}
+
 // AuthsessionSetClientSessionInfo
 // authsession.setClientSessionInfo data:ClientSession = Bool;
 func (s *Service) AuthsessionSetClientSessionInfo(ctx context.Context, request *authsession.TLAuthsessionSetClientSessionInfo) (*mtproto.Bool, error) {

@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -62,7 +63,7 @@ func (c Config) withDefaults() Config {
 // empty or the database is unreachable, which prevents a service from
 // accepting MTProto requests while its authoritative store is unavailable.
 func NewPool(ctx context.Context, cfg Config) (*pgxpool.Pool, error) {
-	if cfg.DSN == "" {
+	if strings.TrimSpace(cfg.DSN) == "" {
 		return nil, errors.New("postgres: DSN is required")
 	}
 
@@ -86,7 +87,43 @@ func NewPool(ctx context.Context, cfg Config) (*pgxpool.Pool, error) {
 		pool.Close()
 		return nil, fmt.Errorf("postgres: ping: %w", err)
 	}
+	var serverVersionNum int
+	if err := pool.QueryRow(ctx, `SELECT current_setting('server_version_num')::integer`).Scan(&serverVersionNum); err != nil {
+		pool.Close()
+		return nil, fmt.Errorf("postgres: read server version: %w", err)
+	}
+	if err := validateServerVersion(serverVersionNum); err != nil {
+		pool.Close()
+		return nil, err
+	}
 	return pool, nil
+}
+
+// VerifySchema checks required columns before a service starts accepting work.
+// Queries should be SELECT statements with LIMIT 0, without runtime mutations.
+func VerifySchema(ctx context.Context, db interface {
+	Query(context.Context, string, ...any) (pgx.Rows, error)
+}, queries ...string) error {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	for _, query := range queries {
+		rows, err := db.Query(ctx, query)
+		if err != nil {
+			return fmt.Errorf("postgres: required schema is unavailable: %w", err)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return fmt.Errorf("postgres: verify required schema: %w", err)
+		}
+	}
+	return nil
+}
+
+func validateServerVersion(serverVersionNum int) error {
+	if serverVersionNum/10000 != 18 {
+		return fmt.Errorf("postgres: PostgreSQL 18 is required (server_version_num=%d)", serverVersionNum)
+	}
+	return nil
 }
 
 // WithTx executes fn in a transaction and commits only when fn succeeds. A

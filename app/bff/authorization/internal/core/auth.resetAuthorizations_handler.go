@@ -28,6 +28,9 @@ import (
 // auth.resetAuthorizations#9fab0d1a = Bool;
 func (c *AuthorizationCore) AuthResetAuthorizations(in *mtproto.TLAuthResetAuthorizations) (*mtproto.Bool, error) {
 	_ = in
+	if c == nil || c.MD == nil || c.svcCtx == nil || c.svcCtx.Dao == nil {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
 	if c.MD.GetUserId() == 0 {
 		c.Logger.Errorf("auth.resetAuthorizations - user not bound")
 		return nil, mtproto.ErrAuthKeyUnregistered

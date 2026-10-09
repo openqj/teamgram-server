@@ -19,10 +19,6 @@
 package core
 
 import (
-	"context"
-	"fmt"
-
-	"github.com/teamgram/marmota/pkg/stores/sqlx"
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/service/biz/user/internal/dal/dataobject"
 	"github.com/teamgram/teamgram-server/app/service/biz/user/user"
@@ -31,19 +27,15 @@ import (
 // UserGetAccountUsername
 // user.getAccountUsername user_id:long = UsernameData;
 func (c *UserCore) UserGetAccountUsername(in *user.TLUserGetAccountUsername) (*user.UsernameData, error) {
+	if c == nil || c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.Postgres == nil ||
+		c.svcCtx.Dao.Postgres.Store == nil || c.svcCtx.Dao.Postgres.Store.Username == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
 	v := new(dataobject.UsernameDO)
-
-	err := c.svcCtx.CachedConn.QueryRow(
-		c.ctx,
-		v,
-		fmt.Sprintf("username_%d", in.GetUserId()),
-		func(ctx context.Context, db *sqlx.DB, v interface{}) error {
-			usernameDO, err2 := c.svcCtx.UsernameDAO.SelectByUserId(c.ctx, in.GetUserId())
-			if err2 == nil {
-				*(v.(*dataobject.UsernameDO)) = *usernameDO
-			}
-			return err2
-		})
+	list, err := c.svcCtx.Dao.Postgres.Store.Username.SelectByUserID(c.ctx, in.GetUserId())
+	if err == nil && len(list) > 0 {
+		*v = list[0]
+	}
 	if err != nil {
 		return nil, err
 	}

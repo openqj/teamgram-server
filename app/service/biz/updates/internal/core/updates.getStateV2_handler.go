@@ -10,8 +10,6 @@
 package core
 
 import (
-	"time"
-
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/service/biz/updates/updates"
 )
@@ -19,21 +17,15 @@ import (
 // UpdatesGetStateV2
 // updates.getStateV2 auth_key_id:long user_id:long = updates.State;
 func (c *UpdatesCore) UpdatesGetStateV2(in *updates.TLUpdatesGetStateV2) (*mtproto.Updates_State, error) {
-	pts := c.svcCtx.Dao.IDGenClient2.CurrentPtsId(c.ctx, in.UserId)
-	if pts == 0 {
-		pts = c.svcCtx.Dao.IDGenClient2.NextPtsId(c.ctx, in.UserId)
+	if in == nil || in.UserId <= 0 {
+		return nil, mtproto.ErrInputRequestInvalid
 	}
-
-	seq := c.svcCtx.Dao.IDGenClient2.CurrentSeqId(c.ctx, in.AuthKeyId)
-	if seq == 0 {
-		seq = -1
+	state, err := c.svcCtx.Dao.CurrentUpdateState(c.ctx, in.UserId, in.AuthKeyId)
+	if err != nil {
+		return nil, err
 	}
-	qts := c.svcCtx.Dao.IDGenClient2.CurrentQtsId(c.ctx, in.AuthKeyId)
-	return mtproto.MakeTLUpdatesState(&mtproto.Updates_State{
-		Pts:         pts,
-		Qts:         qts,
-		Seq:         seq,
-		Date:        int32(time.Now().Unix()), // TODO(@benqi): do.Date2???
-		UnreadCount: 0,
-	}).To_Updates_State(), nil
+	if state.Seq == 0 {
+		state.Seq = -1
+	}
+	return state, nil
 }

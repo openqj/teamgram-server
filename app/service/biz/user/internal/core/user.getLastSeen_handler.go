@@ -17,7 +17,10 @@ import (
 // UserGetLastSeen
 // user.getLastSeen id:long = LastSeenData;
 func (c *UserCore) UserGetLastSeen(in *user.TLUserGetLastSeen) (*user.LastSeenData, error) {
-	do, _ := c.svcCtx.Dao.GetLastSeenAt(c.ctx, in.Id)
+	do, err := c.svcCtx.Dao.GetLastSeenAt(c.ctx, in.Id)
+	if err != nil {
+		return nil, err
+	}
 	if do == nil {
 		err := mtproto.ErrUserIdInvalid
 		c.Logger.Errorf("user.getLastSeen - error: %d", err)

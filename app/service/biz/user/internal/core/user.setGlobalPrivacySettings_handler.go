@@ -12,6 +12,7 @@ package core
 import (
 	"fmt"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/service/biz/user/internal/dal/dataobject"
 	"github.com/teamgram/teamgram-server/app/service/biz/user/user"
@@ -26,6 +27,9 @@ func (c *UserCore) UserSetGlobalPrivacySettings(in *user.TLUserSetGlobalPrivacyS
 	settings := in.GetSettings()
 	if settings == nil {
 		return nil, fmt.Errorf("user.setGlobalPrivacySettings: settings is nil")
+	}
+	if err := c.requirePostgres(); err != nil {
+		return nil, err
 	}
 
 	var (
@@ -43,7 +47,7 @@ func (c *UserCore) UserSetGlobalPrivacySettings(in *user.TLUserSetGlobalPrivacyS
 		return nil, fmt.Errorf("user.setGlobalPrivacySettings: encode settings: %w", err)
 	}
 
-	if _, _, err := c.svcCtx.Dao.UserGlobalPrivacySettingsDAO.InsertOrUpdate(c.ctx, &dataobject.UserGlobalPrivacySettingsDO{
+	value := &dataobject.UserGlobalPrivacySettingsDO{
 		UserId:                           in.UserId,
 		ArchiveAndMuteNewNoncontactPeers: archiveAndMuteNewNoncontactPeers,
 		KeepArchivedUnmuted:              settings.GetKeepArchivedUnmuted(),
@@ -53,9 +57,14 @@ func (c *UserCore) UserSetGlobalPrivacySettings(in *user.TLUserSetGlobalPrivacyS
 		DisplayGiftsButton:               settings.GetDisplayGiftsButton(),
 		NoncontactPeersPaidStars:         globalPrivacyPaidStars(settings),
 		DisallowedGiftsJSON:              disallowedGifts,
-	}); err != nil {
-		c.Logger.Errorf("user.setGlobalPrivacySettings - error: %v", err)
-		return nil, fmt.Errorf("user.setGlobalPrivacySettings: save settings: %w", err)
+	}
+	saveErr := c.svcCtx.Dao.Postgres.InTx(c.ctx, func(tx pgx.Tx) error {
+		_, _, err := c.svcCtx.Dao.Postgres.Store.GlobalPrivacy.InsertOrUpdateTx(c.ctx, tx, value)
+		return err
+	})
+	if saveErr != nil {
+		c.Logger.Errorf("user.setGlobalPrivacySettings - error: %v", saveErr)
+		return nil, fmt.Errorf("user.setGlobalPrivacySettings: save settings: %w", saveErr)
 	}
 
 	return mtproto.BoolTrue, nil

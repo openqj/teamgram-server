@@ -26,6 +26,7 @@ import (
 
 type Config struct {
 	zrpc.RpcServerConf
+	PostgresDSN       string                    `json:",optional"`
 	KV                kv.KvConf                 `json:",optional"`
 	Code              *conf.SmsVerifyCodeConfig `json:",optional"`
 	AuthsessionClient zrpc.RpcClientConf

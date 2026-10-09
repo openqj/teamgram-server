@@ -38,6 +38,7 @@ type AuthsessionClient interface {
 	AuthsessionUnbindAuthKeyUser(ctx context.Context, in *authsession.TLAuthsessionUnbindAuthKeyUser) (*mtproto.Bool, error)
 	AuthsessionGetPermAuthKeyId(ctx context.Context, in *authsession.TLAuthsessionGetPermAuthKeyId) (*mtproto.Int64, error)
 	AuthsessionBindTempAuthKey(ctx context.Context, in *authsession.TLAuthsessionBindTempAuthKey) (*mtproto.Bool, error)
+	AuthsessionDropTempAuthKeys(ctx context.Context, in *authsession.TLAuthsessionDropTempAuthKeys) (*mtproto.Bool, error)
 	AuthsessionSetClientSessionInfo(ctx context.Context, in *authsession.TLAuthsessionSetClientSessionInfo) (*mtproto.Bool, error)
 	AuthsessionGetAuthorization(ctx context.Context, in *authsession.TLAuthsessionGetAuthorization) (*mtproto.Authorization, error)
 	AuthsessionGetAuthStateData(ctx context.Context, in *authsession.TLAuthsessionGetAuthStateData) (*authsession.AuthKeyStateData, error)
@@ -219,6 +220,17 @@ func (m *defaultAuthsessionClient) AuthsessionBindTempAuthKey(ctx context.Contex
 	}
 	client := authsession.NewRPCAuthsessionClient(m.cli.Conn())
 	return client.AuthsessionBindTempAuthKey(ctx, in)
+}
+
+// AuthsessionDropTempAuthKeys
+// authsession.dropTempAuthKeys except_auth_keys:Vector<long> = Bool;
+func (m *defaultAuthsessionClient) AuthsessionDropTempAuthKeys(ctx context.Context, in *authsession.TLAuthsessionDropTempAuthKeys) (*mtproto.Bool, error) {
+	md := metadata.RpcMetadataFromIncoming(ctx)
+	if md != nil {
+		ctx, _ = metadata.RpcMetadataToOutgoing(ctx, md)
+	}
+	client := authsession.NewRPCAuthsessionClient(m.cli.Conn())
+	return client.AuthsessionDropTempAuthKeys(ctx, in)
 }
 
 // AuthsessionSetClientSessionInfo

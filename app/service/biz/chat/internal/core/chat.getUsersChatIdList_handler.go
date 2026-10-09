@@ -23,12 +23,7 @@ func (c *ChatCore) ChatGetUsersChatIdList(in *chat.TLChatGetUsersChatIdList) (*c
 	if in == nil {
 		return nil, mtproto.ErrInputConstructorInvalid
 	}
-	selector := c.svcCtx.Dao.ChatParticipantsDAO.SelectUsersChatIdListWithCB
-	if c.svcCtx.Dao.Postgres != nil && c.svcCtx.Dao.Postgres.Store != nil {
-		selector = func(ctx context.Context, ids []int64, _ func(sz, i int, v *dataobject.ChatParticipantsDO)) ([]dataobject.ChatParticipantsDO, error) {
-			return c.svcCtx.Dao.Postgres.Store.Participants.SelectUsersChatIdList(ctx, ids)
-		}
-	}
+	selector := c.svcCtx.Dao.SelectUsersChatIdListWithCB
 	r, err := collectUsersChatIdList(c.ctx, in.Id, selector)
 	if err != nil {
 		c.Logger.Errorf("chat.getUsersChatIdList - error: %v", err)

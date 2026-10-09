@@ -207,6 +207,10 @@ func TestStatsGetMessageStatsUsesPersistedChannelViews(t *testing.T) {
 	}
 
 	ownerCore := &ApiFullCore{MD: &metadata.RpcMetadata{UserId: owner}}
+	broadcast, err := ownerCore.StatsGetBroadcastStats(&mtproto.TLStatsGetBroadcastStats{Channel: input})
+	if err != nil || broadcast == nil || broadcast.GetViewsPerPost().GetCurrent() != 1 {
+		t.Fatalf("broadcast stats: result=%+v err=%v, want one persisted message view", broadcast, err)
+	}
 	stats, err := ownerCore.StatsGetMessageStats(&mtproto.TLStatsGetMessageStats{Channel: input, MsgId: 1})
 	if err != nil || stats == nil || stats.GetViewsGraph() == nil || stats.GetViewsGraph().GetJson() == nil || stats.GetViewsGraph().GetJson().GetData() != `{"count":1}` {
 		t.Fatalf("message stats: result=%+v err=%v", stats, err)

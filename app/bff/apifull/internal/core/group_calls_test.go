@@ -2,14 +2,19 @@ package core
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/proto/mtproto/rpc/metadata"
+	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/config"
 	apifullDao "github.com/teamgram/teamgram-server/app/bff/apifull/internal/dao"
 	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/domain"
 	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/persist"
@@ -29,6 +34,49 @@ func (c *groupCallUserClient) UserGetImmutableUserV2(_ context.Context, in *user
 		return nil, nil
 	}
 	return &mtproto.ImmutableUser{User: c.users[in.GetId()]}, nil
+}
+
+func groupCallMediaFixture(t *testing.T) config.Config {
+	t.Helper()
+	const signingKey = "group-call-fixture-signing-key-0000000000"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil || r.Header.Get("Authorization") != "Bearer fixture-media" ||
+			!verifyGroupCallMediaSignature(signingKey, r.Header.Get("X-Teamgram-Group-Call-Request-Signature"), body) {
+			t.Error("media request must have valid authorization and signature")
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		var request groupCallMediaRequest
+		if err = json.Unmarshal(body, &request); err != nil || request.RequestID == "" {
+			t.Error("media request must contain valid JSON and request ID")
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if request.Operation != "join_group_call" && request.Operation != "leave_group_call" && request.Operation != "discard_group_call" {
+			t.Errorf("unexpected media operation: %q", request.Operation)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		response := groupCallMediaResponse{
+			RequestID: request.RequestID, Operation: request.Operation, Verified: true,
+			UserID: request.UserID, CallID: request.CallID, ChannelID: request.ChannelID,
+			MediaSource: int32(request.UserID%1_000_000) + 1,
+		}
+		body, err = json.Marshal(response)
+		if err != nil {
+			t.Error(err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("X-Teamgram-Group-Call-Signature", groupCallMediaSignature(signingKey, body))
+		_, _ = w.Write(body)
+	}))
+	t.Cleanup(server.Close)
+	return config.Config{
+		GroupCallMediaEndpoint: server.URL, GroupCallMediaAPIKey: "fixture-media",
+		GroupCallMediaSigningKey: signingKey,
+	}
 }
 
 func TestPhoneCreateGroupCallAuthed(t *testing.T) {
@@ -53,7 +101,7 @@ func TestPhoneCreateGroupCallAuthed(t *testing.T) {
 	}
 }
 
-func TestGroupCallMySQL(t *testing.T) {
+func TestGroupCallPostgres(t *testing.T) {
 	c := &ApiFullCore{MD: &metadata.RpcMetadata{UserId: 4}}
 	up, err := c.PhoneCreateGroupCall(nil)
 	if err != nil {
@@ -97,7 +145,8 @@ func TestGroupCallChannelMembershipAndAccessHash(t *testing.T) {
 		ChannelId:     channelID,
 		AccessHash:    channelID,
 	}
-	ownerCore := &ApiFullCore{MD: &metadata.RpcMetadata{UserId: owner}}
+	mediaConfig := groupCallMediaFixture(t)
+	ownerCore := &ApiFullCore{MD: &metadata.RpcMetadata{UserId: owner}, svcCtx: &svc.ServiceContext{Config: mediaConfig}}
 	created, err := ownerCore.PhoneCreateGroupCall(&mtproto.TLPhoneCreateGroupCall{Peer: peer})
 	if err != nil || created == nil || len(created.GetUpdates()) == 0 {
 		t.Fatalf("create group call: result=%+v err=%v", created, err)
@@ -111,11 +160,16 @@ func TestGroupCallChannelMembershipAndAccessHash(t *testing.T) {
 		t.Fatalf("stored group call = %+v, ok=%v, err=%v", stored, ok, err)
 	}
 	input := &mtproto.InputGroupCall{Id: call.GetId(), AccessHash: call.GetAccessHash()}
-	memberCore := &ApiFullCore{MD: &metadata.RpcMetadata{UserId: member}}
+	memberCore := &ApiFullCore{MD: &metadata.RpcMetadata{UserId: member}, svcCtx: &svc.ServiceContext{Config: mediaConfig}}
 	if _, err = memberCore.PhoneGetGroupCall(&mtproto.TLPhoneGetGroupCall{Call: input, Limit: 10}); err != nil {
 		t.Fatalf("member get group call: %v", err)
 	}
-	if _, err = memberCore.PhoneJoinGroupCall(&mtproto.TLPhoneJoinGroupCall{Call: input, Muted: true}); err != nil {
+	if _, err = ownerCore.PhoneJoinGroupCall(&mtproto.TLPhoneJoinGroupCall{Call: input,
+		JoinAs: mtproto.MakeTLInputPeerSelf(nil).To_InputPeer(), Params: &mtproto.DataJSON{Data: `{}`}}); err != nil {
+		t.Fatalf("owner join group call: %v", err)
+	}
+	if _, err = memberCore.PhoneJoinGroupCall(&mtproto.TLPhoneJoinGroupCall{Call: input, Muted: true,
+		JoinAs: mtproto.MakeTLInputPeerSelf(nil).To_InputPeer(), Params: &mtproto.DataJSON{Data: `{}`}}); err != nil {
 		t.Fatalf("member join group call: %v", err)
 	}
 	participants, err := ownerCore.PhoneGetGroupParticipants(&mtproto.TLPhoneGetGroupParticipants{Call: input, Limit: 10})
@@ -124,7 +178,7 @@ func TestGroupCallChannelMembershipAndAccessHash(t *testing.T) {
 	}
 	checked, err := memberCore.PhoneCheckGroupCall(&mtproto.TLPhoneCheckGroupCall{
 		Call:    input,
-		Sources: []int32{int32(owner), int32(member)},
+		Sources: []int32{int32(owner%1_000_000) + 1, int32(member%1_000_000) + 1},
 	})
 	if err != nil || len(checked.GetDatas()) != 2 {
 		t.Fatalf("check group call: result=%+v err=%v", checked, err)
@@ -158,10 +212,11 @@ func TestGroupCallMutationsPersistAndAuthorize(t *testing.T) {
 		outsider: {Id: outsider, AccessHash: outsider + 100},
 		deleted:  {Id: deleted, AccessHash: deleted + 100, Deleted: true},
 	}}
+	mediaConfig := groupCallMediaFixture(t)
 	coreFor := func(uid int64) *ApiFullCore {
 		return &ApiFullCore{
 			ctx:    context.Background(),
-			svcCtx: &svc.ServiceContext{Dao: &apifullDao.Dao{UserClient: userClient}},
+			svcCtx: &svc.ServiceContext{Config: mediaConfig, Dao: &apifullDao.Dao{UserClient: userClient}},
 			MD:     &metadata.RpcMetadata{UserId: uid},
 		}
 	}
@@ -228,6 +283,7 @@ func TestGroupCallMutationsPersistAndAuthorize(t *testing.T) {
 	}
 	if _, err = inviteeCore.PhoneJoinGroupCall(&mtproto.TLPhoneJoinGroupCall{
 		Call:         input,
+		JoinAs:       mtproto.MakeTLInputPeerSelf(nil).To_InputPeer(),
 		Muted:        true,
 		VideoStopped: true,
 		Params:       &mtproto.DataJSON{Data: "{\"audio_source\":42}"},
@@ -235,7 +291,7 @@ func TestGroupCallMutationsPersistAndAuthorize(t *testing.T) {
 		t.Fatalf("invited user join group call: %v", err)
 	}
 	participantState, participantOK, err := domain.LoadGroupCallParticipant(call.GetId(), invitee)
-	if err != nil || !participantOK || !participantState.VideoStopped || participantState.JoinParams != "{\"audio_source\":42}" {
+	if err != nil || !participantOK || !participantState.VideoStopped || participantState.JoinParams != "{\"audio_source\":42}" || participantState.MediaSource != int32(invitee%1_000_000)+1 {
 		t.Fatalf("joined participant state = %+v, ok=%v, err=%v", participantState, participantOK, err)
 	}
 	participants, err := ownerCore.PhoneGetGroupParticipants(&mtproto.TLPhoneGetGroupParticipants{Call: input, Limit: 10})
@@ -270,7 +326,8 @@ func TestGroupCallMutationsPersistAndAuthorize(t *testing.T) {
 	if _, err = ownerCore.PhoneGetGroupCall(&mtproto.TLPhoneGetGroupCall{Call: input}); !errors.Is(err, mtproto.ErrGroupCallInvalid) {
 		t.Fatalf("get after discard: %v", err)
 	}
-	if _, err = inviteeCore.PhoneJoinGroupCall(&mtproto.TLPhoneJoinGroupCall{Call: input}); !errors.Is(err, mtproto.ErrGroupCallInvalid) {
+	if _, err = inviteeCore.PhoneJoinGroupCall(&mtproto.TLPhoneJoinGroupCall{Call: input,
+		JoinAs: mtproto.MakeTLInputPeerSelf(nil).To_InputPeer(), Params: &mtproto.DataJSON{Data: `{}`}}); !errors.Is(err, mtproto.ErrGroupCallInvalid) {
 		t.Fatalf("join after discard: %v", err)
 	}
 	if _, ok, err := domain.LoadGroupCallParticipant(call.GetId(), invitee); err != nil || ok {
@@ -379,13 +436,32 @@ func TestPhoneSaveDefaultGroupCallJoinAsReadbackIsolation(t *testing.T) {
 }
 
 func TestGroupCallMediaAndStarsFailClosedWithoutProviders(t *testing.T) {
-	c := &ApiFullCore{MD: &metadata.RpcMetadata{UserId: 1}}
+	uid := time.Now().UnixNano()
+	channelID := uid + 1
+	if err := domain.SaveChannel(domain.Channel{ID: channelID, AccessHash: channelID, Creator: uid, Megagroup: true}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = domain.DeleteChannel(uid, channelID) })
+	c := &ApiFullCore{MD: &metadata.RpcMetadata{UserId: uid}}
+	peer := mtproto.MakeTLInputPeerChannel(&mtproto.InputPeer{ChannelId: channelID, AccessHash: channelID}).To_InputPeer()
+	created, err := c.PhoneCreateGroupCall(&mtproto.TLPhoneCreateGroupCall{Peer: peer, RtmpStream: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	call := created.GetUpdates()[0].GetCall_GROUPCALL()
+	input := &mtproto.InputGroupCall{Id: call.GetId(), AccessHash: call.GetAccessHash()}
 	checks := []struct {
 		name string
 		call func() error
 	}{
-		{"stream channels", func() error { _, err := c.PhoneGetGroupCallStreamChannels(nil); return err }},
-		{"rtmp URL", func() error { _, err := c.PhoneGetGroupCallStreamRtmpUrl(nil); return err }},
+		{"stream channels", func() error {
+			_, err := c.PhoneGetGroupCallStreamChannels(&mtproto.TLPhoneGetGroupCallStreamChannels{Call: input})
+			return err
+		}},
+		{"rtmp URL", func() error {
+			_, err := c.PhoneGetGroupCallStreamRtmpUrl(&mtproto.TLPhoneGetGroupCallStreamRtmpUrl{Peer: peer, Revoke: mtproto.BoolFalse})
+			return err
+		}},
 		{"stars", func() error { _, err := c.PhoneGetGroupCallStars(nil); return err }},
 	}
 	for _, check := range checks {
@@ -394,6 +470,12 @@ func TestGroupCallMediaAndStarsFailClosedWithoutProviders(t *testing.T) {
 				t.Fatalf("error = %v, want METHOD_NOT_IMPL", err)
 			}
 		})
+	}
+	if _, err = c.PhoneGetGroupCallStreamChannels(nil); !errors.Is(err, mtproto.ErrGroupCallInvalid) {
+		t.Fatalf("nil stream request: %v, want GROUPCALL_INVALID", err)
+	}
+	if _, err = c.PhoneGetGroupCallStreamRtmpUrl(nil); !errors.Is(err, mtproto.ErrPeerIdInvalid) {
+		t.Fatalf("nil RTMP request: %v, want PEER_ID_INVALID", err)
 	}
 }
 
@@ -435,7 +517,7 @@ func TestGroupCallRecordingStatePersistsWithoutRecorder(t *testing.T) {
 
 func TestGroupCallControlMutationsPersistAndAuthorize(t *testing.T) {
 	uid := int64(1_800_000_000 + time.Now().UnixNano()%100_000_000)
-	c := &ApiFullCore{MD: &metadata.RpcMetadata{UserId: uid}}
+	c := &ApiFullCore{MD: &metadata.RpcMetadata{UserId: uid}, svcCtx: &svc.ServiceContext{Config: groupCallMediaFixture(t)}}
 	scheduleDate := int32(time.Now().Add(time.Hour).Unix())
 	created, err := c.PhoneCreateGroupCall(&mtproto.TLPhoneCreateGroupCall{ScheduleDate: wrapperspb.Int32(scheduleDate)})
 	if err != nil || created == nil || len(created.GetUpdates()) == 0 {
@@ -461,7 +543,8 @@ func TestGroupCallControlMutationsPersistAndAuthorize(t *testing.T) {
 		t.Fatalf("empty settings update: %v", err)
 	}
 
-	if _, err = c.PhoneJoinGroupCall(&mtproto.TLPhoneJoinGroupCall{Call: input}); err != nil {
+	if _, err = c.PhoneJoinGroupCall(&mtproto.TLPhoneJoinGroupCall{Call: input,
+		JoinAs: mtproto.MakeTLInputPeerSelf(nil).To_InputPeer(), Params: &mtproto.DataJSON{Data: `{}`}}); err != nil {
 		t.Fatalf("join group call before participant edit: %v", err)
 	}
 	volume := wrapperspb.Int32(75)

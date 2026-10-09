@@ -29,10 +29,5 @@ func New(c Config, plugin plugin.MsgPlugin) *service.Service {
 // for the PostgreSQL pool owned by its service context.
 func NewWithClose(c Config, plugin plugin.MsgPlugin) (*service.Service, func()) {
 	ctx := svc.NewServiceContext(c, plugin)
-	closeContext := func() {
-		if ctx.Dao != nil && ctx.Dao.Postgres != nil {
-			ctx.Dao.Postgres.Close()
-		}
-	}
-	return service.New(ctx), closeContext
+	return service.New(ctx), ctx.Close
 }

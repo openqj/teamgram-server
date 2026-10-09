@@ -81,6 +81,13 @@ func (d *ChatInvitesDAO) SelectByLink(ctx context.Context, link string) (*dataob
 	return scanInvite(d.db.QueryRow(ctx, `SELECT `+inviteColumns+` FROM chat_invites WHERE link = $1`, link))
 }
 
+// SelectByLinkOn reads and locks an invite row inside an existing transaction.
+// Invite usage limits are enforced by callers while this row lock is held so
+// concurrent imports cannot both observe the same remaining slot.
+func (d *ChatInvitesDAO) SelectByLinkOn(ctx context.Context, tx DB, link string) (*dataobject.ChatInvitesDO, error) {
+	return scanInvite(tx.QueryRow(ctx, `SELECT `+inviteColumns+` FROM chat_invites WHERE link = $1 FOR UPDATE`, link))
+}
+
 func (d *ChatInvitesDAO) SelectAll(ctx context.Context) ([]dataobject.ChatInvitesDO, error) {
 	return d.selectList(ctx, `SELECT `+inviteColumns+` FROM chat_invites ORDER BY id`)
 }

@@ -26,12 +26,15 @@ import (
 // UserGetMutableUsersV2
 // user.getMutableUsersV2 flags:# id:Vector<long> privacy:flags.0?true has_to:flags.2?true to:flags.2?Vector<long> = MutableUsers;
 func (c *UserCore) UserGetMutableUsersV2(in *user.TLUserGetMutableUsersV2) (*mtproto.MutableUsers, error) {
-	userList := c.svcCtx.Dao.GetMutableUsersV2(
+	userList, err := c.svcCtx.Dao.GetMutableUsersV2(
 		c.ctx,
 		in.Id,
 		in.Privacy,
 		in.HasTo,
 		in.To)
+	if err != nil {
+		return nil, err
+	}
 	if userList == nil {
 		userList = []*mtproto.ImmutableUser{}
 	}

@@ -1,5 +1,6 @@
 Name: bff.passkey
 ListenOn: 0.0.0.0:27960
+PostgresDSN: ${TEAMGRAM_POSTGRES_DSN}
 Provider:
   RelyingPartyId: ""
   RelyingPartyDisplayName: ""

@@ -16,9 +16,9 @@ func NewAuthKeyInfosDAO(db DB) *AuthKeyInfosDAO { return &AuthKeyInfosDAO{db: db
 func (dao *AuthKeyInfosDAO) Insert(ctx context.Context, do *dataobject.AuthKeyInfosDO) (int64, int64, error) {
 	return insertResult(ctx, dao.db, `
 		INSERT INTO auth_key_infos
-		(auth_key_id, auth_key_type, perm_auth_key_id, temp_auth_key_id, media_temp_auth_key_id)
-		VALUES ($1, $2, $3, $4, $5) RETURNING id`,
-		do.AuthKeyId, do.AuthKeyType, do.PermAuthKeyId, do.TempAuthKeyId, do.MediaTempAuthKeyId)
+		(auth_key_id, auth_key_type, perm_auth_key_id, temp_auth_key_id, media_temp_auth_key_id, expires_at)
+		VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
+		do.AuthKeyId, do.AuthKeyType, do.PermAuthKeyId, do.TempAuthKeyId, do.MediaTempAuthKeyId, do.ExpiresAt)
 }
 
 func (dao *AuthKeyInfosDAO) InsertTx(ctx context.Context, tx pgx.Tx, do *dataobject.AuthKeyInfosDO) (int64, int64, error) {
@@ -27,7 +27,7 @@ func (dao *AuthKeyInfosDAO) InsertTx(ctx context.Context, tx pgx.Tx, do *dataobj
 
 func (dao *AuthKeyInfosDAO) SelectByAuthKeyId(ctx context.Context, authKeyID int64) (*dataobject.AuthKeyInfosDO, error) {
 	return scanAuthKeyInfos(dao.db.QueryRow(ctx, `
-		SELECT auth_key_id, auth_key_type, perm_auth_key_id, temp_auth_key_id, media_temp_auth_key_id
+		SELECT auth_key_id, auth_key_type, perm_auth_key_id, temp_auth_key_id, media_temp_auth_key_id, expires_at
 		FROM auth_key_infos WHERE auth_key_id = $1 AND deleted = FALSE LIMIT 1`, authKeyID))
 }
 

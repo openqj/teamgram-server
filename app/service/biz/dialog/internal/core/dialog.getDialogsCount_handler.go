@@ -20,8 +20,11 @@ func (c *DialogCore) DialogGetDialogsCount(in *dialog.TLDialogGetDialogsCount) (
 	if in == nil || in.GetUserId() <= 0 || in.GetFolderId() < 0 {
 		return nil, mtproto.ErrInputRequestInvalid
 	}
+	if c == nil || c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.Postgres == nil || c.svcCtx.Dao.Postgres.Store == nil || c.svcCtx.Dao.Postgres.Store.Dialogs == nil {
+		return nil, mtproto.ErrMethodNotImpl
+	}
 
-	rows, err := c.svcCtx.Dao.DialogsDAO.SelectDialogs(c.ctx, in.GetUserId(), in.GetFolderId())
+	rows, err := c.svcCtx.Dao.Postgres.Store.Dialogs.SelectDialogs(c.ctx, in.GetUserId(), in.GetFolderId())
 	if err != nil {
 		c.Logger.Errorf("dialog.getDialogsCount - select dialogs error: %v", err)
 		return nil, err

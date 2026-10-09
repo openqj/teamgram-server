@@ -17,7 +17,10 @@ import (
 // UserBlockedByUser
 // user.blockedByUser userId:long peer_user_id:long = Bool;
 func (c *UserCore) UserBlockedByUser(in *user.TLUserBlockedByUser) (*mtproto.Bool, error) {
-	blocked := c.svcCtx.Dao.CheckBlocked(c.ctx, in.GetUserId(), in.GetPeerUserId())
+	blocked, err := c.svcCtx.Dao.CheckBlocked(c.ctx, in.GetUserId(), in.GetPeerUserId())
+	if err != nil {
+		return nil, err
+	}
 
 	return mtproto.ToBool(blocked), nil
 }

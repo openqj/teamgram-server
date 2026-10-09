@@ -60,7 +60,8 @@ type sessionHttpData struct {
 }
 
 type syncRpcResultDataCtx struct {
-	ctx context.Context
+	ctx  context.Context
+	done chan error
 	syncRpcResultData
 }
 
@@ -73,7 +74,8 @@ type syncRpcResultData struct {
 }
 
 type syncSessionDataCtx struct {
-	ctx context.Context
+	ctx  context.Context
+	done chan error
 	syncSessionData
 }
 
@@ -85,7 +87,8 @@ type syncSessionData struct {
 }
 
 type syncDataCtx struct {
-	ctx context.Context
+	ctx  context.Context
+	done chan error
 	syncData
 }
 

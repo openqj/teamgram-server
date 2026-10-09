@@ -35,7 +35,11 @@ func (c *UserCore) UserDeleteImportersByPhone(in *user.TLUserDeleteImportersByPh
 	if c.MD == nil || c.MD.GetUserId() <= 0 {
 		return nil, mtproto.ErrAuthKeyUnregistered
 	}
-	if _, err := c.svcCtx.Dao.UnregisteredContactsDAO.DeleteImporterByUserAndPhone(c.ctx, in.GetPhone(), c.MD.GetUserId()); err != nil {
+	if err := c.requirePostgres(); err != nil {
+		return nil, err
+	}
+	_, err := c.svcCtx.Dao.Postgres.Store.Unregistered.DeleteImporterByUserAndPhone(c.ctx, in.GetPhone(), c.MD.GetUserId())
+	if err != nil {
 		c.Logger.Errorf("user.deleteImportersByPhone - error: %v", err)
 		return nil, err
 	}

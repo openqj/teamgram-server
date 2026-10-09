@@ -26,7 +26,6 @@ import (
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/config"
 	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/domain"
-	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/persist"
 	msg_client "github.com/teamgram/teamgram-server/app/messenger/msg/msg/client"
 	msgpb "github.com/teamgram/teamgram-server/app/messenger/msg/msg/msg"
 	sync_client "github.com/teamgram/teamgram-server/app/messenger/sync/client"
@@ -37,7 +36,6 @@ import (
 	user_client "github.com/teamgram/teamgram-server/app/service/biz/user/client"
 	dfs_client "github.com/teamgram/teamgram-server/app/service/dfs/client"
 	"github.com/zeromicro/go-zero/core/logx"
-	"github.com/zeromicro/go-zero/core/stores/kv"
 )
 
 type ScheduledMessageSender interface {
@@ -85,15 +83,14 @@ func New(c config.Config) *Dao {
 	}
 	domain.SetRelayCredentials(c.TurnUsername, c.TurnPassword)
 	domain.SetRelaySharedSecret(c.TurnSharedSecret, c.TurnCredentialTTLSeconds)
-	// The configured PostgreSQL DSN is the authoritative domain store, while
-	// Redis backs the small process-shared KV records used by drafts, GIFs and
-	// other APIFull state.
-	if len(c.KV) > 0 {
-		persist.Use(kv.NewStore(c.KV))
-	}
+	// The configured PostgreSQL DSN is the authoritative domain store,
+	// including the small process-shared KV records used by drafts, GIFs and
+	// other APIFull state. Do not replace persist.Default with Redis here: that
+	// would silently bypass the deployment-owned PostgreSQL schema after the
+	// startup gate has succeeded.
 	if c.PostgresDSN == "" {
 		panic("apifull: PostgresDSN is required")
-	} else if err := domain.OpenPostgres(c.PostgresDSN); err != nil {
+	} else if err := domain.OpenPostgresReadOnly(c.PostgresDSN); err != nil {
 		panic(err)
 	} else {
 		logx.Info("apifull PostgreSQL domain store open")

@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 
 	"github.com/teamgram/proto/mtproto"
@@ -70,7 +71,7 @@ type fullUserErrorUserClient struct {
 func (c *fullUserErrorUserClient) UserGetMutableUsersV2(context.Context, *userpb.TLUserGetMutableUsersV2) (*mtproto.MutableUsers, error) {
 	return &mtproto.MutableUsers{Users: []*mtproto.ImmutableUser{
 		{User: &mtproto.UserData{Id: 1}},
-		{User: &mtproto.UserData{Id: 2}},
+		{User: &mtproto.UserData{Id: 2, AccessHash: 200}},
 	}}, nil
 }
 
@@ -86,8 +87,12 @@ func (*fullUserErrorUserClient) UserBlockedByUser(context.Context, *userpb.TLUse
 	return mtproto.BoolFalse, nil
 }
 
-func (*fullUserErrorUserClient) UserGetPrivacy(context.Context, *userpb.TLUserGetPrivacy) (*userpb.Vector_PrivacyRule, error) {
-	return &userpb.Vector_PrivacyRule{}, nil
+func (*fullUserErrorUserClient) UserCheckPrivacy(context.Context, *userpb.TLUserCheckPrivacy) (*mtproto.Bool, error) {
+	return mtproto.BoolTrue, nil
+}
+
+func (*fullUserErrorUserClient) UserGetGlobalPrivacySettings(context.Context, *userpb.TLUserGetGlobalPrivacySettings) (*mtproto.GlobalPrivacySettings, error) {
+	return &mtproto.GlobalPrivacySettings{HideReadMarks: true}, nil
 }
 
 type fullUserErrorChatClient struct {
@@ -129,90 +134,142 @@ func TestUsersGetFullUserPropagatesPeerSettingsError(t *testing.T) {
 	}
 
 	_, err := core.UsersGetFullUser(&mtproto.TLUsersGetFullUser{
-		Id: &mtproto.InputUser{PredicateName: mtproto.Predicate_inputUser, UserId: 2},
+		Id: &mtproto.InputUser{PredicateName: mtproto.Predicate_inputUser, UserId: 2, AccessHash: 200},
 	})
 	if err != wantErr {
 		t.Fatalf("UsersGetFullUser() error = %v, want %v", err, wantErr)
 	}
 }
 
-func TestCheckFullUserPrivacyMatchesGroupMembership(t *testing.T) {
+type fullUserPrivacyClient struct {
+	*fullUserErrorUserClient
+	allowed *mtproto.Bool
+	err     error
+	request *userpb.TLUserCheckPrivacy
+}
+
+func (c *fullUserPrivacyClient) UserCheckPrivacy(_ context.Context, in *userpb.TLUserCheckPrivacy) (*mtproto.Bool, error) {
+	c.request = in
+	return c.allowed, c.err
+}
+
+func TestCheckFullUserPrivacyUsesAuthoritativeUserService(t *testing.T) {
+	wantErr := errors.New("postgres membership unavailable")
+	for _, tc := range []struct {
+		name         string
+		allowed      *mtproto.Bool
+		err, wantErr error
+		want         bool
+	}{
+		{name: "allowed", allowed: mtproto.BoolTrue, want: true},
+		{name: "denied", allowed: mtproto.BoolFalse},
+		{name: "query failure", err: wantErr, wantErr: wantErr},
+		{name: "nil response", wantErr: mtproto.ErrInternalServerError},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client := &fullUserPrivacyClient{allowed: tc.allowed, err: tc.err}
+			core := &UsersCore{ctx: context.Background(), MD: &metadata.RpcMetadata{UserId: 2}, svcCtx: &svc.ServiceContext{Dao: &dao.Dao{UserClient: client}}}
+			got, err := core.checkFullUserPrivacy(1, mtproto.BIRTHDAY)
+			if got != tc.want || !errors.Is(err, tc.wantErr) {
+				t.Fatalf("privacy = (%v, %v), want (%v, %v)", got, err, tc.want, tc.wantErr)
+			}
+			if in := client.request; in.GetUserId() != 1 || in.GetPeerId() != 2 || in.GetKeyType() != mtproto.BIRTHDAY {
+				t.Fatalf("privacy request = %v", in)
+			}
+		})
+	}
+}
+
+type fullUserProfilePrivacyClient struct {
+	*fullUserErrorUserClient
+	allowed      map[int32]bool
+	failKey      int32
+	privacyErr   error
+	nilPrivacy   bool
+	mu           sync.Mutex
+	requests     map[int32]*userpb.TLUserCheckPrivacy
+	usersRequest *userpb.TLUserGetMutableUsersV2
+}
+
+func (c *fullUserProfilePrivacyClient) UserGetMutableUsersV2(_ context.Context, in *userpb.TLUserGetMutableUsersV2) (*mtproto.MutableUsers, error) {
+	c.usersRequest = in
+	return &mtproto.MutableUsers{Users: []*mtproto.ImmutableUser{
+		{User: &mtproto.UserData{Id: 1}},
+		{User: &mtproto.UserData{Id: 2, AccessHash: 200, About: mtproto.MakeFlagsString("Private bio"),
+			ProfilePhoto: &mtproto.Photo{Id: 20}, SavedMusic: &mtproto.Document{Id: 30}, Birthday: "0000-01-01"}},
+	}}, nil
+}
+
+func (*fullUserProfilePrivacyClient) UserGetPeerSettings(context.Context, *userpb.TLUserGetPeerSettings) (*mtproto.PeerSettings, error) {
+	return &mtproto.PeerSettings{}, nil
+}
+
+func (c *fullUserProfilePrivacyClient) UserCheckPrivacy(_ context.Context, in *userpb.TLUserCheckPrivacy) (*mtproto.Bool, error) {
+	c.mu.Lock()
+	c.requests[in.GetKeyType()] = in
+	c.mu.Unlock()
+	if in.GetKeyType() == c.failKey {
+		if c.nilPrivacy {
+			return nil, nil
+		}
+		return nil, c.privacyErr
+	}
+	return mtproto.ToBool(c.allowed[in.GetKeyType()]), nil
+}
+
+func newFullUserProfilePrivacyCore(client *fullUserProfilePrivacyClient) *UsersCore {
 	ctx := context.Background()
-	core := &UsersCore{
-		ctx: ctx,
-		svcCtx: &svc.ServiceContext{Dao: &dao.Dao{
-			ChatClient: &fullUserErrorChatClient{result: &chatpb.Vector_UserChatIdList{Datas: []*chatpb.UserChatIdList{{
-				UserId:     2,
-				ChatIdList: []int64{42},
-			}}}},
-		}},
-	}
-	owner := &mtproto.ImmutableUser{User: &mtproto.UserData{Id: 1}}
-	rules := []*mtproto.PrivacyRule{
-		{PredicateName: mtproto.Predicate_privacyValueAllowContacts},
-		{PredicateName: mtproto.Predicate_privacyValueAllowChatParticipants, Chats: []int64{42}},
-	}
+	client.fullUserErrorUserClient = &fullUserErrorUserClient{}
+	client.requests = make(map[int32]*userpb.TLUserCheckPrivacy)
+	return &UsersCore{ctx: ctx, Logger: logx.WithContext(ctx), MD: &metadata.RpcMetadata{UserId: 1}, svcCtx: &svc.ServiceContext{Dao: &dao.Dao{
+		UserClient: client, ChatClient: &fullUserErrorChatClient{}, DialogClient: &fullUserErrorDialogClient{},
+	}}}
+}
 
-	allowed, err := core.checkFullUserPrivacy(owner, 1, 2, rules)
-	if err != nil {
-		t.Fatalf("checkFullUserPrivacy() error = %v", err)
-	}
-	if !allowed {
-		t.Fatal("expected matching group member to be allowed")
+func TestUsersGetFullUserHonorsEachProfilePrivacyKey(t *testing.T) {
+	keys := []int32{mtproto.VOICE_MESSAGES, mtproto.ABOUT, mtproto.PROFILE_PHOTO, mtproto.SAVED_MUSIC, mtproto.BIRTHDAY}
+	for _, key := range keys {
+		client := &fullUserProfilePrivacyClient{allowed: map[int32]bool{key: true}}
+		got, err := newFullUserProfilePrivacyCore(client).UsersGetFullUser(&mtproto.TLUsersGetFullUser{Id: mtproto.MakeTLInputUser(&mtproto.InputUser{UserId: 2, AccessHash: 200}).To_InputUser()})
+		if err != nil || got.GetFullUser() == nil || !got.GetFullUser().GetReadDatesPrivate() {
+			t.Fatalf("full user for key %d = (%v, %v)", key, got, err)
+		}
+		full := got.GetFullUser()
+		for fieldKey, visible := range map[int32]bool{
+			mtproto.VOICE_MESSAGES: !full.GetVoiceMessagesForbidden(), mtproto.ABOUT: full.GetAbout() != nil,
+			mtproto.PROFILE_PHOTO: full.GetProfilePhoto() != nil, mtproto.SAVED_MUSIC: full.GetSavedMusic() != nil, mtproto.BIRTHDAY: full.GetBirthday() != nil,
+		} {
+			if visible != (fieldKey == key) {
+				t.Fatalf("full user key %d field %d visible=%v", key, fieldKey, visible)
+			}
+		}
+		client.mu.Lock()
+		for _, fieldKey := range keys {
+			in := client.requests[fieldKey]
+			if in == nil || in.GetUserId() != 2 || in.GetPeerId() != 1 || in.GetKeyType() != fieldKey {
+				t.Errorf("full user key %d request = %v", fieldKey, in)
+			}
+		}
+		client.mu.Unlock()
+		if in := client.usersRequest; !in.GetPrivacy() || !in.GetHasTo() || len(in.GetTo()) != 2 {
+			t.Fatalf("full user snapshot request = %v", in)
+		}
 	}
 }
 
-func TestCheckFullUserPrivacyDisallowsMatchingGroupMember(t *testing.T) {
-	ctx := context.Background()
-	core := &UsersCore{
-		ctx: ctx,
-		svcCtx: &svc.ServiceContext{Dao: &dao.Dao{
-			ChatClient: &fullUserErrorChatClient{result: &chatpb.Vector_UserChatIdList{Datas: []*chatpb.UserChatIdList{{
-				UserId:     2,
-				ChatIdList: []int64{42},
-			}}}},
-		}},
-	}
-	owner := &mtproto.ImmutableUser{User: &mtproto.UserData{Id: 1}}
-	rules := []*mtproto.PrivacyRule{
-		{PredicateName: mtproto.Predicate_privacyValueAllowAll},
-		{PredicateName: mtproto.Predicate_privacyValueDisallowChatParticipants, Chats: []int64{42}},
-	}
-
-	allowed, err := core.checkFullUserPrivacy(owner, 1, 2, rules)
-	if err != nil {
-		t.Fatalf("checkFullUserPrivacy() error = %v", err)
-	}
-	if allowed {
-		t.Fatal("expected matching group member to be disallowed")
-	}
-}
-
-func TestCheckFullUserPrivacyFailsClosedForChannelRules(t *testing.T) {
-	core := &UsersCore{svcCtx: &svc.ServiceContext{Dao: &dao.Dao{ChatClient: &fullUserErrorChatClient{}}}}
-	owner := &mtproto.ImmutableUser{User: &mtproto.UserData{Id: 1}}
-	rules := []*mtproto.PrivacyRule{
-		{PredicateName: mtproto.Predicate_privacyValueAllowContacts},
-		{PredicateName: mtproto.Predicate_privacyValueAllowChatParticipants, Chats: []int64{mtproto.MinNebulaChatChannelID}},
-	}
-
-	allowed, err := core.checkFullUserPrivacy(owner, 1, 2, rules)
-	if allowed || err != mtproto.ErrMethodNotImpl {
-		t.Fatalf("checkFullUserPrivacy() = (%v, %v), want (false, ErrMethodNotImpl)", allowed, err)
-	}
-}
-
-func TestCheckFullUserPrivacyPropagatesMembershipQueryError(t *testing.T) {
-	wantErr := errors.New("membership query failed")
-	core := &UsersCore{svcCtx: &svc.ServiceContext{Dao: &dao.Dao{ChatClient: &fullUserErrorChatClient{err: wantErr}}}}
-	owner := &mtproto.ImmutableUser{User: &mtproto.UserData{Id: 1}}
-	rules := []*mtproto.PrivacyRule{
-		{PredicateName: mtproto.Predicate_privacyValueAllowContacts},
-		{PredicateName: mtproto.Predicate_privacyValueAllowChatParticipants, Chats: []int64{42}},
-	}
-
-	allowed, err := core.checkFullUserPrivacy(owner, 1, 2, rules)
-	if allowed || err != wantErr {
-		t.Fatalf("checkFullUserPrivacy() = (%v, %v), want (false, %v)", allowed, err, wantErr)
+func TestUsersGetFullUserPropagatesEveryPrivacyQueryFailure(t *testing.T) {
+	wantErr := errors.New("postgres privacy query failed")
+	for _, key := range []int32{mtproto.VOICE_MESSAGES, mtproto.ABOUT, mtproto.PROFILE_PHOTO, mtproto.SAVED_MUSIC, mtproto.BIRTHDAY} {
+		for _, nilResult := range []bool{false, true} {
+			client := &fullUserProfilePrivacyClient{failKey: key, nilPrivacy: nilResult, privacyErr: wantErr}
+			got, err := newFullUserProfilePrivacyCore(client).UsersGetFullUser(&mtproto.TLUsersGetFullUser{Id: mtproto.MakeTLInputUser(&mtproto.InputUser{UserId: 2, AccessHash: 200}).To_InputUser()})
+			want := wantErr
+			if nilResult {
+				want = mtproto.ErrInternalServerError
+			}
+			if got != nil || !errors.Is(err, want) {
+				t.Fatalf("full user key %d nil=%v = (%v, %v), want error %v", key, nilResult, got, err, want)
+			}
+		}
 	}
 }

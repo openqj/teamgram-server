@@ -20,7 +20,8 @@ func (dao *AuthsDAO) InsertOrUpdateLayer(ctx context.Context, do *dataobject.Aut
 		INSERT INTO auths (auth_key_id, layer, client_ip, date_active, params)
 		VALUES ($1, $2, NULLIF($3, '')::inet, $4, COALESCE($5::jsonb, 'null'::jsonb))
 		ON CONFLICT (auth_key_id) DO UPDATE SET
-		layer = EXCLUDED.layer, client_ip = EXCLUDED.client_ip, date_active = EXCLUDED.date_active
+		layer = EXCLUDED.layer, client_ip = EXCLUDED.client_ip, date_active = EXCLUDED.date_active,
+		deleted = FALSE
 		RETURNING id`, do.AuthKeyId, do.Layer, do.ClientIp, do.DateActive, params)
 }
 

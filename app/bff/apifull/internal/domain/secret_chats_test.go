@@ -2,7 +2,6 @@ package domain
 
 import (
 	"errors"
-	"os"
 	"sort"
 	"sync"
 	"testing"
@@ -10,13 +9,7 @@ import (
 )
 
 func TestSecretChatAuthoritativeLifecycle(t *testing.T) {
-	dsn := os.Getenv("APIFULL_MYSQL_DSN")
-	if dsn == "" {
-		t.Skip("APIFULL_MYSQL_DSN is not configured; PostgreSQL runtime tests cover production storage")
-	}
-	if err := Open(dsn); err != nil {
-		t.Fatal(err)
-	}
+	requirePaymentLedgerDB(t)
 
 	seed := time.Now().UnixNano()
 	chatID := int32(seed & 0x3fffffff)
@@ -26,6 +19,15 @@ func TestSecretChatAuthoritativeLifecycle(t *testing.T) {
 	adminID := seed
 	participantID := seed + 1
 	accessHash := seed + 2
+	t.Cleanup(func() {
+		for _, table := range []string{"apifull_secret_chat_device_key", "apifull_secret_message"} {
+			if _, err := db.Exec(`DELETE FROM `+table+` WHERE chat_id=$1`, chatID); err != nil {
+				t.Errorf("clean %s fixture: %v", table, err)
+			}
+		}
+		_, _ = db.Exec(`DELETE FROM apifull_secret_user_state WHERE user_id IN ($1,$2)`, adminID, participantID)
+		_, _ = db.Exec(`DELETE FROM apifull_secret_chat WHERE id=$1`, chatID)
+	})
 	ga := []byte{2}
 	gb := []byte{3}
 
@@ -139,13 +141,7 @@ func TestSecretChatAuthoritativeLifecycle(t *testing.T) {
 }
 
 func TestSecretChatDeviceRetryDoesNotRollbackNewerKey(t *testing.T) {
-	dsn := os.Getenv("APIFULL_MYSQL_DSN")
-	if dsn == "" {
-		t.Skip("APIFULL_MYSQL_DSN is not configured; PostgreSQL runtime tests cover production storage")
-	}
-	if err := Open(dsn); err != nil {
-		t.Fatal(err)
-	}
+	requirePaymentLedgerDB(t)
 
 	seed := time.Now().UnixNano()
 	chatID := int32(seed & 0x3fffffff)
@@ -179,7 +175,7 @@ func TestSecretChatDeviceRetryDoesNotRollbackNewerKey(t *testing.T) {
 	}
 
 	var keyRows, zeroDates int
-	if err = db.QueryRow(`SELECT COUNT(*), COALESCE(SUM(created_at=0),0) FROM apifull_secret_chat_device_key WHERE chat_id=?`, chatID).Scan(&keyRows, &zeroDates); err != nil {
+	if err = db.QueryRow(`SELECT COUNT(*), COUNT(*) FILTER (WHERE created_at=0) FROM apifull_secret_chat_device_key WHERE chat_id=?`, chatID).Scan(&keyRows, &zeroDates); err != nil {
 		t.Fatal("device key rows:", err)
 	}
 	if keyRows != 2 || zeroDates != 0 {

@@ -22,7 +22,7 @@ Telemetry:
   Batcher: otlpgrpc
 
 Postgres:
-  DSN: postgres://teamgram:teamgram@postgres:5432/teamgram?sslmode=disable
+  DSN: ${TEAMGRAM_POSTGRES_DSN}
   MaxConns: 64
   MinConns: 8
   

@@ -306,83 +306,18 @@ func (c *MessagesCore) checkForwardPrivacy(ctx context.Context, selfUserId, chec
 	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.UserClient == nil {
 		return false, mtproto.ErrInternalServerError
 	}
-	rules, err := c.svcCtx.Dao.UserClient.UserGetPrivacy(ctx, &userpb.TLUserGetPrivacy{
+	allowed, err := c.svcCtx.Dao.UserClient.UserCheckPrivacy(ctx, &userpb.TLUserCheckPrivacy{
 		UserId:  selfUserId,
 		KeyType: mtproto.FORWARDS,
+		PeerId:  checkId,
 	})
 	if err != nil {
 		return false, err
 	}
-	if rules == nil {
+	if allowed == nil {
 		return false, mtproto.ErrInternalServerError
 	}
-
-	if len(rules.Datas) == 0 {
-		return true, nil
-	}
-	for _, rule := range rules.Datas {
-		if rule == nil {
-			return false, mtproto.ErrInternalServerError
-		}
-	}
-	var privacyErr error
-	allowed := mtproto.CheckPrivacyIsAllow(
-		selfUserId,
-		rules.Datas,
-		checkId,
-		func(id, checkId int64) bool {
-			contact, err := c.svcCtx.Dao.UserClient.UserCheckContact(ctx, &userpb.TLUserCheckContact{
-				UserId: id,
-				Id:     checkId,
-			})
-			if err != nil {
-				privacyErr = err
-				return false
-			}
-			if contact == nil {
-				privacyErr = mtproto.ErrInternalServerError
-				return false
-			}
-			return mtproto.FromBool(contact)
-		},
-		func(checkId int64, idList []int64) bool {
-			if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.ChatClient == nil || c.svcCtx.Dao.ChatClient.Client() == nil {
-				privacyErr = mtproto.ErrInternalServerError
-				return false
-			}
-			chatIdList, _ := mtproto.SplitChatAndChannelIdList(idList)
-			if len(chatIdList) == 0 {
-				return false
-			}
-			users, err := c.svcCtx.Dao.ChatClient.Client().ChatGetUsersChatIdList(ctx, &chatpb.TLChatGetUsersChatIdList{
-				Id: []int64{checkId},
-			})
-			if err != nil {
-				privacyErr = err
-				return false
-			}
-			if users == nil {
-				privacyErr = mtproto.ErrInternalServerError
-				return false
-			}
-			for _, item := range users.GetDatas() {
-				if item == nil || item.GetUserId() != checkId {
-					continue
-				}
-				for _, chatID := range item.GetChatIdList() {
-					for _, wantedID := range chatIdList {
-						if chatID == wantedID {
-							return true
-						}
-					}
-				}
-			}
-			return false
-		})
-	if privacyErr != nil {
-		return false, privacyErr
-	}
-	return allowed, nil
+	return mtproto.FromBool(allowed), nil
 }
 
 func (c *MessagesCore) makeForwardMessages(

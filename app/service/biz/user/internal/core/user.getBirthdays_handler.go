@@ -33,20 +33,37 @@ func (c *UserCore) UserGetBirthdays(in *user.TLUserGetBirthdays) (*user.Vector_C
 		return nil, mtproto.ErrUserIdInvalid
 	}
 
-	cacheUserData := c.svcCtx.Dao.GetCacheUserData(c.ctx, in.GetUserId())
-	if cacheUserData == nil {
-		return nil, mtproto.ErrUserIdInvalid
+	self, err := c.svcCtx.Dao.GetImmutableUser(c.ctx, in.GetUserId(), false)
+	if err != nil {
+		return nil, err
 	}
-	for _, contactID := range cacheUserData.GetContactIdList() {
+	ids, err := c.svcCtx.Dao.SelectUserContactIDs(c.ctx, self.Id())
+	if err != nil {
+		return nil, err
+	}
+	for _, contactID := range ids {
 		if contactID <= 0 {
 			continue
 		}
-		contact := c.svcCtx.Dao.GetCacheUserData(c.ctx, contactID)
-		if contact == nil || contact.GetUserData() == nil {
+		contact, err := c.svcCtx.Dao.GetImmutableUser(c.ctx, contactID, true, self.Id())
+		if err == mtproto.ErrUserIdInvalid {
 			continue
 		}
-		birthday := mtproto.FromBirthdayString(contact.GetUserData().GetBirthday())
+		if err != nil {
+			return nil, err
+		}
+		if contact == nil || contact.Deleted() {
+			continue
+		}
+		birthday := contact.Birthday()
 		if birthday == nil {
+			continue
+		}
+		allowed, err := c.svcCtx.Dao.CheckUserPrivacy(c.ctx, contactID, mtproto.BIRTHDAY, self.Id())
+		if err != nil {
+			return nil, err
+		}
+		if !allowed {
 			continue
 		}
 		rV.Datas = append(rV.Datas, mtproto.MakeTLContactBirthday(&mtproto.ContactBirthday{

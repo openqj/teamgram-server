@@ -10,57 +10,37 @@
 package core
 
 import (
-	"context"
 	"time"
 
-	"github.com/teamgram/marmota/pkg/stores/sqlx"
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/service/biz/dialog/dialog"
-	"github.com/teamgram/teamgram-server/app/service/biz/dialog/internal/dal/dataobject"
 )
 
 // DialogClearAllDrafts
 // dialog.clearAllDrafts user_id:long = Vector<PeerWithDraftMessage>;
 func (c *DialogCore) DialogClearAllDrafts(in *dialog.TLDialogClearAllDrafts) (*dialog.Vector_PeerWithDraftMessage, error) {
-	var (
-		err error
-
-		rValues = &dialog.Vector_PeerWithDraftMessage{
-			Datas: []*dialog.PeerWithDraftMessage{},
-		}
-		cacheKeys = []string{dialog.GetAllDraftIdListCacheKey(in.UserId)}
-	)
-
-	if _, err = c.svcCtx.Dao.DialogsDAO.SelectAllDraftsWithCB(
-		c.ctx,
-		in.UserId,
-		func(sz, i int, v *dataobject.DialogsDO) {
-			cacheKeys = append(cacheKeys, dialog.GetDialogCacheKeyByPeer(in.UserId, v.PeerType, v.PeerId))
-			rValues.Datas = append(rValues.Datas,
-				dialog.MakeTLUpdateDraftMessage(&dialog.PeerWithDraftMessage{
-					Peer: mtproto.MakePeer(v.PeerType, v.PeerId),
-					Draft: mtproto.MakeTLDraftMessageEmpty(&mtproto.DraftMessage{
-						Date_FLAGINT32: mtproto.MakeFlagsInt32(int32(time.Now().Unix())),
-					}).To_DraftMessage(),
-				}).To_PeerWithDraftMessage())
-		}); err != nil {
-		c.Logger.Errorf("dialog.getAllDrafts - error: %v", err)
+	if c == nil || c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.Postgres == nil ||
+		c.svcCtx.Dao.Postgres.Store == nil || c.svcCtx.Dao.Postgres.Store.Dialogs == nil {
+		return nil, mtproto.ErrMethodNotImpl
+	}
+	rows, err := c.svcCtx.Dao.Postgres.Store.Dialogs.SelectAllDrafts(c.ctx, in.UserId)
+	if err != nil {
 		return nil, err
 	}
-
-	if len(rValues.Datas) > 0 {
-		_, _, err = c.svcCtx.Dao.CachedConn.Exec(
-			c.ctx,
-			func(ctx context.Context, conn *sqlx.DB) (int64, int64, error) {
-				rowsAffected, err := c.svcCtx.Dao.DialogsDAO.ClearAllDrafts(ctx, in.UserId)
-				return 0, rowsAffected, err
-			},
-			cacheKeys...)
-		if err != nil {
-			c.Logger.Errorf("dialog.clearAllDrafts - error: %v", err)
+	result := &dialog.Vector_PeerWithDraftMessage{Datas: make([]*dialog.PeerWithDraftMessage, 0, len(rows))}
+	for i := range rows {
+		row := &rows[i]
+		result.Datas = append(result.Datas, dialog.MakeTLUpdateDraftMessage(&dialog.PeerWithDraftMessage{
+			Peer: mtproto.MakePeer(row.PeerType, row.PeerId),
+			Draft: mtproto.MakeTLDraftMessageEmpty(&mtproto.DraftMessage{
+				Date_FLAGINT32: mtproto.MakeFlagsInt32(int32(time.Now().Unix())),
+			}).To_DraftMessage(),
+		}).To_PeerWithDraftMessage())
+	}
+	if len(rows) > 0 {
+		if _, err = c.svcCtx.Dao.Postgres.Store.Dialogs.ClearAllDrafts(c.ctx, in.UserId); err != nil {
 			return nil, err
 		}
 	}
-
-	return rValues, nil
+	return result, nil
 }

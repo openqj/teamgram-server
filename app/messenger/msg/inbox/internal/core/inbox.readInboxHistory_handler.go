@@ -30,6 +30,21 @@ import (
 // InboxReadInboxHistory
 // inbox.readInboxHistory user_id:long auth_key_id:long peer_type:int peer_id:long unread_count:int read_inbox_max_id:int max_id:int = Void;
 func (c *InboxCore) InboxReadInboxHistory(in *inbox.TLInboxReadInboxHistory) (*mtproto.Void, error) {
+	if in == nil || in.UserId <= 0 || in.PeerId <= 0 || in.MaxId < 0 ||
+		(in.PeerType != mtproto.PEER_SELF && in.PeerType != mtproto.PEER_USER && in.PeerType != mtproto.PEER_CHAT) {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if c.svcCtx.Dao.Postgres != nil {
+		peerType, peerID := in.PeerType, in.PeerId
+		if peerType == mtproto.PEER_SELF {
+			peerType, peerID = mtproto.PEER_USER, in.UserId
+		}
+		_, _, _, err := c.svcCtx.Dao.ReadHistoryState(c.ctx, in.UserId, mtproto.MakePeerUtil(peerType, peerID), in.MaxId)
+		if err != nil {
+			return nil, err
+		}
+		return mtproto.EmptyVoid, nil
+	}
 	var (
 		maxId       = in.MaxId
 		did         = mtproto.MakeDialogId(in.UserId, in.PeerType, in.PeerId)

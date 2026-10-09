@@ -7,27 +7,12 @@ import (
 	"os"
 	"testing"
 	"time"
-
-	"github.com/go-sql-driver/mysql"
 )
 
 func requireReportsDB(t *testing.T) string {
 	t.Helper()
-	dsn := os.Getenv("APIFULL_MYSQL_DSN")
-	if dsn == "" {
-		t.Skip("APIFULL_MYSQL_DSN is not configured")
-	}
-	cfg, err := mysql.ParseDSN(dsn)
-	if err != nil {
-		t.Fatalf("parse APIFULL_MYSQL_DSN: %v", err)
-	}
-	if cfg.DBName != "teamgram_audit" || cfg.Net != "tcp" || cfg.Addr != "127.0.0.1:13306" {
-		t.Fatalf("test requires 127.0.0.1:13306/teamgram_audit")
-	}
-	if err := Open(dsn); err != nil {
-		t.Fatalf("open isolated report database: %v", err)
-	}
-	return dsn
+	requirePaymentLedgerDB(t)
+	return os.Getenv("APIFULL_POSTGRES_DSN")
 }
 
 func TestReportIntakeIsDurableAndIdempotent(t *testing.T) {
@@ -60,7 +45,7 @@ func TestReportIntakeIsDurableAndIdempotent(t *testing.T) {
 	}
 
 	// Reopen the same isolated database to exercise the read-after-restart path.
-	if err := Open(dsn); err != nil {
+	if err := OpenPostgresReadOnly(dsn); err != nil {
 		t.Fatalf("reopen isolated report database: %v", err)
 	}
 	loaded, found, err := LoadReportByDedupe(dedupeKey)

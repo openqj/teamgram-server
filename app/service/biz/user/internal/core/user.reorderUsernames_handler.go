@@ -19,9 +19,6 @@
 package core
 
 import (
-	"time"
-
-	"github.com/teamgram/marmota/pkg/stores/sqlx"
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/service/biz/user/user"
 )
@@ -29,23 +26,11 @@ import (
 // UserReorderUsernames
 // user.reorderUsernames peer_type:int peer_id:long username_list:Vector<string> = Bool;
 func (c *UserCore) UserReorderUsernames(in *user.TLUserReorderUsernames) (*mtproto.Bool, error) {
-	var (
-		order2 = time.Now().Unix() << 32
-	)
-
-	_ = sqlx.TxWrapper(c.ctx, c.svcCtx.Dao.DB, func(tx *sqlx.Tx, result *sqlx.StoreResult) {
-		for i, username := range in.GetUsernameList() {
-			_, err := c.svcCtx.Dao.UsernameDAO.UpdateTx(tx,
-				map[string]interface{}{
-					"order2": order2 + int64(i),
-				},
-				username)
-			if err != nil {
-				result.Err = err
-				return
-			}
-		}
-	})
-
+	if c.MD == nil || c.MD.GetUserId() <= 0 {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
+	if err := c.svcCtx.Dao.ReorderPeerUsernames(c.ctx, c.MD.GetUserId(), in.GetPeerType(), in.GetPeerId(), in.GetUsernameList()); err != nil {
+		return nil, err
+	}
 	return mtproto.BoolTrue, nil
 }

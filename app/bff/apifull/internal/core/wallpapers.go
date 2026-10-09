@@ -21,7 +21,6 @@ package core
 import (
 	"encoding/json"
 	"strconv"
-	"sync"
 
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/persist"
@@ -40,26 +39,23 @@ func lookPut(userID int64, method string, in any) error {
 
 // RPCWallpapersServer: Layer 229 methods previously returned ERR_ENTERPRISE_IS_BLOCKED.
 
-func wallKey(userID int64) string {
-	return "wallpaper:" + strconv.FormatInt(userID, 10)
-}
-
-func wallUploadKey(userID int64) string {
-	return "wallpaper:uploaded:" + strconv.FormatInt(userID, 10)
-}
-
-var wallpaperMu sync.Mutex
-
-func loadWallpapers(userID int64) ([]*mtproto.WallPaper, error) {
-	raw, err := persist.Default.Get(wallKey(userID))
-	if err != nil || raw == "" {
-		return nil, err
+func decodeWallpaperList(raw string) ([]*mtproto.WallPaper, error) {
+	if raw == "" {
+		return nil, nil
 	}
 	var list []*mtproto.WallPaper
 	if err := json.Unmarshal([]byte(raw), &list); err != nil {
 		return nil, err
 	}
 	return list, nil
+}
+
+func loadWallpapers(userID int64) ([]*mtproto.WallPaper, error) {
+	raw, err := persist.LoadWallpaperList(userID, false)
+	if err != nil {
+		return nil, err
+	}
+	return decodeWallpaperList(raw)
 }
 
 func storeWallpapers(userID int64, list []*mtproto.WallPaper) error {
@@ -70,19 +66,15 @@ func storeWallpapers(userID int64, list []*mtproto.WallPaper) error {
 	if err != nil {
 		return err
 	}
-	return persist.Default.Set(wallKey(userID), string(b))
+	return persist.StoreWallpaperList(userID, false, string(b))
 }
 
 func loadUploadedWallpapers(userID int64) ([]*mtproto.WallPaper, error) {
-	raw, err := persist.Default.Get(wallUploadKey(userID))
-	if err != nil || raw == "" {
+	raw, err := persist.LoadWallpaperList(userID, true)
+	if err != nil {
 		return nil, err
 	}
-	var list []*mtproto.WallPaper
-	if err := json.Unmarshal([]byte(raw), &list); err != nil {
-		return nil, err
-	}
-	return list, nil
+	return decodeWallpaperList(raw)
 }
 
 func storeUploadedWallpapers(userID int64, list []*mtproto.WallPaper) error {
@@ -93,7 +85,29 @@ func storeUploadedWallpapers(userID int64, list []*mtproto.WallPaper) error {
 	if err != nil {
 		return err
 	}
-	return persist.Default.Set(wallUploadKey(userID), string(b))
+	return persist.StoreWallpaperList(userID, true, string(b))
+}
+
+func mutateWallpapers(userID int64, uploaded bool, mutate func([]*mtproto.WallPaper) ([]*mtproto.WallPaper, error)) error {
+	_, err := persist.MutateWallpaperList(userID, uploaded, func(raw string) (string, error) {
+		list, err := decodeWallpaperList(raw)
+		if err != nil {
+			return "", err
+		}
+		next, err := mutate(list)
+		if err != nil {
+			return "", err
+		}
+		if next == nil {
+			next = []*mtproto.WallPaper{}
+		}
+		encoded, err := json.Marshal(next)
+		if err != nil {
+			return "", err
+		}
+		return string(encoded), nil
+	})
+	return err
 }
 
 func wallpaperMatches(w *mtproto.WallPaper, in *mtproto.InputWallPaper) bool {
@@ -177,23 +191,21 @@ func wallpaperHash(list []*mtproto.WallPaper) int64 {
 }
 
 func upsertWallpaper(userID int64, src *mtproto.InputWallPaper, settings *mtproto.WallPaperSettings) error {
-	list, err := loadWallpapers(userID)
-	if err != nil {
-		return err
-	}
 	owned, err := findOwnedWallpaper(userID, src)
 	if err != nil {
 		return err
 	}
 	wp := proto.Clone(owned).(*mtproto.WallPaper)
 	wp.Settings = settings
-	for i, w := range list {
-		if wallpaperMatches(w, src) {
-			list[i] = wp
-			return storeWallpapers(userID, list)
+	return mutateWallpapers(userID, false, func(list []*mtproto.WallPaper) ([]*mtproto.WallPaper, error) {
+		for i, w := range list {
+			if wallpaperMatches(w, src) {
+				list[i] = wp
+				return list, nil
+			}
 		}
-	}
-	return storeWallpapers(userID, append(list, wp))
+		return append(list, wp), nil
+	})
 }
 
 func (c *ApiFullCore) AccountGetWallPapers(in *mtproto.TLAccountGetWallPapers) (*mtproto.Account_WallPapers, error) {
@@ -262,24 +274,20 @@ func (c *ApiFullCore) AccountUploadWallPaper(in *mtproto.TLAccountUploadWallPape
 		Document:   document,
 		Settings:   in.GetSettings(),
 	}).To_WallPaper()
-	wallpaperMu.Lock()
-	defer wallpaperMu.Unlock()
-	uploaded, err := loadUploadedWallpapers(userID)
-	if err != nil {
-		return nil, err
-	}
-	replaced := false
-	for i, candidate := range uploaded {
-		if candidate != nil && candidate.GetId() == wallpaper.GetId() {
-			uploaded[i] = wallpaper
-			replaced = true
-			break
+	if err = mutateWallpapers(userID, true, func(uploaded []*mtproto.WallPaper) ([]*mtproto.WallPaper, error) {
+		replaced := false
+		for i, candidate := range uploaded {
+			if candidate != nil && candidate.GetId() == wallpaper.GetId() {
+				uploaded[i] = wallpaper
+				replaced = true
+				break
+			}
 		}
-	}
-	if !replaced {
-		uploaded = append(uploaded, wallpaper)
-	}
-	if err = storeUploadedWallpapers(userID, uploaded); err != nil {
+		if !replaced {
+			uploaded = append(uploaded, wallpaper)
+		}
+		return uploaded, nil
+	}); err != nil {
 		return nil, err
 	}
 	return wallpaper, nil
@@ -298,17 +306,15 @@ func (c *ApiFullCore) AccountSaveWallPaper(in *mtproto.TLAccountSaveWallPaper) (
 		return nil, err
 	}
 	if mtproto.FromBool(in.GetUnsave()) {
-		list, err := loadWallpapers(userID)
-		if err != nil {
-			return nil, err
-		}
-		kept := make([]*mtproto.WallPaper, 0, len(list))
-		for _, w := range list {
-			if !wallpaperMatches(w, src) {
-				kept = append(kept, w)
+		if err = mutateWallpapers(userID, false, func(list []*mtproto.WallPaper) ([]*mtproto.WallPaper, error) {
+			kept := make([]*mtproto.WallPaper, 0, len(list))
+			for _, w := range list {
+				if !wallpaperMatches(w, src) {
+					kept = append(kept, w)
+				}
 			}
-		}
-		if err = storeWallpapers(userID, kept); err != nil {
+			return kept, nil
+		}); err != nil {
 			return nil, err
 		}
 		return mtproto.BoolTrue, nil
@@ -344,7 +350,9 @@ func (c *ApiFullCore) AccountResetWallPapers(in *mtproto.TLAccountResetWallPaper
 	if err = lookPut(userID, "account.resetWallPapers", in); err != nil {
 		return nil, err
 	}
-	if err = storeWallpapers(userID, nil); err != nil {
+	if err = mutateWallpapers(userID, false, func([]*mtproto.WallPaper) ([]*mtproto.WallPaper, error) {
+		return []*mtproto.WallPaper{}, nil
+	}); err != nil {
 		return nil, err
 	}
 	return mtproto.BoolTrue, nil

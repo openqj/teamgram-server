@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/service/authsession/authsession"
@@ -33,6 +34,9 @@ func TestPostgresRuntimeSmoke(t *testing.T) {
 	const userID int64 = 918273645002
 	const tempID int64 = 918273645003
 	const secondaryKeyID int64 = 918273645004
+	const replacementTempID int64 = 918273645005
+	const expiredTempID int64 = 918273645006
+	const mediaTempID int64 = 918273645007
 	// The salt cache is process independent; clear the probe key so a prior
 	// run cannot add a previous salt to the requested window.
 	_, _ = d.kv.DelCtx(ctx, fmt.Sprintf("%s_%d", pgSaltPrefix, keyID))
@@ -42,6 +46,12 @@ func TestPostgresRuntimeSmoke(t *testing.T) {
 	_, _ = d.pool.Exec(ctx, `DELETE FROM auth_keys WHERE auth_key_id=$1`, keyID)
 	_, _ = d.pool.Exec(ctx, `DELETE FROM auth_key_infos WHERE auth_key_id=$1`, tempID)
 	_, _ = d.pool.Exec(ctx, `DELETE FROM auth_keys WHERE auth_key_id=$1`, tempID)
+	_, _ = d.pool.Exec(ctx, `DELETE FROM auth_key_infos WHERE auth_key_id=$1`, replacementTempID)
+	_, _ = d.pool.Exec(ctx, `DELETE FROM auth_keys WHERE auth_key_id=$1`, replacementTempID)
+	_, _ = d.pool.Exec(ctx, `DELETE FROM auth_key_infos WHERE auth_key_id=$1`, expiredTempID)
+	_, _ = d.pool.Exec(ctx, `DELETE FROM auth_keys WHERE auth_key_id=$1`, expiredTempID)
+	_, _ = d.pool.Exec(ctx, `DELETE FROM auth_key_infos WHERE auth_key_id=$1`, mediaTempID)
+	_, _ = d.pool.Exec(ctx, `DELETE FROM auth_keys WHERE auth_key_id=$1`, mediaTempID)
 	_, _ = d.pool.Exec(ctx, `DELETE FROM auth_users WHERE auth_key_id=$1`, secondaryKeyID)
 	_, _ = d.pool.Exec(ctx, `DELETE FROM auths WHERE auth_key_id=$1`, secondaryKeyID)
 	_, _ = d.pool.Exec(ctx, `DELETE FROM auth_key_infos WHERE auth_key_id=$1`, secondaryKeyID)
@@ -53,6 +63,12 @@ func TestPostgresRuntimeSmoke(t *testing.T) {
 		_, _ = d.pool.Exec(ctx, `DELETE FROM auth_keys WHERE auth_key_id=$1`, keyID)
 		_, _ = d.pool.Exec(ctx, `DELETE FROM auth_key_infos WHERE auth_key_id=$1`, tempID)
 		_, _ = d.pool.Exec(ctx, `DELETE FROM auth_keys WHERE auth_key_id=$1`, tempID)
+		_, _ = d.pool.Exec(ctx, `DELETE FROM auth_key_infos WHERE auth_key_id=$1`, replacementTempID)
+		_, _ = d.pool.Exec(ctx, `DELETE FROM auth_keys WHERE auth_key_id=$1`, replacementTempID)
+		_, _ = d.pool.Exec(ctx, `DELETE FROM auth_key_infos WHERE auth_key_id=$1`, expiredTempID)
+		_, _ = d.pool.Exec(ctx, `DELETE FROM auth_keys WHERE auth_key_id=$1`, expiredTempID)
+		_, _ = d.pool.Exec(ctx, `DELETE FROM auth_key_infos WHERE auth_key_id=$1`, mediaTempID)
+		_, _ = d.pool.Exec(ctx, `DELETE FROM auth_keys WHERE auth_key_id=$1`, mediaTempID)
 		_, _ = d.pool.Exec(ctx, `DELETE FROM auth_users WHERE auth_key_id=$1`, secondaryKeyID)
 		_, _ = d.pool.Exec(ctx, `DELETE FROM auths WHERE auth_key_id=$1`, secondaryKeyID)
 		_, _ = d.pool.Exec(ctx, `DELETE FROM auth_key_infos WHERE auth_key_id=$1`, secondaryKeyID)
@@ -61,6 +77,14 @@ func TestPostgresRuntimeSmoke(t *testing.T) {
 	key := mtproto.MakeTLAuthKeyInfo(&mtproto.AuthKeyInfo{AuthKeyId: keyID, AuthKey: []byte("key"), AuthKeyType: mtproto.AuthKeyTypePerm, PermAuthKeyId: keyID}).To_AuthKeyInfo()
 	if err := d.SetAuthKeyV2(ctx, key, 0); err != nil {
 		t.Fatal(err)
+	}
+	// Ownership is authoritative in auth_users and must be readable before
+	// optional client/session metadata is initialized in auths.
+	if _, err := d.BindAuthKeyUser(ctx, keyID, userID); err != nil {
+		t.Fatal(err)
+	}
+	if got := d.GetAuthKeyUserId(ctx, keyID); got != userID {
+		t.Fatalf("user id before client session info = %d, want %d", got, userID)
 	}
 	if err := d.SetClientSessionInfo(ctx, &authsession.ClientSession{AuthKeyId: keyID, Layer: 229, ApiId: 1, DeviceModel: "smoke", Ip: "127.0.0.1", Params: `{"x":1}`}); err != nil {
 		t.Fatal(err)
@@ -72,11 +96,69 @@ func TestPostgresRuntimeSmoke(t *testing.T) {
 		t.Fatalf("future salts=%v err=%v", salts, err)
 	}
 	temp := mtproto.MakeTLAuthKeyInfo(&mtproto.AuthKeyInfo{AuthKeyId: tempID, AuthKey: []byte("temp"), AuthKeyType: mtproto.AuthKeyTypeTemp}).To_AuthKeyInfo()
-	if err := d.SetAuthKeyV2(ctx, temp, 0); err != nil {
+	if err := d.SetAuthKeyV2(ctx, temp, 3600); err != nil {
 		t.Fatal(err)
+	}
+	var expiresAt int64
+	if err := d.pool.QueryRow(ctx, `SELECT expires_at FROM auth_key_infos WHERE auth_key_id=$1`, tempID).Scan(&expiresAt); err != nil {
+		t.Fatal(err)
+	}
+	if delta := expiresAt - time.Now().Unix(); delta < 3598 || delta > 3600 {
+		t.Fatalf("temporary key expiry delta = %d seconds, want about 3600", delta)
 	}
 	if err := d.BindTempAuthKeyV2(ctx, keyID, tempID, mtproto.AuthKeyTypeTemp); err != nil {
 		t.Fatal(err)
+	}
+	replacementTemp := mtproto.MakeTLAuthKeyInfo(&mtproto.AuthKeyInfo{AuthKeyId: replacementTempID, AuthKey: []byte("replacement-temp"), AuthKeyType: mtproto.AuthKeyTypeTemp}).To_AuthKeyInfo()
+	if err := d.SetAuthKeyV2(ctx, replacementTemp, 3600); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.BindTempAuthKeyV2(ctx, keyID, replacementTempID, mtproto.AuthKeyTypeTemp); err != nil {
+		t.Fatal(err)
+	}
+	mediaTemp := mtproto.MakeTLAuthKeyInfo(&mtproto.AuthKeyInfo{AuthKeyId: mediaTempID, AuthKey: []byte("media-temp"), AuthKeyType: mtproto.AuthKeyTypeMediaTemp}).To_AuthKeyInfo()
+	if err := d.SetAuthKeyV2(ctx, mediaTemp, 3600); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.BindTempAuthKeyV2(ctx, keyID, mediaTempID, mtproto.AuthKeyTypeMediaTemp); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.DropTempAuthKeys(ctx, keyID, []int64{replacementTempID}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.QueryAuthKeyV2(ctx, mediaTempID); err != mtproto.ErrAuthKeyUnregistered {
+		t.Fatalf("query dropped media temp key error = %v, want AUTH_KEY_UNREGISTERED", err)
+	}
+	if perm, err := d.QueryAuthKeyV2(ctx, keyID); err != nil || perm.GetMediaTempAuthKeyId() != 0 || perm.GetTempAuthKeyId() != replacementTempID {
+		t.Fatalf("permanent key after dropping non-except temp keys = %v, err=%v", perm, err)
+	}
+	if kept, err := d.QueryAuthKeyV2(ctx, replacementTempID); err != nil || kept.GetPermAuthKeyId() != keyID {
+		t.Fatalf("excepted temporary key = %v, err=%v; want key bound to %d", kept, err, keyID)
+	}
+	if err := d.DropTempAuthKeys(ctx, keyID, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.QueryAuthKeyV2(ctx, replacementTempID); err != mtproto.ErrAuthKeyUnregistered {
+		t.Fatalf("query dropped temp key with empty exception list error = %v, want AUTH_KEY_UNREGISTERED", err)
+	}
+	if oldTemp, err := d.QueryAuthKeyV2(ctx, tempID); err != nil || oldTemp.GetPermAuthKeyId() != 0 {
+		t.Fatalf("replaced temporary key owner = %v, err=%v; want unbound", oldTemp, err)
+	}
+	if perm, err := d.QueryAuthKeyV2(ctx, keyID); err != nil || perm.GetTempAuthKeyId() != 0 || perm.GetMediaTempAuthKeyId() != 0 {
+		t.Fatalf("permanent key temp ids after dropping all keys = %v, err=%v; want cleared", perm, err)
+	}
+	expiredTemp := mtproto.MakeTLAuthKeyInfo(&mtproto.AuthKeyInfo{AuthKeyId: expiredTempID, AuthKey: []byte("expired-temp"), AuthKeyType: mtproto.AuthKeyTypeTemp}).To_AuthKeyInfo()
+	if err := d.SetAuthKeyV2(ctx, expiredTemp, 3600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.pool.Exec(ctx, `UPDATE auth_key_infos SET expires_at=$1 WHERE auth_key_id=$2`, time.Now().Unix()-1, expiredTempID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.QueryAuthKeyV2(ctx, expiredTempID); err != mtproto.ErrAuthKeyUnregistered {
+		t.Fatalf("query expired temp key error = %v, want AUTH_KEY_UNREGISTERED", err)
+	}
+	if err := d.BindTempAuthKeyV2(ctx, keyID, expiredTempID, mtproto.AuthKeyTypeTemp); err == nil {
+		t.Fatal("binding expired temp key unexpectedly succeeded")
 	}
 	if _, err := d.BindAuthKeyUser(ctx, keyID, userID); err != nil {
 		t.Fatal(err)

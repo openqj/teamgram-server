@@ -31,15 +31,24 @@ func (d *DocumentsDAO) insert(ctx context.Context, db DB, do *dataobject.Documen
 	}
 	err = db.QueryRow(ctx, `INSERT INTO documents
  (document_id, access_hash, dc_id, file_path, file_size, uploaded_file_name, ext,
-  mime_type, thumb_id, video_thumb_id, attributes, date2)
- VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,COALESCE($11::jsonb, '{}'::jsonb),$12) RETURNING id`,
+  mime_type, thumb_id, video_thumb_id, attributes, date2, sha256)
+ VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,COALESCE($11::jsonb, '{}'::jsonb),$12,$13) RETURNING id`,
 		do.DocumentId, do.AccessHash, do.DcId, do.FilePath, do.FileSize,
 		do.UploadedFileName, do.Ext, do.MimeType, do.ThumbId, do.VideoThumbId,
-		attributes, do.Date2).Scan(&id)
+		attributes, do.Date2, do.Sha256).Scan(&id)
 	if err != nil {
 		return 0, 0, err
 	}
 	return id, 1, nil
+}
+
+// SelectByHash returns the non-deleted document matching the hash, size, and MIME tuple.
+func (d *DocumentsDAO) SelectByHash(ctx context.Context, sha256 []byte, size int64, mimeType string) (*dataobject.DocumentsDO, error) {
+	return scanDocument(d.db.QueryRow(ctx, `SELECT `+documentColumns+`
+FROM documents
+WHERE sha256 = $1 AND file_size = $2 AND mime_type = $3 AND deleted = FALSE
+  AND octet_length(sha256) = 32
+ORDER BY id LIMIT 1`, sha256, size, mimeType))
 }
 
 func (d *DocumentsDAO) SelectByDocumentId(ctx context.Context, id int64) (*dataobject.DocumentsDO, error) {

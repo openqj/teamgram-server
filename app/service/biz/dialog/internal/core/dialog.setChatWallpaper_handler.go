@@ -19,9 +19,6 @@
 package core
 
 import (
-	"context"
-
-	"github.com/teamgram/marmota/pkg/stores/sqlx"
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/service/biz/dialog/dialog"
 )
@@ -29,41 +26,35 @@ import (
 // DialogSetChatWallpaper
 // dialog.setChatWallpaper flags:# user_id:long peer_type:int peer_id:long wallpaper_id:long wallpaper_overridden:flags.0?true = Bool;
 func (c *DialogCore) DialogSetChatWallpaper(in *dialog.TLDialogSetChatWallpaper) (*mtproto.Bool, error) {
-	_, _, err := c.svcCtx.Dao.CachedConn.Exec(
-		c.ctx,
-		func(ctx context.Context, conn *sqlx.DB) (int64, int64, error) {
-			var (
-				rowsAffected int64
-				err          error
-			)
-
-			if in.WallpaperId != 0 {
-				rowsAffected, err = c.svcCtx.Dao.DialogsDAO.UpdateCustomMap(
-					c.ctx,
-					map[string]interface{}{
-						"wallpaper_id":         in.WallpaperId,
-						"wallpaper_overridden": in.WallpaperOverridden,
-					},
-					in.UserId,
-					in.PeerType,
-					in.PeerId)
-			} else {
-				rowsAffected, err = c.svcCtx.Dao.DialogsDAO.UpdateCustomMap(
-					c.ctx,
-					map[string]interface{}{
-						"wallpaper_id":         0,
-						"wallpaper_overridden": false,
-					},
-					in.UserId,
-					in.PeerType,
-					in.PeerId)
-			}
-
-			return 0, rowsAffected, err
-		},
-		dialog.GetDialogCacheKey(in.UserId, mtproto.MakePeerDialogId(in.PeerType, in.PeerId)))
+	if c == nil || c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.Postgres == nil || c.svcCtx.Dao.Postgres.Store == nil || c.svcCtx.Dao.Postgres.Store.Dialogs == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
+	if in == nil {
+		return nil, mtproto.ErrInputConstructorInvalid
+	}
+	store := c.svcCtx.Dao.Postgres.Store
+	values := map[string]interface{}{
+		"wallpaper_id":         in.WallpaperId,
+		"wallpaper_overridden": in.WallpaperOverridden,
+	}
+	if in.WallpaperId == 0 {
+		values["wallpaper_overridden"] = false
+	}
+	tx, err := c.svcCtx.Dao.Postgres.Pool.Begin(c.ctx)
+	if err == nil {
+		defer func() { _ = tx.Rollback(c.ctx) }()
+		_, err = store.Dialogs.UpdateCustomMapTx(c.ctx, tx, values, in.UserId, in.PeerType, in.PeerId)
+		if err == nil && in.WallpaperOverridden {
+			_, err = store.Dialogs.UpdateCustomMapTx(c.ctx, tx, values, in.PeerId, in.PeerType, in.UserId)
+		}
+		if err == nil {
+			err = tx.Commit(c.ctx)
+		}
+	}
 	if err != nil {
-		c.Logger.Errorf("dialog.setChatWallpaper - error: %v", err)
+		if c.Logger != nil {
+			c.Logger.Errorf("dialog.setChatWallpaper - error: %v", err)
+		}
 		return nil, err
 	}
 

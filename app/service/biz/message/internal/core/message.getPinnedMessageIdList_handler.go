@@ -24,11 +24,7 @@ func (c *MessageCore) MessageGetPinnedMessageIdList(in *message.TLMessageGetPinn
 	switch in.GetPeerType() {
 	case mtproto.PEER_SELF, mtproto.PEER_USER, mtproto.PEER_CHAT:
 		peerDialogId := mtproto.MakeDialogId(in.GetUserId(), in.GetPeerType(), in.GetPeerId())
-		idList, err := c.svcCtx.Dao.MessagesDAO.SelectPinnedMessageIdList(
-			c.ctx,
-			in.GetUserId(),
-			peerDialogId.A,
-			peerDialogId.B)
+		idList, err := c.svcCtx.Dao.SelectPinnedMessageIDs(c.ctx, in.GetUserId(), peerDialogId.A, peerDialogId.B)
 		if err != nil {
 			c.Logger.Errorf("message.getPinnedMessageIdList - error: %v", err)
 			return nil, err

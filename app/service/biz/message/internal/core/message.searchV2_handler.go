@@ -19,11 +19,9 @@
 package core
 
 import (
-	"fmt"
 	"math"
 
 	"github.com/teamgram/proto/mtproto"
-	"github.com/teamgram/teamgram-server/app/service/biz/message/internal/dal/dataobject"
 	"github.com/teamgram/teamgram-server/app/service/biz/message/message"
 )
 
@@ -76,17 +74,13 @@ func (c *MessageCore) MessageSearchV2(in *message.TLMessageSearchV2) (*mtproto.M
 	}
 
 	dialogId := mtproto.MakeDialogId(in.UserId, in.PeerType, in.PeerId)
-	c.svcCtx.Dao.MessagesDAO.SelectBackwardBySendUserIdOffsetIdLimitWithCB(
-		c.ctx,
-		in.UserId,
-		dialogId.A,
-		dialogId.B,
-		in.FromId,
-		offset,
-		in.Limit,
-		func(sz, i int, v *dataobject.MessagesDO) {
-			boxList = append(boxList, c.svcCtx.Dao.MakeMessageBox(c.ctx, in.UserId, v))
-		})
+	list, err := c.svcCtx.Dao.SelectHistoryBySender(c.ctx, in.UserId, dialogId.A, dialogId.B, in.FromId, offset, in.Limit)
+	if err != nil {
+		return nil, err
+	}
+	for i := range list {
+		boxList = append(boxList, c.svcCtx.Dao.MakeMessageBox(c.ctx, in.UserId, &list[i]))
+	}
 
 	if boxList == nil {
 		boxList = []*mtproto.MessageBox{}
@@ -99,14 +93,10 @@ func (c *MessageCore) MessageSearchV2(in *message.TLMessageSearchV2) (*mtproto.M
 }
 
 func (c *MessageCore) calcSize(id, fromId int64, did mtproto.DialogID) int {
-	where := fmt.Sprintf("user_id = %d AND (dialog_id1 = %d AND dialog_id2 = %d) AND sender_user_id = %d AND deleted = 0",
-		id,
-		did.A,
-		did.B,
-		fromId)
-
-	return c.svcCtx.Dao.CommonDAO.CalcSizeByWhere(
-		c.ctx,
-		c.svcCtx.Dao.MessagesDAO.CalcTableName(id),
-		where)
+	if c.svcCtx.Dao.Postgres != nil && c.svcCtx.Dao.Postgres.Store != nil && c.svcCtx.Dao.Postgres.Store.Messages != nil {
+		count, _ := c.svcCtx.Dao.CountHistoryBySender(c.ctx, id, did.A, did.B, fromId)
+		return int(count)
+	}
+	count, _ := c.svcCtx.Dao.CountHistoryBySender(c.ctx, id, did.A, did.B, fromId)
+	return int(count)
 }

@@ -97,6 +97,18 @@ func (d *Dao) GetDialog(ctx context.Context, userId int64, peerType int32, peerI
 }
 
 func (d *Dao) GetDialogByPeerDialogId(ctx context.Context, userId, peerDialogId int64) (*dialog.DialogExt, error) {
+	if d != nil && d.Postgres != nil && d.Postgres.Store != nil && d.Postgres.Store.Dialogs != nil {
+		dialogDO, err := d.Postgres.Store.Dialogs.SelectByPeerDialogId(ctx, userId, peerDialogId)
+		if err != nil {
+			logx.WithContext(ctx).Errorf("dialog.getDialogById - error: %v", err)
+			return nil, err
+		}
+		if dialogDO == nil {
+			return nil, mtproto.ErrPeerIdInvalid
+		}
+		return d.MakeDialog(dialogDO), nil
+	}
+
 	var (
 		dlgExt *dialog.DialogExt
 	)

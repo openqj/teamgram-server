@@ -19,7 +19,11 @@ import (
 func (c *UserCore) UserGetContactList(in *user.TLUserGetContactList) (*user.Vector_ContactData, error) {
 	rValList := &user.Vector_ContactData{}
 
-	rValList.Datas = c.svcCtx.Dao.GetUserContactList(c.ctx, in.GetUserId())
+	var err error
+	rValList.Datas, err = c.svcCtx.Dao.GetUserContactList(c.ctx, in.GetUserId())
+	if err != nil {
+		return nil, err
+	}
 	if rValList.Datas == nil {
 		rValList.Datas = []*mtproto.ContactData{}
 	}

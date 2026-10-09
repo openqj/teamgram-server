@@ -9,6 +9,7 @@ package dao
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -27,18 +28,27 @@ const (
 )
 
 type gatewayNodeStream struct {
-	nodeAddr string
-	conn     *grpc.ClientConn
-	stream   grpc.BidiStreamingClient[gateway.GatewayStreamRequest, gateway.GatewayStreamResponse]
-	sendCh   chan *gateway.GatewayStreamRequest
-	closed   atomic.Int32
-	cancel   context.CancelFunc
+	nodeAddr   string
+	conn       *grpc.ClientConn
+	stream     grpc.BidiStreamingClient[gateway.GatewayStreamRequest, gateway.GatewayStreamResponse]
+	sendCh     chan *gateway.GatewayStreamRequest
+	closed     atomic.Int32
+	ctx        context.Context
+	cancel     context.CancelFunc
+	reqCounter atomic.Int64
+	pendingMu  sync.Mutex
+	pending    map[string]chan error
 }
 
-func (ns *gatewayNodeStream) close() {
+func (ns *gatewayNodeStream) close(err error) {
 	if ns.closed.CompareAndSwap(0, 1) {
 		ns.cancel()
-		close(ns.sendCh)
+		ns.pendingMu.Lock()
+		for requestID, result := range ns.pending {
+			result <- err
+			delete(ns.pending, requestID)
+		}
+		ns.pendingMu.Unlock()
 		ns.conn.Close()
 	}
 }
@@ -105,7 +115,9 @@ func (sg *StreamingGateway) createGatewayStream(addr string) (*gatewayNodeStream
 		conn:     conn,
 		stream:   stream,
 		sendCh:   make(chan *gateway.GatewayStreamRequest, gatewaySendBufSize),
+		ctx:      ctx,
 		cancel:   cancel,
+		pending:  make(map[string]chan error),
 	}
 
 	go sg.sendLoop(ns)
@@ -116,70 +128,117 @@ func (sg *StreamingGateway) createGatewayStream(addr string) (*gatewayNodeStream
 }
 
 func (sg *StreamingGateway) sendLoop(ns *gatewayNodeStream) {
-	for req := range ns.sendCh {
-		if ns.closed.Load() != 0 {
+	for {
+		select {
+		case <-ns.ctx.Done():
 			return
-		}
-		if err := ns.stream.Send(req); err != nil {
-			logx.Errorf("StreamingGateway sendLoop(%s) Send error: %v", ns.nodeAddr, err)
-			sg.handleStreamError(ns)
-			return
+		case req := <-ns.sendCh:
+			if err := ns.stream.Send(req); err != nil {
+				logx.Errorf("StreamingGateway sendLoop(%s) Send error: %v", ns.nodeAddr, err)
+				sg.handleStreamError(ns, err)
+				return
+			}
 		}
 	}
 }
 
 func (sg *StreamingGateway) recvLoop(ns *gatewayNodeStream) {
 	for {
-		_, err := ns.stream.Recv()
+		response, err := ns.stream.Recv()
 		if err != nil {
 			if ns.closed.Load() == 0 {
 				logx.Errorf("StreamingGateway recvLoop(%s) Recv error: %v", ns.nodeAddr, err)
-				sg.handleStreamError(ns)
+				sg.handleStreamError(ns, err)
 			}
 			return
 		}
-		// fire-and-forget: ignore responses
+		if response == nil {
+			sg.handleStreamError(ns, fmt.Errorf("gateway(%s) returned an empty stream reply", ns.nodeAddr))
+			return
+		}
+		if !response.GetSuccess() {
+			err = fmt.Errorf("gateway(%s) rejected session delivery", ns.nodeAddr)
+		}
+		ns.pendingMu.Lock()
+		result := ns.pending[response.GetRequestId()]
+		delete(ns.pending, response.GetRequestId())
+		ns.pendingMu.Unlock()
+		if result != nil {
+			result <- err
+		}
 	}
 }
 
-func (sg *StreamingGateway) handleStreamError(ns *gatewayNodeStream) {
+func (sg *StreamingGateway) handleStreamError(ns *gatewayNodeStream, err error) {
 	addr := ns.nodeAddr
-	ns.close()
+	ns.close(err)
 
 	sg.mu.Lock()
-	delete(sg.streams, addr)
+	if sg.streams[addr] == ns {
+		delete(sg.streams, addr)
+	}
 	sg.mu.Unlock()
 
 	// reconnect will happen lazily on next SendDataToGateway call
 	logx.Infof("StreamingGateway: removed stream for %s, will reconnect on next send", addr)
 }
 
-func (sg *StreamingGateway) SendDataToGateway(gatewayId string, authKeyId, sessionId int64, payload []byte) (bool, error) {
+func (sg *StreamingGateway) SendDataToGateway(ctx context.Context, gatewayId string, authKeyId, sessionId int64, payload []byte) (bool, error) {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
 	ns, err := sg.getOrCreateStream(gatewayId)
 	if err != nil {
 		return false, err
 	}
 
 	req := &gateway.GatewayStreamRequest{
+		RequestId: strconv.FormatInt(ns.reqCounter.Add(1), 10),
 		SendData: &gateway.TLGatewaySendDataToGateway{
 			AuthKeyId: authKeyId,
 			SessionId: sessionId,
 			Payload:   payload,
 		},
 	}
+	result := make(chan error, 1)
+	ns.pendingMu.Lock()
+	if ns.closed.Load() != 0 {
+		ns.pendingMu.Unlock()
+		return false, fmt.Errorf("gateway(%s) stream is closed", gatewayId)
+	}
+	ns.pending[req.GetRequestId()] = result
+	ns.pendingMu.Unlock()
+	defer func() {
+		ns.pendingMu.Lock()
+		delete(ns.pending, req.GetRequestId())
+		ns.pendingMu.Unlock()
+	}()
 
 	select {
+	case <-ctx.Done():
+		return false, ctx.Err()
+	case <-ns.ctx.Done():
+		return false, fmt.Errorf("gateway(%s) stream is closed", gatewayId)
 	case ns.sendCh <- req:
-		return true, nil
 	default:
 		return false, fmt.Errorf("StreamingGateway: sendCh full for gateway %s", gatewayId)
+	}
+	select {
+	case err := <-result:
+		return err == nil, err
+	case <-ctx.Done():
+		return false, ctx.Err()
+	case <-ns.ctx.Done():
+		return false, fmt.Errorf("gateway(%s) stream is closed", gatewayId)
 	}
 }
 
 func (sg *StreamingGateway) RemoveGateway(gatewayId string) {
 	sg.mu.Lock()
 	if ns, ok := sg.streams[gatewayId]; ok {
-		ns.close()
+		ns.close(fmt.Errorf("gateway(%s) removed", gatewayId))
 		delete(sg.streams, gatewayId)
 	}
 	sg.mu.Unlock()
@@ -190,7 +249,7 @@ func (sg *StreamingGateway) Close() {
 	defer sg.mu.Unlock()
 
 	for _, ns := range sg.streams {
-		ns.close()
+		ns.close(fmt.Errorf("gateway(%s) stream manager closed", ns.nodeAddr))
 	}
 	sg.streams = make(map[string]*gatewayNodeStream)
 }

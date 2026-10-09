@@ -19,11 +19,11 @@
 package dao
 
 import (
-	"errors"
 	"flag"
 
 	kafka "github.com/teamgram/marmota/pkg/mq"
 	"github.com/teamgram/marmota/pkg/net/rpcx"
+	sharedpersist "github.com/teamgram/teamgram-server/app/bff/apifull/persist"
 	"github.com/teamgram/teamgram-server/app/bff/authorization/internal/config"
 	msg_client "github.com/teamgram/teamgram-server/app/messenger/msg/msg/client"
 	sync_client "github.com/teamgram/teamgram-server/app/messenger/sync/client"
@@ -61,6 +61,15 @@ type Dao struct {
 }
 
 func New(c config.Config) *Dao {
+	if c.PostgresDSN == "" {
+		panic("authorization: PostgresDSN is required")
+	}
+	// Password, recovery and authorization transition state is shared with the
+	// APIFull handlers. Bind that store to the deployment-owned PostgreSQL
+	// schema before serving any requests; the in-memory default is test-only.
+	if err := sharedpersist.OpenPostgresReadOnly(c.PostgresDSN); err != nil {
+		panic(err)
+	}
 	MMDB, err := geoip2.Open(mmdb)
 	if err != nil {
 		// panic(err)
@@ -68,10 +77,9 @@ func New(c config.Config) *Dao {
 	kvStore := kv.NewStore(c.KV)
 	var passwordStore twofa.ProofStore = twofa.NewRedisProofStore(kvStore)
 	var passwordStoreErr error
-	if c.PostgresDSN != "" {
-		passwordStore, passwordStoreErr = twofa.OpenPostgresProofStore(c.PostgresDSN)
-	} else {
-		passwordStoreErr = errors.New("authorization: PostgresDSN is required")
+	passwordStore, passwordStoreErr = twofa.OpenPostgresProofStore(c.PostgresDSN)
+	if passwordStoreErr != nil {
+		panic(passwordStoreErr)
 	}
 	return &Dao{
 		kv:                kvStore,

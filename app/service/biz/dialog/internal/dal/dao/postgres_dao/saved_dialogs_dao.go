@@ -47,7 +47,10 @@ func (d *SavedDialogsDAO) InsertOrUpdate(ctx context.Context, do *dataobject.Sav
 	return id, 1, nil
 }
 func (d *SavedDialogsDAO) Select(ctx context.Context, userID int64, peerType int32, peerID int64) (*dataobject.SavedDialogsDO, error) {
-	return scanSavedDialog(d.db.QueryRow(ctx, `SELECT `+savedDialogColumns+` FROM saved_dialogs WHERE user_id = $1 AND peer_type = $2 AND peer_id = $3 AND deleted = FALSE`, userID, peerType, peerID))
+	return d.SelectOn(ctx, d.db, userID, peerType, peerID)
+}
+func (d *SavedDialogsDAO) SelectOn(ctx context.Context, db DB, userID int64, peerType int32, peerID int64) (*dataobject.SavedDialogsDO, error) {
+	return scanSavedDialog(db.QueryRow(ctx, `SELECT `+savedDialogColumns+` FROM saved_dialogs WHERE user_id = $1 AND peer_type = $2 AND peer_id = $3 AND deleted = FALSE`, userID, peerType, peerID))
 }
 func (d *SavedDialogsDAO) SelectPinnedDialogs(ctx context.Context, userID int64) ([]dataobject.SavedDialogsDO, error) {
 	return d.selectList(ctx, `user_id = $1 AND pinned > 0 AND deleted = FALSE ORDER BY pinned DESC`, userID)
@@ -85,6 +88,18 @@ func (d *SavedDialogsDAO) SelectDialogsWithCB(ctx context.Context, userID int64,
 	}
 	return list, err
 }
+
+func (d *SavedDialogsDAO) Count(ctx context.Context, userID int64, excludePinned bool) (int64, error) {
+	query := `SELECT count(*) FROM saved_dialogs WHERE user_id = $1 AND deleted = FALSE`
+	if excludePinned {
+		query += ` AND pinned = 0`
+	}
+	var count int64
+	if err := d.db.QueryRow(ctx, query, userID).Scan(&count); err != nil {
+		return 0, err
+	}
+	return count, nil
+}
 func (d *SavedDialogsDAO) selectList(ctx context.Context, where string, args ...any) ([]dataobject.SavedDialogsDO, error) {
 	rows, err := d.db.Query(ctx, `SELECT `+savedDialogColumns+` FROM saved_dialogs WHERE `+where, args...)
 	if err != nil {
@@ -107,7 +122,10 @@ func (d *SavedDialogsDAO) UpdateUserPeerPinned(ctx context.Context, pinned int64
 	return rowsAffected(tag), nil
 }
 func (d *SavedDialogsDAO) UpdateReadMaxId(ctx context.Context, readMaxID int32, userID int64, peerType int32, peerID int64) (int64, error) {
-	tag, err := d.db.Exec(ctx, `UPDATE saved_dialogs SET read_max_id = GREATEST(read_max_id, $1) WHERE user_id = $2 AND peer_type = $3 AND peer_id = $4 AND deleted = FALSE`, readMaxID, userID, peerType, peerID)
+	return d.UpdateReadMaxIdOn(ctx, d.db, readMaxID, userID, peerType, peerID)
+}
+func (d *SavedDialogsDAO) UpdateReadMaxIdOn(ctx context.Context, db DB, readMaxID int32, userID int64, peerType int32, peerID int64) (int64, error) {
+	tag, err := db.Exec(ctx, `UPDATE saved_dialogs SET read_max_id = GREATEST(read_max_id, $1) WHERE user_id = $2 AND peer_type = $3 AND peer_id = $4 AND deleted = FALSE`, readMaxID, userID, peerType, peerID)
 	if err != nil {
 		return 0, err
 	}

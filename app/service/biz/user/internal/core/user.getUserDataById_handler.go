@@ -19,6 +19,9 @@
 package core
 
 import (
+	"errors"
+
+	"github.com/teamgram/marmota/pkg/stores/sqlc"
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/service/biz/user/user"
 )
@@ -26,7 +29,13 @@ import (
 // UserGetUserDataById
 // user.getUserDataById user_id:long = UserData;
 func (c *UserCore) UserGetUserDataById(in *user.TLUserGetUserDataById) (*mtproto.UserData, error) {
-	cacheData := c.svcCtx.Dao.GetCacheUserData(c.ctx, in.UserId)
+	cacheData, err := c.svcCtx.Dao.GetCacheUserDataWithError(c.ctx, in.UserId)
+	if errors.Is(err, sqlc.ErrNotFound) {
+		return nil, mtproto.ErrUserIdInvalid
+	}
+	if err != nil {
+		return nil, err
+	}
 	if cacheData == nil {
 		c.Logger.Errorf("user.getUserDataById - error: not found userId(%d)", in.UserId)
 		return nil, mtproto.ErrUserIdInvalid

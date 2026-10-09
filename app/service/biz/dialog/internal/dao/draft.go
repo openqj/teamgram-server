@@ -16,6 +16,18 @@ import (
 )
 
 func (d *Dao) GetNoCacheAllDraftIdList(ctx context.Context, userId int64) ([]int64, error) {
+	if d != nil && d.Postgres != nil && d.Postgres.Store != nil && d.Postgres.Store.Dialogs != nil {
+		rows, err := d.Postgres.Store.Dialogs.SelectAllDrafts(ctx, userId)
+		if err != nil {
+			return nil, err
+		}
+		ids := make([]int64, 0, len(rows))
+		for i := range rows {
+			ids = append(ids, rows[i].Id)
+		}
+		return ids, nil
+	}
+
 	var (
 		draftIdList []int64
 	)
@@ -41,6 +53,10 @@ func (d *Dao) GetNoCacheAllDraftIdList(ctx context.Context, userId int64) ([]int
 }
 
 func (d *Dao) GetAllDraftIdList(ctx context.Context, userId int64) ([]int64, error) {
+	if d != nil && d.Postgres != nil {
+		return d.GetNoCacheAllDraftIdList(ctx, userId)
+	}
+
 	var (
 		draftIdList []int64
 	)

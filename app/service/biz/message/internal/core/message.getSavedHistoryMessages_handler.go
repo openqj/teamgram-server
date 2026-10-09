@@ -35,8 +35,7 @@ func (c *MessageCore) MessageGetSavedHistoryMessages(in *message.TLMessageGetSav
 		return nil, mtproto.ErrMethodNotImpl
 	}
 	hasPostgres := c.svcCtx.Dao.Postgres != nil && c.svcCtx.Dao.Postgres.Store != nil && c.svcCtx.Dao.Postgres.Store.Messages != nil
-	hasMysql := c.svcCtx.Dao.Mysql != nil && c.svcCtx.Dao.MessagesDAO != nil && c.svcCtx.Dao.CommonDAO != nil
-	if !hasPostgres && !hasMysql {
+	if !hasPostgres && !c.svcCtx.Dao.HasLegacyStore() {
 		return nil, mtproto.ErrMethodNotImpl
 	}
 	if in.UserId <= 0 {
@@ -55,6 +54,7 @@ func (c *MessageCore) MessageGetSavedHistoryMessages(in *message.TLMessageGetSav
 		maxId      = in.MaxId
 		hash       = in.Hash
 		boxList    []*mtproto.MessageBox
+		err        error
 	)
 	peer = normalizeSavedHistoryPeer(peer, selfUserId)
 	if limit > 100 {
@@ -73,62 +73,76 @@ func (c *MessageCore) MessageGetSavedHistoryMessages(in *message.TLMessageGetSav
 		loadType = loadTypeForward
 	}
 
-	if offsetId == 0 {
-		offsetId = math.MaxInt32
-	}
-
-	switch loadType {
-	case loadTypeBackward:
+	if in.OffsetDate > 0 {
+		offsetDate := in.OffsetDate
+		switch loadType {
+		case loadTypeBackward:
+			boxList, err = c.svcCtx.Dao.GetOffsetDateBackwardSavedHistoryMessages(c.ctx, selfUserId, peer, offsetDate, minId, maxId, addOffset+limit, hash)
+			if err != nil {
+				return nil, err
+			}
+		case loadTypeFirstAroundDate:
+			boxList1, err := c.svcCtx.Dao.GetOffsetDateForwardSavedHistoryMessages(c.ctx, selfUserId, peer, offsetDate, minId, maxId, -addOffset, hash)
+			if err != nil {
+				return nil, err
+			}
+			for i, j := 0, len(boxList1)-1; i < j; i, j = i+1, j-1 {
+				boxList1[i], boxList1[j] = boxList1[j], boxList1[i]
+			}
+			boxList = append(boxList, boxList1...)
+			boxList2, err := c.svcCtx.Dao.GetOffsetDateBackwardSavedHistoryMessages(c.ctx, selfUserId, peer, offsetDate, minId, maxId, limit+addOffset, hash)
+			if err != nil {
+				return nil, err
+			}
+			boxList = append(boxList, boxList2...)
+		case loadTypeForward:
+			boxList, err = c.svcCtx.Dao.GetOffsetDateForwardSavedHistoryMessages(c.ctx, selfUserId, peer, offsetDate, minId, maxId, -addOffset, hash)
+			if err != nil {
+				return nil, err
+			}
+			for i, j := 0, len(boxList)-1; i < j; i, j = i+1, j-1 {
+				boxList[i], boxList[j] = boxList[j], boxList[i]
+			}
+		}
+	} else {
 		if offsetId == 0 {
 			offsetId = math.MaxInt32
 		}
-		// c.svcCtx.Dao.MessageClient.MessageGet
-		var err error
-		boxList, err = c.svcCtx.Dao.GetOffsetIdBackwardSavedHistoryMessages(c.ctx, selfUserId, peer, offsetId, minId, maxId, addOffset+limit, hash)
-		if err != nil {
-			return nil, err
-		}
-	case loadTypeFirstAroundDate:
-		boxList1, err := c.svcCtx.GetOffsetIdForwardSavedHistoryMessages(c.ctx, selfUserId, peer, offsetId, minId, maxId, -addOffset, hash)
-		if err != nil {
-			return nil, err
-		}
-		for i, j := 0, len(boxList1)-1; i < j; i, j = i+1, j-1 {
-			boxList1[i], boxList1[j] = boxList1[j], boxList1[i]
-		}
-		boxList = append(boxList, boxList1...)
-		// 降序
-		boxList2, err := c.svcCtx.Dao.GetOffsetIdBackwardSavedHistoryMessages(c.ctx, selfUserId, peer, offsetId, minId, maxId, limit+addOffset, hash)
-		if err != nil {
-			return nil, err
-		}
-		// log.Infof("%v", messages2)
-		boxList = append(boxList, boxList2...)
-	case loadTypeForward:
-		var err error
-		boxList, err = c.svcCtx.Dao.GetOffsetIdForwardSavedHistoryMessages(c.ctx, selfUserId, peer, offsetId, minId, maxId, -addOffset, hash)
-		if err != nil {
-			return nil, err
-		}
-		for i, j := 0, len(boxList)-1; i < j; i, j = i+1, j-1 {
-			boxList[i], boxList[j] = boxList[j], boxList[i]
+		switch loadType {
+		case loadTypeBackward:
+			boxList, err = c.svcCtx.Dao.GetOffsetIdBackwardSavedHistoryMessages(c.ctx, selfUserId, peer, offsetId, minId, maxId, addOffset+limit, hash)
+			if err != nil {
+				return nil, err
+			}
+		case loadTypeFirstAroundDate:
+			boxList1, err := c.svcCtx.Dao.GetOffsetIdForwardSavedHistoryMessages(c.ctx, selfUserId, peer, offsetId, minId, maxId, -addOffset, hash)
+			if err != nil {
+				return nil, err
+			}
+			for i, j := 0, len(boxList1)-1; i < j; i, j = i+1, j-1 {
+				boxList1[i], boxList1[j] = boxList1[j], boxList1[i]
+			}
+			boxList = append(boxList, boxList1...)
+			boxList2, err := c.svcCtx.Dao.GetOffsetIdBackwardSavedHistoryMessages(c.ctx, selfUserId, peer, offsetId, minId, maxId, limit+addOffset, hash)
+			if err != nil {
+				return nil, err
+			}
+			boxList = append(boxList, boxList2...)
+		case loadTypeForward:
+			boxList, err = c.svcCtx.Dao.GetOffsetIdForwardSavedHistoryMessages(c.ctx, selfUserId, peer, offsetId, minId, maxId, -addOffset, hash)
+			if err != nil {
+				return nil, err
+			}
+			for i, j := 0, len(boxList)-1; i < j; i, j = i+1, j-1 {
+				boxList[i], boxList[j] = boxList[j], boxList[i]
+			}
 		}
 	}
 
 	var (
 		count int64
-		err   error
 	)
-	if hasPostgres {
-		count, err = c.svcCtx.Dao.CountSavedMessages(c.ctx, selfUserId, peer.PeerType, peer.PeerId)
-	} else {
-		count = int64(c.svcCtx.Dao.CommonDAO.CalcSize(c.ctx, c.svcCtx.Dao.MessagesDAO.CalcTableName(selfUserId), map[string]interface{}{
-			"user_id":         selfUserId,
-			"saved_peer_type": peer.PeerType,
-			"saved_peer_id":   peer.PeerId,
-			"deleted":         0,
-		}))
-	}
+	count, err = c.svcCtx.Dao.CountSavedMessages(c.ctx, selfUserId, peer.PeerType, peer.PeerId)
 	if err != nil {
 		return nil, err
 	}

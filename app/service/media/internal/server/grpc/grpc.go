@@ -13,6 +13,7 @@ import (
 	"github.com/teamgram/teamgram-server/app/service/media/internal/server/grpc/service"
 	"github.com/teamgram/teamgram-server/app/service/media/internal/svc"
 	"github.com/teamgram/teamgram-server/app/service/media/media"
+	"github.com/teamgram/teamgram-server/app/service/media/media/hashrpc"
 
 	"github.com/zeromicro/go-zero/core/logx"
 	"github.com/zeromicro/go-zero/zrpc"
@@ -22,7 +23,9 @@ import (
 // New new a grpc server.
 func New(ctx *svc.ServiceContext, c zrpc.RpcServerConf) *zrpc.RpcServer {
 	s, err := zrpc.NewServer(c, func(grpcServer *grpc.Server) {
-		media.RegisterRPCMediaServer(grpcServer, service.New(ctx))
+		mediaService := service.New(ctx)
+		media.RegisterRPCMediaServer(grpcServer, mediaService)
+		hashrpc.RegisterDocumentHashLookupServer(grpcServer, mediaService)
 	})
 	logx.Must(err)
 	return s

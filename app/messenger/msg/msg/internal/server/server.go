@@ -35,12 +35,12 @@ func New() *Server {
 
 func (s *Server) Initialize() error {
 	var c config.Config
-	conf.MustLoad(*configFile, &c)
+	conf.MustLoad(*configFile, &c, conf.UseEnv())
 	if c.Postgres.DSN == "" {
 		return errors.New("msg: Postgres.DSN is required")
 	}
 
-	logx.Infov(c)
+	logx.Infof("messenger msg service config loaded")
 	ctx := svc.NewServiceContext(c, nil)
 	s.ctx = ctx
 	s.grpcSrv = grpc.New(ctx, c.RpcServerConf)
@@ -58,7 +58,7 @@ func (s *Server) Destroy() {
 	if s.grpcSrv != nil {
 		s.grpcSrv.Stop()
 	}
-	if s.ctx != nil && s.ctx.Dao != nil && s.ctx.Dao.Postgres != nil {
-		s.ctx.Dao.Postgres.Close()
+	if s.ctx != nil {
+		s.ctx.Close()
 	}
 }

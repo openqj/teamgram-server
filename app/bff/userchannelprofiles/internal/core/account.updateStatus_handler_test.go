@@ -127,6 +127,52 @@ func TestAccountUpdateStatusReturnsPushFailure(t *testing.T) {
 	}
 }
 
+func TestAccountUpdateStatusValidatesContextAndRequest(t *testing.T) {
+	users := &statusUserClient{sequence: &[]string{}}
+	syncer := &statusSyncClient{sequence: &[]string{}}
+
+	for name, core := range map[string]*UserChannelProfilesCore{
+		"nil core": nil,
+		"missing metadata": {
+			ctx:    context.Background(),
+			svcCtx: &svc.ServiceContext{Dao: &dao.Dao{UserClient: users, SyncClient: syncer}},
+		},
+		"missing user": {
+			ctx:    context.Background(),
+			svcCtx: &svc.ServiceContext{Dao: &dao.Dao{UserClient: users, SyncClient: syncer}},
+			MD:     &metadata.RpcMetadata{},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got, err := core.AccountUpdateStatus(&mtproto.TLAccountUpdateStatus{Offline: mtproto.BoolFalse}); got != nil || !errors.Is(err, mtproto.ErrAuthKeyUnregistered) {
+				t.Fatalf("result=(%v,%v), want auth error", got, err)
+			}
+		})
+	}
+
+	core := newStatusCore(users, syncer)
+	if got, err := core.AccountUpdateStatus(nil); got != nil || !errors.Is(err, mtproto.ErrInputRequestInvalid) {
+		t.Fatalf("nil request result=(%v,%v), want input error", got, err)
+	}
+	if got, err := core.AccountUpdateStatus(&mtproto.TLAccountUpdateStatus{}); got != nil || !errors.Is(err, mtproto.ErrInputRequestInvalid) {
+		t.Fatalf("missing offline result=(%v,%v), want input error", got, err)
+	}
+
+	for name, svcCtx := range map[string]*svc.ServiceContext{
+		"missing dao":         {},
+		"missing user client": {Dao: &dao.Dao{SyncClient: syncer}},
+		"missing sync client": {Dao: &dao.Dao{UserClient: users}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			candidate := newStatusCore(users, syncer)
+			candidate.svcCtx = svcCtx
+			if got, err := candidate.AccountUpdateStatus(&mtproto.TLAccountUpdateStatus{Offline: mtproto.BoolFalse}); got != nil || !errors.Is(err, mtproto.ErrInternalServerError) {
+				t.Fatalf("result=(%v,%v), want internal error", got, err)
+			}
+		})
+	}
+}
+
 func newStatusCore(users *statusUserClient, syncer *statusSyncClient) *UserChannelProfilesCore {
 	return &UserChannelProfilesCore{
 		ctx: context.Background(),

@@ -19,7 +19,9 @@
 package server
 
 import (
+	"errors"
 	"flag"
+	"strings"
 
 	"github.com/teamgram/teamgram-server/app/bff/passkey/internal/config"
 	"github.com/teamgram/teamgram-server/app/bff/passkey/internal/server/grpc"
@@ -34,6 +36,7 @@ var configFile = flag.String("f", "etc/passkey.yaml", "the config file")
 
 type Server struct {
 	grpcSrv *zrpc.RpcServer
+	ctx     *svc.ServiceContext
 }
 
 func New() *Server {
@@ -42,10 +45,14 @@ func New() *Server {
 
 func (s *Server) Initialize() error {
 	var c config.Config
-	conf.MustLoad(*configFile, &c)
+	conf.MustLoad(*configFile, &c, conf.UseEnv())
+	if strings.TrimSpace(c.PostgresDSN) == "" {
+		return errors.New("passkey: PostgresDSN is required")
+	}
 
-	logx.Infov(c)
+	logx.Infof("passkey config loaded")
 	ctx := svc.NewServiceContext(c)
+	s.ctx = ctx
 	s.grpcSrv = grpc.New(ctx, c.RpcServerConf)
 
 	go func() {
@@ -58,5 +65,10 @@ func (s *Server) RunLoop() {
 }
 
 func (s *Server) Destroy() {
-	s.grpcSrv.Stop()
+	if s.grpcSrv != nil {
+		s.grpcSrv.Stop()
+	}
+	if s.ctx != nil && s.ctx.Dao != nil {
+		s.ctx.Dao.Close()
+	}
 }

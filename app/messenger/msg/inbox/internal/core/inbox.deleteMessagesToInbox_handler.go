@@ -21,6 +21,7 @@ package core
 import (
 	"context"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/messenger/msg/inbox/inbox"
 	"github.com/teamgram/teamgram-server/app/messenger/sync/sync"
@@ -29,6 +30,25 @@ import (
 // InboxDeleteMessagesToInbox
 // inbox.deleteMessagesToInbox from_id:long id:Vector<int> = Void;
 func (c *InboxCore) InboxDeleteMessagesToInbox(in *inbox.TLInboxDeleteMessagesToInbox) (*mtproto.Void, error) {
+	if in == nil || in.FromId <= 0 {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if c.svcCtx.Dao.Postgres != nil {
+		rows, err := c.svcCtx.Dao.Postgres.Pool.Query(c.ctx, `SELECT DISTINCT user_id FROM messages WHERE dialog_message_id=ANY($1::bigint[]) AND user_id<>$2 AND NOT deleted ORDER BY user_id`, in.Id, in.FromId)
+		if err != nil {
+			return nil, err
+		}
+		users, err := pgx.CollectRows(rows, pgx.RowTo[int64])
+		if err != nil {
+			return nil, err
+		}
+		for _, userID := range users {
+			if err := c.svcCtx.Dao.DeleteInboxMessageState(c.ctx, userID, in.Id); err != nil {
+				return nil, err
+			}
+		}
+		return mtproto.EmptyVoid, nil
+	}
 	_ = c.svcCtx.Dao.DeleteInboxMessages(
 		c.ctx,
 		in.FromId,

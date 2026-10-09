@@ -26,9 +26,9 @@ func (c *MessageCore) MessageUnPinAllMessages(in *message.TLMessageUnPinAllMessa
 		mtproto.PEER_USER,
 		mtproto.PEER_CHAT:
 		dialogId := mtproto.MakeDialogId(in.UserId, in.PeerType, in.PeerId)
-		idList, _ = c.svcCtx.Dao.MessagesDAO.SelectPinnedMessageIdList(c.ctx, in.UserId, dialogId.A, dialogId.B)
+		idList, _ = c.svcCtx.Dao.SelectPinnedMessageIDs(c.ctx, in.UserId, dialogId.A, dialogId.B)
 		if len(idList) > 0 {
-			c.svcCtx.Dao.MessagesDAO.UpdateUnPinnedByIdList(c.ctx, in.UserId, idList)
+			_, _ = c.svcCtx.Dao.UnpinMessages(c.ctx, in.UserId, idList)
 		}
 	case mtproto.PEER_CHANNEL:
 		c.Logger.Errorf("message.unPinAllMessages blocked, License key from https://teamgram.net required to unlock enterprise features.")

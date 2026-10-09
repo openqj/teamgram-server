@@ -17,6 +17,18 @@ import (
 )
 
 func (d *Dao) GetNoCachePinnedDialogIdList(ctx context.Context, userId int64) ([]int64, error) {
+	if d != nil && d.Postgres != nil && d.Postgres.Store != nil && d.Postgres.Store.Dialogs != nil {
+		rows, err := d.Postgres.Store.Dialogs.SelectPinnedDialogs(ctx, userId)
+		if err != nil {
+			return nil, err
+		}
+		ids := make([]int64, 0, len(rows))
+		for i := range rows {
+			ids = append(ids, rows[i].PeerDialogId)
+		}
+		return ids, nil
+	}
+
 	var (
 		dialogIdList []int64
 	)
@@ -42,6 +54,10 @@ func (d *Dao) GetNoCachePinnedDialogIdList(ctx context.Context, userId int64) ([
 }
 
 func (d *Dao) GetPinnedDialogIdList(ctx context.Context, userId int64) ([]int64, error) {
+	if d != nil && d.Postgres != nil {
+		return d.GetNoCachePinnedDialogIdList(ctx, userId)
+	}
+
 	var (
 		dialogIdList []int64
 	)
@@ -84,6 +100,18 @@ func (d *Dao) GetPinnedDialogIdList(ctx context.Context, userId int64) ([]int64,
 }
 
 func (d *Dao) GetNoCacheNotPinnedDialogIdList(ctx context.Context, userId int64) ([]int64, error) {
+	if d != nil && d.Postgres != nil && d.Postgres.Store != nil && d.Postgres.Store.Dialogs != nil {
+		rows, err := d.Postgres.Store.Dialogs.SelectExcludePinnedDialogs(ctx, userId)
+		if err != nil {
+			return nil, err
+		}
+		ids := make([]int64, 0, len(rows))
+		for i := range rows {
+			ids = append(ids, rows[i].PeerDialogId)
+		}
+		return ids, nil
+	}
+
 	var (
 		dialogIdList []int64
 	)
@@ -109,6 +137,10 @@ func (d *Dao) GetNoCacheNotPinnedDialogIdList(ctx context.Context, userId int64)
 }
 
 func (d *Dao) GetNotPinnedDialogIdList(ctx context.Context, userId int64) ([]int64, error) {
+	if d != nil && d.Postgres != nil {
+		return d.GetNoCacheNotPinnedDialogIdList(ctx, userId)
+	}
+
 	var (
 		dialogIdList []int64
 	)
@@ -151,6 +183,18 @@ func (d *Dao) GetNotPinnedDialogIdList(ctx context.Context, userId int64) ([]int
 }
 
 func (d *Dao) GetNoCacheFolderPinnedDialogIdList(ctx context.Context, userId int64, folderId int32) ([]int64, error) {
+	if d != nil && d.Postgres != nil && d.Postgres.Store != nil && d.Postgres.Store.Dialogs != nil {
+		rows, err := d.Postgres.Store.Dialogs.SelectFolderPinnedDialogsWithCB(ctx, userId, folderId, nil)
+		if err != nil {
+			return nil, err
+		}
+		ids := make([]int64, 0, len(rows))
+		for i := range rows {
+			ids = append(ids, rows[i].PeerDialogId)
+		}
+		return ids, nil
+	}
+
 	var (
 		dialogIdList []int64
 	)
@@ -177,6 +221,10 @@ func (d *Dao) GetNoCacheFolderPinnedDialogIdList(ctx context.Context, userId int
 }
 
 func (d *Dao) GetFolderPinnedDialogIdList(ctx context.Context, userId int64) ([]int64, error) {
+	if d != nil && d.Postgres != nil {
+		return d.GetNoCacheFolderPinnedDialogIdList(ctx, userId, 1)
+	}
+
 	var (
 		dialogIdList []int64
 	)
@@ -220,6 +268,18 @@ func (d *Dao) GetFolderPinnedDialogIdList(ctx context.Context, userId int64) ([]
 }
 
 func (d *Dao) GetNoCacheFolderNotPinnedDialogIdList(ctx context.Context, userId int64, folderId int32) ([]int64, error) {
+	if d != nil && d.Postgres != nil && d.Postgres.Store != nil && d.Postgres.Store.Dialogs != nil {
+		rows, err := d.Postgres.Store.Dialogs.SelectExcludeFolderPinnedDialogsWithCB(ctx, userId, folderId, nil)
+		if err != nil {
+			return nil, err
+		}
+		ids := make([]int64, 0, len(rows))
+		for i := range rows {
+			ids = append(ids, rows[i].PeerDialogId)
+		}
+		return ids, nil
+	}
+
 	var (
 		dialogIdList []int64
 	)
@@ -246,6 +306,10 @@ func (d *Dao) GetNoCacheFolderNotPinnedDialogIdList(ctx context.Context, userId 
 }
 
 func (d *Dao) GetFolderNotPinnedDialogIdList(ctx context.Context, userId int64) ([]int64, error) {
+	if d != nil && d.Postgres != nil {
+		return d.GetNoCacheFolderNotPinnedDialogIdList(ctx, userId, 1)
+	}
+
 	var (
 		dialogIdList []int64
 	)
@@ -289,6 +353,24 @@ func (d *Dao) GetFolderNotPinnedDialogIdList(ctx context.Context, userId int64) 
 }
 
 func (d *Dao) GetDialogListByIdList(ctx context.Context, userId int64, idList []int64) ([]*dialog.DialogExt, error) {
+	if d != nil && d.Postgres != nil && d.Postgres.Store != nil && d.Postgres.Store.Dialogs != nil {
+		rows, err := d.Postgres.Store.Dialogs.SelectPeerDialogList(ctx, userId, idList)
+		if err != nil {
+			return nil, err
+		}
+		byPeerDialogID := make(map[int64]*dialog.DialogExt, len(rows))
+		for i := range rows {
+			byPeerDialogID[rows[i].PeerDialogId] = d.MakeDialog(&rows[i])
+		}
+		result := make(dialog.DialogExtList, 0, len(rows))
+		for _, id := range idList {
+			if value := byPeerDialogID[id]; value != nil {
+				result = append(result, value)
+			}
+		}
+		return result, nil
+	}
+
 	var (
 		dlgExtList = make(dialog.DialogExtList, 0, len(idList))
 		keyList    = make([]string, 0, len(idList))

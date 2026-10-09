@@ -64,7 +64,10 @@ func (c *UserChannelProfilesCore) ContactsGetBirthdays(in *mtproto.TLContactsGet
 	}
 
 	cUsers, err := c.svcCtx.Dao.UserClient.UserGetMutableUsersV2(c.ctx, &user.TLUserGetMutableUsersV2{
-		Id: idList,
+		Id:      append(append([]int64{}, idList...), c.MD.UserId),
+		Privacy: true,
+		HasTo:   true,
+		To:      []int64{c.MD.UserId},
 	})
 	if err != nil {
 		c.Logger.Errorf("contacts.getBirthdays - error: %v", err)

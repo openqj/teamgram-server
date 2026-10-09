@@ -19,60 +19,36 @@
 package core
 
 import (
-	"context"
-	"github.com/teamgram/marmota/pkg/stores/sqlx"
+	"errors"
+
+	"github.com/jackc/pgx/v5"
 	"github.com/teamgram/proto/mtproto"
-	"github.com/teamgram/teamgram-server/app/service/biz/user/internal/dao"
 	"github.com/teamgram/teamgram-server/app/service/biz/user/user"
 )
 
 // UserEditCloseFriends
 // user.editCloseFriends user_id:long id:Vector<long> = Bool;
 func (c *UserCore) UserEditCloseFriends(in *user.TLUserEditCloseFriends) (*mtproto.Bool, error) {
-	var (
-		cList   = c.svcCtx.Dao.GetCloseFriendList(c.ctx, in.UserId)
-		kList   []string
-		cIdList []int64
-	)
-
-	if len(cList) == 0 && len(in.Id) == 0 {
-		return mtproto.BoolTrue, nil
-	}
-
-	for _, id := range in.Id {
-		kList = append(kList, dao.GenContactCacheKey(in.UserId, id))
-	}
-
-	for _, c := range cList {
-		kList = append(kList, dao.GenContactCacheKey(in.UserId, c.ContactUserId))
-		cIdList = append(cIdList, c.ContactUserId)
-	}
-
-	c.svcCtx.Dao.CachedConn.Exec(
-		c.ctx,
-		func(ctx context.Context, conn *sqlx.DB) (int64, int64, error) {
-			var (
-				err error
-			)
-
-			if len(cIdList) > 0 {
-				_, err = c.svcCtx.Dao.UserContactsDAO.UpdateCloseFriend(c.ctx, false, in.UserId, cIdList)
-				if err != nil {
-					c.Logger.Errorf("user.editCloseFriends - error: %v", err)
-					return 0, 0, err
-				}
+	err := c.svcCtx.Dao.Postgres.InTx(c.ctx, func(tx pgx.Tx) error {
+		var userID int64
+		if err := tx.QueryRow(c.ctx, `SELECT id FROM users WHERE id=$1 FOR UPDATE`, in.UserId).Scan(&userID); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return mtproto.ErrUserIdInvalid
 			}
-
-			if len(in.Id) > 0 {
-				_, err = c.svcCtx.Dao.UserContactsDAO.UpdateCloseFriend(c.ctx, true, in.UserId, in.Id)
-				if err != nil {
-					c.Logger.Errorf("user.editCloseFriends - error: %v", err)
-				}
-			}
-
-			return 0, 0, err
-		},
-		kList...)
+			return err
+		}
+		if _, err := tx.Exec(c.ctx, `UPDATE user_contacts SET close_friend=FALSE WHERE owner_user_id=$1 AND close_friend=TRUE`, in.UserId); err != nil {
+			return err
+		}
+		if len(in.Id) > 0 {
+			_, err := c.svcCtx.Dao.Postgres.Store.Contacts.UpdateCloseFriendTx(c.ctx, tx, true, in.UserId, in.Id)
+			return err
+		}
+		return nil
+	})
+	if err != nil {
+		return mtproto.BoolFalse, err
+	}
 
 	return mtproto.BoolTrue, nil
 }

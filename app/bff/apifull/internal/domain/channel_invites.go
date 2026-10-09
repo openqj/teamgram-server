@@ -67,17 +67,29 @@ func CreateChannelInvite(invite ChannelInvite) (ChannelInvite, error) {
 	if invite.Date == 0 {
 		invite.Date = time.Now().Unix()
 	}
-	_, err := db.Exec(`INSERT INTO chat_invites
+	tx, err := db.Begin()
+	if err != nil {
+		return ChannelInvite{}, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	_, err = tx.Exec(`INSERT INTO chat_invites
 		(chat_id, admin_id, link, permanent, revoked, request_needed, start_date, expire_date,
 		usage_limit, usage2, requested, title, date2)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
 		invite.ChannelID, invite.AdminID, invite.Link, invite.Permanent, invite.Revoked,
 		invite.RequestNeeded, invite.StartDate, invite.ExpireDate, invite.UsageLimit,
 		invite.Usage, invite.Requested, invite.Title, invite.Date)
 	if err != nil {
 		return ChannelInvite{}, err
 	}
-	return loadChannelInvite(db, invite.Link)
+	stored, err := loadChannelInvite(tx, invite.Link)
+	if err != nil {
+		return ChannelInvite{}, err
+	}
+	if err = tx.Commit(); err != nil {
+		return ChannelInvite{}, err
+	}
+	return stored, nil
 }
 
 func GetChannelInvite(channelID int64, link string) (ChannelInvite, error) {
@@ -214,7 +226,7 @@ func DeleteChannelInvite(channelID int64, link string) (bool, error) {
 	if db == nil {
 		return false, errors.New("domain PostgreSQL is not open")
 	}
-	result, err := db.Exec(`DELETE FROM chat_invites WHERE chat_id=? AND link=?`, channelID, link)
+	result, err := execPostgresMutation(`DELETE FROM chat_invites WHERE chat_id=$1 AND link=$2`, channelID, link)
 	if err != nil {
 		return false, err
 	}
@@ -226,7 +238,7 @@ func DeleteRevokedChannelInvites(channelID, adminID int64) error {
 	if db == nil {
 		return errors.New("domain PostgreSQL is not open")
 	}
-	_, err := db.Exec(`DELETE FROM chat_invites WHERE chat_id=? AND admin_id=? AND revoked=1`, channelID, adminID)
+	_, err := execPostgresMutation(`DELETE FROM chat_invites WHERE chat_id=$1 AND admin_id=$2 AND revoked=TRUE`, channelID, adminID)
 	return err
 }
 

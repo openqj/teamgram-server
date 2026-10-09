@@ -18,8 +18,6 @@
 package core
 
 import (
-	"strconv"
-
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/messenger/sync/sync"
 	chatpb "github.com/teamgram/teamgram-server/app/service/biz/chat/chat"
@@ -174,17 +172,4 @@ func futureCreatorUserId(chat *mtproto.MutableChat, leaving int64) int64 {
 		return member.UserId
 	}
 	return 0
-}
-
-func stickerSetValue(set *mtproto.InputStickerSet) string {
-	if set == nil {
-		return "0"
-	}
-	if set.GetPredicateName() == mtproto.Predicate_inputStickerSetID || set.GetId() != 0 {
-		return strconv.FormatInt(set.GetId(), 10)
-	}
-	if set.GetShortName() != "" {
-		return set.GetShortName()
-	}
-	return "0"
 }

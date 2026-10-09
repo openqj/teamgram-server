@@ -27,6 +27,7 @@ import (
 func (c *ConfigurationCore) HelpGetSupportName(in *mtproto.TLHelpGetSupportName) (*mtproto.Help_SupportName, error) {
 	_ = in
 
-	// No support user is stored.
+	// No support user is configured for this deployment.  The typed empty name
+	// is the protocol response and keeps clients from decoding a nil result.
 	return mtproto.MakeTLHelpSupportName(&mtproto.Help_SupportName{}).To_Help_SupportName(), nil
 }

@@ -26,11 +26,15 @@ import (
 // DialogGetDialogFilterBySlug
 // dialog.getDialogFilterBySlug user_id:long slug:string = DialogFilterExt;
 func (c *DialogCore) DialogGetDialogFilterBySlug(in *dialog.TLDialogGetDialogFilterBySlug) (*dialog.DialogFilterExt, error) {
+	if c == nil || c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.Postgres == nil ||
+		c.svcCtx.Dao.Postgres.Store == nil || c.svcCtx.Dao.Postgres.Store.DialogFilters == nil {
+		return nil, mtproto.ErrMethodNotImpl
+	}
 	var (
 		dialogFilter *dialog.DialogFilterExt
 	)
 
-	v, err := c.svcCtx.Dao.DialogFiltersDAO.SelectBySlug(c.ctx, in.UserId, in.Slug)
+	v, err := c.svcCtx.Dao.Postgres.Store.DialogFilters.SelectBySlug(c.ctx, in.UserId, in.Slug)
 	if err != nil {
 		c.Logger.Errorf("dialog.getDialogFilterBySlug - error: %v", err)
 		return nil, err

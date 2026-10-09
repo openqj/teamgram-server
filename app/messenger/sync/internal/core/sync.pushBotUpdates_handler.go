@@ -37,7 +37,9 @@ func (c *SyncCore) SyncPushBotUpdates(in *sync.TLSyncPushBotUpdates) (*mtproto.V
 	if err != nil {
 		return nil, err
 	}
-	c.pushUpdatesToSession(syncTypeUser, in.GetUserId(), 0, nil, nil, nil, in.GetUpdates(), notification)
+	if err := c.pushUpdatesToSession(syncTypeUser, in.GetUserId(), 0, nil, nil, nil, in.GetUpdates(), notification); err != nil {
+		return nil, err
+	}
 
 	return mtproto.EmptyVoid, nil
 }

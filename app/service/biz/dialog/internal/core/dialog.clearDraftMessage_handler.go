@@ -10,12 +10,9 @@
 package core
 
 import (
-	"context"
-	"time"
-
-	"github.com/teamgram/marmota/pkg/stores/sqlx"
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/service/biz/dialog/dialog"
+	"time"
 
 	"github.com/zeromicro/go-zero/core/jsonx"
 )
@@ -31,7 +28,11 @@ func getEmptyDraftMessage() string {
 // DialogClearDraftMessage
 // dialog.clearDraftMessage user_id:long peer_type:int peer_id:long = Bool;
 func (c *DialogCore) DialogClearDraftMessage(in *dialog.TLDialogClearDraftMessage) (*mtproto.Bool, error) {
-	dlgDO, err := c.svcCtx.Dao.DialogsDAO.SelectDialog(
+	if c == nil || c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.Postgres == nil ||
+		c.svcCtx.Dao.Postgres.Store == nil || c.svcCtx.Dao.Postgres.Store.Dialogs == nil {
+		return nil, mtproto.ErrMethodNotImpl
+	}
+	dlgDO, err := c.svcCtx.Dao.Postgres.Store.Dialogs.SelectDialog(
 		c.ctx,
 		in.UserId,
 		in.PeerType,
@@ -42,20 +43,13 @@ func (c *DialogCore) DialogClearDraftMessage(in *dialog.TLDialogClearDraftMessag
 	}
 
 	if dlgDO != nil && dlgDO.DraftType == 2 {
-		_, _, err = c.svcCtx.Dao.CachedConn.Exec(
+		_, err = c.svcCtx.Dao.Postgres.Store.Dialogs.SaveDraft(
 			c.ctx,
-			func(ctx context.Context, conn *sqlx.DB) (int64, int64, error) {
-				_, err := c.svcCtx.Dao.DialogsDAO.SaveDraft(
-					ctx,
-					1,
-					getEmptyDraftMessage(),
-					in.UserId,
-					in.PeerType,
-					in.PeerId)
-				return 0, 0, err
-			},
-			dialog.GetDialogCacheKeyByPeer(in.UserId, in.PeerType, in.PeerId),
-			dialog.GetAllDraftIdListCacheKey(in.UserId))
+			1,
+			getEmptyDraftMessage(),
+			in.UserId,
+			in.PeerType,
+			in.PeerId)
 		if err != nil {
 			c.Logger.Errorf("dialog.clearDraftMessage - error: %v", err)
 			return nil, err

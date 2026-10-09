@@ -11,11 +11,11 @@
 package inbox_helper
 
 import (
-	kafka "github.com/teamgram/marmota/pkg/mq"
 	"github.com/teamgram/teamgram-server/app/messenger/msg/inbox/internal/config"
 	"github.com/teamgram/teamgram-server/app/messenger/msg/inbox/internal/core"
 	"github.com/teamgram/teamgram-server/app/messenger/msg/inbox/internal/server/mq"
 	"github.com/teamgram/teamgram-server/app/messenger/msg/inbox/internal/svc"
+	"github.com/teamgram/teamgram-server/pkg/mqconsumer"
 )
 
 type (
@@ -29,7 +29,7 @@ var (
 	NewInboxCore      = core.New
 )
 
-func New(c Config) *kafka.ConsumerGroup {
+func New(c Config) *mqconsumer.Consumer {
 	consumer, _ := NewWithContext(c)
 	return consumer
 }
@@ -38,7 +38,7 @@ func New(c Config) *kafka.ConsumerGroup {
 // callback so callers that own the process can close the PostgreSQL pool
 // during shutdown. New keeps the generated helper's original API for other
 // callers.
-func NewWithContext(c Config) (*kafka.ConsumerGroup, func()) {
+func NewWithContext(c Config) (*mqconsumer.Consumer, func()) {
 	ctx := svc.NewServiceContext(c)
 	closeContext := func() {
 		if ctx.Dao != nil && ctx.Dao.Postgres != nil {

@@ -19,6 +19,7 @@
 package core
 
 import (
+	"github.com/jackc/pgx/v5"
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/service/biz/user/user"
 )
@@ -35,20 +36,6 @@ func (c *UserCore) UserUpdateBotData(in *user.TLUserUpdateBotData) (*mtproto.Boo
 	}
 	if c.MD == nil || c.MD.GetUserId() <= 0 {
 		return nil, mtproto.ErrMethodNotImpl
-	}
-
-	botDO, err := c.svcCtx.Dao.Postgres.Store.Bots.Select(c.ctx, in.GetBotId())
-	if err != nil {
-		return nil, err
-	}
-	if botDO == nil || botDO.BotId != in.GetBotId() {
-		return nil, mtproto.ErrBotInvalid
-	}
-	if botDO.CreatorUserId <= 0 {
-		return nil, mtproto.ErrMethodNotImpl
-	}
-	if botDO.CreatorUserId != c.MD.GetUserId() {
-		return nil, mtproto.ErrForbiddenUserBotInvalid
 	}
 
 	changes := make(map[string]any, 6)
@@ -70,13 +57,28 @@ func (c *UserCore) UserUpdateBotData(in *user.TLUserUpdateBotData) (*mtproto.Boo
 	if in.GetBotHasMainApp() != nil {
 		changes["bot_has_main_app"] = mtproto.FromBool(in.GetBotHasMainApp())
 	}
-	if len(changes) == 0 {
-		return mtproto.BoolTrue, nil
-	}
-
-	if _, err = c.svcCtx.Dao.Postgres.Store.Bots.Update(c.ctx, changes, in.GetBotId()); err != nil {
+	err := c.svcCtx.Dao.Postgres.InTx(c.ctx, func(tx pgx.Tx) error {
+		botDO, err := c.svcCtx.Dao.Postgres.Store.Bots.SelectForUpdateTx(c.ctx, tx, in.GetBotId())
+		if err != nil {
+			return err
+		}
+		if botDO == nil || botDO.BotId != in.GetBotId() {
+			return mtproto.ErrBotInvalid
+		}
+		if botDO.CreatorUserId <= 0 {
+			return mtproto.ErrMethodNotImpl
+		}
+		if botDO.CreatorUserId != c.MD.GetUserId() {
+			return mtproto.ErrForbiddenUserBotInvalid
+		}
+		if len(changes) == 0 {
+			return nil
+		}
+		_, err = c.svcCtx.Dao.Postgres.Store.Bots.UpdateTx(c.ctx, tx, changes, in.GetBotId())
+		return err
+	})
+	if err != nil {
 		return nil, err
 	}
-
 	return mtproto.BoolTrue, nil
 }

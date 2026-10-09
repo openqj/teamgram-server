@@ -81,7 +81,7 @@ func (d *Dao) SendDataToGateway(ctx context.Context, gatewayId string, authKeyId
 	payload := SerializeToBuffer2(salt, sessionId, msg)
 
 	if d.UseStreamGateway && d.streamingGateway != nil {
-		return d.streamingGateway.SendDataToGateway(gatewayId, authKeyId, sessionId, payload)
+		return d.streamingGateway.SendDataToGateway(ctx, gatewayId, authKeyId, sessionId, payload)
 	}
 
 	d.gateMu.RLock()

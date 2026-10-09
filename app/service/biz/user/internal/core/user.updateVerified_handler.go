@@ -17,9 +17,9 @@ import (
 // UserUpdateVerified
 // user.updateVerified user_id:long verified:Bool = Bool;
 func (c *UserCore) UserUpdateVerified(in *user.TLUserUpdateVerified) (*mtproto.Bool, error) {
-	rowsAffected, err := c.svcCtx.Dao.UsersDAO.UpdateUser(c.ctx, map[string]interface{}{
+	rowsAffected, err := c.svcCtx.Dao.UpdateUserFields(c.ctx, in.UserId, map[string]any{
 		"verified": mtproto.FromBool(in.Verified),
-	}, in.UserId)
+	})
 
 	if err != nil {
 		c.Logger.Errorf("user.updateVerified - error: %v", err)

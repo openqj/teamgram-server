@@ -26,6 +26,9 @@ import (
 // AuthsessionSetInitConnection
 // authsession.setInitConnection auth_key_id:long ip:string api_id:int device_model:string system_version:string app_version:string system_lang_code:string lang_pack:string lang_code:string proxy:string params:string = Bool;
 func (c *AuthsessionCore) AuthsessionSetInitConnection(in *authsession.TLAuthsessionSetInitConnection) (*mtproto.Bool, error) {
+	if in == nil || in.GetAuthKeyId() == 0 {
+		return nil, mtproto.ErrAuthKeyInvalid
+	}
 	var (
 		initConnection = in
 		inKeyId        = in.GetAuthKeyId()

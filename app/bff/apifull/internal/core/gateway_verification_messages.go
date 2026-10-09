@@ -19,9 +19,11 @@
 package core
 
 import (
+	"context"
 	"strconv"
 
 	"github.com/teamgram/proto/mtproto"
+	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/domain"
 	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/persist"
 )
 
@@ -32,14 +34,33 @@ func (c *ApiFullCore) MessagesReportMessagesDelivery(in *mtproto.TLMessagesRepor
 	if err != nil {
 		return nil, err
 	}
+	ids := []int32(nil)
+	if in != nil {
+		ids = in.GetId()
+	}
+	if len(ids) == 0 {
+		return nil, mtproto.ErrMessageIdInvalid
+	}
+	for _, id := range ids {
+		if id <= 0 {
+			return nil, mtproto.ErrMessageIdInvalid
+		}
+	}
+	if domain.Ready() {
+		ctx := c.ctx
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		if err = domain.RecordMessagesDelivery(ctx, uid, ids); err != nil {
+			return nil, err
+		}
+	}
+	// Keep the compatibility mirror after validation and the durable write.
+	// Invalid requests or failed PostgreSQL writes must not leave state.
 	if err = restPut(uid, "messages.reportMessagesDelivery", in); err != nil {
 		return nil, err
 	}
-	id := ""
-	if in != nil && len(in.GetId()) > 0 {
-		id = strconv.FormatInt(int64(in.GetId()[0]), 10)
-	}
-	if err = persist.Default.Set(b18Key(uid, "delivery"), id); err != nil {
+	if err = persist.Default.Set(b18Key(uid, "delivery"), strconv.FormatInt(int64(ids[0]), 10)); err != nil {
 		return nil, err
 	}
 	return mtproto.BoolTrue, nil

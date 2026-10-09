@@ -25,6 +25,7 @@ import (
 	"math"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/teamgram/marmota/pkg/hack"
 	"github.com/teamgram/marmota/pkg/stores/sqlx"
 	"github.com/teamgram/proto/mtproto"
@@ -32,9 +33,11 @@ import (
 	"github.com/teamgram/teamgram-server/app/messenger/msg/msg/msg"
 	"github.com/teamgram/teamgram-server/app/service/biz/dialog/dialog"
 	idgen_client "github.com/teamgram/teamgram-server/app/service/idgen/client"
+	"github.com/teamgram/teamgram-server/app/service/idgen/counter"
 
 	"github.com/zeromicro/go-zero/core/jsonx"
 	"github.com/zeromicro/go-zero/core/logx"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
@@ -63,6 +66,9 @@ func makeMessageBoxByDO(boxDO *dataobject.MessagesDO) *mtproto.MessageBox {
 }
 
 func (d *Dao) sendMessageToOutbox(ctx context.Context, fromId int64, peer *mtproto.PeerUtil, outboxMessage *msg.OutboxMessage) (*mtproto.MessageBox, bool, error) {
+	if d.Postgres != nil && d.Postgres.Store != nil {
+		return d.sendMessageToOutboxPostgres(ctx, fromId, peer, outboxMessage)
+	}
 	var (
 		dialogId = mtproto.MakeDialogId(fromId, peer.PeerType, peer.PeerId)
 		err      error
@@ -295,6 +301,145 @@ func (d *Dao) sendMessageToOutbox(ctx context.Context, fromId int64, peer *mtpro
 	return outBox, true, nil
 }
 
+// sendMessageToOutboxPostgres persists the message view, dialog projection,
+// hashtag rows, and pts update atomically. It is the runtime path used by the
+// PostgreSQL-only service constructor; the generated MySQL implementation
+// above remains only as a migration-boundary fallback for tests.
+func (d *Dao) sendMessageToOutboxPostgres(ctx context.Context, fromID int64, peer *mtproto.PeerUtil, outboxMessage *msg.OutboxMessage) (*mtproto.MessageBox, bool, error) {
+	var box *mtproto.MessageBox
+	var inserted bool
+	err := d.Postgres.InTx(ctx, func(tx pgx.Tx) error {
+		var err error
+		box, inserted, err = d.sendMessageToOutboxPostgresOn(ctx, tx, fromID, peer, outboxMessage)
+		return err
+	})
+	if err != nil {
+		return nil, false, err
+	}
+	return box, inserted, nil
+}
+
+func (d *Dao) sendMessageToOutboxPostgresOn(ctx context.Context, tx pgx.Tx, fromID int64, peer *mtproto.PeerUtil, outboxMessage *msg.OutboxMessage) (*mtproto.MessageBox, bool, error) {
+	if outboxMessage == nil || outboxMessage.Message == nil || peer == nil {
+		return nil, false, mtproto.ErrMessageEmpty
+	}
+	if peer.PeerType != mtproto.PEER_USER && peer.PeerType != mtproto.PEER_CHAT {
+		return nil, false, mtproto.ErrPeerIdInvalid
+	}
+	// Serialize a sender's message IDs, dialog projections and update writes.
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('messenger-user:' || $1::bigint::text, 0))`, fromID); err != nil {
+		return nil, false, err
+	}
+	if outboxMessage.RandomId != 0 {
+		existing, err := d.Postgres.Store.Messages.SelectByRandomIdOn(ctx, tx, fromID, fromID, outboxMessage.RandomId)
+		if err != nil {
+			return nil, false, err
+		}
+		if existing != nil {
+			box := makeMessageBoxByDO(existing)
+			if err := d.loadMessagePtsPostgres(ctx, tx, box); err != nil {
+				return nil, false, err
+			}
+			return box, false, nil
+		}
+	}
+	idList := d.IDGenClient2.GetNextIdList(ctx, idgen_client.MakeIDTypeNextId())
+	if len(idList) != 1 || idList[0].Id <= 0 {
+		return nil, false, mtproto.ErrInternalServerError
+	}
+	messageIDValue, err := counter.NextOn(ctx, tx, counter.MessageBoxKey(fromID), 1)
+	if err != nil {
+		return nil, false, err
+	}
+	dialogMessageID, messageID := idList[0].Id, int32(messageIDValue)
+	dialogID := mtproto.MakeDialogId(fromID, peer.PeerType, peer.PeerId)
+	message := proto.Clone(outboxMessage.Message).(*mtproto.Message)
+	message.Out = true
+	message.Id = messageID
+	message.MediaUnread = mtproto.CheckHasMediaUnread(message)
+	mData, err := jsonx.Marshal(message)
+	if err != nil {
+		return nil, false, err
+	}
+	savedPeer := &mtproto.PeerUtil{PeerType: mtproto.PEER_EMPTY}
+	if message.GetSavedPeerId() != nil {
+		savedPeer = mtproto.FromPeer(message.GetSavedPeerId())
+	}
+	box := &mtproto.MessageBox{UserId: fromID, SenderUserId: fromID,
+		PeerType: peer.PeerType, PeerId: peer.PeerId, MessageId: messageID,
+		DialogId1: dialogID.A, DialogId2: dialogID.B, DialogMessageId: dialogMessageID,
+		RandomId: outboxMessage.RandomId, MessageFilterType: mtproto.GetMediaType(message), Message: message,
+		PtsCount: 1}
+	dialogDO := &dataobject.DialogsDO{UserId: fromID, PeerType: peer.PeerType, PeerId: peer.PeerId,
+		PeerDialogId: mtproto.MakePeerDialogId(peer.PeerType, peer.PeerId), TopMessage: messageID,
+		DraftMessageData: "null", Date2: int64(message.Date)}
+	var duplicate *mtproto.MessageBox
+	err = func() error {
+		messageDO := &dataobject.MessagesDO{
+			UserId: fromID, UserMessageBoxId: messageID, DialogId1: dialogID.A, DialogId2: dialogID.B,
+			DialogMessageId: dialogMessageID, SenderUserId: fromID, PeerType: peer.PeerType, PeerId: peer.PeerId,
+			RandomId: outboxMessage.RandomId, MessageFilterType: box.MessageFilterType, MessageData: string(mData),
+			Message: message.Message, MediaUnread: message.MediaUnread, Date2: int64(message.Date),
+			SavedPeerType: savedPeer.PeerType, SavedPeerId: savedPeer.PeerId,
+		}
+		storageID, rowsAffected, err := d.Postgres.Store.Messages.InsertOrReturnIdOn(ctx, tx, messageDO)
+		if err != nil {
+			return err
+		}
+		if rowsAffected == 0 {
+			existing, err := d.Postgres.Store.Messages.SelectByStorageIDOn(ctx, tx, fromID, storageID)
+			if err != nil {
+				return err
+			}
+			if existing == nil {
+				return errors.New("conflicting message has no stored record")
+			}
+			duplicate = makeMessageBoxByDO(existing)
+			return nil
+		}
+		if _, err := d.Postgres.Store.Dialogs.UpdateMessageTopOn(ctx, tx, dialogDO.TopMessage, dialogDO.Date2, fromID, peer.PeerType, peer.PeerId); err != nil {
+			return err
+		}
+		// A dialog may not exist yet for a first outbound message.
+		if dlg, err := d.Postgres.Store.Dialogs.SelectDialogOn(ctx, tx, fromID, peer.PeerType, peer.PeerId); err != nil {
+			return err
+		} else if dlg == nil {
+			if _, _, err = d.Postgres.Store.Dialogs.InsertIgnoreOn(ctx, tx, dialogDO); err != nil {
+				return err
+			}
+		}
+		for _, entity := range message.GetEntities() {
+			if entity.GetPredicateName() == mtproto.Predicate_messageEntityHashtag && entity.GetUrl() != "" {
+				if _, _, err := d.Postgres.Store.HashTags.InsertOrUpdateOn(ctx, tx, &dataobject.HashTagsDO{
+					UserId: fromID, PeerType: peer.PeerType, PeerId: peer.PeerId,
+					HashTag: entity.GetUrl(), HashTagMessageId: messageID,
+				}); err != nil {
+					return err
+				}
+			}
+		}
+		pts, err := counter.NextOn(ctx, tx, counter.PtsKey(fromID), 1)
+		if err != nil {
+			return err
+		}
+		box.Pts = int32(pts)
+		_, err = d.AddToPtsQueueOn(ctx, tx, fromID, box.Pts, 1, mtproto.MakeTLUpdateNewMessage(&mtproto.Update{
+			Message_MESSAGE: message, Pts_INT32: box.Pts, PtsCount: 1,
+		}).To_Update())
+		return err
+	}()
+	if err != nil {
+		return nil, false, err
+	}
+	if duplicate != nil {
+		if err := d.loadMessagePtsPostgres(ctx, tx, duplicate); err != nil {
+			return nil, false, err
+		}
+		return duplicate, false, nil
+	}
+	return box, true, nil
+}
+
 func (d *Dao) SendUserMessage(ctx context.Context, fromId, toId int64, outBox *msg.OutboxMessage) (*mtproto.MessageBox, bool, error) {
 	peer := &mtproto.PeerUtil{PeerType: mtproto.PEER_USER, PeerId: toId}
 	return d.sendMessageToOutbox(ctx, fromId, peer, outBox)
@@ -317,7 +462,10 @@ func (d *Dao) SendUserMultiMessage(ctx context.Context, fromId, toId int64, outB
 
 	for _, msg := range outBoxList {
 		peer := &mtproto.PeerUtil{PeerType: mtproto.PEER_USER, PeerId: toId}
-		outBox, _, _ := d.sendMessageToOutbox(ctx, fromId, peer, msg)
+		outBox, _, err := d.sendMessageToOutbox(ctx, fromId, peer, msg)
+		if err != nil {
+			return nil, err
+		}
 		boxList = append(boxList, outBox)
 	}
 
@@ -341,7 +489,10 @@ func (d *Dao) SendChatMultiMessage(ctx context.Context, fromId, chatId int64, ou
 
 	for _, msg := range outBoxList {
 		peer := &mtproto.PeerUtil{PeerType: mtproto.PEER_CHAT, PeerId: chatId}
-		box, _, _ := d.sendMessageToOutbox(ctx, fromId, peer, msg)
+		box, _, err := d.sendMessageToOutbox(ctx, fromId, peer, msg)
+		if err != nil {
+			return nil, err
+		}
 		boxList = append(boxList, box)
 	}
 
@@ -413,6 +564,23 @@ func (d *Dao) DeleteMessages(ctx context.Context, userId int64, msgIds []int32) 
 	}
 
 	peer := dialogId.ToPeerUtil(userId)
+	if d.Postgres != nil && d.Postgres.Store != nil {
+		topMessage, _ := getLastTopMessage(topMessageIndex)
+		err := d.Postgres.InTx(ctx, func(tx pgx.Tx) error {
+			if _, err := d.Postgres.Store.Messages.DeleteMessagesByMessageIdListOn(ctx, tx, userId, msgIds); err != nil {
+				return err
+			}
+			_, err := d.Postgres.Store.Dialogs.UpdateOutboxDialogOn(ctx, tx, topMessage, time.Now().Unix(), userId, peer.PeerType, peer.PeerId)
+			return err
+		})
+		if err != nil {
+			return nil, nil, err
+		}
+		for i := range msgDOList {
+			deletedMsgDataIdList = append(deletedMsgDataIdList, msgDOList[i].DialogMessageId)
+		}
+		return peer, deletedMsgDataIdList, nil
+	}
 
 	tR := sqlx.TxWrapper(ctx, d.DB, func(tx *sqlx.Tx, result *sqlx.StoreResult) {
 		_, result.Err = d.MessagesDAO.DeleteMessagesByMessageIdListTx(tx, userId, msgIds)
@@ -529,7 +697,7 @@ func (d *Dao) DeletePhoneCallHistory(ctx context.Context, userId int64) ([]int32
 		deletedMsgDataIdList = make([]int64, 0)
 	)
 
-	_, err := d.MessagesDAO.SelectPhoneCallListWithCB(
+	_, err := d.SelectPhoneCallMessages(
 		ctx,
 		userId,
 		mtproto.MEDIA_PHONE_CALL,
@@ -564,9 +732,15 @@ func (d *Dao) DeletePhoneCallHistory(ctx context.Context, userId int64) ([]int32
 		}
 
 		// TODO: performance optimization
-		lastMessageId, err := d.MessagesDAO.SelectDialogLastMessageId(ctx, userId, dialogId.A, dialogId.B)
+		lastMessageId, err := d.SelectDialogLastMessageID(ctx, userId, dialogId.A, dialogId.B)
 		if err != nil {
 			return nil, nil, err
+		}
+		if d.Postgres != nil && d.Postgres.Store != nil {
+			if _, err = d.Postgres.Store.Dialogs.UpdateCustomMap(ctx, map[string]any{"top_message": lastMessageId}, userId, mtproto.PEER_USER, mtproto.GetPeerIdByDialogId(userId, dialogId)); err != nil {
+				return nil, nil, err
+			}
+			continue
 		}
 		_, _, err = d.CachedConn.Exec(
 			ctx,
@@ -589,17 +763,20 @@ func (d *Dao) DeletePhoneCallHistory(ctx context.Context, userId int64) ([]int32
 	return deletedIdList, deletedMsgDataIdList, nil
 }
 
-func (d *Dao) SendMessageToOutboxV1(ctx context.Context, fromId int64, peer *mtproto.PeerUtil, outMsgBox *mtproto.MessageBox) error {
+func (d *Dao) SendMessageToOutboxV1(ctx context.Context, fromId int64, peer *mtproto.PeerUtil, outMsgBox *mtproto.MessageBox) (bool, error) {
 	return d.sendMessageToOutboxV1(ctx, fromId, peer, outMsgBox, true)
 }
 
 // SendMessageToOutboxV1NoPts writes the outbox message to DB without writing
 // user_pts_updates (caller is responsible for pts persistence).
-func (d *Dao) SendMessageToOutboxV1NoPts(ctx context.Context, fromId int64, peer *mtproto.PeerUtil, outMsgBox *mtproto.MessageBox) error {
+func (d *Dao) SendMessageToOutboxV1NoPts(ctx context.Context, fromId int64, peer *mtproto.PeerUtil, outMsgBox *mtproto.MessageBox) (bool, error) {
 	return d.sendMessageToOutboxV1(ctx, fromId, peer, outMsgBox, false)
 }
 
-func (d *Dao) sendMessageToOutboxV1(ctx context.Context, fromId int64, peer *mtproto.PeerUtil, outMsgBox *mtproto.MessageBox, writePts bool) error {
+func (d *Dao) sendMessageToOutboxV1(ctx context.Context, fromId int64, peer *mtproto.PeerUtil, outMsgBox *mtproto.MessageBox, writePts bool) (bool, error) {
+	if d.Postgres != nil && d.Postgres.Store != nil {
+		return d.sendMessageToOutboxV1Postgres(ctx, fromId, peer, outMsgBox, writePts)
+	}
 	message := outMsgBox.Message
 	mData, _ := jsonx.Marshal(outMsgBox.GetMessage())
 	outBoxMsgId := outMsgBox.MessageId
@@ -614,8 +791,9 @@ func (d *Dao) sendMessageToOutboxV1(ctx context.Context, fromId int64, peer *mtp
 		savedPeerUtil = &mtproto.PeerUtil{PeerType: mtproto.PEER_EMPTY, PeerId: 0}
 	}
 
+	inserted := false
 	tR := sqlx.TxWrapper(ctx, d.DB, func(tx *sqlx.Tx, result *sqlx.StoreResult) {
-		_, _, err := d.MessagesDAO.InsertOrReturnIdTx(
+		_, rowsAffected, err := d.MessagesDAO.InsertOrReturnIdTx(
 			tx,
 			&dataobject.MessagesDO{
 				UserId:            outMsgBox.UserId,
@@ -641,6 +819,10 @@ func (d *Dao) sendMessageToOutboxV1(ctx context.Context, fromId int64, peer *mtp
 			result.Err = err
 			return
 		}
+		if rowsAffected == 0 {
+			return
+		}
+		inserted = true
 
 		for _, entity := range message.GetEntities() {
 			if entity.GetPredicateName() == mtproto.Predicate_messageEntityHashtag {
@@ -669,6 +851,12 @@ func (d *Dao) sendMessageToOutboxV1(ctx context.Context, fromId int64, peer *mtp
 		}
 	})
 
+	if tR.Err != nil {
+		return false, tR.Err
+	}
+	if !inserted {
+		return false, nil
+	}
 	_, err := d.DialogClient.DialogInsertOrUpdateDialog(
 		ctx,
 		&dialog.TLDialogInsertOrUpdateDialog{
@@ -687,7 +875,84 @@ func (d *Dao) sendMessageToOutboxV1(ctx context.Context, fromId int64, peer *mtp
 		// return i
 	}
 
-	return tR.Err
+	return true, tR.Err
+}
+
+func (d *Dao) sendMessageToOutboxV1Postgres(ctx context.Context, fromID int64, peer *mtproto.PeerUtil, outMsgBox *mtproto.MessageBox, writePts bool) (bool, error) {
+	if outMsgBox == nil || outMsgBox.Message == nil || peer == nil {
+		return false, mtproto.ErrInputRequestInvalid
+	}
+	mData, err := jsonx.Marshal(outMsgBox.GetMessage())
+	if err != nil {
+		return false, err
+	}
+	savedPeer := &mtproto.PeerUtil{PeerType: mtproto.PEER_EMPTY}
+	if outMsgBox.Message.GetSavedPeerId() != nil {
+		savedPeer = mtproto.FromPeer(outMsgBox.Message.GetSavedPeerId())
+	}
+	inserted := false
+	err = d.Postgres.InTx(ctx, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('messenger-user:' || $1::bigint::text, 0))`, fromID); err != nil {
+			return err
+		}
+		storageID, rowsAffected, err := d.Postgres.Store.Messages.InsertOrReturnIdOn(ctx, tx, &dataobject.MessagesDO{
+			UserId: outMsgBox.UserId, UserMessageBoxId: outMsgBox.MessageId, DialogId1: outMsgBox.DialogId1,
+			DialogId2: outMsgBox.DialogId2, DialogMessageId: outMsgBox.DialogMessageId, SenderUserId: outMsgBox.UserId,
+			PeerType: peer.PeerType, PeerId: peer.PeerId, RandomId: outMsgBox.RandomId,
+			MessageFilterType: outMsgBox.MessageFilterType, MessageData: string(mData), Message: outMsgBox.Message.GetMessage(),
+			MediaUnread: outMsgBox.Message.GetMediaUnread(), Date2: int64(outMsgBox.Message.Date),
+			SavedPeerType: savedPeer.PeerType, SavedPeerId: savedPeer.PeerId,
+		})
+		if err != nil {
+			return err
+		}
+		if rowsAffected == 0 {
+			existing, err := d.Postgres.Store.Messages.SelectByStorageIDOn(ctx, tx, outMsgBox.UserId, storageID)
+			if err != nil {
+				return err
+			}
+			if existing == nil {
+				return errors.New("conflicting outbox message has no stored record")
+			}
+			pts, ptsCount := outMsgBox.Pts, outMsgBox.PtsCount
+			*outMsgBox = *makeMessageBoxByDO(existing)
+			outMsgBox.Pts, outMsgBox.PtsCount = pts, ptsCount
+			return nil
+		}
+		inserted = true
+		for _, entity := range outMsgBox.Message.GetEntities() {
+			if entity.GetPredicateName() == mtproto.Predicate_messageEntityHashtag && entity.GetUrl() != "" {
+				if _, _, err := d.Postgres.Store.HashTags.InsertOrUpdateOn(ctx, tx, &dataobject.HashTagsDO{UserId: outMsgBox.UserId, PeerType: peer.PeerType, PeerId: peer.PeerId, HashTag: entity.GetUrl(), HashTagMessageId: outMsgBox.MessageId}); err != nil {
+					return err
+				}
+			}
+		}
+		if writePts {
+			if outMsgBox.Pts <= 0 {
+				pts, err := counter.NextOn(ctx, tx, counter.PtsKey(fromID), 1)
+				if err != nil {
+					return err
+				}
+				outMsgBox.Pts = int32(pts)
+				outMsgBox.PtsCount = 1
+			}
+			if outMsgBox.Pts <= 0 || outMsgBox.PtsCount <= 0 {
+				return mtproto.ErrInternalServerError
+			}
+			if _, err := d.AddToPtsQueueOn(ctx, tx, fromID, outMsgBox.Pts, outMsgBox.PtsCount, mtproto.MakeTLUpdateNewMessage(&mtproto.Update{Message_MESSAGE: outMsgBox.Message, Pts_INT32: outMsgBox.Pts, PtsCount: outMsgBox.PtsCount}).To_Update()); err != nil {
+				return err
+			}
+		}
+		if _, err := d.Postgres.Store.Dialogs.UpdateMessageTopOn(ctx, tx, outMsgBox.MessageId, int64(outMsgBox.Message.Date), fromID, peer.PeerType, peer.PeerId); err != nil {
+			return err
+		}
+		_, _, err = d.Postgres.Store.Dialogs.InsertIgnoreOn(ctx, tx, &dataobject.DialogsDO{UserId: fromID, PeerType: peer.PeerType, PeerId: peer.PeerId, PeerDialogId: mtproto.MakePeerDialogId(peer.PeerType, peer.PeerId), TopMessage: outMsgBox.MessageId, DraftMessageData: "null", Date2: int64(outMsgBox.Message.Date)})
+		return err
+	})
+	if err != nil {
+		return false, err
+	}
+	return inserted, nil
 }
 
 func (d *Dao) sendMessageToOutboxV2(ctx context.Context, fromId int64, peer *mtproto.PeerUtil, outboxMessage *msg.OutboxMessage, out bool) (*mtproto.MessageBox, error) {
@@ -862,6 +1127,9 @@ func (d *Dao) EditChatOutboxMessageV2(ctx context.Context, fromId, toId int64, n
 }
 
 func (d *Dao) editOutboxMessageV2(ctx context.Context, fromId int64, peerType int32, peerId int64, newMessage *msg.OutboxMessage, dstMessage *mtproto.MessageBox) (*mtproto.MessageBox, error) {
+	if d.Postgres != nil {
+		return d.EditMessageState(ctx, fromId, mtproto.MakePeerUtil(peerType, peerId), dstMessage.MessageId, newMessage.Message)
+	}
 	var (
 		pts            = d.IDGenClient2.NextPtsId(ctx, fromId)
 		ptsCount int32 = 1

@@ -19,11 +19,8 @@
 package core
 
 import (
-	"context"
 	"time"
 
-	"github.com/teamgram/marmota/pkg/stores/sqlx"
-	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/service/biz/dialog/dialog"
 	"github.com/teamgram/teamgram-server/app/service/biz/dialog/internal/dal/dataobject"
 
@@ -33,48 +30,12 @@ import (
 // DialogCreateDialogFilter
 // dialog.createDialogFilter user_id:long dialog_filter:DialogFilterExt = DialogFilterExt;
 func (c *DialogCore) DialogCreateDialogFilter(in *dialog.TLDialogCreateDialogFilter) (*dialog.DialogFilterExt, error) {
-	var (
-		dialogFilterExtList []*dialog.DialogFilterExt
-		dialogExt           = in.GetDialogFilter()
-		created             = false
-	)
-
-	c.svcCtx.Dao.CachedConn.QueryRow(
-		c.ctx,
-		&dialogFilterExtList,
-		dialog.GetDialogFilterCacheKey(in.UserId),
-		func(ctx context.Context, conn *sqlx.DB, v interface{}) error {
-			var (
-				vList []*dialog.DialogFilterExt
-			)
-			_, err := c.svcCtx.Dao.DialogFiltersDAO.SelectListWithCB(
-				c.ctx,
-				in.UserId,
-				func(sz, i int, v *dataobject.DialogFiltersDO) {
-					dialogFilter := &dialog.DialogFilterExt{
-						Id:           v.DialogFilterId,
-						DialogFilter: nil,
-						Order:        v.OrderValue,
-					}
-
-					if df, err := mtproto.UnmarshalDialogFilter(v.DialogFilter); err != nil {
-						c.Logger.Errorf("jsonx.UnmarshalFromString(%v) - error: %v", v, err)
-						// continue
-						return
-					} else {
-						dialogFilter.DialogFilter = df
-					}
-
-					vList = append(vList, dialogFilter)
-				})
-			if err != nil {
-				return err
-			}
-
-			*v.(*[]*dialog.DialogFilterExt) = vList
-			return err
-		},
-	)
+	dialogFilterExtList, err := c.loadDialogFilterExtList(c.ctx, in.UserId)
+	if err != nil {
+		return nil, err
+	}
+	dialogExt := in.GetDialogFilter()
+	created := false
 
 	for _, v := range dialogFilterExtList {
 		if v.Slug == dialogExt.Slug {
@@ -94,25 +55,22 @@ func (c *DialogCore) DialogCreateDialogFilter(in *dialog.TLDialogCreateDialogFil
 	}
 
 	dialogExt.Id++
-	c.svcCtx.Dao.CachedConn.Exec(
-		c.ctx,
-		func(ctx context.Context, conn *sqlx.DB) (int64, int64, error) {
-			dialogExt.DialogFilter.Id = dialogExt.Id
-			dData, _ := jsonx.MarshalToString(dialogExt.DialogFilter)
-			return c.svcCtx.Dao.DialogFiltersDAO.InsertOrUpdate(c.ctx, &dataobject.DialogFiltersDO{
-				UserId:         in.UserId,
-				DialogFilterId: dialogExt.Id,
-				IsChatlist:     true,
-				JoinedBySlug:   true,
-				Slug:           dialogExt.Slug,
-				HasMyInvites:   0,
-				DialogFilter:   dData,
-				OrderValue:     time.Now().Unix() << 32,
-				FromSuggested:  -1,
-				Deleted:        false,
-			})
-		},
-		dialog.GetDialogFilterCacheKey(in.UserId))
+	dialogExt.DialogFilter.Id = dialogExt.Id
+	dData, _ := jsonx.MarshalToString(dialogExt.DialogFilter)
+	if _, _, err := c.svcCtx.Dao.Postgres.Store.DialogFilters.InsertOrUpdate(c.ctx, &dataobject.DialogFiltersDO{
+		UserId:         in.UserId,
+		DialogFilterId: dialogExt.Id,
+		IsChatlist:     true,
+		JoinedBySlug:   true,
+		Slug:           dialogExt.Slug,
+		HasMyInvites:   0,
+		DialogFilter:   dData,
+		OrderValue:     time.Now().Unix() << 32,
+		FromSuggested:  -1,
+		Deleted:        false,
+	}); err != nil {
+		return nil, err
+	}
 
 	return dialogExt, nil
 }

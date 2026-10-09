@@ -1,11 +1,14 @@
 package twofa
 
 import (
+	"context"
 	"database/sql"
 	"errors"
+	"fmt"
+	"strings"
 	"sync"
+	"time"
 
-	_ "github.com/go-sql-driver/mysql"
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
@@ -41,15 +44,6 @@ func (s redisProofStore) CompareAndDelete(key, expected string) (bool, error) {
 	}
 }
 
-type mysqlProofStore struct {
-	db *sql.DB
-}
-
-var (
-	mysqlStoresMu sync.Mutex
-	mysqlStores   = map[string]*mysqlProofStore{}
-)
-
 var (
 	postgresStoresMu sync.Mutex
 	postgresStores   = map[string]*postgresProofStore{}
@@ -61,8 +55,11 @@ type postgresProofStore struct {
 
 // OpenPostgresProofStore opens the shared PostgreSQL APIFull KV store used by
 // BFF authentication helpers. New deployments should use this path; the
-// MySQL implementation remains only for isolated compatibility tests.
+// PostgreSQL is the sole database implementation for this store.
 func OpenPostgresProofStore(dsn string) (ProofStore, error) {
+	if strings.TrimSpace(dsn) == "" {
+		return nil, errors.New("twofa: PostgreSQL DSN is required")
+	}
 	postgresStoresMu.Lock()
 	defer postgresStoresMu.Unlock()
 	if store := postgresStores[dsn]; store != nil {
@@ -74,13 +71,44 @@ func OpenPostgresProofStore(dsn string) (ProofStore, error) {
 	}
 	db.SetMaxOpenConns(8)
 	db.SetMaxIdleConns(8)
-	if err = db.Ping(); err != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err = db.PingContext(ctx); err != nil {
 		_ = db.Close()
 		return nil, err
+	}
+	var version int
+	if err = db.QueryRowContext(ctx, `SELECT current_setting('server_version_num')::integer`).Scan(&version); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("twofa: verify PostgreSQL version: %w", err)
+	}
+	if version/10000 != 18 {
+		_ = db.Close()
+		return nil, fmt.Errorf("twofa: PostgreSQL 18 is required (server_version_num=%d)", version)
+	}
+	if _, err = db.ExecContext(ctx, `SELECT k,v FROM apifull_kv LIMIT 0`); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("twofa: verify apifull_kv schema: %w", err)
 	}
 	store := &postgresProofStore{db: db}
 	postgresStores[dsn] = store
 	return store, nil
+}
+
+// ClosePostgresProofStores closes and forgets the process-wide PostgreSQL stores.
+func ClosePostgresProofStores() error {
+	postgresStoresMu.Lock()
+	defer postgresStoresMu.Unlock()
+	var closeErr error
+	for dsn, store := range postgresStores {
+		if store != nil && store.db != nil {
+			if err := store.db.Close(); err != nil && closeErr == nil {
+				closeErr = err
+			}
+		}
+		delete(postgresStores, dsn)
+	}
+	return closeErr
 }
 
 func (s *postgresProofStore) Get(key string) (string, error) {
@@ -94,45 +122,6 @@ func (s *postgresProofStore) Get(key string) (string, error) {
 
 func (s *postgresProofStore) CompareAndDelete(key, expected string) (bool, error) {
 	r, err := s.db.Exec(`DELETE FROM apifull_kv WHERE k = $1 AND v = $2`, key, expected)
-	if err != nil {
-		return false, err
-	}
-	n, err := r.RowsAffected()
-	return n == 1, err
-}
-
-func OpenMySQLProofStore(dsn string) (ProofStore, error) {
-	mysqlStoresMu.Lock()
-	defer mysqlStoresMu.Unlock()
-	if store := mysqlStores[dsn]; store != nil {
-		return store, nil
-	}
-	db, err := sql.Open("mysql", dsn)
-	if err != nil {
-		return nil, err
-	}
-	db.SetMaxOpenConns(8)
-	db.SetMaxIdleConns(8)
-	if err = db.Ping(); err != nil {
-		_ = db.Close()
-		return nil, err
-	}
-	store := &mysqlProofStore{db: db}
-	mysqlStores[dsn] = store
-	return store, nil
-}
-
-func (s *mysqlProofStore) Get(key string) (string, error) {
-	var v string
-	err := s.db.QueryRow(`SELECT v FROM apifull_kv WHERE k = ?`, key).Scan(&v)
-	if err == sql.ErrNoRows {
-		return "", nil
-	}
-	return v, err
-}
-
-func (s *mysqlProofStore) CompareAndDelete(key, expected string) (bool, error) {
-	r, err := s.db.Exec(`DELETE FROM apifull_kv WHERE k = ? AND BINARY v = BINARY ?`, key, expected)
 	if err != nil {
 		return false, err
 	}

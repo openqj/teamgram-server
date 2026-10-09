@@ -27,6 +27,9 @@ import (
 // AuthLogOut
 // auth.logOut#3e72ba19 = auth.LoggedOut;
 func (c *AuthorizationCore) AuthLogOut(in *mtproto.TLAuthLogOut) (*mtproto.Auth_LoggedOut, error) {
+	if c == nil || c.MD == nil || c.svcCtx == nil || c.svcCtx.Dao == nil || c.MD.GetPermAuthKeyId() == 0 || c.MD.GetUserId() == 0 {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
 	// unbind auth_key and user_id
 	unbound, err := c.svcCtx.Dao.AuthsessionClient.AuthsessionUnbindAuthKeyUser(c.ctx, &authsession.TLAuthsessionUnbindAuthKeyUser{
 		AuthKeyId: c.MD.PermAuthKeyId,

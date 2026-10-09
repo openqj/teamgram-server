@@ -11,6 +11,10 @@ const dcId = Number(process.env.TG_DC_ID || '2');
 const dcHost = process.env.TG_DC_HOST || '127.0.0.1';
 const dcPort = Number(process.env.TG_DC_PORT || '11443');
 const gramjsDir = process.env.TEAMGRAM_GRAMJS_DIR || '/Users/mac/open/test/telegram-tt-master';
+const postgresContainer = process.env.UPDATES_POSTGRES_CONTAINER || 'teamgram-postgres';
+if (!/^[1-9][0-9]*$/.test(userId) || !Number.isInteger(dcId) || dcId <= 0) {
+  throw new Error('UPDATES_STATE_USER_ID and TG_DC_ID must be positive integers');
+}
 
 const globalAny = globalThis as typeof globalThis & { self?: any; addEventListener?: () => void };
 globalAny.self ??= globalThis;
@@ -19,25 +23,18 @@ globalAny.self.addEventListener ??= globalAny.addEventListener;
 
 function postgres(query: string): string {
   return execFileSync('docker', [
-    'exec', 'teamgram-postgres', 'psql', '-v', 'ON_ERROR_STOP=1', '-At', '-q', '-F', '\t', '-U', 'teamgram', '-d', 'teamgram', '-c', query,
+    'exec', postgresContainer, 'psql', '-v', 'ON_ERROR_STOP=1', '-At', '-q', '-F', '\t', '-U', 'teamgram', '-d', 'teamgram', '-c', query,
   ], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
-}
-
-function redis(key: string): string {
-  return execFileSync('docker', ['exec', 'redis', 'redis-cli', '--raw', 'GET', key], {
-    encoding: 'utf8',
-    stdio: ['ignore', 'pipe', 'ignore'],
-  }).trim();
 }
 
 function loadAuth(): { authKeyId: string; authKeyHex: string } {
   const raw = postgres(`
-    SELECT k.auth_key_id, k.body
+    SELECT k.auth_key_id, encode(k.body, 'base64')
     FROM auth_users u
     JOIN auth_keys k USING (auth_key_id)
     JOIN auth_key_infos i USING (auth_key_id)
-    WHERE u.user_id=${userId} AND u.state=0 AND u.deleted=0
-      AND k.deleted=0 AND i.deleted=0 AND i.auth_key_type=0
+    WHERE u.user_id=${userId} AND u.state=0 AND NOT u.deleted
+      AND NOT k.deleted AND NOT i.deleted AND i.auth_key_type=0
     ORDER BY u.date_active DESC, u.id DESC
     LIMIT 1
   `);
@@ -50,15 +47,20 @@ function loadAuth(): { authKeyId: string; authKeyHex: string } {
 }
 
 function stateSnapshot(authKeyId: string) {
-  const secretState = postgres(`
-    SELECT last_qts, confirmed_qts FROM apifull_secret_user_state WHERE user_id=${userId}
-  `);
-  if (!secretState) throw new Error(`no production secret-update state found for user ${userId}`);
+  if (!/^-?[0-9]+$/.test(authKeyId)) throw new Error('invalid persisted auth key ID');
+  const [pts, seq, qts, date, counters, confirmedQts] = postgres(`
+    SELECT
+      COALESCE((SELECT pts FROM user_pts_updates WHERE user_id=${userId} ORDER BY pts DESC LIMIT 1), 0),
+      COALESCE((SELECT seq FROM auth_seq_updates WHERE user_id=${userId} AND auth_id=${authKeyId} ORDER BY seq DESC LIMIT 1), 0),
+      COALESCE((SELECT last_qts FROM apifull_secret_user_state WHERE user_id=${userId}), 0),
+      COALESCE((SELECT date2 FROM auth_seq_updates WHERE user_id=${userId} AND auth_id=${authKeyId} ORDER BY seq DESC LIMIT 1), 1),
+      COALESCE((SELECT jsonb_agg(jsonb_build_array(key, value, updated_at) ORDER BY key)::text
+        FROM idgen_counters WHERE key IN ('pts_updates_ngen_${userId}', 'seq_updates_ngen_${authKeyId}', 'qts_updates_ngen_${authKeyId}')), '[]'),
+      COALESCE((SELECT confirmed_qts FROM apifull_secret_user_state WHERE user_id=${userId}), 0)
+  `).split('\t');
   return {
-    pts: redis(`pts_updates_ngen_${userId}`),
-    seq: redis(`seq_updates_ngen_${authKeyId}`),
-    idgenQts: redis(`qts_updates_ngen_${authKeyId}`),
-    secretState,
+    pts: Number(pts), seq: Number(seq) || -1, qts: Number(qts), date: Number(date),
+    counters: JSON.parse(counters), confirmedQts: Number(confirmedQts),
   };
 }
 
@@ -96,16 +98,21 @@ function makeClient(authKeyHex: string): any {
 }
 
 async function main() {
+  const serverVersion = Number(postgres('SHOW server_version_num'));
+  if (!Number.isInteger(serverVersion) || Math.floor(serverVersion / 10000) !== 18) {
+    throw new Error('PostgreSQL 18 is required');
+  }
   const { authKeyId, authKeyHex } = loadAuth();
   const before = stateSnapshot(authKeyId);
-  const expectedPts = Number(before.pts);
-  const [expectedQts] = before.secretState.split('\t').map(Number);
-  const expectedSeq = Number(before.seq || 0) || -1;
-  if (!Number.isSafeInteger(expectedPts) || expectedPts <= 0) {
-    throw new Error('a non-zero existing PTS is required to keep updates.getState read-only');
+  const startedAt = Number(postgres('SELECT floor(extract(epoch FROM clock_timestamp()))::bigint'));
+  const expectedPts = before.pts;
+  const expectedQts = before.qts;
+  const expectedSeq = before.seq;
+  if (!Number.isSafeInteger(expectedPts) || expectedPts < 0) {
+    throw new Error('invalid committed PostgreSQL PTS');
   }
   if (!Number.isSafeInteger(expectedQts) || expectedQts < 0) {
-    throw new Error(`invalid persisted secret QTS: ${before.secretState}`);
+    throw new Error(`invalid persisted secret QTS: ${String(before.qts)}`);
   }
 
   const client = makeClient(authKeyHex);
@@ -117,31 +124,28 @@ async function main() {
     if (String(me?.id) !== userId) throw new Error(`auth key user mismatch: ${String(me?.id)}`);
     const state = await client.invoke(new Api.updates.GetState());
     const type = rpcName(state);
-    const currentSecond = Math.floor(Date.now() / 1000);
     if (!type.toLowerCase().endsWith('state')
       || Number(state?.pts) !== expectedPts
       || Number(state?.seq) !== expectedSeq
       || Number(state?.qts) !== expectedQts
-      || !Number.isSafeInteger(Number(state?.date))
-      || Math.abs(currentSecond - Number(state.date)) > 60) {
+      || Number(state?.date) < Math.max(before.date, startedAt)
+      || Number(state?.date) > Number(postgres('SELECT floor(extract(epoch FROM clock_timestamp()))::bigint'))) {
       throw new Error(`updates.getState response mismatch: type=${type}, pts=${String(state?.pts)}, seq=${String(state?.seq)}, qts=${String(state?.qts)}`);
     }
     const after = stateSnapshot(authKeyId);
     if (JSON.stringify(after) !== JSON.stringify(before)) {
-      throw new Error('updates.getState changed a Redis or PostgreSQL state counter');
+      throw new Error('committed PostgreSQL state changed during the read-only probe');
     }
     console.log(JSON.stringify({
       userId: String(me.id),
-      transport: `DC${dcId} WebSocket -> gateway -> session -> Updates BFF -> biz updates/IDGen + PostgreSQL secret-QTS`,
+      transport: `DC${dcId} TCP obfuscated -> gateway -> session -> Updates BFF -> PostgreSQL committed updates/secret-QTS`,
       type,
       pts: Number(state.pts),
       seq: Number(state.seq),
       qts: Number(state.qts),
       date: Number(state.date),
-      redisPts: before.pts,
-      redisSeq: before.seq || '0',
-      idgenQts: before.idgenQts || '0',
-      postgresSecretState: before.secretState,
+      postgresCounters: before.counters,
+      postgresConfirmedQts: before.confirmedQts,
       stateUnchanged: true,
       writes: 0,
     }));

@@ -48,6 +48,14 @@ func TestGameHighScoreRoundtrip(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := c.MessagesSetGameScore(&mtproto.TLMessagesSetGameScore{
+		Peer:   peer,
+		Id:     11,
+		UserId: player,
+		Score:  42,
+	}); err != mtproto.ErrBotScoreNotModified {
+		t.Fatalf("unchanged score error = %v", err)
+	}
 	got, err := c.MessagesGetGameHighScores(&mtproto.TLMessagesGetGameHighScores{
 		Peer:   peer,
 		Id:     11,

@@ -24,15 +24,16 @@ func (c *ChatCore) ChatGetMutableChatByLink(in *chat.TLChatGetMutableChatByLink)
 	if in == nil || strings.TrimSpace(in.GetLink()) == "" {
 		return nil, mtproto.ErrInviteHashInvalid
 	}
+	if c == nil || c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.Postgres == nil ||
+		c.svcCtx.Dao.Postgres.Pool == nil || c.svcCtx.Dao.Postgres.Store == nil ||
+		c.svcCtx.Dao.Postgres.Store.Invites == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
 
 	link := chat.GetInviteHashByLink(strings.TrimSpace(in.GetLink()))
 	var invite *dataobject.ChatInvitesDO
 	var err error
-	if c.svcCtx.Dao.Postgres != nil && c.svcCtx.Dao.Postgres.Store != nil {
-		invite, err = c.svcCtx.Dao.Postgres.Store.Invites.SelectByLink(c.ctx, link)
-	} else {
-		invite, err = c.svcCtx.Dao.ChatInvitesDAO.SelectByLink(c.ctx, link)
-	}
+	invite, err = c.svcCtx.Dao.Postgres.Store.Invites.SelectByLink(c.ctx, link)
 	if err != nil {
 		c.Logger.Errorf("chat.getMutableChatByLink - error: %v", err)
 		return nil, err

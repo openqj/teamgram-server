@@ -20,13 +20,14 @@ package core
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/teamgram/proto/mtproto"
+	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/domain"
 	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/persist"
+	"google.golang.org/protobuf/types/known/wrapperspb"
 )
-
-// RPCSmsjobsServer: Layer 229 methods previously returned ERR_ENTERPRISE_IS_BLOCKED.
 
 // smsPut is retained for unrelated local audit records used by translation and
 // transcription handlers. SMS jobs themselves do not call it without a provider.
@@ -39,50 +40,134 @@ func smsPut(userID int64, op string, v any) error {
 }
 
 func (c *ApiFullCore) SmsjobsIsEligibleToJoin(in *mtproto.TLSmsjobsIsEligibleToJoin) (*mtproto.Smsjobs_EligibilityToJoin, error) {
-	if _, err := c.requireUserId(); err != nil {
+	uid, err := c.smsjobsUser()
+	if err != nil {
 		return nil, err
 	}
-	return nil, mtproto.ErrMethodNotImpl
+	monthly, err := domain.SmsjobsEligibility(uid)
+	if err != nil {
+		return nil, smsJobsError(err)
+	}
+	return mtproto.MakeTLSmsjobsEligibleToJoin(&mtproto.Smsjobs_EligibilityToJoin{
+		TermsUrl: SmsjobsTermsURL(), MonthlySentSms: monthly,
+	}).To_Smsjobs_EligibilityToJoin(), nil
 }
 
 func (c *ApiFullCore) SmsjobsJoin(in *mtproto.TLSmsjobsJoin) (*mtproto.Bool, error) {
-	if _, err := c.requireUserId(); err != nil {
+	uid, err := c.smsjobsUser()
+	if err != nil {
 		return nil, err
 	}
-	return nil, mtproto.ErrMethodNotImpl
+	if err = domain.SmsjobsJoin(uid); err != nil {
+		return nil, smsJobsError(err)
+	}
+	return mtproto.BoolTrue, nil
 }
 
 func (c *ApiFullCore) SmsjobsLeave(in *mtproto.TLSmsjobsLeave) (*mtproto.Bool, error) {
-	if _, err := c.requireUserId(); err != nil {
+	uid, err := c.smsjobsUser()
+	if err != nil {
 		return nil, err
 	}
-	return nil, mtproto.ErrMethodNotImpl
+	if err = domain.SmsjobsLeave(uid); err != nil {
+		return nil, smsJobsError(err)
+	}
+	return mtproto.BoolTrue, nil
 }
 
 func (c *ApiFullCore) SmsjobsUpdateSettings(in *mtproto.TLSmsjobsUpdateSettings) (*mtproto.Bool, error) {
-	if _, err := c.requireUserId(); err != nil {
+	uid, err := c.smsjobsUser()
+	if err != nil {
 		return nil, err
 	}
-	return nil, mtproto.ErrMethodNotImpl
+	allowInternational := in != nil && in.GetAllowInternational()
+	if err = domain.SmsjobsUpdateSettings(uid, allowInternational); err != nil {
+		return nil, smsJobsError(err)
+	}
+	return mtproto.BoolTrue, nil
 }
 
 func (c *ApiFullCore) SmsjobsGetStatus(in *mtproto.TLSmsjobsGetStatus) (*mtproto.Smsjobs_Status, error) {
-	if _, err := c.requireUserId(); err != nil {
+	uid, err := c.smsjobsUser()
+	if err != nil {
 		return nil, err
 	}
-	return nil, mtproto.ErrMethodNotImpl
+	status, err := domain.SmsjobsStatus(uid)
+	if err != nil {
+		return nil, smsJobsError(err)
+	}
+	wire := &mtproto.Smsjobs_Status{
+		AllowInternational: status.AllowInternational,
+		RecentSent:         status.RecentSent,
+		RecentSince:        status.RecentSince,
+		RecentRemains:      status.RecentRemains,
+		TotalSent:          status.TotalSent,
+		TotalSince:         status.TotalSince,
+		TermsUrl:           SmsjobsTermsURL(),
+	}
+	if status.LastGiftSlug != "" {
+		wire.LastGiftSlug = wrapperspb.String(status.LastGiftSlug)
+	}
+	return mtproto.MakeTLSmsjobsStatus(wire).To_Smsjobs_Status(), nil
 }
 
 func (c *ApiFullCore) SmsjobsGetSmsJob(in *mtproto.TLSmsjobsGetSmsJob) (*mtproto.SmsJob, error) {
-	if _, err := c.requireUserId(); err != nil {
+	uid, err := c.smsjobsUser()
+	if err != nil {
 		return nil, err
 	}
-	return nil, mtproto.ErrMethodNotImpl
+	if in == nil || in.GetJobId() == "" {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	job, err := domain.GetSmsJob(uid, in.GetJobId())
+	if err != nil {
+		return nil, smsJobsError(err)
+	}
+	return mtproto.MakeTLSmsJob(&mtproto.SmsJob{
+		JobId: job.JobID, PhoneNumber: job.PhoneNumber, Text: job.Text,
+	}).To_SmsJob(), nil
 }
 
 func (c *ApiFullCore) SmsjobsFinishJob(in *mtproto.TLSmsjobsFinishJob) (*mtproto.Bool, error) {
-	if _, err := c.requireUserId(); err != nil {
+	uid, err := c.smsjobsUser()
+	if err != nil {
 		return nil, err
 	}
-	return nil, mtproto.ErrMethodNotImpl
+	if in == nil || in.GetJobId() == "" {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	failure := ""
+	if in.GetError() != nil {
+		failure = in.GetError().GetValue()
+	}
+	if err = domain.FinishSmsJob(uid, in.GetJobId(), failure); err != nil {
+		return nil, smsJobsError(err)
+	}
+	return mtproto.BoolTrue, nil
+}
+
+func SmsjobsTermsURL() string { return domain.SmsjobsTermsURL() }
+
+func (c *ApiFullCore) smsjobsUser() (int64, error) {
+	uid, err := c.requireUserId()
+	if err != nil {
+		return 0, err
+	}
+	if !domain.Ready() {
+		return 0, mtproto.ErrMethodNotImpl
+	}
+	return uid, nil
+}
+
+func smsJobsError(err error) error {
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, domain.ErrSmsJobIDInvalid):
+		return mtproto.ErrInputRequestInvalid
+	case errors.Is(err, domain.ErrSmsJobNotFound):
+		return mtproto.ErrMethodNotImpl
+	default:
+		return mtproto.ErrInternalServerError
+	}
 }

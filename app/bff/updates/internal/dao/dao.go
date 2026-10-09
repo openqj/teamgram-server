@@ -35,10 +35,19 @@ type Dao struct {
 	SecretUpdates SecretUpdatesReader
 }
 
+func (d *Dao) Close() {
+	if d == nil || d.SecretUpdates == nil {
+		return
+	}
+	if closer, ok := d.SecretUpdates.(interface{ Close() error }); ok {
+		_ = closer.Close()
+	}
+}
+
 func New(c config.Config) *Dao {
 	secretUpdates, err := NewSecretUpdatesReader(c.PostgresDSN)
 	if err != nil {
-		secretUpdates = &unavailableSecretUpdatesReader{err: err}
+		panic(err)
 	}
 	return &Dao{
 		UpdatesClient:     updates_client.NewUpdatesClient(rpcx.GetCachedRpcClient(c.UpdatesClient)),

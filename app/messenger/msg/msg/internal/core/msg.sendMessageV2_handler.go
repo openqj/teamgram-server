@@ -31,6 +31,9 @@ const chatInboxFanoutWorkers = 16
 // MsgSendMessageV2
 // msg.sendMessageV2 user_id:long auth_key_id:long peer_type:int peer_id:long message:Vector<OutboxMessage> = Updates;
 func (c *MsgCore) MsgSendMessageV2(in *msg.TLMsgSendMessageV2) (*mtproto.Updates, error) {
+	if in == nil || in.UserId <= 0 || in.PeerId <= 0 {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
 	var (
 		rUpdates   *mtproto.Updates
 		err        error
@@ -45,6 +48,11 @@ func (c *MsgCore) MsgSendMessageV2(in *msg.TLMsgSendMessageV2) (*mtproto.Updates
 		c.Logger.Errorf("msg.sendMessageV2: {%s} - error: len(outBoxList) == 0", in)
 		return nil, err
 	}
+	for _, message := range outBoxList {
+		if message == nil || message.Message == nil {
+			return nil, mtproto.ErrMessageEmpty
+		}
+	}
 
 	if ups, handled, err := c.persistScheduled(in); handled {
 		if err != nil {
@@ -56,7 +64,7 @@ func (c *MsgCore) MsgSendMessageV2(in *msg.TLMsgSendMessageV2) (*mtproto.Updates
 	switch peer.PeerType {
 	case mtproto.PEER_USER:
 		if len(outBoxList) == 1 {
-			if kUseV3 && c.MD != nil {
+			if kUseV3 && c.MD != nil && c.svcCtx.Dao.Postgres == nil {
 				threading2.GoSafeContext(c.ctx, func(ctx context.Context) {
 					_, _ = c.sendUserOutgoingMessageV3(ctx, in.UserId, in.AuthKeyId, in.PeerId, outBoxList[0])
 				})
@@ -120,6 +128,9 @@ func (c *MsgCore) sendUserOutgoingMessageV2(fromUserId, fromAuthKeyId, toUserId 
 		c.Logger.Errorf("msg.sendUserOutgoingMessageV2 - error: %v", err)
 		return nil, err
 	}
+	if users == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
 
 	c.Logger.WithDuration(timex.Since(since2)).Infof("end: user.getMutableUsers")
 
@@ -168,6 +179,9 @@ func (c *MsgCore) sendUserOutgoingMessageV2(fromUserId, fromAuthKeyId, toUserId 
 		})
 
 	c.Logger.WithDuration(timex.Since(since2)).Infof("end: outBox.Message = plugin.RemakeMessage(")
+	if c.svcCtx.Dao.Postgres != nil {
+		return c.sendUserOutgoingPostgres(c.ctx, fromUserId, fromAuthKeyId, toUserId, []*msg.OutboxMessage{outBox}, users, idHelper.UserIdList)
+	}
 
 	var (
 		rUpdates *mtproto.Updates
@@ -206,10 +220,13 @@ func (c *MsgCore) sendUserOutgoingMessageV2(fromUserId, fromAuthKeyId, toUserId 
 
 			if fromUserId != toUserId {
 				c.Logger.WithDuration(timex.Since(since2)).Infof("end: c.svcCtx.Dao.InboxClient.InboxSendUserMessageToInboxV2(")
-				blocked, _ := c.svcCtx.Dao.UserClient.UserBlockedByUser(c.ctx, &userpb.TLUserBlockedByUser{
+				blocked, err2 := c.svcCtx.Dao.UserClient.UserBlockedByUser(c.ctx, &userpb.TLUserBlockedByUser{
 					UserId:     toUserId,
 					PeerUserId: fromUserId,
 				})
+				if err2 != nil {
+					return err2
+				}
 
 				if !mtproto.FromBool(blocked) {
 					c.Logger.WithDuration(timex.Since(since2)).Infof("end: c.svcCtx.Dao.UserClient.UserBlockedByUser")
@@ -313,6 +330,9 @@ func (c *MsgCore) sendChatOutgoingMessageV2(fromUserId, fromAuthKeyId, peerChatI
 		return nil, err
 	}
 
+	if chat == nil || chat.GetChat() == nil || sUserList == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
 	if _, ok := chat.GetImmutableChatParticipant(fromUserId); !ok {
 		c.Logger.Errorf("msg.sendChatOutgoingMessageV2 - error: ErrChatParticipantNotExists")
 		err = mtproto.ErrChatWriteForbidden
@@ -337,6 +357,9 @@ func (c *MsgCore) sendChatOutgoingMessageV2(fromUserId, fromAuthKeyId, peerChatI
 			return hasBot
 		})
 
+	if c.svcCtx.Dao.Postgres != nil {
+		return c.sendChatOutgoingPostgres(c.ctx, fromUserId, fromAuthKeyId, peerChatId, []*msg.OutboxMessage{outBox}, chat, sUserList)
+	}
 	var (
 		rUpdates *mtproto.Updates
 	)
@@ -440,6 +463,9 @@ func (c *MsgCore) sendUserOutgoingMessageList(fromUserId, fromAuthKeyId, toUserI
 		c.Logger.Errorf("msg.sendUserOutgoingMessageV2 - error: %v", err)
 		return nil, err
 	}
+	if users == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
 
 	sender, _ := users.GetImmutableUser(fromUserId)
 	if sender == nil || sender.Deleted() {
@@ -486,6 +512,9 @@ func (c *MsgCore) sendUserOutgoingMessageList(fromUserId, fromAuthKeyId, toUserI
 				return hasBot
 			})
 	}
+	if c.svcCtx.Dao.Postgres != nil {
+		return c.sendUserOutgoingPostgres(c.ctx, fromUserId, fromAuthKeyId, toUserId, outBoxList, users, idHelper.UserIdList)
+	}
 
 	_, err = c.svcCtx.Dao.DoIdempotent(
 		c.ctx,
@@ -531,10 +560,13 @@ func (c *MsgCore) sendUserOutgoingMessageList(fromUserId, fromAuthKeyId, toUserI
 			}
 
 			if fromUserId != toUserId {
-				blocked, _ := c.svcCtx.Dao.UserClient.UserBlockedByUser(c.ctx, &userpb.TLUserBlockedByUser{
+				blocked, err2 := c.svcCtx.Dao.UserClient.UserBlockedByUser(c.ctx, &userpb.TLUserBlockedByUser{
 					UserId:     toUserId,
 					PeerUserId: fromUserId,
 				})
+				if err2 != nil {
+					return err2
+				}
 
 				if !mtproto.FromBool(blocked) {
 					_, err2 = c.svcCtx.Dao.InboxClient.InboxSendUserMessageToInboxV2(
@@ -637,6 +669,9 @@ func (c *MsgCore) sendChatOutgoingMessageList(fromUserId, fromAuthKeyId, peerCha
 		return nil, err
 	}
 
+	if chat == nil || chat.GetChat() == nil || sUserList == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
 	if _, ok := chat.GetImmutableChatParticipant(fromUserId); !ok {
 		c.Logger.Errorf("msg.sendChatOutgoingMessageV2 - error: ErrChatParticipantNotExists")
 		err = mtproto.ErrChatWriteForbidden
@@ -663,6 +698,9 @@ func (c *MsgCore) sendChatOutgoingMessageList(fromUserId, fromAuthKeyId, peerCha
 			})
 	}
 
+	if c.svcCtx.Dao.Postgres != nil {
+		return c.sendChatOutgoingPostgres(c.ctx, fromUserId, fromAuthKeyId, peerChatId, outBoxList, chat, sUserList)
+	}
 	//var (
 	//	rUpdates *mtproto.Updates
 	//)
@@ -682,7 +720,7 @@ func (c *MsgCore) sendChatOutgoingMessageList(fromUserId, fromAuthKeyId, peerCha
 				box, err2 := c.svcCtx.Dao.SendChatMessageV2(ctx, fromUserId, peerChatId, outBox)
 				if err2 != nil {
 					c.Logger.Error(err2.Error())
-					return err
+					return err2
 				}
 				boxList = append(boxList, box)
 				updateList = append(updateList, mtproto.MakeTLUpdateNewMessage(&mtproto.Update{
@@ -725,7 +763,7 @@ func (c *MsgCore) sendChatOutgoingMessageList(fromUserId, fromAuthKeyId, peerCha
 
 			if err2 != nil {
 				c.Logger.Error(err2.Error())
-				return err
+				return err2
 			}
 
 			*v.(**mtproto.Updates) = mtproto.MakeReplyUpdates(
@@ -858,10 +896,13 @@ func (c *MsgCore) sendUserOutgoingMessageV3(ctx context.Context, fromUserId, fro
 
 			if fromUserId != toUserId {
 				c.Logger.WithDuration(timex.Since(since2)).Infof("end: c.svcCtx.Dao.InboxClient.InboxSendUserMessageToInboxV2(")
-				blocked, _ := c.svcCtx.Dao.UserClient.UserBlockedByUser(ctx, &userpb.TLUserBlockedByUser{
+				blocked, err2 := c.svcCtx.Dao.UserClient.UserBlockedByUser(ctx, &userpb.TLUserBlockedByUser{
 					UserId:     toUserId,
 					PeerUserId: fromUserId,
 				})
+				if err2 != nil {
+					return err2
+				}
 
 				if !mtproto.FromBool(blocked) {
 					c.Logger.WithDuration(timex.Since(since2)).Infof("end: c.svcCtx.Dao.UserClient.UserBlockedByUser")

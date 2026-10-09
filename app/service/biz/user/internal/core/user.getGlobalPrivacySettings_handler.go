@@ -13,6 +13,7 @@ import (
 	"fmt"
 
 	"github.com/teamgram/proto/mtproto"
+	"github.com/teamgram/teamgram-server/app/service/biz/user/internal/dal/dataobject"
 	"github.com/teamgram/teamgram-server/app/service/biz/user/user"
 )
 
@@ -21,6 +22,9 @@ import (
 func (c *UserCore) UserGetGlobalPrivacySettings(in *user.TLUserGetGlobalPrivacySettings) (*mtproto.GlobalPrivacySettings, error) {
 	if in == nil {
 		return nil, fmt.Errorf("user.getGlobalPrivacySettings: request is nil")
+	}
+	if err := c.requirePostgres(); err != nil {
+		return nil, err
 	}
 
 	var (
@@ -40,7 +44,9 @@ func (c *UserCore) UserGetGlobalPrivacySettings(in *user.TLUserGetGlobalPrivacyS
 	//	keep_archived_folders:flags.2?true
 	//	hide_read_marks:flags.3?true
 	//	new_noncontact_peers_require_premium:flags.4?true = GlobalPrivacySettings;
-	do, err := c.svcCtx.Dao.UserGlobalPrivacySettingsDAO.Select(c.ctx, in.UserId)
+	var do *dataobject.UserGlobalPrivacySettingsDO
+	var err error
+	do, err = c.svcCtx.Dao.Postgres.Store.GlobalPrivacy.Select(c.ctx, in.UserId)
 	if err != nil {
 		c.Logger.Errorf("user.getGlobalPrivacySettings - error: %v", err)
 		return nil, fmt.Errorf("user.getGlobalPrivacySettings: load settings: %w", err)

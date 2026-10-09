@@ -12,6 +12,7 @@ import (
 	"github.com/teamgram/teamgram-server/app/bff/messages/internal/svc"
 	messageclient "github.com/teamgram/teamgram-server/app/service/biz/message/client"
 	messagepb "github.com/teamgram/teamgram-server/app/service/biz/message/message"
+	"google.golang.org/protobuf/proto"
 )
 
 type searchResultsPositionsMessageClient struct {
@@ -24,14 +25,12 @@ type searchResultsPositionsMessageClient struct {
 }
 
 func (c *searchResultsPositionsMessageClient) MessageGetSearchCounter(_ context.Context, in *messagepb.TLMessageGetSearchCounter) (*mtproto.Int32, error) {
-	copy := *in
-	c.counterIn = append(c.counterIn, &copy)
+	c.counterIn = append(c.counterIn, proto.Clone(in).(*messagepb.TLMessageGetSearchCounter))
 	return c.counter, c.counterErr
 }
 
 func (c *searchResultsPositionsMessageClient) MessageSearchByMediaType(_ context.Context, in *messagepb.TLMessageSearchByMediaType) (*mtproto.MessageBoxList, error) {
-	copy := *in
-	c.searchIn = append(c.searchIn, &copy)
+	c.searchIn = append(c.searchIn, proto.Clone(in).(*messagepb.TLMessageSearchByMediaType))
 	if c.search == nil {
 		return nil, nil
 	}

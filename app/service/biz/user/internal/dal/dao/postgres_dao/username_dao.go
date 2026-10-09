@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/service/biz/user/internal/dal/dataobject"
 )
 
@@ -14,7 +16,11 @@ func NewUsernameDAO(db DB) *UsernameDAO { return &UsernameDAO{db: db} }
 
 func scanUsername(row interface{ Scan(...any) error }) (*dataobject.UsernameDO, error) {
 	do := new(dataobject.UsernameDO)
-	if err := row.Scan(&do.Id, &do.Username, &do.PeerType, &do.PeerId, &do.Editable, &do.Active, &do.Order2, &do.Deleted); err != nil {
+	err := row.Scan(&do.Id, &do.Username, &do.PeerType, &do.PeerId, &do.Editable, &do.Active, &do.Order2, &do.Deleted)
+	if err == pgx.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
 		return nil, err
 	}
 	return do, nil
@@ -58,6 +64,35 @@ func (d *UsernameDAO) SelectByUserID(ctx context.Context, userID int64) ([]datao
 	return d.SelectByPeer(ctx, 2, userID)
 }
 
+func (d *UsernameDAO) SelectAllByPeer(ctx context.Context, peerType int32, peerID int64) ([]dataobject.UsernameDO, error) {
+	return d.selectAllByPeer(ctx, d.db, peerType, peerID, false)
+}
+
+func (d *UsernameDAO) SelectAllByPeerForUpdate(ctx context.Context, tx DB, peerType int32, peerID int64) ([]dataobject.UsernameDO, error) {
+	return d.selectAllByPeer(ctx, tx, peerType, peerID, true)
+}
+
+func (d *UsernameDAO) selectAllByPeer(ctx context.Context, db DB, peerType int32, peerID int64, lock bool) ([]dataobject.UsernameDO, error) {
+	query := `SELECT ` + usernameColumns + ` FROM username WHERE peer_type=$1 AND peer_id=$2 AND deleted=FALSE ORDER BY active DESC,order2,id`
+	if lock {
+		query += ` FOR UPDATE`
+	}
+	rows, err := db.Query(ctx, query, peerType, peerID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make([]dataobject.UsernameDO, 0)
+	for rows.Next() {
+		var entry dataobject.UsernameDO
+		if err := rows.Scan(&entry.Id, &entry.Username, &entry.PeerType, &entry.PeerId, &entry.Editable, &entry.Active, &entry.Order2, &entry.Deleted); err != nil {
+			return nil, err
+		}
+		result = append(result, entry)
+	}
+	return result, rows.Err()
+}
+
 func (d *UsernameDAO) SelectList(ctx context.Context, names []string) ([]dataobject.UsernameDO, error) {
 	if len(names) == 0 {
 		return []dataobject.UsernameDO{}, nil
@@ -82,7 +117,37 @@ func (d *UsernameDAO) SelectList(ctx context.Context, names []string) ([]dataobj
 	return result, rows.Err()
 }
 
+func (d *UsernameDAO) SearchByQueryNotIdList(ctx context.Context, q string, excluded []int64, limit int32) ([]dataobject.UsernameDO, error) {
+	if len(excluded) == 0 || limit <= 0 {
+		return []dataobject.UsernameDO{}, nil
+	}
+	rows, err := d.db.Query(ctx, `SELECT `+usernameColumns+` FROM username
+WHERE lower(username) LIKE lower($1) AND NOT (peer_id = ANY($2::bigint[]))
+  AND editable = TRUE AND deleted = FALSE ORDER BY order2, id LIMIT $3`, q, excluded, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make([]dataobject.UsernameDO, 0)
+	for rows.Next() {
+		var do dataobject.UsernameDO
+		if err := rows.Scan(&do.Id, &do.Username, &do.PeerType, &do.PeerId, &do.Editable, &do.Active, &do.Order2, &do.Deleted); err != nil {
+			return nil, err
+		}
+		result = append(result, do)
+	}
+	return result, rows.Err()
+}
+
 func (d *UsernameDAO) Update(ctx context.Context, values map[string]any, username string) (int64, error) {
+	return d.update(ctx, d.db, values, username)
+}
+
+func (d *UsernameDAO) UpdateOn(ctx context.Context, tx DB, values map[string]any, username string) (int64, error) {
+	return d.update(ctx, tx, values, username)
+}
+
+func (d *UsernameDAO) update(ctx context.Context, db DB, values map[string]any, username string) (int64, error) {
 	allowed := map[string]bool{"peer_type": true, "peer_id": true, "editable": true, "active": true, "order2": true, "deleted": true, "username": true}
 	sets := make([]string, 0, len(values))
 	args := make([]any, 0, len(values)+1)
@@ -97,7 +162,7 @@ func (d *UsernameDAO) Update(ctx context.Context, values map[string]any, usernam
 		return 0, nil
 	}
 	args = append(args, username)
-	tag, err := d.db.Exec(ctx, `UPDATE username SET `+strings.Join(sets, ", ")+` WHERE lower(username) = lower($`+fmt.Sprint(len(args))+`)`, args...)
+	tag, err := db.Exec(ctx, `UPDATE username SET `+strings.Join(sets, ", ")+` WHERE lower(username) = lower($`+fmt.Sprint(len(args))+`)`, args...)
 	if err != nil {
 		return 0, err
 	}
@@ -118,4 +183,24 @@ func (d *UsernameDAO) DeleteByPeer(ctx context.Context, peerType int32, peerID i
 		return 0, err
 	}
 	return tag.RowsAffected(), nil
+}
+
+func (d *UsernameDAO) DeleteByChannelID(ctx context.Context, channelID int64) (int64, error) {
+	tag, err := d.db.Exec(ctx, `DELETE FROM username WHERE peer_type = $1 AND peer_id = $2 AND editable = TRUE`, mtproto.PEER_CHANNEL, channelID)
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
+}
+
+func (d *UsernameDAO) DeactivateAllChannelUsernamesTx(ctx context.Context, tx DB, channelID int64) (int64, error) {
+	tag, err := tx.Exec(ctx, `UPDATE username SET active=FALSE WHERE peer_type=$1 AND peer_id=$2 AND editable=FALSE AND deleted=FALSE AND active=TRUE`, mtproto.PEER_CHANNEL, channelID)
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
+}
+
+func (d *UsernameDAO) DeleteByChannelId(ctx context.Context, channelID int64) (int64, error) {
+	return d.DeleteByChannelID(ctx, channelID)
 }

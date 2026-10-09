@@ -6,26 +6,18 @@ import (
 	"os"
 	"testing"
 	"time"
-
-	"github.com/go-sql-driver/mysql"
 )
 
 func requirePaymentLedgerDB(t *testing.T) {
 	t.Helper()
-	dsn := os.Getenv("APIFULL_MYSQL_DSN")
+	dsn := os.Getenv("APIFULL_POSTGRES_DSN")
 	if dsn == "" {
-		t.Skip("APIFULL_MYSQL_DSN is not configured")
+		t.Skip("APIFULL_POSTGRES_DSN is not configured")
 	}
-	cfg, err := mysql.ParseDSN(dsn)
-	if err != nil {
-		t.Fatalf("parse APIFULL_MYSQL_DSN: %v", err)
-	}
-	if cfg.DBName != "teamgram_audit" || cfg.Net != "tcp" || cfg.Addr != "127.0.0.1:13306" {
-		t.Fatalf("test requires 127.0.0.1:13306/teamgram_audit, got %s", cfg.FormatDSN())
-	}
-	if err = Open(dsn); err != nil {
+	if err := OpenPostgresReadOnly(dsn); err != nil {
 		t.Fatalf("open isolated payment database: %v", err)
 	}
+	t.Cleanup(func() { _ = Close() })
 }
 
 func TestPaymentLedgerStateTransitionsAreDurableAndIdempotent(t *testing.T) {
@@ -34,9 +26,9 @@ func TestPaymentLedgerStateTransitionsAreDurableAndIdempotent(t *testing.T) {
 	requestKey := fmt.Sprintf("payment-ledger-%d", userID)
 	fingerprint := "invoice-fingerprint"
 	cleanup := func() {
-		_, _ = db.Exec(`DELETE FROM apifull_payment_receipt WHERE user_id=?`, userID)
-		_, _ = db.Exec(`DELETE FROM apifull_payment_ledger WHERE user_id=?`, userID)
-		_, _ = db.Exec(`DELETE FROM apifull_payment_request WHERE user_id=?`, userID)
+		_, _ = db.Exec(`DELETE FROM apifull_payment_receipt WHERE user_id=$1`, userID)
+		_, _ = db.Exec(`DELETE FROM apifull_payment_ledger WHERE user_id=$1`, userID)
+		_, _ = db.Exec(`DELETE FROM apifull_payment_request WHERE user_id=$1`, userID)
 	}
 	t.Cleanup(cleanup)
 

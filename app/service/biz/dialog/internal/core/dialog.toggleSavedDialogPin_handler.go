@@ -28,6 +28,9 @@ import (
 // DialogToggleSavedDialogPin
 // dialog.toggleSavedDialogPin user_id:long peer:PeerUtil pinned:Bool = Bool;
 func (c *DialogCore) DialogToggleSavedDialogPin(in *dialog.TLDialogToggleSavedDialogPin) (*mtproto.Bool, error) {
+	if c == nil || c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.Postgres == nil || c.svcCtx.Dao.Postgres.Store == nil || c.svcCtx.Dao.Postgres.Store.SavedDialogs == nil {
+		return nil, mtproto.ErrMethodNotImpl
+	}
 	var (
 		peer   = in.Peer
 		pinned int64
@@ -39,7 +42,7 @@ func (c *DialogCore) DialogToggleSavedDialogPin(in *dialog.TLDialogToggleSavedDi
 		pinned = 0
 	}
 
-	_, err := c.svcCtx.Dao.SavedDialogsDAO.UpdateUserPeerPinned(
+	_, err := c.svcCtx.Dao.Postgres.Store.SavedDialogs.UpdateUserPeerPinned(
 		c.ctx,
 		pinned,
 		in.GetUserId(),

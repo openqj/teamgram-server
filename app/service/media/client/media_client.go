@@ -16,6 +16,7 @@ import (
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/proto/mtproto/rpc/metadata"
 	"github.com/teamgram/teamgram-server/app/service/media/media"
+	"github.com/teamgram/teamgram-server/app/service/media/media/hashrpc"
 
 	"github.com/zeromicro/go-zero/zrpc"
 )
@@ -31,6 +32,7 @@ type MediaClient interface {
 	MediaGetVideoSizeList(ctx context.Context, in *media.TLMediaGetVideoSizeList) (*media.VideoSizeList, error)
 	MediaUploadedDocumentMedia(ctx context.Context, in *media.TLMediaUploadedDocumentMedia) (*mtproto.MessageMedia, error)
 	MediaGetDocument(ctx context.Context, in *media.TLMediaGetDocument) (*mtproto.Document, error)
+	MediaGetDocumentByHash(ctx context.Context, in *hashrpc.DocumentHashRequest) (*mtproto.Document, error)
 	MediaGetDocumentList(ctx context.Context, in *media.TLMediaGetDocumentList) (*media.Vector_Document, error)
 	MediaUploadEncryptedFile(ctx context.Context, in *media.TLMediaUploadEncryptedFile) (*mtproto.EncryptedFile, error)
 	MediaGetEncryptedFile(ctx context.Context, in *media.TLMediaGetEncryptedFile) (*mtproto.EncryptedFile, error)
@@ -137,6 +139,14 @@ func (m *defaultMediaClient) MediaGetDocument(ctx context.Context, in *media.TLM
 	}
 	client := media.NewRPCMediaClient(m.cli.Conn())
 	return client.MediaGetDocument(ctx, in)
+}
+
+func (m *defaultMediaClient) MediaGetDocumentByHash(ctx context.Context, in *hashrpc.DocumentHashRequest) (*mtproto.Document, error) {
+	md := metadata.RpcMetadataFromIncoming(ctx)
+	if md != nil {
+		ctx, _ = metadata.RpcMetadataToOutgoing(ctx, md)
+	}
+	return hashrpc.NewDocumentHashLookupClient(m.cli.Conn()).GetDocumentByHash(ctx, in)
 }
 
 // MediaGetDocumentList

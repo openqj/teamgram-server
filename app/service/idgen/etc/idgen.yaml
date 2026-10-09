@@ -5,5 +5,5 @@ Etcd:
     - 127.0.0.1:2379
   Key: service.idgen
 NodeId: 1
-SeqIDGen:
-  - Host: 127.0.0.1:6379
+Postgres:
+  DSN: postgres://teamgram:teamgram@127.0.0.1:5432/teamgram?sslmode=disable

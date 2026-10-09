@@ -73,20 +73,49 @@ func (d *MessagesDAO) insert(ctx context.Context, db DB, do *dataobject.Messages
   message_data, message, mentioned, media_unread, pinned, saved_peer_type,
   saved_peer_id, date2, ttl_period, outbox_read_date)
  VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
-		ON CONFLICT (sender_user_id, random_id) WHERE random_id <> 0 DO UPDATE SET updated_at = messages.updated_at
+		ON CONFLICT DO NOTHING
  RETURNING id`, do.UserId, do.UserMessageBoxId, do.DialogId1, do.DialogId2,
 		do.DialogMessageId, do.SenderUserId, do.PeerType, do.PeerId, do.RandomId,
 		do.MessageFilterType, do.MessageData, do.Message, do.Mentioned, do.MediaUnread,
 		do.Pinned, do.SavedPeerType, do.SavedPeerId, do.Date2, do.TtlPeriod,
 		do.OutboxReadDate).Scan(&id)
+	if err == pgx.ErrNoRows {
+		err = db.QueryRow(ctx, `SELECT id FROM messages
+ WHERE user_id = $1 AND sender_user_id = $2 AND (
+   ($3::bigint <> 0 AND random_id = $3) OR
+   ($4::bigint <> 0 AND dialog_message_id = $4) OR
+   (user_message_box_id = $5 AND random_id = $3 AND dialog_message_id = $4))
+ ORDER BY id LIMIT 1`, do.UserId, do.SenderUserId, do.RandomId, do.DialogMessageId, do.UserMessageBoxId).Scan(&id)
+		if err == nil {
+			return id, 0, nil
+		}
+	}
 	if err != nil {
 		return 0, 0, err
 	}
 	return id, 1, nil
 }
 
+func (d *MessagesDAO) SelectByStorageIDOn(ctx context.Context, db DB, userID, id int64) (*dataobject.MessagesDO, error) {
+	return scanMessage(db.QueryRow(ctx, `SELECT `+messageColumns+` FROM messages WHERE user_id = $1 AND id = $2`, userID, id))
+}
+
+func (d *MessagesDAO) SelectByDeliveryIDOn(ctx context.Context, db DB, userID, senderUserID, dialogMessageID int64) (*dataobject.MessagesDO, error) {
+	return scanMessage(db.QueryRow(ctx, `SELECT `+messageColumns+` FROM messages
+ WHERE user_id = $1 AND sender_user_id = $2 AND dialog_message_id = $3 AND dialog_message_id <> 0`, userID, senderUserID, dialogMessageID))
+}
+
 func (d *MessagesDAO) SelectByRandomId(ctx context.Context, senderUserID, randomID int64) (*dataobject.MessagesDO, error) {
-	return scanMessage(d.db.QueryRow(ctx, `SELECT `+messageColumns+` FROM messages WHERE sender_user_id = $1 AND random_id = $2 AND deleted = FALSE LIMIT 1`, senderUserID, randomID))
+	return d.SelectByRandomIdForUser(ctx, d.db, senderUserID, senderUserID, randomID)
+}
+
+func (d *MessagesDAO) SelectByRandomIdOn(ctx context.Context, tx DB, userID, senderUserID, randomID int64) (*dataobject.MessagesDO, error) {
+	return d.SelectByRandomIdForUser(ctx, tx, userID, senderUserID, randomID)
+}
+
+func (d *MessagesDAO) SelectByRandomIdForUser(ctx context.Context, db DB, userID, senderUserID, randomID int64) (*dataobject.MessagesDO, error) {
+	return scanMessage(db.QueryRow(ctx, `SELECT `+messageColumns+` FROM messages
+ WHERE user_id = $1 AND sender_user_id = $2 AND random_id = $3 LIMIT 1`, userID, senderUserID, randomID))
 }
 
 func (d *MessagesDAO) SelectByMessageId(ctx context.Context, userID int64, messageID int32) (*dataobject.MessagesDO, error) {
@@ -129,13 +158,13 @@ func (d *MessagesDAO) SelectByMessageIdList(ctx context.Context, userID int64, i
 // dialog-wide message ids. The generated MySQL DAO accepted a physical table
 // name; PostgreSQL stores all message views in one relation, so the user
 // scope is the authoritative partition key instead.
-func (d *MessagesDAO) SelectByMessageDataIdList(ctx context.Context, userID int64, ids []int64) ([]dataobject.MessagesDO, error) {
+func (d *MessagesDAO) SelectByMessageDataIdList(ctx context.Context, _ int64, ids []int64) ([]dataobject.MessagesDO, error) {
 	if len(ids) == 0 {
 		return []dataobject.MessagesDO{}, nil
 	}
 	rows, err := d.db.Query(ctx, `SELECT `+messageColumns+` FROM messages
-WHERE user_id = $1 AND dialog_message_id = ANY($2::bigint[]) AND deleted = FALSE
-ORDER BY user_message_box_id DESC`, userID, ids)
+WHERE dialog_message_id = ANY($1::bigint[]) AND deleted = FALSE
+ORDER BY user_message_box_id DESC`, ids)
 	if err != nil {
 		return nil, err
 	}
@@ -191,7 +220,11 @@ WHERE user_id = $1 AND user_message_box_id = ANY($2::integer[]) AND deleted = FA
 }
 
 func (d *MessagesDAO) UpdatePinned(ctx context.Context, pinned bool, userID int64, messageID int32) (int64, error) {
-	tag, err := d.db.Exec(ctx, `UPDATE messages SET pinned = $1 WHERE user_id = $2 AND user_message_box_id = $3`, pinned, userID, messageID)
+	return d.UpdatePinnedOn(ctx, d.db, pinned, userID, messageID)
+}
+
+func (d *MessagesDAO) UpdatePinnedOn(ctx context.Context, db DB, pinned bool, userID int64, messageID int32) (int64, error) {
+	tag, err := db.Exec(ctx, `UPDATE messages SET pinned = $1 WHERE user_id = $2 AND user_message_box_id = $3`, pinned, userID, messageID)
 	if err != nil {
 		return 0, err
 	}
@@ -252,10 +285,14 @@ func (d *MessagesDAO) SelectPinnedList(ctx context.Context, userID, dialogID1, d
 }
 
 func (d *MessagesDAO) UpdateUnPinnedByIdList(ctx context.Context, userID int64, ids []int32) (int64, error) {
+	return d.UpdateUnPinnedByIdListOn(ctx, d.db, userID, ids)
+}
+
+func (d *MessagesDAO) UpdateUnPinnedByIdListOn(ctx context.Context, db DB, userID int64, ids []int32) (int64, error) {
 	if len(ids) == 0 {
 		return 0, nil
 	}
-	tag, err := d.db.Exec(ctx, `UPDATE messages SET pinned = FALSE WHERE user_id = $1 AND user_message_box_id = ANY($2::integer[])`, userID, ids)
+	tag, err := db.Exec(ctx, `UPDATE messages SET pinned = FALSE WHERE user_id = $1 AND user_message_box_id = ANY($2::integer[])`, userID, ids)
 	if err != nil {
 		return 0, err
 	}
@@ -263,8 +300,12 @@ func (d *MessagesDAO) UpdateUnPinnedByIdList(ctx context.Context, userID int64, 
 }
 
 func (d *MessagesDAO) SelectDialogLastMessageId(ctx context.Context, userID, dialogID1, dialogID2 int64) (int32, error) {
+	return d.SelectDialogLastMessageIdOn(ctx, d.db, userID, dialogID1, dialogID2)
+}
+
+func (d *MessagesDAO) SelectDialogLastMessageIdOn(ctx context.Context, db DB, userID, dialogID1, dialogID2 int64) (int32, error) {
 	var id int32
-	err := d.db.QueryRow(ctx, `SELECT user_message_box_id FROM messages
+	err := db.QueryRow(ctx, `SELECT user_message_box_id FROM messages
 WHERE user_id = $1 AND dialog_id1 = $2 AND dialog_id2 = $3 AND deleted = FALSE
 ORDER BY user_message_box_id DESC LIMIT 1`, userID, dialogID1, dialogID2).Scan(&id)
 	if err == pgx.ErrNoRows {
@@ -528,6 +569,14 @@ WHERE user_id = $1 AND dialog_id1 = $2 AND dialog_id2 = $3 AND deleted = FALSE`,
 	return count, err
 }
 
+func (d *MessagesDAO) CountHistoryBySender(ctx context.Context, userID, dialogID1, dialogID2, senderUserID int64) (int64, error) {
+	var count int64
+	err := d.db.QueryRow(ctx, `SELECT count(*) FROM messages
+WHERE user_id = $1 AND dialog_id1 = $2 AND dialog_id2 = $3
+  AND sender_user_id = $4 AND deleted = FALSE`, userID, dialogID1, dialogID2, senderUserID).Scan(&count)
+	return count, err
+}
+
 func (d *MessagesDAO) CountUnreadMentions(ctx context.Context, userID int64, peerType int32, peerID int64) (int64, error) {
 	var count int64
 	err := d.db.QueryRow(ctx, `SELECT count(*) FROM messages
@@ -541,7 +590,7 @@ func (d *MessagesDAO) SelectBackwardUnreadMentionsByOffsetIdLimit(ctx context.Co
 WHERE user_id = $1 AND dialog_id1 = $2 AND dialog_id2 = $3
   AND user_message_box_id < $4 AND user_message_box_id >= $5
   AND ($6 = 0 OR user_message_box_id <= $6)
-  AND mentioned = TRUE AND deleted = FALSE
+  AND mentioned = TRUE AND media_unread = TRUE AND deleted = FALSE
 ORDER BY user_message_box_id DESC LIMIT $7`, userID, dialogID1, dialogID2, offsetID, minID, maxID, limit)
 	if err != nil {
 		return nil, err
@@ -554,7 +603,7 @@ func (d *MessagesDAO) SelectForwardUnreadMentionsByOffsetIdLimit(ctx context.Con
 WHERE user_id = $1 AND dialog_id1 = $2 AND dialog_id2 = $3
   AND user_message_box_id >= $4 AND user_message_box_id >= $5
   AND ($6 = 0 OR user_message_box_id <= $6)
-  AND mentioned = TRUE AND deleted = FALSE
+  AND mentioned = TRUE AND media_unread = TRUE AND deleted = FALSE
 ORDER BY user_message_box_id ASC LIMIT $7`, userID, dialogID1, dialogID2, offsetID, minID, maxID, limit)
 	if err != nil {
 		return nil, err

@@ -2,101 +2,143 @@ package dao
 
 import (
 	"context"
-	"database/sql"
 	"errors"
+	"fmt"
+	"net/url"
 	"os"
 	"testing"
 	"time"
 
-	"github.com/go-sql-driver/mysql"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-func isolatedUpdatesDSN(t *testing.T) string {
+func isolatedUpdatesPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
-	dsn := os.Getenv("UPDATES_MYSQL_DSN")
+	dsn := os.Getenv("UPDATES_POSTGRES_DSN")
 	if dsn == "" {
-		t.Skip("UPDATES_MYSQL_DSN is not set")
+		t.Skip("UPDATES_POSTGRES_DSN must point to an isolated PostgreSQL 18 database")
 	}
-	cfg, err := mysql.ParseDSN(dsn)
+	ctx := context.Background()
+	admin, err := pgxpool.New(ctx, dsn)
 	if err != nil {
-		t.Fatalf("parse UPDATES_MYSQL_DSN: %v", err)
+		t.Fatal(err)
 	}
-	if cfg.DBName != "teamgram_audit" || cfg.Net != "tcp" || cfg.Addr != "127.0.0.1:13306" {
-		t.Fatalf("test requires 127.0.0.1:13306/teamgram_audit")
+	t.Cleanup(admin.Close)
+	var version int
+	if err := admin.QueryRow(ctx, `SELECT current_setting('server_version_num')::integer`).Scan(&version); err != nil || version/10000 != 18 {
+		t.Fatalf("PostgreSQL 18 required: version=%d err=%v", version, err)
 	}
-	return dsn
+	schema := pgx.Identifier{fmt.Sprintf("secret_updates_test_%d", time.Now().UnixNano())}.Sanitize()
+	if _, err := admin.Exec(ctx, `CREATE SCHEMA `+schema); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if _, err := admin.Exec(context.Background(), `DROP SCHEMA `+schema+` CASCADE`); err != nil {
+			t.Errorf("clean secret update schema: %v", err)
+		}
+	})
+	for _, table := range []string{"apifull_secret_message", "apifull_secret_user_state"} {
+		name := pgx.Identifier{table}.Sanitize()
+		if _, err := admin.Exec(ctx, `CREATE TABLE `+schema+`.`+name+` (LIKE public.`+name+` INCLUDING ALL)`); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cfg, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.ConnConfig.RuntimeParams["search_path"] = schema
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	return pool
 }
 
-func TestSecretUpdatesReaderRequiresMySQL(t *testing.T) {
+func TestSecretUpdatesReaderRequiresPostgres(t *testing.T) {
 	reader, err := NewSecretUpdatesReader("")
 	if reader != nil || !errors.Is(err, ErrSecretUpdatesDisabled) {
 		t.Fatalf("reader = %v, err = %v", reader, err)
 	}
 }
 
-func TestMySQLSecretUpdatesReader(t *testing.T) {
-	dsn := isolatedUpdatesDSN(t)
-	db, err := sql.Open("mysql", dsn)
-	if err != nil {
+func TestPostgresSecretUpdatesReader(t *testing.T) {
+	pool := isolatedUpdatesPool(t)
+	ctx := context.Background()
+	const userID int64 = 101
+	if _, err := pool.Exec(ctx, `INSERT INTO apifull_secret_user_state (user_id, last_qts, confirmed_qts) VALUES ($1,3,0)`, userID); err != nil {
 		t.Fatal(err)
 	}
-
-	userID := time.Now().UnixNano()
-	if _, err = db.Exec(`INSERT INTO apifull_secret_user_state (user_id, last_qts, confirmed_qts) VALUES (?,3,0)`, userID); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		_, _ = db.Exec(`DELETE FROM apifull_secret_message WHERE recipient_user_id=?`, userID)
-		_, _ = db.Exec(`DELETE FROM apifull_secret_user_state WHERE user_id=?`, userID)
-		_ = db.Close()
-	})
 	rows := []struct {
 		qts     int32
-		service int
+		service bool
 		file    bool
-	}{{3, 0, true}, {1, 0, false}, {2, 1, false}}
+	}{{3, false, true}, {1, false, false}, {2, true, false}}
 	for _, row := range rows {
 		var fileID, fileAccessHash, fileSize, fileDCID, fileFingerprint any
 		if row.file {
 			fileID, fileAccessHash, fileSize, fileDCID, fileFingerprint = int64(90), int64(91), int64(92), int32(4), int32(93)
 		}
-		_, err = db.Exec(`INSERT INTO apifull_secret_message
+		_, err := pool.Exec(ctx, `INSERT INTO apifull_secret_message
 			(chat_id, sender_user_id, recipient_user_id, random_id, qts, date, encrypted_data, service,
 			 file_id, file_access_hash, file_size, file_dc_id, file_key_fingerprint, acknowledged_at, read_at)
-			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,0)`,
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,0,0)`,
 			20, userID+1, userID, userID+int64(row.qts), row.qts, 100+row.qts, []byte{byte(row.qts)}, row.service,
 			fileID, fileAccessHash, fileSize, fileDCID, fileFingerprint)
 		if err != nil {
 			t.Fatal(err)
 		}
 	}
-
-	reader, err := NewSecretUpdatesReader(dsn)
-	if err != nil {
-		t.Fatal(err)
-	}
-	mysqlReader := reader.(*mysqlSecretUpdatesReader)
-	defer mysqlReader.db.Close()
-
-	current, err := reader.CurrentQTS(context.Background(), userID)
+	reader := &postgresSecretUpdatesReader{pool: pool}
+	current, err := reader.CurrentQTS(ctx, userID)
 	if err != nil || current != 3 {
 		t.Fatalf("current qts = (%d, %v)", current, err)
 	}
-	first, err := reader.GetDifference(context.Background(), userID, 0, 2)
+	first, err := reader.GetDifference(ctx, userID, 0, 2)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if first.CurrentQTS != 3 || !first.HasMore || len(first.Messages) != 2 || first.Messages[0].QTS != 1 || first.Messages[1].QTS != 2 || !first.Messages[1].Service {
 		t.Fatalf("first page = %+v", first)
 	}
-	last, err := reader.GetDifference(context.Background(), userID, 2, 2)
+	last, err := reader.GetDifference(ctx, userID, 2, 2)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if last.HasMore || len(last.Messages) != 1 || last.Messages[0].QTS != 3 || last.Messages[0].File == nil || last.Messages[0].File.ID != 90 {
 		t.Fatalf("last page = %+v", last)
 	}
-	if _, err = reader.GetDifference(context.Background(), userID, 4, 2); !errors.Is(err, ErrMaxQTSInvalid) {
-		t.Fatalf("future qts error = %v", err)
+	for _, qts := range []int32{-1, 4} {
+		if _, err := reader.GetDifference(ctx, userID, qts, 2); !errors.Is(err, ErrMaxQTSInvalid) {
+			t.Fatalf("invalid qts %d error = %v", qts, err)
+		}
+	}
+	if current, err := reader.CurrentQTS(ctx, 202); err != nil || current != 0 {
+		t.Fatalf("unused current qts = (%d, %v)", current, err)
+	}
+}
+
+func TestSecretUpdatesStartupRequiresCompleteSchema(t *testing.T) {
+	pool := isolatedUpdatesPool(t)
+	databaseURL, err := url.Parse(os.Getenv("UPDATES_POSTGRES_DSN"))
+	if err != nil || databaseURL.Host == "" {
+		t.Fatalf("test requires PostgreSQL URL: %v", err)
+	}
+	query := databaseURL.Query()
+	query.Set("search_path", pool.Config().ConnConfig.RuntimeParams["search_path"])
+	databaseURL.RawQuery = query.Encode()
+	reader, err := NewSecretUpdatesReader(databaseURL.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = reader.(*postgresSecretUpdatesReader).Close()
+	if _, err := pool.Exec(context.Background(), `ALTER TABLE apifull_secret_message DROP COLUMN file_key_fingerprint`); err != nil {
+		t.Fatal(err)
+	}
+	reader, err = NewSecretUpdatesReader(databaseURL.String())
+	if err == nil || reader != nil {
+		t.Fatalf("secret updates startup accepted an incomplete schema: %v %v", reader, err)
 	}
 }

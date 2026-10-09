@@ -26,12 +26,17 @@ import (
 // SessionPushSessionUpdatesData
 // session.pushSessionUpdatesData auth_key_id:long session_id:long updates:Updates = Bool;
 func (c *SessionCore) SessionPushSessionUpdatesData(in *session.TLSessionPushSessionUpdatesData) (*mtproto.Bool, error) {
+	if in == nil || in.PermAuthKeyId == 0 || in.Updates == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
 	mainAuth, err := c.getOrFetchMainAuthWrapper(in.PermAuthKeyId)
 	if err != nil {
 		c.Logger.Errorf("session.pushSessionUpdatesData - %v", err)
 		return nil, err
 	}
-	mainAuth.SyncSessionDataArrived(c.ctx, in.AuthKeyId, in.SessionId, in.Updates)
+	if err := mainAuth.SyncSessionDataArrived(c.ctx, in.AuthKeyId, in.SessionId, in.Updates); err != nil {
+		return nil, err
+	}
 
 	return mtproto.BoolTrue, nil
 }

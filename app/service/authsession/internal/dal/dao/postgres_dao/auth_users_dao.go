@@ -25,10 +25,11 @@ func (dao *AuthUsersDAO) insertOrUpdates(ctx context.Context, db DB, do *dataobj
 	return insertResult(ctx, db, `
 		INSERT INTO auth_users (auth_key_id, user_id, hash, date_created, date_active)
 		VALUES ($1, $2, $3, $4, $5)
-		ON CONFLICT (auth_key_id, user_id) DO UPDATE SET
+		ON CONFLICT (auth_key_id) WHERE deleted = FALSE DO UPDATE SET
 		user_id = EXCLUDED.user_id, hash = EXCLUDED.hash,
 		date_created = EXCLUDED.date_created, date_active = EXCLUDED.date_active,
 		deleted = FALSE
+		WHERE auth_users.user_id = EXCLUDED.user_id
 		RETURNING id`, do.AuthKeyId, do.UserId, do.Hash, do.DateCreated, do.DateActive)
 }
 

@@ -24,6 +24,12 @@ import (
 // MsgUpdatePinnedMessage
 // msg.updatePinnedMessage flags:# user_id:long auth_key_id:long silent:flags.0?true unpin:flags.1?true pm_oneside:flags.2?true peer_type:int peer_id:long id:int = Updates;
 func (c *MsgCore) MsgUpdatePinnedMessage(in *msg.TLMsgUpdatePinnedMessage) (*mtproto.Updates, error) {
+	if in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if c.svcCtx.Dao.Postgres != nil {
+		return c.pinMessagePostgres(in)
+	}
 	var (
 		peer     = mtproto.MakePeerUtil(in.PeerType, in.PeerId)
 		rUpdates *mtproto.Updates

@@ -10,13 +10,9 @@
 package core
 
 import (
-	"context"
-
-	"github.com/teamgram/marmota/pkg/stores/sqlx"
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/messenger/msg/inbox/inbox"
 	"github.com/teamgram/teamgram-server/app/messenger/msg/msg/msg"
-	"github.com/teamgram/teamgram-server/app/service/biz/dialog/dialog"
 )
 
 // MsgReadMessageContents
@@ -24,6 +20,24 @@ import (
 func (c *MsgCore) MsgReadMessageContents(in *msg.TLMsgReadMessageContents) (*mtproto.Messages_AffectedMessages, error) {
 	if in == nil {
 		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if c.svcCtx.Dao.Postgres != nil {
+		ids := make([]int32, 0, len(in.Id))
+		for _, content := range in.Id {
+			if content == nil || content.Id <= 0 {
+				return nil, mtproto.ErrMessageIdInvalid
+			}
+			ids = append(ids, content.Id)
+		}
+		updates, pts, err := c.svcCtx.Dao.ReadMessageContentsState(c.ctx, in.UserId, mtproto.MakePeerUtil(in.PeerType, in.PeerId), ids)
+		if err != nil {
+			return nil, err
+		}
+		var count int32
+		for _, update := range updates {
+			count += update.PtsCount
+		}
+		return mtproto.MakeTLMessagesAffectedMessages(&mtproto.Messages_AffectedMessages{Pts: pts, PtsCount: count}).To_Messages_AffectedMessages(), nil
 	}
 	var (
 		pts, ptsCount int32
@@ -92,21 +106,9 @@ func (c *MsgCore) readMentionedMessageContents(in *msg.TLMsgReadMessageContents)
 				sz = 0
 			}
 
-			if _, _, err := c.svcCtx.Dao.CachedConn.Exec(
-				c.ctx,
-				func(ctx context.Context, conn *sqlx.DB) (int64, int64, error) {
-					_, err2 := c.svcCtx.Dao.UpdateDialogCustomMap(
-						ctx,
-						map[string]interface{}{
-							"unread_mentions_count": sz,
-						},
-						in.UserId,
-						mtproto.PEER_CHAT,
-						in.PeerId)
-
-					return 0, 0, err2
-				},
-				dialog.GetDialogCacheKey(in.UserId, mtproto.MakePeerDialogId(mtproto.PEER_CHAT, in.PeerId))); err != nil {
+			if _, err := c.svcCtx.Dao.UpdateDialogCustomMap(c.ctx, map[string]interface{}{
+				"unread_mentions_count": sz,
+			}, in.UserId, mtproto.PEER_CHAT, in.PeerId); err != nil {
 				return 0, err
 			}
 		}
@@ -201,21 +203,8 @@ func (c *MsgCore) readReactionUnreadMessageContents(in *msg.TLMsgReadMessageCont
 	}
 
 	if unreadReactionsCount > 0 {
-		if _, _, err := c.svcCtx.Dao.CachedConn.Exec(
-			c.ctx,
-			func(ctx context.Context, conn *sqlx.DB) (int64, int64, error) {
-				_, err2 := c.svcCtx.Dao.UpdateDialogUnreadCount(
-					ctx,
-					0,
-					0,
-					-unreadReactionsCount,
-					in.UserId,
-					in.PeerType,
-					in.PeerId)
-
-				return 0, 0, err2
-			},
-			dialog.GetDialogCacheKey(in.UserId, mtproto.MakePeerDialogId(in.PeerType, in.PeerId))); err != nil {
+		if _, err := c.svcCtx.Dao.UpdateDialogUnreadCount(c.ctx, 0, 0, -unreadReactionsCount,
+			in.UserId, in.PeerType, in.PeerId); err != nil {
 			return 0, err
 		}
 	}

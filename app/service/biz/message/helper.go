@@ -40,6 +40,7 @@ type (
 )
 
 var (
+	VerifyPostgresSchema            = postgres_dao.VerifySchema
 	NewMessagesDAO                  = mysql_dao.NewMessagesDAO
 	NewMessageReadOutboxDAO         = mysql_dao.NewMessageReadOutboxDAO
 	NewPostgresMessagesDAO          = postgres_dao.NewMessagesDAO

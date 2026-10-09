@@ -20,9 +20,11 @@ package dao
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/teamgram/marmota/pkg/stores/sqlc"
 	"github.com/teamgram/marmota/pkg/stores/sqlx"
 	"github.com/teamgram/proto/mtproto"
@@ -49,11 +51,18 @@ func genContactsBlockPeerCacheKey(id, blockedId int64) string {
 	return fmt.Sprintf("%s_%d_%d", contactsBlockPeerPrefix, id, blockedId)
 }
 
-func (d *Dao) CheckBlocked(ctx context.Context, id, blockedId int64) bool {
+func (d *Dao) CheckBlocked(ctx context.Context, id, blockedId int64) (bool, error) {
+	if d.Postgres != nil {
+		do, err := d.Postgres.Store.PeerBlocks.Select(ctx, id, mtproto.PEER_USER, blockedId)
+		if err != nil {
+			return false, err
+		}
+		return do != nil && !do.Deleted, nil
+	}
 	var (
 		blocked = new(CachedPeerBlocked)
 	)
-	d.CachedConn.QueryRow(
+	err := d.CachedConn.QueryRow(
 		ctx,
 		blocked,
 		genContactsBlockPeerCacheKey(id, blockedId),
@@ -75,10 +84,25 @@ func (d *Dao) CheckBlocked(ctx context.Context, id, blockedId int64) bool {
 		},
 	)
 
-	return !blocked.IsEmpty()
+	if errors.Is(err, sqlc.ErrNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return !blocked.IsEmpty(), nil
 }
 
-func (d *Dao) BlockUser(ctx context.Context, id, blockId int64) bool {
+func (d *Dao) BlockUser(ctx context.Context, id, blockId int64) error {
+	if d.Postgres != nil {
+		return d.Postgres.InTx(ctx, func(tx pgx.Tx) error {
+			if err := lockUserForBlock(ctx, tx, id); err != nil {
+				return err
+			}
+			_, _, err := d.Postgres.Store.PeerBlocks.InsertOrUpdateTx(ctx, tx, &dataobject.UserPeerBlocksDO{UserId: id, PeerType: mtproto.PEER_USER, PeerId: blockId, Date: time.Now().Unix()})
+			return err
+		})
+	}
 	_, _, err := d.CachedConn.Exec(
 		ctx,
 		func(ctx context.Context, conn *sqlx.DB) (int64, int64, error) {
@@ -91,10 +115,19 @@ func (d *Dao) BlockUser(ctx context.Context, id, blockId int64) bool {
 		},
 		genContactsBlockPeerCacheKey(id, blockId))
 
-	return err == nil
+	return err
 }
 
-func (d *Dao) UnBlockUser(ctx context.Context, id, unblockId int64) bool {
+func (d *Dao) UnBlockUser(ctx context.Context, id, unblockId int64) error {
+	if d.Postgres != nil {
+		return d.Postgres.InTx(ctx, func(tx pgx.Tx) error {
+			if err := lockUserForBlock(ctx, tx, id); err != nil {
+				return err
+			}
+			_, err := d.Postgres.Store.PeerBlocks.DeleteTx(ctx, tx, id, mtproto.PEER_USER, unblockId)
+			return err
+		})
+	}
 	_, _, err := d.CachedConn.Exec(
 		ctx,
 		func(ctx context.Context, conn *sqlx.DB) (int64, int64, error) {
@@ -107,5 +140,17 @@ func (d *Dao) UnBlockUser(ctx context.Context, id, unblockId int64) bool {
 		},
 		genContactsBlockPeerCacheKey(id, unblockId))
 
-	return err == nil
+	return err
+}
+
+func lockUserForBlock(ctx context.Context, tx pgx.Tx, id int64) error {
+	if id <= 0 {
+		return mtproto.ErrUserIdInvalid
+	}
+	var userID int64
+	err := tx.QueryRow(ctx, `SELECT id FROM users WHERE id=$1 AND deleted=FALSE AND user_type NOT IN(0,1) FOR UPDATE`, id).Scan(&userID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return mtproto.ErrUserIdInvalid
+	}
+	return err
 }

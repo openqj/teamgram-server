@@ -17,11 +17,13 @@ import (
 // UserSetPrivacy
 // user.setPrivacy user_id:int key_type:int rules:Vector<PrivacyRule> = Bool;
 func (c *UserCore) UserSetPrivacy(in *user.TLUserSetPrivacy) (*mtproto.Bool, error) {
-	c.svcCtx.Dao.SetUserPrivacyRules(
+	if err := c.svcCtx.Dao.SetUserPrivacyRules(
 		c.ctx,
 		in.GetUserId(),
 		in.GetKeyType(),
-		in.GetRules())
+		in.GetRules()); err != nil {
+		return nil, err
+	}
 
 	return mtproto.BoolTrue, nil
 }

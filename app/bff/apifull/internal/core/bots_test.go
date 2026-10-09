@@ -26,7 +26,6 @@ import (
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/proto/mtproto/rpc/metadata"
 	apifullDao "github.com/teamgram/teamgram-server/app/bff/apifull/internal/dao"
-	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/persist"
 	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/svc"
 	user_client "github.com/teamgram/teamgram-server/app/service/biz/user/client"
 	userpb "github.com/teamgram/teamgram-server/app/service/biz/user/user"
@@ -47,10 +46,6 @@ func (c *botCommandsUserClient) UserGetBotInfo(_ context.Context, _ *userpb.TLUs
 }
 
 func TestBotCommandsAndMenuButtonRoundTrip(t *testing.T) {
-	if err := persist.Default.Set(botMenuButtonPersistKey(1, 7), ""); err != nil {
-		t.Fatal(err)
-	}
-
 	userClient := &botCommandsUserClient{}
 	c := &ApiFullCore{
 		svcCtx: &svc.ServiceContext{Dao: &apifullDao.Dao{UserClient: userClient}},
@@ -112,6 +107,18 @@ func TestBotWritesNilError(t *testing.T) {
 		{"webhook answer", func() error { _, err := c.BotsAnswerWebhookJSONQuery(nil); return err }},
 		{"broadcast rights", func() error { _, err := c.BotsSetBotBroadcastDefaultAdminRights(nil); return err }},
 		{"group rights", func() error { _, err := c.BotsSetBotGroupDefaultAdminRights(nil); return err }},
+		{"malformed group rights", func() error {
+			_, err := c.BotsSetBotGroupDefaultAdminRights(&mtproto.TLBotsSetBotGroupDefaultAdminRights{
+				AdminRights: &mtproto.ChatAdminRights{InviteUsers: true},
+			})
+			return err
+		}},
+		{"mismatched group rights", func() error {
+			_, err := c.BotsSetBotGroupDefaultAdminRights(&mtproto.TLBotsSetBotGroupDefaultAdminRights{
+				AdminRights: &mtproto.ChatAdminRights{PredicateName: "invalid", Constructor: mtproto.TLConstructor_CRC32_chatAdminRights},
+			})
+			return err
+		}},
 		{"attach menu", func() error { _, err := c.MessagesToggleBotInAttachMenu(nil); return err }},
 		{"custom verification", func() error { _, err := c.BotsSetCustomVerification(nil); return err }},
 	}
@@ -121,7 +128,15 @@ func TestBotWritesNilError(t *testing.T) {
 			if !errors.Is(err, mtproto.ErrInputConstructorInvalid) {
 				t.Fatalf("%s: got %v, want INPUT_CONSTRUCTOR_INVALID", fn.name, err)
 			}
-		} else if fn.name == "set bot info" || fn.name == "edit access" || fn.name == "set join results" || fn.name == "broadcast rights" || fn.name == "group rights" || fn.name == "custom verification" {
+		} else if fn.name == "set bot info" {
+			if !errors.Is(err, mtproto.ErrInputRequestInvalid) {
+				t.Fatalf("%s: got %v, want INPUT_REQUEST_INVALID", fn.name, err)
+			}
+		} else if fn.name == "broadcast rights" || fn.name == "group rights" || fn.name == "malformed group rights" || fn.name == "mismatched group rights" {
+			if !errors.Is(err, mtproto.ErrInputConstructorInvalid) {
+				t.Fatalf("%s: got %v, want INPUT_CONSTRUCTOR_INVALID", fn.name, err)
+			}
+		} else if fn.name == "edit access" || fn.name == "set join results" || fn.name == "custom verification" || fn.name == "help updates" || fn.name == "custom request" || fn.name == "webhook answer" {
 			if !errors.Is(err, mtproto.ErrMethodNotImpl) {
 				t.Fatalf("%s: got %v, want METHOD_NOT_IMPL", fn.name, err)
 			}

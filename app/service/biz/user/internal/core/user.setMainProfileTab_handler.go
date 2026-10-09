@@ -19,29 +19,26 @@
 package core
 
 import (
-	"context"
-
-	"github.com/teamgram/marmota/pkg/stores/sqlx"
 	"github.com/teamgram/proto/mtproto"
-	"github.com/teamgram/teamgram-server/app/service/biz/user/internal/dao"
 	"github.com/teamgram/teamgram-server/app/service/biz/user/user"
 )
 
 // UserSetMainProfileTab
 // user.setMainProfileTab user_id:long tab:ProfileTab = Bool;
 func (c *UserCore) UserSetMainProfileTab(in *user.TLUserSetMainProfileTab) (*mtproto.Bool, error) {
-	_, _, err := c.svcCtx.Dao.CachedConn.Exec(
-		c.ctx,
-		func(ctx context.Context, conn *sqlx.DB) (int64, int64, error) {
-			_, err := c.svcCtx.Dao.UsersDAO.UpdateMainTab(c.ctx, mtproto.FromProfileTabToType(in.GetTab()), in.GetUserId())
-			if err != nil {
-				c.Logger.Errorf("user.setMainProfileTab - error: %v", err)
-			}
-			return 0, 0, err
-		},
-		dao.GenCacheUserDataCacheKey(in.UserId))
+	if in == nil || in.GetUserId() <= 0 || in.GetTab() == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if err := c.requirePostgres(); err != nil {
+		return nil, err
+	}
+	rows, err := c.svcCtx.Dao.UpdateUserFields(c.ctx, in.GetUserId(), map[string]any{"main_tab": mtproto.FromProfileTabToType(in.GetTab())})
 	if err != nil {
 		c.Logger.Errorf("user.setMainProfileTab - error: %v", err)
+		return nil, err
+	}
+	if rows != 1 {
+		return nil, mtproto.ErrUserIdInvalid
 	}
 
 	return mtproto.BoolTrue, nil

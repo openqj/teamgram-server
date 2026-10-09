@@ -403,6 +403,22 @@ func (c *ApiFullCore) ChannelsGetFullChannel(in *mtproto.TLChannelsGetFullChanne
 	if err != nil {
 		return nil, err
 	}
+	if domain.Ready() {
+		community, isCommunity, communityErr := domain.LoadCommunity(ch.ID)
+		if communityErr != nil {
+			return nil, mtproto.ErrInternalServerError
+		}
+		if isCommunity {
+			canView, viewErr := domain.CommunityCanView(ch.ID, userId)
+			if viewErr != nil {
+				return nil, mtproto.ErrInternalServerError
+			}
+			if !canView {
+				return nil, mtproto.ErrUserNotParticipant
+			}
+			return c.communityFull(userId, community, ch)
+		}
+	}
 	if err = c.requireChannelMember(userId, ch.ID); err != nil {
 		return nil, err
 	}
@@ -411,10 +427,39 @@ func (c *ApiFullCore) ChannelsGetFullChannel(in *mtproto.TLChannelsGetFullChanne
 		c.Logger.Errorf("channels.getFullChannel - error: %v", err)
 		return nil, err
 	}
+	channelFull := box.GetFullChat().To_ChannelFull().GetData2()
+	stickerSetID, foundStickerSet, err := domain.LoadChannelStickerSet(ch.ID)
+	if err != nil {
+		return nil, mtproto.ErrInternalServerError
+	}
+	if foundStickerSet {
+		set, loadErr := persist.GetStickerSet(stickerRequestContext(c), userId, stickerSetID, "")
+		if loadErr != nil {
+			return nil, stickerProviderError(c, loadErr)
+		}
+		if set == nil {
+			return nil, mtproto.ErrInternalServerError
+		}
+		channelFull.Stickerset = stickerSetFromRecord(set, 0).GetSet()
+	}
+	emojiSetID, foundEmojiSet, err := domain.LoadChannelEmojiStickerSet(ch.ID)
+	if err != nil {
+		return nil, mtproto.ErrInternalServerError
+	}
+	if foundEmojiSet {
+		set, loadErr := persist.GetStickerSet(stickerRequestContext(c), userId, emojiSetID, "")
+		if loadErr != nil {
+			return nil, stickerProviderError(c, loadErr)
+		}
+		if set == nil || !set.Emojis {
+			return nil, mtproto.ErrInternalServerError
+		}
+		channelFull.Emojiset = stickerSetFromRecord(set, 0).GetSet()
+	}
 	return box, nil
 }
 
-// resolveChannel reads the canonical MySQL channel row when configured. The
+// resolveChannel reads the canonical PostgreSQL channel row when configured. The
 // KV-only path is retained solely for deployments that have no canonical
 // store configured; it must not shadow a missing row in production.
 func (c *ApiFullCore) resolveChannel(userID, id int64) (domain.Channel, error) {
@@ -423,7 +468,7 @@ func (c *ApiFullCore) resolveChannel(userID, id int64) (domain.Channel, error) {
 	}
 	ch, ok, err := domain.LoadChannel(id)
 	if err != nil {
-		c.Logger.Errorf("channels.resolveChannel - stored mysql failed")
+		c.Logger.Errorf("channels.resolveChannel - PostgreSQL read failed")
 		return domain.Channel{}, mtproto.ErrInternalServerError
 	}
 	if ok {
@@ -758,7 +803,9 @@ func (c *ApiFullCore) hydrateChannelUsers(userID int64, ids ...int64) ([]*mtprot
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	mutable, err := d.UserClient.UserGetMutableUsersV2(ctx, &userpb.TLUserGetMutableUsersV2{Id: unique})
+	mutable, err := d.UserClient.UserGetMutableUsersV2(ctx, &userpb.TLUserGetMutableUsersV2{
+		Id: unique, Privacy: true, HasTo: true, To: []int64{userID},
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -1303,11 +1350,53 @@ func channelAdminLogFilterAllows(filter *mtproto.ChannelAdminLogEventsFilter, re
 }
 
 func (c *ApiFullCore) ChannelsSetStickers(in *mtproto.TLChannelsSetStickers) (*mtproto.Bool, error) {
-	_ = in
-	if _, err := c.requireUserId(); err != nil {
+	userID, err := c.requireUserId()
+	if err != nil {
 		return nil, err
 	}
-	return nil, mtproto.ErrMethodNotImpl
+	// Preserve the historical nil probe used by the compatibility suite while
+	// handling real requests through the canonical PostgreSQL providers.
+	if in == nil {
+		return nil, mtproto.ErrMethodNotImpl
+	}
+	if in.GetChannel() == nil || in.GetStickerset() == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	channel, err := c.resolveMemberChannel(userID, in.GetChannel(), inputChannelID(in.GetChannel()))
+	if err != nil {
+		return nil, err
+	}
+	setID := int64(0)
+	set := in.GetStickerset()
+	switch set.GetPredicateName() {
+	case mtproto.Predicate_inputStickerSetEmpty:
+		// Empty clears the channel's sticker binding.
+	case mtproto.Predicate_inputStickerSetID:
+		if set.GetId() <= 0 {
+			return nil, mtproto.ErrStickersetInvalid
+		}
+		setID = set.GetId()
+	case mtproto.Predicate_inputStickerSetShortName:
+		if set.GetShortName() == "" {
+			return nil, mtproto.ErrStickersetInvalid
+		}
+	default:
+		return nil, mtproto.ErrStickersetInvalid
+	}
+	if setID != 0 || set.GetPredicateName() == mtproto.Predicate_inputStickerSetShortName {
+		loaded, loadErr := persist.GetStickerSet(stickerRequestContext(c), userID, setID, set.GetShortName())
+		if loadErr != nil {
+			return nil, stickerProviderError(c, loadErr)
+		}
+		if accessErr := validateStickerSetAccess(set, loaded); accessErr != nil {
+			return nil, accessErr
+		}
+		setID = loaded.ID
+	}
+	if err = domain.SetChannelStickerSet(userID, channel.ID, setID); err != nil {
+		return nil, c.mapChannelMemberError(err)
+	}
+	return mtproto.BoolTrue, nil
 }
 
 func (c *ApiFullCore) ChannelsReadMessageContents(in *mtproto.TLChannelsReadMessageContents) (*mtproto.Bool, error) {

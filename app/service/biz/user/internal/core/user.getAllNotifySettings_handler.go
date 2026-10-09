@@ -43,7 +43,7 @@ func (c *UserCore) UserGetAllNotifySettings(in *user.TLUserGetAllNotifySettings)
 		}
 	)
 
-	if _, err := c.svcCtx.Dao.UserNotifySettingsDAO.SelectAllWithCB(c.ctx,
+	if _, err := c.svcCtx.Dao.Postgres.Store.NotifySettings.SelectAllWithCB(c.ctx,
 		in.UserId,
 		func(sz, i int, v *dataobject.UserNotifySettingsDO) {
 			settings.Datas = append(settings.Datas, user.MakeTLPeerPeerNotifySettings(&user.PeerPeerNotifySettings{

@@ -26,12 +26,14 @@ import (
 // UserToggleUsername
 // user.toggleUsername peer_type:int peer_id:long username:string active:Bool = Bool;
 func (c *UserCore) UserToggleUsername(in *user.TLUserToggleUsername) (*mtproto.Bool, error) {
-	_, _ = c.svcCtx.Dao.UsernameDAO.Update(
-		c.ctx,
-		map[string]interface{}{
-			"active": mtproto.FromBool(in.GetActive()),
-		},
-		in.GetUsername())
-
+	if c.MD == nil || c.MD.GetUserId() <= 0 {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
+	if in.GetActive() == nil || (in.GetActive().GetPredicateName() != mtproto.Predicate_boolTrue && in.GetActive().GetPredicateName() != mtproto.Predicate_boolFalse) {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if err := c.svcCtx.Dao.TogglePeerUsername(c.ctx, c.MD.GetUserId(), in.GetPeerType(), in.GetPeerId(), in.GetUsername(), mtproto.FromBool(in.GetActive())); err != nil {
+		return nil, err
+	}
 	return mtproto.BoolTrue, nil
 }

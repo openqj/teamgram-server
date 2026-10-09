@@ -273,9 +273,8 @@ func (c *AuthorizationCore) authSendCode(authKeyId, sessionId int64, request *mt
 
 	if phoneRegistered {
 		// https://core.telegram.org/api/auth#future-auth-tokens
-		// TODO:
-		//  At all times, the future auth token database should contain at most 20 tokens:
-		//  evict older tokens as new tokens are added to stay below this limit.
+		// The DAO keeps at most 20 active tokens per user and evicts older
+		// entries atomically while issuing new ones.
 		for _, v := range settings.GetLogoutTokens() {
 			id, _ := c.svcCtx.Dao.GetFutureAuthToken(c.ctx, v)
 			if id == user.Id() {

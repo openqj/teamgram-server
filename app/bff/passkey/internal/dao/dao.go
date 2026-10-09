@@ -20,7 +20,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"os"
 	"strings"
 	"time"
 
@@ -64,80 +63,61 @@ type Credential struct {
 
 type Dao struct {
 	DB                *sql.DB
-	DBErr             error
 	UserClient        user_client.UserClient
 	AuthsessionClient authsession_client.AuthsessionClient
 }
 
 func New(c config.Config) *Dao {
-	d := &Dao{
+	db, err := openPostgres(c.PostgresDSN)
+	if err != nil {
+		panic(err)
+	}
+	return &Dao{
+		DB:                db,
 		UserClient:        user_client.NewUserClient(rpcx.GetCachedRpcClient(c.UserClient)),
 		AuthsessionClient: authsession_client.NewAuthsessionClient(rpcx.GetCachedRpcClient(c.AuthSessionClient)),
 	}
-	if c.PostgresDSN == "" {
-		d.DBErr = ErrUnavailable
-		return d
-	}
-	d.DB, d.DBErr = sql.Open("pgx", c.PostgresDSN)
-	if d.DBErr != nil {
-		return d
-	}
-	d.DB.SetMaxOpenConns(8)
-	d.DB.SetMaxIdleConns(8)
-	if d.DBErr = d.DB.Ping(); d.DBErr != nil {
-		_ = d.DB.Close()
-		return d
-	}
-	if !schemaReadOnly() {
-		d.DBErr = migrate(d.DB)
-	}
-	if d.DBErr != nil {
-		_ = d.DB.Close()
-	}
-	return d
 }
 
-func schemaReadOnly() bool {
-	value := strings.TrimSpace(os.Getenv("TEAMGRAM_APIFULL_SCHEMA_READONLY"))
-	return value == "1" || strings.EqualFold(value, "true") || strings.EqualFold(value, "yes")
+func openPostgres(dsn string) (*sql.DB, error) {
+	if strings.TrimSpace(dsn) == "" {
+		return nil, errors.New("passkey: PostgresDSN is required")
+	}
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		return nil, fmt.Errorf("passkey: open PostgreSQL: %w", err)
+	}
+	db.SetMaxOpenConns(8)
+	db.SetMaxIdleConns(8)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err = db.PingContext(ctx); err == nil {
+		var version int
+		err = db.QueryRowContext(ctx, `SELECT current_setting('server_version_num')::integer`).Scan(&version)
+		if err == nil && version/10000 != 18 {
+			err = fmt.Errorf("PostgreSQL 18 is required (server_version_num=%d)", version)
+		}
+	}
+	if err == nil {
+		for _, query := range []string{
+			`SELECT challenge,user_id,kind,data,expires_at,used,created_at FROM apifull_passkey_session LIMIT 0`,
+			`SELECT credential_id,user_id,name,date_created,last_usage_date,sign_count,credential,deleted FROM apifull_passkey_credential LIMIT 0`,
+		} {
+			if _, err = db.ExecContext(ctx, query); err != nil {
+				break
+			}
+		}
+	}
+	if err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("passkey: verify PostgreSQL persistence: %w", err)
+	}
+	return db, nil
 }
 
 func (d *Dao) available() error {
 	if d == nil || d.DB == nil {
 		return ErrUnavailable
-	}
-	return d.DBErr
-}
-
-func migrate(db *sql.DB) error {
-	statements := []string{
-		`CREATE TABLE IF NOT EXISTS apifull_passkey_session (
-			challenge VARCHAR(255) NOT NULL PRIMARY KEY,
-			user_id BIGINT NOT NULL DEFAULT 0,
-			kind VARCHAR(16) NOT NULL,
-			data BYTEA NOT NULL,
-			expires_at BIGINT NOT NULL,
-			used BOOLEAN NOT NULL DEFAULT FALSE,
-			created_at BIGINT NOT NULL,
-			CONSTRAINT apifull_passkey_session_kind_key UNIQUE (challenge, kind)
-		)`,
-		`CREATE TABLE IF NOT EXISTS apifull_passkey_credential (
-			credential_id BYTEA NOT NULL PRIMARY KEY,
-			user_id BIGINT NOT NULL,
-			name VARCHAR(255) NOT NULL DEFAULT '',
-			date_created BIGINT NOT NULL,
-			last_usage_date BIGINT NOT NULL DEFAULT 0,
-			sign_count BIGINT NOT NULL DEFAULT 0,
-			credential BYTEA NOT NULL,
-			deleted BOOLEAN NOT NULL DEFAULT FALSE
-		)`,
-		`CREATE INDEX IF NOT EXISTS idx_apifull_passkey_session_expiry ON apifull_passkey_session (expires_at)`,
-		`CREATE INDEX IF NOT EXISTS idx_apifull_passkey_credential_user ON apifull_passkey_credential (user_id, deleted)`,
-	}
-	for _, statement := range statements {
-		if _, err := db.Exec(statement); err != nil {
-			return err
-		}
 	}
 	return nil
 }

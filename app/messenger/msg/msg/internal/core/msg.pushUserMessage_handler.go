@@ -20,6 +20,9 @@ import (
 // MsgPushUserMessage
 // msg.pushUserMessage user_id:long auth_key_id:long (UserMessage) = Bool;
 func (c *MsgCore) MsgPushUserMessage(in *msg.TLMsgPushUserMessage) (*mtproto.Bool, error) {
+	if in == nil || in.GetUserId() <= 0 || in.GetPeerId() <= 0 || in.GetMessage() == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
 	var (
 		peer   = mtproto.MakePeerUtil(in.PeerType, in.PeerId)
 		boxMsg = in.Message

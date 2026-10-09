@@ -19,6 +19,8 @@
 package svc
 
 import (
+	"fmt"
+
 	"github.com/teamgram/teamgram-server/app/interface/session/internal/config"
 	"github.com/teamgram/teamgram-server/app/interface/session/internal/dao"
 	"github.com/teamgram/teamgram-server/app/interface/session/internal/sess"
@@ -30,8 +32,11 @@ type ServiceContext struct {
 	*dao.Dao
 }
 
-func NewServiceContext(c config.Config) *ServiceContext {
-	d := dao.New(c)
+func NewServiceContext(c config.Config) (*ServiceContext, error) {
+	d, err := dao.New(c)
+	if err != nil {
+		return nil, fmt.Errorf("session: initialize PostgreSQL store: %w", err)
+	}
 	mainAuthMgr := sess.NewMainAuthWrapperManager(d)
 	d.RpcShardingManager.RegisterCB(mainAuthMgr.OnShardingCB)
 	d.RpcShardingManager.Start()
@@ -40,5 +45,5 @@ func NewServiceContext(c config.Config) *ServiceContext {
 		Config:      c,
 		MainAuthMgr: mainAuthMgr,
 		Dao:         d,
-	}
+	}, nil
 }

@@ -449,7 +449,7 @@ func ReadHistory(userID, channelID int64, maxID int32) (int32, error) {
 	return readMax, nil
 }
 
-// Ready reports whether this process has opened the APIFull MySQL store.
+// Ready reports whether this process has opened the APIFull PostgreSQL store.
 // Callers that also serve the basic message API use this to avoid routing a
 // channel read into the generic message store when the channel store is not
 // configured in that process.
@@ -788,7 +788,7 @@ func Open(dsn string) error {
 		return errors.New("domain PostgreSQL is not open")
 	}
 	openOnce.Do(func() {
-		openErr = domain.OpenPostgres(dsn)
+		openErr = domain.OpenPostgresReadOnly(dsn)
 	})
 	return openErr
 }

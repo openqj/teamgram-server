@@ -25,3 +25,9 @@ func NewServiceContext(c config.Config) *ServiceContext {
 		Dao:    dao.New(c),
 	}
 }
+
+func (s *ServiceContext) Close() {
+	if s != nil && s.Dao != nil && s.Dao.Postgres != nil {
+		s.Dao.Postgres.Close()
+	}
+}

@@ -32,7 +32,7 @@ func (c *UserCore) UserGetNotifySettingsList(in *user.TLUserGetNotifySettingsLis
 		}
 	)
 
-	if _, err := c.svcCtx.Dao.UserNotifySettingsDAO.SelectListWithCB(c.ctx,
+	if _, err := c.svcCtx.Dao.Postgres.Store.NotifySettings.SelectListWithCB(c.ctx,
 		in.UserId,
 		in.Peers,
 		func(i int, v *dataobject.UserNotifySettingsDO) {

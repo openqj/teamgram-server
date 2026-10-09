@@ -22,11 +22,11 @@ import (
 	"errors"
 	"flag"
 
-	kafka "github.com/teamgram/marmota/pkg/mq"
 	inbox_helper "github.com/teamgram/teamgram-server/app/messenger/msg/inbox"
 	"github.com/teamgram/teamgram-server/app/messenger/msg/internal/config"
 	msg_helper "github.com/teamgram/teamgram-server/app/messenger/msg/msg"
 	"github.com/teamgram/teamgram-server/app/messenger/msg/msg/msg"
+	"github.com/teamgram/teamgram-server/pkg/mqconsumer"
 
 	"github.com/zeromicro/go-zero/core/conf"
 	"github.com/zeromicro/go-zero/core/logx"
@@ -38,7 +38,7 @@ var configFile = flag.String("f", "etc/msg.yaml", "the config file")
 
 type Server struct {
 	grpcSrv    *zrpc.RpcServer
-	mq         *kafka.ConsumerGroup
+	mq         *mqconsumer.Consumer
 	closeMsg   func()
 	closeInbox func()
 }
@@ -49,12 +49,12 @@ func New() *Server {
 
 func (s *Server) Initialize() error {
 	var c config.Config
-	conf.MustLoad(*configFile, &c)
+	conf.MustLoad(*configFile, &c, conf.UseEnv())
 	if c.Postgres.DSN == "" {
 		return errors.New("msg: Postgres.DSN is required")
 	}
 
-	logx.Infov(c)
+	logx.Infof("messenger msg config loaded")
 
 	msgService, closeMsg := msg_helper.NewWithClose(
 		msg_helper.Config{

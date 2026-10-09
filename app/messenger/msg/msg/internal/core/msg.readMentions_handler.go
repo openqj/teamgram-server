@@ -26,6 +26,17 @@ func (c *MsgCore) MsgReadMentions(in *msg.TLMsgReadMentions) (*mtproto.Messages_
 	if topMsgID != nil {
 		topMsgIDValue = topMsgID.GetValue()
 	}
+	if c.svcCtx.Dao.Postgres != nil {
+		updates, pts, err := c.svcCtx.Dao.ReadMentionsState(c.ctx, in.UserId, in.PeerId, topMsgIDValue, topMsgID != nil)
+		if err != nil {
+			return nil, err
+		}
+		var count int32
+		for _, update := range updates {
+			count += update.PtsCount
+		}
+		return mtproto.MakeTLMessagesAffectedHistory(&mtproto.Messages_AffectedHistory{Pts: pts, PtsCount: count}).To_Messages_AffectedHistory(), nil
+	}
 	cleared, err := c.svcCtx.Dao.ClearMentions(
 		c.ctx,
 		in.GetUserId(),

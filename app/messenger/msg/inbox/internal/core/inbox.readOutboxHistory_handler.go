@@ -33,6 +33,16 @@ import (
 // InboxReadOutboxHistory
 // inbox.readOutboxHistory user_id:long peer_type:int peer_id:long max_dialog_message_id:int64 = Void;
 func (c *InboxCore) InboxReadOutboxHistory(in *inbox.TLInboxReadOutboxHistory) (*mtproto.Void, error) {
+	if in == nil || in.UserId <= 0 || in.PeerId <= 0 || in.MaxDialogMessageId <= 0 ||
+		(in.PeerType != mtproto.PEER_USER && in.PeerType != mtproto.PEER_CHAT) {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if c.svcCtx.Dao.Postgres != nil {
+		if err := c.svcCtx.Dao.ReadOutboxHistoryState(c.ctx, in.UserId, mtproto.MakePeerUtil(in.PeerType, in.PeerId), in.MaxDialogMessageId); err != nil {
+			return nil, err
+		}
+		return mtproto.EmptyVoid, nil
+	}
 	switch in.PeerType {
 	case mtproto.PEER_USER:
 		replyId, err := c.svcCtx.Dao.SelectMessageByDataID(

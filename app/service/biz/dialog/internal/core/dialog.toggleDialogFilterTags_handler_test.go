@@ -6,42 +6,39 @@ import (
 	"testing"
 	"time"
 
-	mysqldriver "github.com/go-sql-driver/mysql"
-	"github.com/teamgram/marmota/pkg/stores/sqlx"
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/service/biz/dialog/dialog"
 	"github.com/teamgram/teamgram-server/app/service/biz/dialog/internal/dao"
 	"github.com/teamgram/teamgram-server/app/service/biz/dialog/internal/svc"
+	"github.com/teamgram/teamgram-server/pkg/storage/postgres"
 )
 
-func dialogTagsAuditDB(t *testing.T) *sqlx.DB {
+func dialogTagsPostgres(t *testing.T) *dao.Postgres {
 	t.Helper()
-	dsn := os.Getenv("APIFULL_MYSQL_DSN")
+	dsn := os.Getenv("DIALOG_POSTGRES_DSN")
 	if dsn == "" {
-		t.Skip("APIFULL_MYSQL_DSN must point to the isolated teamgram_audit database")
+		t.Skip("DIALOG_POSTGRES_DSN must point to an isolated PostgreSQL 18 test database")
 	}
-	config, err := mysqldriver.ParseDSN(dsn)
+	pg, err := dao.NewPostgres(postgres.Config{DSN: dsn})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if config.DBName != "teamgram_audit" || config.Addr != "127.0.0.1:13306" {
-		t.Fatalf("refusing non-audit MySQL target %q at %q", config.DBName, config.Addr)
-	}
-	return sqlx.NewMySQL(&sqlx.Config{DSN: dsn})
+	t.Cleanup(pg.Close)
+	return pg
 }
 
 func TestDialogToggleDialogFilterTagsAcknowledgesDisable(t *testing.T) {
-	db := dialogTagsAuditDB(t)
+	pg := dialogTagsPostgres(t)
 	ctx := context.Background()
 	uid := time.Now().UnixNano()
 	c := &DialogCore{
 		ctx: ctx,
 		svcCtx: &svc.ServiceContext{Dao: &dao.Dao{
-			Mysql: &dao.Mysql{DB: db},
+			Postgres: pg,
 		}},
 	}
 	t.Cleanup(func() {
-		_, _ = db.Exec(ctx, "delete from dialog_filter_tags where user_id = ?", uid)
+		_, _ = pg.Pool.Exec(ctx, "delete from dialog_filter_tags where user_id = $1", uid)
 	})
 
 	for _, enabled := range []*mtproto.Bool{mtproto.BoolTrue, mtproto.BoolFalse} {
@@ -60,5 +57,13 @@ func TestDialogToggleDialogFilterTagsAcknowledgesDisable(t *testing.T) {
 	}
 	if mtproto.FromBool(stored) {
 		t.Fatal("disabled dialog-filter tags were read back as enabled")
+	}
+	result, err := c.DialogToggleDialogFilterTags(&dialog.TLDialogToggleDialogFilterTags{UserId: uid, Enabled: mtproto.BoolTrue})
+	if err != nil || !mtproto.FromBool(result) {
+		t.Fatalf("re-enable = (%v, %v), want true", result, err)
+	}
+	stored, err = c.DialogGetDialogFilterTags(&dialog.TLDialogGetDialogFilterTags{UserId: uid})
+	if err != nil || !mtproto.FromBool(stored) {
+		t.Fatalf("read after re-enable = (%v, %v), want true", stored, err)
 	}
 }

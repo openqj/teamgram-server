@@ -28,7 +28,11 @@ func (c *UserCore) UserGetMutableUsers(in *user.TLUserGetMutableUsers) (*user.Ve
 
 	since2 := timex.Now()
 	if useV2 {
-		vUser.Datas = c.svcCtx.Dao.GetCacheImmutableUserListV2(c.ctx, in.Id, in.To)
+		var err error
+		vUser.Datas, err = c.svcCtx.Dao.GetCacheImmutableUserListV2(c.ctx, in.Id, in.To)
+		if err != nil {
+			return nil, err
+		}
 		if len(vUser.Datas) == 0 {
 			c.Logger.Errorf("user.getMutableUsersV2 - not found users: {id: %v, to: %v}", in.To, in.To)
 		}

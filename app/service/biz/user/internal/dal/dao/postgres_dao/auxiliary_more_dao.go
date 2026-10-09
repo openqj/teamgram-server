@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/service/biz/user/internal/dal/dataobject"
 )
 
@@ -57,6 +58,29 @@ func (d *UserNotifySettingsDAO) SelectAllWithCB(ctx context.Context, u int64, cb
 		}
 	}
 	return o, e
+}
+
+// SelectListWithCB preserves the generated API used by user.getNotifySettingsList
+// while reading each requested peer from PostgreSQL.
+func (d *UserNotifySettingsDAO) SelectListWithCB(ctx context.Context, u int64, peers []*mtproto.PeerUtil, cb func(int, *dataobject.UserNotifySettingsDO)) ([]dataobject.UserNotifySettingsDO, error) {
+	result := make([]dataobject.UserNotifySettingsDO, 0, len(peers))
+	for _, peer := range peers {
+		if peer == nil {
+			continue
+		}
+		value, err := d.Select(ctx, u, peer.PeerType, peer.PeerId)
+		if err != nil {
+			return nil, err
+		}
+		if value == nil {
+			continue
+		}
+		result = append(result, *value)
+		if cb != nil {
+			cb(len(result)-1, value)
+		}
+	}
+	return result, nil
 }
 func (d *UserNotifySettingsDAO) Select(ctx context.Context, u int64, pt int32, pid int64) (*dataobject.UserNotifySettingsDO, error) {
 	v, e := scanNotify(d.db.QueryRow(ctx, `SELECT `+notifyCols+` FROM user_notify_settings WHERE user_id=$1 AND peer_type=$2 AND peer_id=$3 AND deleted=FALSE`, u, pt, pid))
@@ -232,6 +256,9 @@ func (d *UserSavedMusicDAO) upsertMusic(ctx context.Context, db DB, v *dataobjec
 func (d *UserSavedMusicDAO) SelectList(ctx context.Context, u int64) ([]dataobject.UserSavedMusicDO, error) {
 	return d.selectMusic(ctx, u, nil)
 }
+func (d *UserSavedMusicDAO) SelectListTx(ctx context.Context, tx DB, u int64) ([]dataobject.UserSavedMusicDO, error) {
+	return d.selectMusicOn(ctx, tx, u, nil)
+}
 func (d *UserSavedMusicDAO) SelectListWithCB(ctx context.Context, u int64, cb func(int, int, *dataobject.UserSavedMusicDO)) ([]dataobject.UserSavedMusicDO, error) {
 	o, e := d.SelectList(ctx, u)
 	if e == nil && cb != nil {
@@ -257,6 +284,9 @@ func (d *UserSavedMusicDAO) SelectListByIdListWithCB(ctx context.Context, u int6
 	return o, e
 }
 func (d *UserSavedMusicDAO) selectMusic(ctx context.Context, u int64, ids []int64) ([]dataobject.UserSavedMusicDO, error) {
+	return d.selectMusicOn(ctx, d.db, u, ids)
+}
+func (d *UserSavedMusicDAO) selectMusicOn(ctx context.Context, db DB, u int64, ids []int64) ([]dataobject.UserSavedMusicDO, error) {
 	q := `SELECT id,user_id,saved_music_id,order2,deleted FROM user_saved_music WHERE user_id=$1 AND deleted=FALSE`
 	args := []any{u}
 	if ids != nil {
@@ -264,7 +294,7 @@ func (d *UserSavedMusicDAO) selectMusic(ctx context.Context, u int64, ids []int6
 		args = append(args, ids)
 	}
 	q += ` ORDER BY order2,id`
-	rows, e := d.db.Query(ctx, q, args...)
+	rows, e := db.Query(ctx, q, args...)
 	if e != nil {
 		return nil, e
 	}

@@ -44,8 +44,17 @@ func TestBotAndWebViewMethodsFailClosedWithoutProvider(t *testing.T) {
 		{"webview button", func() error { _, err := c.BotsRequestWebViewButton(nil); return err }},
 		{"main webview", func() error { _, err := c.MessagesRequestMainWebView(nil); return err }},
 		{"popular app bots", func() error { _, err := c.BotsGetPopularAppBots(nil); return err }},
-		{"broadcast rights", func() error { _, err := c.BotsSetBotBroadcastDefaultAdminRights(nil); return err }},
-		{"group rights", func() error { _, err := c.BotsSetBotGroupDefaultAdminRights(nil); return err }},
+		{"bot updates status", func() error { _, err := c.HelpSetBotUpdatesStatus(nil); return err }},
+		{"custom request", func() error { _, err := c.BotsSendCustomRequest(nil); return err }},
+		{"webhook answer", func() error { _, err := c.BotsAnswerWebhookJSONQuery(nil); return err }},
+		{"broadcast rights", func() error {
+			_, err := c.BotsSetBotBroadcastDefaultAdminRights(&mtproto.TLBotsSetBotBroadcastDefaultAdminRights{AdminRights: mtproto.MakeTLChatAdminRights(&mtproto.ChatAdminRights{}).To_ChatAdminRights()})
+			return err
+		}},
+		{"group rights", func() error {
+			_, err := c.BotsSetBotGroupDefaultAdminRights(&mtproto.TLBotsSetBotGroupDefaultAdminRights{AdminRights: mtproto.MakeTLChatAdminRights(&mtproto.ChatAdminRights{}).To_ChatAdminRights()})
+			return err
+		}},
 		{"custom verification", func() error { _, err := c.BotsSetCustomVerification(nil); return err }},
 	}
 	for _, tc := range calls {

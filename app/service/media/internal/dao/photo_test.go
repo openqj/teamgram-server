@@ -19,7 +19,10 @@
 package dao
 
 import (
+	"reflect"
 	"testing"
+
+	"github.com/teamgram/proto/mtproto"
 )
 
 //func init2() {
@@ -60,4 +63,38 @@ func TestUploadPhotoFile(t *testing.T) {
 	//func MakeFileDataByLoad(fileId, accessHash int64) (*fileData, error) {
 	//
 	//}
+}
+
+func TestPhotoSizePersistenceRoundTrip(t *testing.T) {
+	tests := []struct {
+		name string
+		in   *mtproto.PhotoSize
+		want string
+	}{
+		{
+			name: "cached",
+			in:   mtproto.MakeTLPhotoCachedSize(&mtproto.PhotoSize{Type: "x", W: 32, H: 24, Bytes: []byte{1, 2, 3}}).To_PhotoSize(),
+			want: mtproto.Predicate_photoCachedSize,
+		},
+		{
+			name: "progressive",
+			in:   mtproto.MakeTLPhotoSizeProgressive(&mtproto.PhotoSize{Type: "y", W: 640, H: 480, Sizes: []int32{100, 200, 300}}).To_PhotoSize(),
+			want: mtproto.Predicate_photoSizeProgressive,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			do := makePhotoSizesDO(42, tt.in)
+			got := getPhotoSize(do)
+			if got == nil || got.GetPredicateName() != tt.want {
+				t.Fatalf("round-trip predicate = %v, want %s", got, tt.want)
+			}
+			if tt.name == "cached" && !reflect.DeepEqual(got.GetBytes(), tt.in.GetBytes()) {
+				t.Fatalf("cached bytes = %v, want %v", got.GetBytes(), tt.in.GetBytes())
+			}
+			if tt.name == "progressive" && !reflect.DeepEqual(got.GetSizes(), tt.in.GetSizes()) {
+				t.Fatalf("progressive sizes = %v, want %v", got.GetSizes(), tt.in.GetSizes())
+			}
+		})
+	}
 }

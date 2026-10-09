@@ -23,5 +23,5 @@ Telemetry:
   
 NodeId: 1
 
-SeqIDGen:
-  - Host: redis:6379
+Postgres:
+  DSN: ${TEAMGRAM_POSTGRES_DSN}

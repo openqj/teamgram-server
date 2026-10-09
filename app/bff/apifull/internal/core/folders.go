@@ -489,6 +489,20 @@ func clistSlugKey(slug string) string {
 }
 
 func loadClist(uid int64) (*clState, error) {
+	if domain.Ready() {
+		raw, err := domain.LoadChatlistState(uid)
+		if err != nil {
+			return nil, err
+		}
+		if len(raw) == 0 {
+			return &clState{}, nil
+		}
+		var st clState
+		if err := json.Unmarshal(raw, &st); err != nil {
+			return nil, err
+		}
+		return &st, nil
+	}
 	raw, err := persist.Default.Get(clistKey(uid))
 	if err != nil || raw == "" {
 		return &clState{}, err
@@ -508,11 +522,27 @@ func saveClist(uid int64, st *clState) error {
 	if err != nil {
 		return err
 	}
+	if domain.Ready() {
+		invites := make([]domain.ChatlistInviteRecord, 0, len(st.Invites))
+		for _, invite := range st.Invites {
+			peers, err := json.Marshal(invite.Peers)
+			if err != nil {
+				return err
+			}
+			invites = append(invites, domain.ChatlistInviteRecord{
+				Slug: invite.Slug, FilterID: invite.FilterID, Title: invite.Title, PeersJSON: peers,
+			})
+		}
+		return domain.SaveChatlistState(uid, b, invites)
+	}
 	return persist.Default.Set(clistKey(uid), string(b))
 }
 
 func indexClistSlug(slug string, uid int64) error {
 	if slug == "" {
+		return nil
+	}
+	if domain.Ready() {
 		return nil
 	}
 	return persist.Default.Set(clistSlugKey(slug), strconv.FormatInt(uid, 10))
@@ -522,12 +552,26 @@ func clearClistSlug(slug string) error {
 	if slug == "" {
 		return nil
 	}
+	if domain.Ready() {
+		return nil
+	}
 	return persist.Default.Set(clistSlugKey(slug), "")
 }
 
 func findClistInvite(slug string) (*clInvite, bool, error) {
 	if slug == "" {
 		return nil, false, nil
+	}
+	if domain.Ready() {
+		_, record, ok, err := domain.FindChatlistInvite(slug)
+		if err != nil || !ok {
+			return nil, ok, err
+		}
+		var peers []*mtproto.InputPeer
+		if err := json.Unmarshal(record.PeersJSON, &peers); err != nil {
+			return nil, false, err
+		}
+		return &clInvite{FilterID: record.FilterID, Slug: record.Slug, Title: record.Title, Peers: peers}, true, nil
 	}
 	raw, err := persist.Default.Get(clistSlugKey(slug))
 	if err != nil || raw == "" {
@@ -1479,11 +1523,29 @@ func (c *ApiFullCore) ChatlistsHideChatlistUpdates(in *mtproto.TLChatlistsHideCh
 	return mtproto.BoolTrue, nil
 }
 
-func (c *ApiFullCore) ChatlistsGetLeaveChatlistSuggestions(_ *mtproto.TLChatlistsGetLeaveChatlistSuggestions) (*mtproto.Vector_Peer, error) {
-	if _, err := c.requireUserId(); err != nil {
+func (c *ApiFullCore) ChatlistsGetLeaveChatlistSuggestions(in *mtproto.TLChatlistsGetLeaveChatlistSuggestions) (*mtproto.Vector_Peer, error) {
+	uid, err := c.requireUserId()
+	if err != nil {
 		return nil, err
 	}
-	return nil, mtproto.ErrMethodNotImpl
+	if in == nil || in.GetChatlist() == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	filterID := chatlistFilterID(in.GetChatlist())
+	if err := c.requireChatlistFilter(uid, filterID); err != nil {
+		return nil, err
+	}
+	state, err := loadClist(uid)
+	if err != nil {
+		return nil, err
+	}
+	var joined []*mtproto.InputPeer
+	for _, entry := range state.Joined {
+		if entry.FilterID == filterID {
+			joined = append(joined, entry.Peers...)
+		}
+	}
+	return &mtproto.Vector_Peer{Datas: inputPeersToPeers(uid, mergeInputPeers(joined))}, nil
 }
 
 func (c *ApiFullCore) ChatlistsLeaveChatlist(in *mtproto.TLChatlistsLeaveChatlist) (*mtproto.Updates, error) {

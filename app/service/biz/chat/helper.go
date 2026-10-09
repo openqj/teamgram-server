@@ -32,6 +32,7 @@ type (
 )
 
 var (
+	VerifyPostgresSchema           = postgres_dao.VerifySchema
 	NewChatParticipantsDAO         = mysql_dao.NewChatParticipantsDAO
 	NewPostgresChatParticipantsDAO = postgres_dao.NewChatParticipantsDAO
 )

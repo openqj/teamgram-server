@@ -19,8 +19,11 @@
 package server
 
 import (
+	"errors"
 	"flag"
+	"strings"
 
+	sharedpersist "github.com/teamgram/teamgram-server/app/bff/apifull/persist"
 	"github.com/teamgram/teamgram-server/app/bff/configuration/internal/config"
 	"github.com/teamgram/teamgram-server/app/bff/configuration/internal/server/grpc"
 	"github.com/teamgram/teamgram-server/app/bff/configuration/internal/svc"
@@ -42,7 +45,10 @@ func New() *Server {
 
 func (s *Server) Initialize() error {
 	var c config.Config
-	conf.MustLoad(*configFile, &c)
+	conf.MustLoad(*configFile, &c, conf.UseEnv())
+	if strings.TrimSpace(c.PostgresDSN) == "" {
+		return errors.New("configuration: PostgresDSN is required")
+	}
 
 	logx.Infov(c)
 	ctx := svc.NewServiceContext(c)
@@ -59,4 +65,7 @@ func (s *Server) RunLoop() {
 
 func (s *Server) Destroy() {
 	s.grpcSrv.Stop()
+	if err := sharedpersist.ClosePostgres(); err != nil {
+		logx.Errorf("close configuration PostgreSQL: %v", err)
+	}
 }

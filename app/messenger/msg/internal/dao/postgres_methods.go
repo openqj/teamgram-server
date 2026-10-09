@@ -2,10 +2,36 @@ package dao
 
 import (
 	"context"
+	"errors"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/messenger/msg/internal/dal/dao/postgres_dao"
 	"github.com/teamgram/teamgram-server/app/messenger/msg/internal/dal/dataobject"
 )
+
+// DeleteChatUserHistory marks every message view authored by deleteUserID in
+// the basic-group conversation as deleted in one authoritative transaction.
+// The operation is used by msg.deleteChatHistory and must not expose a
+// partially deleted history if the database rejects the write.
+func (d *Dao) DeleteChatUserHistory(ctx context.Context, chatID, deleteUserID int64) error {
+	if d == nil || d.Postgres == nil || d.Postgres.Store == nil {
+		return errors.New("messenger/msg: postgres store is not configured")
+	}
+	if chatID <= 0 || deleteUserID <= 0 {
+		return mtproto.ErrInputRequestInvalid
+	}
+	return d.Postgres.InTx(ctx, func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `
+UPDATE messages
+SET deleted = TRUE
+WHERE peer_type = $1
+  AND peer_id = $2
+  AND sender_user_id = $3
+  AND deleted = FALSE`, mtproto.PEER_CHAT, chatID, deleteUserID)
+		return err
+	})
+}
 
 // InsertOrUpdateHashTag writes through the PostgreSQL aggregate when the
 // service has been configured with the authoritative store. Keeping the
@@ -201,6 +227,19 @@ func (d *Dao) SelectDialogLastMessages(ctx context.Context, userID, dialogID1, d
 		return d.Postgres.Store.Messages.SelectDialogLastMessageList(ctx, userID, dialogID1, dialogID2, limit)
 	}
 	return d.MessagesDAO.SelectDialogLastMessageList(ctx, userID, dialogID1, dialogID2, limit)
+}
+
+func (d *Dao) SelectPhoneCallMessages(ctx context.Context, userID int64, mediaType int32, offset, limit int32, cb func(int, int, *dataobject.MessagesDO)) ([]dataobject.MessagesDO, error) {
+	if d.Postgres != nil && d.Postgres.Store != nil && d.Postgres.Store.Messages != nil {
+		list, err := d.Postgres.Store.Messages.SelectPhoneCallList(ctx, userID, mediaType, offset, limit)
+		if cb != nil {
+			for i := range list {
+				cb(len(list), i, &list[i])
+			}
+		}
+		return list, err
+	}
+	return nil, nil
 }
 
 func (d *Dao) DeleteMessageByIDList(ctx context.Context, userID int64, ids []int32) (int64, error) {

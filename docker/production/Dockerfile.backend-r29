@@ -19,6 +19,11 @@ FROM --platform=linux/arm64 teamgram-server-latest:20261007-r28-prod
 
 WORKDIR /app
 COPY --from=builder /app/teamgram-server/teamgramd/bin/ /app/bin/
+COPY --from=builder /app/teamgram-server/teamgramd/etc2/ /app/etc2/
+COPY --from=builder /app/teamgram-server/teamgramd/docker/entrypoint.sh /app/docker/entrypoint.sh
+RUN chmod +x /app/docker/entrypoint.sh
+
+ENTRYPOINT ["/app/docker/entrypoint.sh"]
 
 LABEL org.opencontainers.image.version="20261008-r29-prod" \
-      org.opencontainers.image.description="r28 runtime with current APIFull and Bot registry fixes"
+      org.opencontainers.image.description="PostgreSQL 18 runtime with current APIFull and Bot registry fixes"

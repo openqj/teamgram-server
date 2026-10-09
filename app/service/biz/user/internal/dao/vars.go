@@ -28,6 +28,12 @@ const (
 )
 
 var (
+	userPrivacyKeys = []int32{
+		mtproto.STATUS_TIMESTAMP, mtproto.PROFILE_PHOTO, mtproto.PHONE_NUMBER,
+		mtproto.CHAT_INVITE, mtproto.PHONE_CALL, mtproto.PHONE_P2P, mtproto.FORWARDS,
+		mtproto.ADDED_BY_PHONE, mtproto.VOICE_MESSAGES, mtproto.ABOUT, mtproto.BIRTHDAY,
+		mtproto.STAR_GIFTS_AUTO_SAVE, mtproto.NO_PAID_MESSAGES, mtproto.SAVED_MUSIC,
+	}
 	defaultRules = []*mtproto.PrivacyRule{
 		mtproto.MakeTLPrivacyValueAllowAll(nil).To_PrivacyRule(),
 	}
@@ -68,7 +74,7 @@ func removeAllNil(contacts []*mtproto.ContactData) []*mtproto.ContactData {
 }
 
 func makeDefaultPrivacyRules(key int32) []*mtproto.PrivacyRule {
-	if key == mtproto.PHONE_NUMBER {
+	if key == mtproto.PHONE_NUMBER || key == mtproto.NO_PAID_MESSAGES {
 		return phoneNumberRules
 	} else {
 		return defaultRules

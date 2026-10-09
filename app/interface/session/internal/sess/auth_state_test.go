@@ -182,6 +182,9 @@ func (f *fakeAuthsessionClient) AuthsessionGetPermAuthKeyId(context.Context, *au
 func (f *fakeAuthsessionClient) AuthsessionBindTempAuthKey(context.Context, *authsession.TLAuthsessionBindTempAuthKey) (*mtproto.Bool, error) {
 	return nil, nil
 }
+func (f *fakeAuthsessionClient) AuthsessionDropTempAuthKeys(context.Context, *authsession.TLAuthsessionDropTempAuthKeys) (*mtproto.Bool, error) {
+	return nil, nil
+}
 func (f *fakeAuthsessionClient) AuthsessionSetClientSessionInfo(context.Context, *authsession.TLAuthsessionSetClientSessionInfo) (*mtproto.Bool, error) {
 	return nil, nil
 }

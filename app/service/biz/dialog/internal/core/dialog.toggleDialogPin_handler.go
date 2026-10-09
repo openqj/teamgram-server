@@ -10,10 +10,8 @@
 package core
 
 import (
-	"context"
 	"time"
 
-	"github.com/teamgram/marmota/pkg/stores/sqlx"
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/service/biz/dialog/dialog"
 )
@@ -26,6 +24,10 @@ func (c *DialogCore) DialogToggleDialogPin(in *dialog.TLDialogToggleDialogPin) (
 		pinned       int64
 	)
 
+	store, err := c.pgStore()
+	if err != nil || store.Dialogs == nil {
+		return nil, mtproto.ErrMethodNotImpl
+	}
 	dlgExt, err := c.svcCtx.Dao.GetDialogByPeerDialogId(c.ctx, in.GetUserId(), peerDialogId)
 	if err != nil {
 		c.Logger.Errorf("dialog.toggleDialogPin - error: %v", err)
@@ -41,23 +43,12 @@ func (c *DialogCore) DialogToggleDialogPin(in *dialog.TLDialogToggleDialogPin) (
 	}
 
 	if folderId == 0 {
-		c.svcCtx.Dao.CachedConn.Exec(
-			c.ctx,
-			func(ctx context.Context, conn *sqlx.DB) (int64, int64, error) {
-				c.svcCtx.Dao.DialogsDAO.UpdatePeerDialogListPinned(c.ctx, pinned, in.UserId, []int64{peerDialogId})
-				return 0, 0, nil
-			},
-			dialog.GetDialogCacheKey(in.GetUserId(), peerDialogId),
-			dialog.GetPinnedDialogIdListCacheKey(in.GetUserId()))
+		_, err = store.Dialogs.UpdatePeerDialogListPinned(c.ctx, pinned, in.UserId, []int64{peerDialogId})
 	} else {
-		c.svcCtx.Dao.CachedConn.Exec(
-			c.ctx,
-			func(ctx context.Context, conn *sqlx.DB) (int64, int64, error) {
-				c.svcCtx.Dao.DialogsDAO.UpdateFolderPeerDialogListPinned(c.ctx, pinned, in.UserId, []int64{peerDialogId})
-				return 0, 0, nil
-			},
-			dialog.GetDialogCacheKey(in.GetUserId(), peerDialogId),
-			dialog.GetFolderPinnedDialogIdListCacheKey(in.GetUserId()))
+		_, err = store.Dialogs.UpdateFolderPeerDialogListPinned(c.ctx, pinned, in.UserId, []int64{peerDialogId})
+	}
+	if err != nil {
+		return nil, err
 	}
 
 	return &mtproto.Int32{

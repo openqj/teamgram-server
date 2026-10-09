@@ -17,6 +17,9 @@ import (
 // AuthsessionGetUserId
 // authsession.getUserId auth_key_id:long = Int64;
 func (c *AuthsessionCore) AuthsessionGetUserId(in *authsession.TLAuthsessionGetUserId) (*mtproto.Int64, error) {
+	if in == nil || in.GetAuthKeyId() == 0 {
+		return nil, mtproto.ErrAuthKeyInvalid
+	}
 	var (
 		inKeyId = in.GetAuthKeyId()
 	)

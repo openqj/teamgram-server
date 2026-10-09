@@ -44,26 +44,20 @@ func (c *MediaCore) MediaUploadProfilePhotoFile(in *media.TLMediaUploadProfilePh
 	if photo == nil {
 		return nil, mtproto.ErrInternalServerError
 	}
+	if photo.GetId() <= 0 {
+		return nil, mtproto.ErrInternalServerError
+	}
 
 	hasVideo := len(photo.GetVideoSizes()) > 0
 
-	if err = c.svcCtx.Dao.SavePhotoSizeV2(c.ctx, photo.GetId(), photo.GetSizes()); err != nil {
-		c.Logger.Error("media.uploadProfilePhotoFile - error: %v", err.Error())
-		return nil, err
-	}
-	if hasVideo {
-		if err = c.svcCtx.Dao.SaveVideoSizeV2(c.ctx, photo.GetId(), photo.GetVideoSizes()); err != nil {
-			c.Logger.Errorf("media.uploadProfilePhotoFile - save video sizes: %v", err)
-			return nil, err
-		}
-	}
-
-	if err = c.svcCtx.SavePhotoV2(c.ctx,
+	if err = c.svcCtx.Dao.SavePhotoAggregateV2(c.ctx,
 		photo.GetId(),
 		photo.GetAccessHash(),
 		photo.GetHasStickers(),
 		hasVideo,
-		fileName); err != nil {
+		fileName,
+		photo.GetSizes(),
+		photo.GetVideoSizes()); err != nil {
 		c.Logger.Errorf("media.uploadProfilePhotoFile - save photo: %v", err)
 		return nil, err
 	}

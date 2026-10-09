@@ -22,6 +22,7 @@ import (
 	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/config"
 	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/server/grpc/service"
 	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/svc"
+	"github.com/teamgram/teamgram-server/app/bff/apifull/layer229"
 )
 
 type (
@@ -30,4 +31,8 @@ type (
 
 func New(c Config) *service.Service {
 	return service.New(svc.NewServiceContext(c))
+}
+
+func ClosePostgres() error {
+	return layer229.Close()
 }

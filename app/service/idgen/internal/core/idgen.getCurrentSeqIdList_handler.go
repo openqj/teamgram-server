@@ -19,8 +19,6 @@
 package core
 
 import (
-	"strconv"
-
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/service/idgen/idgen"
 )
@@ -28,34 +26,20 @@ import (
 // IdgenGetCurrentSeqIdList
 // idgen.getCurrentSeqIdList id:Vector<InputId> = Vector<IdVal>;
 func (c *IdgenCore) IdgenGetCurrentSeqIdList(in *idgen.TLIdgenGetCurrentSeqIdList) (*idgen.Vector_IdVal, error) {
-	var (
-		idList = make([]*idgen.IdVal, len(in.GetId()))
-	)
-
+	keys := make([]string, len(in.GetId()))
 	for i, id := range in.GetId() {
-		switch id.GetPredicateName() {
-		case idgen.Predicate_inputSeqId:
-			sid, err := c.svcCtx.Dao.KV.GetCtx(c.ctx, id.Key)
-			if err != nil {
-				c.Logger.Errorf("idgen.getCurrentSeqIdList(%s) error: %v", id.Key, err)
-				return nil, err
-			}
-
-			if sid == "" {
-				idList[i] = idgen.MakeTLSeqIdVal(&idgen.IdVal{
-					Id_INT64: 0,
-				}).To_IdVal()
-			} else {
-				iV, _ := strconv.ParseInt(sid, 10, 64)
-				idList[i] = idgen.MakeTLSeqIdVal(&idgen.IdVal{
-					Id_INT64: iV,
-				}).To_IdVal()
-			}
-		default:
-			err := mtproto.ErrInputRequestInvalid
-			c.Logger.Errorf("idgen.getCurrentSeqIdList - error: %v", err)
-			return nil, err
+		if id == nil || id.GetPredicateName() != idgen.Predicate_inputSeqId {
+			return nil, mtproto.ErrInputRequestInvalid
 		}
+		keys[i] = id.Key
+	}
+	values, err := c.svcCtx.Dao.CurrentList(c.ctx, keys)
+	if err != nil {
+		return nil, err
+	}
+	idList := make([]*idgen.IdVal, len(values))
+	for i, value := range values {
+		idList[i] = idgen.MakeTLSeqIdVal(&idgen.IdVal{Id_INT64: value}).To_IdVal()
 	}
 
 	return &idgen.Vector_IdVal{

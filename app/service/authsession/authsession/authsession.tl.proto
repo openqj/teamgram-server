@@ -191,6 +191,11 @@ message TL_authsession_bindTempAuthKey {
   bytes encrypted_message = 6;
 }
 
+message TL_authsession_dropTempAuthKeys {
+  TLConstructor constructor = 1;
+  repeated int64 except_auth_keys = 3;
+}
+
 //--------------------------------------------------------------------------------------------
 message TL_authsession_setClientSessionInfo {
   TLConstructor constructor = 1;
@@ -277,6 +282,8 @@ service RPCAuthsession {
   rpc authsession_getPermAuthKeyId(TL_authsession_getPermAuthKeyId)
       returns (mtproto.Int64) {}
   rpc authsession_bindTempAuthKey(TL_authsession_bindTempAuthKey)
+      returns (mtproto.Bool) {}
+  rpc authsession_dropTempAuthKeys(TL_authsession_dropTempAuthKeys)
       returns (mtproto.Bool) {}
   rpc authsession_setClientSessionInfo(TL_authsession_setClientSessionInfo)
       returns (mtproto.Bool) {}

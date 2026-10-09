@@ -21,7 +21,7 @@ func (c *MessageCore) MessageUpdatePinnedMessageId(in *message.TLMessageUpdatePi
 	case mtproto.PEER_SELF,
 		mtproto.PEER_USER,
 		mtproto.PEER_CHAT:
-		_, err := c.svcCtx.Dao.MessagesDAO.UpdatePinned(c.ctx, mtproto.FromBool(in.Pinned), in.UserId, in.Id)
+		_, err := c.svcCtx.Dao.UpdatePinnedMessage(c.ctx, mtproto.FromBool(in.Pinned), in.UserId, in.Id)
 		if err != nil {
 			c.Logger.Errorf("message.updatePinnedMessageId - error: %v", err)
 		}

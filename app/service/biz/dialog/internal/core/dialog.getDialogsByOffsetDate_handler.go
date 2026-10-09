@@ -22,6 +22,9 @@ func (c *DialogCore) DialogGetDialogsByOffsetDate(in *dialog.TLDialogGetDialogsB
 	if in == nil || in.GetUserId() <= 0 || in.GetOffsetDate() < 0 || in.GetLimit() < 0 {
 		return nil, mtproto.ErrInputRequestInvalid
 	}
+	if c == nil || c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.Postgres == nil || c.svcCtx.Dao.Postgres.Store == nil || c.svcCtx.Dao.Postgres.Store.Dialogs == nil {
+		return nil, mtproto.ErrMethodNotImpl
+	}
 	if in.GetLimit() == 0 {
 		return &dialog.Vector_DialogExt{Datas: dialog.DialogExtList{}}, nil
 	}
@@ -29,7 +32,7 @@ func (c *DialogCore) DialogGetDialogsByOffsetDate(in *dialog.TLDialogGetDialogsB
 		return nil, mtproto.ErrLimitInvalid
 	}
 
-	rows, err := c.svcCtx.Dao.DialogsDAO.SelectDialogs(c.ctx, in.GetUserId(), 0)
+	rows, err := c.svcCtx.Dao.Postgres.Store.Dialogs.SelectDialogs(c.ctx, in.GetUserId(), 0)
 	if err != nil {
 		c.Logger.Errorf("dialog.getDialogsByOffsetDate - select dialogs error: %v", err)
 		return nil, err

@@ -21,16 +21,16 @@ package core
 import (
 	"time"
 
-	"github.com/teamgram/marmota/pkg/stores/sqlx"
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/service/biz/user/internal/dal/dataobject"
 	"github.com/teamgram/teamgram-server/app/service/biz/user/user"
+	"github.com/teamgram/teamgram-server/pkg/storage/postgres"
 )
 
 // UserUpdateUsernameByUsername
 // user.updateUsernameByUsername peer_type:int peer_id:long username:string = Bool;
 func (c *UserCore) UserUpdateUsernameByUsername(in *user.TLUserUpdateUsernameByUsername) (*mtproto.Bool, error) {
-	_, _, err := c.svcCtx.Dao.UsernameDAO.Insert(c.ctx, &dataobject.UsernameDO{
+	_, _, err := c.svcCtx.Dao.Postgres.Store.Username.Insert(c.ctx, &dataobject.UsernameDO{
 		Username: in.Username,
 		PeerType: in.PeerType,
 		PeerId:   in.PeerId,
@@ -39,7 +39,7 @@ func (c *UserCore) UserUpdateUsernameByUsername(in *user.TLUserUpdateUsernameByU
 		Order2:   time.Now().Unix() << 32,
 	})
 	if err != nil {
-		if sqlx.IsDuplicate(err) {
+		if postgres.IsUniqueViolation(err) {
 			return mtproto.BoolFalse, nil
 		} else {
 			c.Logger.Errorf("username.updateUsername - error: %v", err)

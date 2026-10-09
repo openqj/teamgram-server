@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"errors"
-	"os"
 	"testing"
 	"time"
 
@@ -12,6 +11,7 @@ import (
 	"github.com/teamgram/proto/mtproto/rpc/metadata"
 	apifullDao "github.com/teamgram/teamgram-server/app/bff/apifull/internal/dao"
 	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/domain"
+	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/persist"
 	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/svc"
 	sync_client "github.com/teamgram/teamgram-server/app/messenger/sync/client"
 	syncpb "github.com/teamgram/teamgram-server/app/messenger/sync/sync"
@@ -61,15 +61,19 @@ func voipPeer(id, accessHash int64) *mtproto.InputPhoneCall {
 }
 
 func TestPhoneRequestCallAuthed(t *testing.T) {
-	if os.Getenv("APIFULL_MYSQL_DSN") == "" {
-		t.Skip("APIFULL_MYSQL_DSN is not configured; PostgreSQL runtime tests cover production storage")
+	dsn := isolatedAuditDSN(t)
+	cleanupDB, err := persist.OpenPostgresDB(dsn)
+	if err != nil {
+		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = cleanupDB.Close() })
 	previousRelay := domain.Relay
 	domain.SetRelay("turn.example.test", 3478)
 	domain.SetRelayCredentials("fixture-user", "fixture-password")
 	t.Cleanup(func() { domain.Relay = previousRelay })
 
-	adminID, participantID := int64(710001), int64(710002)
+	adminID := time.Now().UnixNano()
+	participantID := adminID + 1
 	adminHash, participantHash := int64(810001), int64(810002)
 	users := map[int64]*mtproto.UserData{
 		adminID: voipUser(adminID, adminHash), participantID: voipUser(participantID, participantHash),
@@ -91,6 +95,10 @@ func TestPhoneRequestCallAuthed(t *testing.T) {
 		t.Fatalf("requested call: %+v", requested)
 	}
 	callID, accessHash := requested.GetPhoneCall().GetId(), requested.GetPhoneCall().GetAccessHash()
+	t.Cleanup(func() {
+		_, _ = cleanupDB.Exec(`DELETE FROM apifull_call_artifact WHERE call_id=$1`, callID)
+		_, _ = cleanupDB.Exec(`DELETE FROM apifull_call WHERE id=$1`, callID)
+	})
 	if len(syncer.updates) != 1 || syncer.updates[0].GetUserId() != participantID {
 		t.Fatalf("request update: %+v", syncer.updates)
 	}
@@ -134,7 +142,7 @@ func TestPhoneRequestCallAuthed(t *testing.T) {
 	if len(syncer.updates) != 4 {
 		t.Fatalf("updates=%d, want request/accept/confirm/discard", len(syncer.updates))
 	}
-	if err = domain.Open(os.Getenv("APIFULL_MYSQL_DSN")); err != nil {
+	if err = domain.OpenPostgresReadOnly(dsn); err != nil {
 		t.Fatalf("reopen domain: %v", err)
 	}
 	afterRestart, ok, err := domain.LoadCall(callID)
@@ -147,7 +155,17 @@ func TestPhoneRequestCallAuthed(t *testing.T) {
 }
 
 func TestPhoneCallRejectsWrongPeerAndState(t *testing.T) {
-	adminID, participantID := int64(710011), int64(710012)
+	cleanupDB, err := persist.OpenPostgresDB(isolatedAuditDSN(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = cleanupDB.Close() })
+	previousRelay := domain.Relay
+	domain.SetRelay("turn.example.test", 3478)
+	domain.SetRelayCredentials("fixture-user", "fixture-password")
+	t.Cleanup(func() { domain.Relay = previousRelay })
+	adminID := time.Now().UnixNano()
+	participantID := adminID + 1
 	participantHash := int64(810012)
 	users := map[int64]*mtproto.UserData{
 		adminID: voipUser(adminID, 810011), participantID: voipUser(participantID, participantHash),
@@ -163,6 +181,10 @@ func TestPhoneCallRejectsWrongPeerAndState(t *testing.T) {
 		t.Fatal(err)
 	}
 	callID, accessHash := requested.GetPhoneCall().GetId(), requested.GetPhoneCall().GetAccessHash()
+	t.Cleanup(func() {
+		_, _ = cleanupDB.Exec(`DELETE FROM apifull_call_artifact WHERE call_id=$1`, callID)
+		_, _ = cleanupDB.Exec(`DELETE FROM apifull_call WHERE id=$1`, callID)
+	})
 	peer := voipPeer(callID, accessHash)
 	if _, err = voipCore(adminID, users, syncer).PhoneAcceptCall(&mtproto.TLPhoneAcceptCall{Peer: peer, GB: []byte("gb")}); !errors.Is(err, mtproto.ErrCallPeerInvalid) {
 		t.Fatalf("admin accept err=%v, want CALL_PEER_INVALID", err)

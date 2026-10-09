@@ -13,14 +13,10 @@ import (
 	"context"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/teamgram/marmota/pkg/net/rpcx"
 	"github.com/teamgram/teamgram-server/app/service/biz/updates/internal/config"
 	"github.com/teamgram/teamgram-server/app/service/biz/updates/internal/dal/dao/postgres_dao"
 	"github.com/teamgram/teamgram-server/app/service/biz/updates/internal/dal/dataobject"
-	idgen_client "github.com/teamgram/teamgram-server/app/service/idgen/client"
 	"github.com/teamgram/teamgram-server/pkg/storage/postgres"
-
-	"github.com/zeromicro/go-zero/core/stores/kv"
 )
 
 type Dao struct {
@@ -31,8 +27,6 @@ type Dao struct {
 	AuthSeqUpdatesDAO AuthSeqUpdatesStore
 	UserPtsUpdatesDAO UserPtsUpdatesStore
 	Postgres          *Postgres
-	kv                kv.Store
-	idgen_client.IDGenClient2
 }
 
 type AuthSeqUpdatesStore interface {
@@ -63,8 +57,6 @@ func New(c config.Config) *Dao {
 		AuthSeqUpdatesDAO: pg.AuthSeqUpdatesDAO,
 		UserPtsUpdatesDAO: pg.UserPtsUpdatesDAO,
 		Postgres:          pg,
-		kv:                kv.NewStore(c.KV),
-		IDGenClient2:      idgen_client.NewIDGenClient2(rpcx.GetCachedRpcClient(c.IdgenClient)),
 	}
 }
 
@@ -80,6 +72,13 @@ type Postgres struct {
 func newPostgresDao(c config.Config) (*Postgres, error) {
 	pool, err := postgres.NewPool(context.Background(), c.Postgres)
 	if err != nil {
+		return nil, err
+	}
+	if err := postgres.VerifySchema(context.Background(), pool,
+		`SELECT id,user_id,pts,pts_count,update_type,update_data,date2 FROM user_pts_updates LIMIT 0`,
+		`SELECT id,auth_id,user_id,seq,update_type,update_data,date2 FROM auth_seq_updates LIMIT 0`,
+		`SELECT user_id,last_qts FROM apifull_secret_user_state LIMIT 0`); err != nil {
+		pool.Close()
 		return nil, err
 	}
 	return &Postgres{

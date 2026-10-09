@@ -132,46 +132,29 @@ func (c *ChatsCore) MessagesGetMessageReadParticipants2C6F97B7(in *mtproto.TLMes
 			return nil, mtproto.ErrInternalServerError
 		}
 
-		var lookupErr error
-		// TODO: 性能优化
-		boxList.Walk(func(idx int, v *mtproto.MessageBox) {
-			if lookupErr != nil {
-				return
-			}
-			if v == nil {
-				lookupErr = mtproto.ErrInternalServerError
-				return
-			}
-			if v.UserId == c.MD.UserId {
-				return
-			}
-
-			dialogList, err := c.svcCtx.Dao.DialogClient.DialogGetDialogsByIdList(c.ctx, &dialog.TLDialogGetDialogsByIdList{
-				UserId: v.UserId,
-				IdList: []int64{mtproto.MakePeerDialogId(peer.PeerType, peer.PeerId)},
-			})
-			if err != nil {
-				lookupErr = err
-				return
-			} else if dialogList == nil {
-				lookupErr = mtproto.ErrInternalServerError
-				return
-			}
-
-			for _, d := range dialogList.GetDatas() {
-				if d == nil || d.GetDialog() == nil {
-					lookupErr = mtproto.ErrInternalServerError
-					return
-				}
-				if d.GetDialog().GetReadInboxMaxId() >= v.MessageId {
-					rValueList = append(rValueList, v.UserId)
-					return
-				}
+		senderMessageID := int32(0)
+		boxList.Walk(func(_ int, v *mtproto.MessageBox) {
+			if v != nil && v.UserId == msgBox.SenderUserId {
+				senderMessageID = v.MessageId
 			}
 		})
-		if lookupErr != nil {
-			c.Logger.Errorf("messages.getMessageReadParticipants - error: %v", lookupErr)
-			return nil, lookupErr
+		if senderMessageID == 0 {
+			return &mtproto.Vector_Long{Datas: rValueList}, nil
+		}
+		readDates, err := c.svcCtx.Dao.MessageClient.MessageGetOutboxReadDate(c.ctx, &message.TLMessageGetOutboxReadDate{
+			UserId: msgBox.SenderUserId, PeerType: mtproto.PEER_CHAT, PeerId: peer.PeerId, MsgId: senderMessageID,
+		})
+		if err != nil {
+			c.Logger.Errorf("messages.getMessageReadParticipants - error: %v", err)
+			return nil, err
+		}
+		if readDates == nil {
+			return nil, mtproto.ErrInternalServerError
+		}
+		for _, readDate := range readDates.GetDatas() {
+			if readDate != nil && readDate.GetDate() > 0 {
+				rValueList = append(rValueList, readDate.GetUserId())
+			}
 		}
 	default:
 		err := mtproto.ErrPeerIdInvalid

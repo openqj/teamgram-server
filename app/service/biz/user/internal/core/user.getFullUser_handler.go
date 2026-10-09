@@ -37,8 +37,8 @@ func (c *UserCore) UserGetFullUser(in *user.TLUserGetFullUser) (*mtproto.Users_U
 
 	full := mtproto.MakeTLUserFull(&mtproto.UserFull{
 		Id:             in.GetId(),
-		About:          peerUser.GetUser().GetAbout(),
-		ProfilePhoto:   peerUser.GetUser().GetProfilePhoto(),
+		About:          nil,
+		ProfilePhoto:   nil,
 		Settings:       nil,
 		NotifySettings: nil,
 		BotInfo:        nil,
@@ -46,9 +46,26 @@ func (c *UserCore) UserGetFullUser(in *user.TLUserGetFullUser) (*mtproto.Users_U
 		MainTab:        peerUser.GetUser().GetMainTab(),
 		SavedMusic:     nil,
 	}).To_UserFull()
+	if peerUser.CheckPrivacy(mtproto.ABOUT, in.GetSelfUserId()) {
+		full.About = peerUser.GetUser().GetAbout()
+	}
+	if peerUser.CheckPrivacy(mtproto.PROFILE_PHOTO, in.GetSelfUserId()) {
+		full.ProfilePhoto = peerUser.GetUser().GetProfilePhoto()
+	}
+	global, err := c.UserGetGlobalPrivacySettings(&user.TLUserGetGlobalPrivacySettings{UserId: in.GetId()})
+	if err != nil {
+		return nil, err
+	}
+	if global == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
+	full.ReadDatesPrivate = global.GetHideReadMarks()
 
 	if in.GetSelfUserId() != in.GetId() {
-		full.Blocked = c.svcCtx.Dao.CheckBlocked(c.ctx, in.GetSelfUserId(), in.GetId())
+		full.Blocked, err = c.svcCtx.Dao.CheckBlocked(c.ctx, in.GetSelfUserId(), in.GetId())
+		if err != nil {
+			return nil, err
+		}
 	}
 	full.Settings, err = c.UserGetPeerSettings(&user.TLUserGetPeerSettings{
 		UserId:   in.GetSelfUserId(),
@@ -67,12 +84,21 @@ func (c *UserCore) UserGetFullUser(in *user.TLUserGetFullUser) (*mtproto.Users_U
 		return nil, err
 	}
 
-	if peerUser.CheckPrivacy(mtproto.BIRTHDAY, in.GetSelfUserId()) {
+	allowBirthday, err := c.svcCtx.Dao.CheckUserPrivacy(c.ctx, in.GetId(), mtproto.BIRTHDAY, in.GetSelfUserId())
+	if err != nil {
+		return nil, err
+	}
+	if allowBirthday {
 		full.Birthday = peerUser.Birthday()
 	}
-	if peerUser.GetUser().GetSavedMusic() != nil &&
-		peerUser.CheckPrivacy(mtproto.SAVED_MUSIC, in.GetSelfUserId()) {
-		full.SavedMusic = peerUser.GetUser().GetSavedMusic()
+	if peerUser.GetUser().GetSavedMusic() != nil {
+		allowMusic, err := c.svcCtx.Dao.CheckUserPrivacy(c.ctx, in.GetId(), mtproto.SAVED_MUSIC, in.GetSelfUserId())
+		if err != nil {
+			return nil, err
+		}
+		if allowMusic {
+			full.SavedMusic = peerUser.GetUser().GetSavedMusic()
+		}
 	}
 	if peerUser.IsBot() {
 		if managerBotId := peerUser.BotManagerId(); managerBotId > 0 {

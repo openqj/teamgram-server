@@ -105,12 +105,21 @@ func (c *MessagesCore) MessagesGetOutboxReadDate(in *mtproto.TLMessagesGetOutbox
 		return nil, status.Error(mtproto.ErrBadRequest, "MESSAGE_TOO_OLD")
 	}
 
-	peerPrivacyAllows, err := checkStatusTimestampPrivacy(peerUser, c.MD.UserId)
+	peerSettings, err := c.svcCtx.Dao.UserClient.UserGetGlobalPrivacySettings(c.ctx, &userpb.TLUserGetGlobalPrivacySettings{UserId: peer.PeerId})
 	if err != nil {
 		return nil, err
 	}
-	if !peerPrivacyAllows {
-		return nil, mtproto.ErrUserPrivacyRestricted
+	if peerSettings == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
+	if peerSettings.GetHideReadMarks() {
+		allowed, err := c.checkStatusTimestampPrivacy(peer.PeerId, c.MD.UserId)
+		if err != nil {
+			return nil, err
+		}
+		if !allowed {
+			return nil, mtproto.ErrUserPrivacyRestricted
+		}
 	}
 
 	selfUser, err := c.svcCtx.Dao.UserClient.UserGetImmutableUser(c.ctx, &userpb.TLUserGetImmutableUser{
@@ -127,12 +136,21 @@ func (c *MessagesCore) MessagesGetOutboxReadDate(in *mtproto.TLMessagesGetOutbox
 	if selfUser == nil || selfUser.GetUser() == nil || selfUser.GetUser().GetId() != c.MD.UserId {
 		return nil, mtproto.ErrInternalServerError
 	}
-	selfPrivacyAllows, err := checkStatusTimestampPrivacy(selfUser, peer.PeerId)
+	selfSettings, err := c.svcCtx.Dao.UserClient.UserGetGlobalPrivacySettings(c.ctx, &userpb.TLUserGetGlobalPrivacySettings{UserId: c.MD.UserId})
 	if err != nil {
 		return nil, err
 	}
-	if !selfPrivacyAllows {
-		return nil, status.Error(mtproto.ErrForbidden, "YOUR_PRIVACY_RESTRICTED")
+	if selfSettings == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
+	if selfSettings.GetHideReadMarks() && !selfUser.Premium() {
+		allowed, err := c.checkStatusTimestampPrivacy(c.MD.UserId, peer.PeerId)
+		if err != nil {
+			return nil, err
+		}
+		if !allowed {
+			return nil, status.Error(mtproto.ErrForbidden, "YOUR_PRIVACY_RESTRICTED")
+		}
 	}
 
 	rList, err := c.svcCtx.Dao.MessageClient.MessageGetOutboxReadDate(c.ctx, &message.TLMessageGetOutboxReadDate{
@@ -161,46 +179,15 @@ func (c *MessagesCore) MessagesGetOutboxReadDate(in *mtproto.TLMessagesGetOutbox
 	}).To_OutboxReadDate(), nil
 }
 
-func checkStatusTimestampPrivacy(user *mtproto.ImmutableUser, peerID int64) (bool, error) {
-	if user == nil || user.GetUser() == nil {
+func (c *MessagesCore) checkStatusTimestampPrivacy(ownerID, peerID int64) (bool, error) {
+	allowed, err := c.svcCtx.Dao.UserClient.UserCheckPrivacy(c.ctx, &userpb.TLUserCheckPrivacy{
+		UserId: ownerID, KeyType: mtproto.STATUS_TIMESTAMP, PeerId: peerID,
+	})
+	if err != nil {
+		return false, err
+	}
+	if allowed == nil {
 		return false, mtproto.ErrInternalServerError
 	}
-
-	var privacyRules *mtproto.PrivacyKeyRules
-	for _, rules := range user.GetKeysPrivacyRules() {
-		if rules == nil {
-			return false, mtproto.ErrInternalServerError
-		}
-		if rules.GetKey() == int32(mtproto.STATUS_TIMESTAMP) {
-			if privacyRules != nil {
-				return false, mtproto.ErrInternalServerError
-			}
-			privacyRules = rules
-		}
-	}
-	if privacyRules == nil || len(privacyRules.GetRules()) == 0 {
-		return false, mtproto.ErrInternalServerError
-	}
-
-	baseRules := 0
-	for _, rule := range privacyRules.GetRules() {
-		if rule == nil {
-			return false, mtproto.ErrInternalServerError
-		}
-		switch rule.GetPredicateName() {
-		case mtproto.Predicate_privacyValueAllowAll,
-			mtproto.Predicate_privacyValueAllowContacts,
-			mtproto.Predicate_privacyValueDisallowAll:
-			baseRules++
-		case mtproto.Predicate_privacyValueAllowUsers,
-			mtproto.Predicate_privacyValueDisallowUsers:
-		default:
-			return false, mtproto.ErrMethodNotImpl
-		}
-	}
-
-	if baseRules != 1 {
-		return false, mtproto.ErrInternalServerError
-	}
-	return user.CheckPrivacy(mtproto.STATUS_TIMESTAMP, peerID), nil
+	return mtproto.FromBool(allowed), nil
 }

@@ -20,6 +20,7 @@ package core
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/teamgram/proto/mtproto"
@@ -91,24 +92,26 @@ func emojiKeywordDifference(lang string, from, version int32, kws []*mtproto.Emo
 }
 
 func (c *ApiFullCore) MessagesGetEmojiKeywords(in *mtproto.TLMessagesGetEmojiKeywords) (*mtproto.EmojiKeywordsDifference, error) {
-	uid, err := c.requireUserId()
-	if err != nil {
+	if _, err := c.requireUserId(); err != nil {
 		return nil, err
 	}
 	lang := ""
 	if in != nil {
 		lang = in.GetLangCode()
 	}
-	kws, version, err := loadCreatedEmojiKeywords(uid)
+	rows, version, err := persist.LoadEmojiKeywords(stickerRequestContext(c), lang)
 	if err != nil {
+		if errors.Is(err, persist.ErrStickerProviderUnavailable) {
+			return nil, stickersProviderUnavailable(c)
+		}
 		return nil, err
 	}
+	kws := emojiKeywordRecords(rows)
 	return emojiKeywordDifference(lang, 0, version, kws), nil
 }
 
 func (c *ApiFullCore) MessagesGetEmojiKeywordsDifference(in *mtproto.TLMessagesGetEmojiKeywordsDifference) (*mtproto.EmojiKeywordsDifference, error) {
-	uid, err := c.requireUserId()
-	if err != nil {
+	if _, err := c.requireUserId(); err != nil {
 		return nil, err
 	}
 	lang := ""
@@ -117,10 +120,14 @@ func (c *ApiFullCore) MessagesGetEmojiKeywordsDifference(in *mtproto.TLMessagesG
 		lang = in.GetLangCode()
 		from = in.GetFromVersion()
 	}
-	kws, version, err := loadCreatedEmojiKeywords(uid)
+	rows, version, err := persist.LoadEmojiKeywords(stickerRequestContext(c), lang)
 	if err != nil {
+		if errors.Is(err, persist.ErrStickerProviderUnavailable) {
+			return nil, stickersProviderUnavailable(c)
+		}
 		return nil, err
 	}
+	kws := emojiKeywordRecords(rows)
 	return emojiKeywordDifference(lang, from, version, kws), nil
 }
 
@@ -129,36 +136,53 @@ func (c *ApiFullCore) MessagesGetEmojiKeywordsLanguages(in *mtproto.TLMessagesGe
 		return nil, err
 	}
 
-	// Telegram clients pass the languages they can use. Return the supported
-	// subset in request order so the result is deterministic and contains no
-	// duplicate entries.
 	var requested []string
 	if in != nil {
 		requested = in.GetLangCodes()
 	}
-	seen := make(map[string]struct{}, len(requested))
-	languages := make([]*mtproto.EmojiLanguage, 0, len(requested))
-	for _, lang := range requested {
-		if _, ok := emojiKeywordLanguages[lang]; !ok {
-			continue
+	rows, err := persist.LoadEmojiLanguages(stickerRequestContext(c), requested)
+	if err != nil {
+		if errors.Is(err, persist.ErrStickerProviderUnavailable) {
+			return nil, stickersProviderUnavailable(c)
 		}
-		if _, ok := seen[lang]; ok {
-			continue
-		}
-		seen[lang] = struct{}{}
+		return nil, err
+	}
+	languages := make([]*mtproto.EmojiLanguage, 0, len(rows))
+	for _, row := range rows {
 		languages = append(languages, mtproto.MakeTLEmojiLanguage(&mtproto.EmojiLanguage{
-			LangCode: lang,
+			LangCode: row.LangCode,
 		}).To_EmojiLanguage())
 	}
 	return &mtproto.Vector_EmojiLanguage{Datas: languages}, nil
 }
 
 func (c *ApiFullCore) MessagesGetEmojiURL(in *mtproto.TLMessagesGetEmojiURL) (*mtproto.EmojiURL, error) {
-	_ = in
 	if _, err := c.requireUserId(); err != nil {
 		return nil, err
 	}
-	// URL resolution requires the emoji catalog/CDN service, which is not wired
-	// into APIFull.
-	return nil, mtproto.ErrMethodNotImpl
+	lang := ""
+	if in != nil {
+		lang = in.GetLangCode()
+	}
+	url, err := persist.LoadEmojiURL(stickerRequestContext(c), lang)
+	if err != nil {
+		if errors.Is(err, persist.ErrStickerProviderUnavailable) {
+			return nil, stickersProviderUnavailable(c)
+		}
+		return nil, err
+	}
+	if url == "" {
+		return nil, mtproto.ErrLangCodeNotSupported
+	}
+	return mtproto.MakeTLEmojiURL(&mtproto.EmojiURL{Url: url}).To_EmojiURL(), nil
+}
+
+func emojiKeywordRecords(rows []persist.EmojiKeywordRecord) []*mtproto.EmojiKeyword {
+	out := make([]*mtproto.EmojiKeyword, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, mtproto.MakeTLEmojiKeyword(&mtproto.EmojiKeyword{
+			Keyword: row.Keyword, Emoticons: append([]string(nil), row.Emoticons...),
+		}).To_EmojiKeyword())
+	}
+	return out
 }

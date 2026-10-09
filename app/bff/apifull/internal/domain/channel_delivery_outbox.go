@@ -80,17 +80,13 @@ func insertChannelDeliveryEventTx(tx *sql.Tx, channelID, senderID, excludeAuthKe
 		return err
 	}
 	key := ChannelDeliveryKey{ChannelID: channelID, PTSFrom: ptsFrom, PTSTo: ptsTo}
-	result, err := tx.Exec(`INSERT IGNORE INTO apifull_channel_delivery_outbox
+	var deliveryID int64
+	err = tx.QueryRow(`INSERT INTO apifull_channel_delivery_outbox
 		(channel_id, pts_from, pts_to, sender_user_id, exclude_auth_key_id, payload, created_at)
-		VALUES (?,?,?,?,?,?,?)`, channelID, key.PTSFrom, key.PTSTo, senderID, excludeAuthKeyID, payload, time.Now().Unix())
-	if err != nil {
-		return err
-	}
-	inserted, err := result.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if inserted == 0 {
+		VALUES (?,?,?,?,?,?,?)
+		ON CONFLICT (channel_id, pts_from, pts_to) DO NOTHING
+		RETURNING id`, channelID, key.PTSFrom, key.PTSTo, senderID, excludeAuthKeyID, payload, time.Now().Unix()).Scan(&deliveryID)
+	if errors.Is(err, sql.ErrNoRows) {
 		var state string
 		if err = tx.QueryRow(`SELECT state FROM apifull_channel_delivery_outbox
 			WHERE channel_id=? AND pts_from=? AND pts_to=? FOR UPDATE`, channelID, key.PTSFrom, key.PTSTo).Scan(&state); err != nil {
@@ -98,7 +94,6 @@ func insertChannelDeliveryEventTx(tx *sql.Tx, channelID, senderID, excludeAuthKe
 		}
 		return nil
 	}
-	deliveryID, err := result.LastInsertId()
 	if err != nil {
 		return err
 	}
@@ -150,35 +145,9 @@ func LockChannelDelivery(ctx context.Context, key ChannelDeliveryKey, wait time.
 	if key.ChannelID <= 0 || key.PTSFrom <= 0 || key.PTSTo < key.PTSFrom {
 		return nil, false, ErrInvalidMessageID
 	}
-	if wait < 0 {
-		wait = 0
-	}
-	seconds := int(wait / time.Second)
-	if wait%time.Second != 0 {
-		seconds++
-	}
 	lockHash := sha256.Sum256([]byte(fmt.Sprintf("%d:%d:%d", key.ChannelID, key.PTSFrom, key.PTSTo)))
 	lockName := "apifull:ch:" + hex.EncodeToString(lockHash[:20])
-	conn, err := db.Conn(ctx)
-	if err != nil {
-		return nil, false, err
-	}
-	var acquired sql.NullInt64
-	if err = conn.QueryRowContext(ctx, `SELECT GET_LOCK(?, ?)`, lockName, seconds).Scan(&acquired); err != nil {
-		_ = conn.Close()
-		return nil, false, err
-	}
-	if !acquired.Valid || acquired.Int64 != 1 {
-		_ = conn.Close()
-		return nil, false, nil
-	}
-	return func() {
-		releaseCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		var released sql.NullInt64
-		_ = conn.QueryRowContext(releaseCtx, `SELECT RELEASE_LOCK(?)`, lockName).Scan(&released)
-		_ = conn.Close()
-	}, true, nil
+	return lockPostgresTransaction(ctx, lockName, wait)
 }
 
 func LoadChannelDelivery(ctx context.Context, key ChannelDeliveryKey) (ChannelDeliveryPayload, bool, error) {
@@ -302,29 +271,34 @@ func CompleteChannelDeliveryRecipient(ctx context.Context, key ChannelDeliveryKe
 		return err
 	}
 	defer tx.Rollback()
+	var deliveryID int64
+	err = tx.QueryRowContext(ctx, `SELECT id FROM apifull_channel_delivery_outbox
+		WHERE channel_id=$1 AND pts_from=$2 AND pts_to=$3 AND state='pending' FOR UPDATE`,
+		key.ChannelID, key.PTSFrom, key.PTSTo).Scan(&deliveryID)
+	if err == sql.ErrNoRows {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
 	if _, err = tx.ExecContext(ctx, `UPDATE apifull_channel_delivery_recipient r
-		JOIN apifull_channel_delivery_outbox o ON o.id=r.delivery_id
-		SET r.state=?, r.delivered_at=?
-		WHERE o.channel_id=? AND o.pts_from=? AND o.pts_to=? AND o.state='pending' AND r.user_id=? AND r.state='pending'`,
-		state, time.Now().Unix(), key.ChannelID, key.PTSFrom, key.PTSTo, userID); err != nil {
+		SET state=$1, delivered_at=$2
+		WHERE delivery_id=$3 AND user_id=$4 AND state='pending'`,
+		state, time.Now().Unix(), deliveryID, userID); err != nil {
 		return err
 	}
 	var pending int
-	if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM apifull_channel_delivery_recipient r
-		JOIN apifull_channel_delivery_outbox o ON o.id=r.delivery_id
-		WHERE o.channel_id=? AND o.pts_from=? AND o.pts_to=? AND r.state='pending'`,
-		key.ChannelID, key.PTSFrom, key.PTSTo).Scan(&pending); err != nil {
+	if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM apifull_channel_delivery_recipient
+		WHERE delivery_id=$1 AND state='pending'`, deliveryID).Scan(&pending); err != nil {
 		return err
 	}
 	if pending == 0 {
 		if _, err = tx.ExecContext(ctx, `UPDATE apifull_channel_delivery_outbox
 			SET state='completed', payload='', exclude_auth_key_id=0
-			WHERE channel_id=? AND pts_from=? AND pts_to=?`, key.ChannelID, key.PTSFrom, key.PTSTo); err != nil {
+			WHERE id=$1`, deliveryID); err != nil {
 			return err
 		}
-		if _, err = tx.ExecContext(ctx, `DELETE r FROM apifull_channel_delivery_recipient r
-			JOIN apifull_channel_delivery_outbox o ON o.id=r.delivery_id
-			WHERE o.channel_id=? AND o.pts_from=? AND o.pts_to=?`, key.ChannelID, key.PTSFrom, key.PTSTo); err != nil {
+		if _, err = tx.ExecContext(ctx, `DELETE FROM apifull_channel_delivery_recipient WHERE delivery_id=$1`, deliveryID); err != nil {
 			return err
 		}
 	}
@@ -335,11 +309,24 @@ func RetryChannelDeliveryRecipient(ctx context.Context, key ChannelDeliveryKey, 
 	if db == nil {
 		return errors.New("domain PostgreSQL is not open")
 	}
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var deliveryID int64
+	err = tx.QueryRowContext(ctx, `SELECT id FROM apifull_channel_delivery_outbox
+		WHERE channel_id=$1 AND pts_from=$2 AND pts_to=$3 AND state='pending' FOR UPDATE`,
+		key.ChannelID, key.PTSFrom, key.PTSTo).Scan(&deliveryID)
+	if err == sql.ErrNoRows {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
 	var attempts int
-	err := db.QueryRowContext(ctx, `SELECT r.attempts FROM apifull_channel_delivery_recipient r
-		JOIN apifull_channel_delivery_outbox o ON o.id=r.delivery_id
-		WHERE o.channel_id=? AND o.pts_from=? AND o.pts_to=? AND o.state='pending' AND r.user_id=? AND r.state='pending'`,
-		key.ChannelID, key.PTSFrom, key.PTSTo, userID).Scan(&attempts)
+	err = tx.QueryRowContext(ctx, `SELECT attempts FROM apifull_channel_delivery_recipient
+		WHERE delivery_id=$1 AND user_id=$2 AND state='pending' FOR UPDATE`, deliveryID, userID).Scan(&attempts)
 	if err == sql.ErrNoRows {
 		return nil
 	}
@@ -357,12 +344,14 @@ func RetryChannelDeliveryRecipient(ctx context.Context, key ChannelDeliveryKey, 
 	if len(detail) > 255 {
 		detail = strings.ToValidUTF8(detail[:255], "")
 	}
-	_, err = db.ExecContext(ctx, `UPDATE apifull_channel_delivery_recipient r
-		JOIN apifull_channel_delivery_outbox o ON o.id=r.delivery_id
-		SET r.attempts=r.attempts+1, r.next_attempt_at=?, r.last_error=?
-		WHERE o.channel_id=? AND o.pts_from=? AND o.pts_to=? AND o.state='pending' AND r.user_id=? AND r.state='pending'`,
-		time.Now().Add(delay).Unix(), detail, key.ChannelID, key.PTSFrom, key.PTSTo, userID)
-	return err
+	_, err = tx.ExecContext(ctx, `UPDATE apifull_channel_delivery_recipient
+		SET attempts=attempts+1, next_attempt_at=$1, last_error=$2
+		WHERE delivery_id=$3 AND user_id=$4 AND state='pending'`,
+		time.Now().Add(delay).Unix(), detail, deliveryID, userID)
+	if err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func minInt(value, maximum int) int {

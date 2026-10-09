@@ -38,18 +38,10 @@ func (c *ChatCore) ChatGetRecentChatInviteRequesters(in *chat.TLChatGetRecentCha
 		RecentRequesters: []int64{},
 	}).To_RecentChatInviteRequesters()
 
-	var doList []dataobject.ChatInviteParticipantsDO
-	if c.svcCtx.Dao.Postgres != nil && c.svcCtx.Dao.Postgres.Store != nil {
-		doList, err = c.svcCtx.Dao.Postgres.Store.InviteParticipants.SelectRecentRequestedList(c.ctx, in.GetChatId())
-		for i := range doList {
-			rValue.RecentRequesters = append(rValue.RecentRequesters, doList[i].UserId)
-		}
-	} else {
-		_, err = c.svcCtx.Dao.ChatInviteParticipantsDAO.SelectRecentRequestedListWithCB(c.ctx, in.GetChatId(),
-			func(sz, i int, v *dataobject.ChatInviteParticipantsDO) {
-				rValue.RecentRequesters = append(rValue.RecentRequesters, v.UserId)
-			})
-	}
+	doList, err := c.svcCtx.Dao.SelectRecentInviteParticipantsWithCB(c.ctx, in.GetChatId(),
+		func(sz, i int, v *dataobject.ChatInviteParticipantsDO) {
+			rValue.RecentRequesters = append(rValue.RecentRequesters, v.UserId)
+		})
 	if err != nil {
 		return nil, err
 	}

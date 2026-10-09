@@ -10,15 +10,21 @@
 package core
 
 import (
+	"time"
+
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/service/biz/chat/chat"
 	"github.com/teamgram/teamgram-server/app/service/biz/chat/internal/dal/dataobject"
-	"time"
 )
 
 // ChatExportChatInvite
 // chat.exportChatInvite flags:# chat_id:long admin_id:long legacy_revoke_permanent:flags.2?true request_needed:flags.3?true expire_date:flags.0?int usage_limit:flags.1?int title:flags.4?string = ExportedChatInvite;
 func (c *ChatCore) ChatExportChatInvite(in *chat.TLChatExportChatInvite) (*mtproto.ExportedChatInvite, error) {
+	if c == nil || c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.Postgres == nil ||
+		c.svcCtx.Dao.Postgres.Pool == nil || c.svcCtx.Dao.Postgres.Store == nil ||
+		c.svcCtx.Dao.Postgres.Store.Invites == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
 	callerId, err := c.requireInviteCaller()
 	if err != nil {
 		return nil, err
@@ -49,18 +55,17 @@ func (c *ChatCore) ChatExportChatInvite(in *chat.TLChatExportChatInvite) (*mtpro
 		Date2:         time.Now().Unix(),
 	}
 
-	if c.svcCtx.Dao.Postgres != nil && c.svcCtx.Dao.Postgres.Store != nil {
-		tx, txErr := c.svcCtx.Dao.Postgres.Pool.Begin(c.ctx)
-		if txErr == nil {
-			defer tx.Rollback(c.ctx)
-			_, _, txErr = c.svcCtx.Dao.Postgres.Store.Invites.InsertOn(c.ctx, tx, chatInviteDO)
-			if txErr == nil {
-				txErr = tx.Commit(c.ctx)
-			}
-		}
+	tx, txErr := c.svcCtx.Dao.Postgres.Pool.Begin(c.ctx)
+	if txErr != nil {
+		return nil, txErr
+	}
+	defer func() { _ = tx.Rollback(c.ctx) }()
+	_, _, txErr = c.svcCtx.Dao.Postgres.Store.Invites.InsertOn(c.ctx, tx, chatInviteDO)
+	if txErr == nil {
+		txErr = tx.Commit(c.ctx)
+	}
+	if txErr != nil {
 		err = txErr
-	} else {
-		_, _, err = c.svcCtx.Dao.ChatInvitesDAO.Insert(c.ctx, chatInviteDO)
 	}
 	if err != nil {
 		c.Logger.Errorf("chat.exportChatInvite - error: %v", err)

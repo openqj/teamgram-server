@@ -34,9 +34,9 @@ func New() *Server {
 
 func (s *Server) Initialize() error {
 	var c config.Config
-	conf.MustLoad(*configFile, &c)
+	conf.MustLoad(*configFile, &c, conf.UseEnv())
 
-	logx.Infov(c)
+	logx.Infof("media config loaded")
 	ctx := svc.NewServiceContext(c)
 	s.svcCtx = ctx
 	s.grpcSrv = grpc.New(ctx, c.RpcServerConf)

@@ -22,6 +22,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/teamgram/marmota/pkg/stores/sqlx"
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/service/biz/user/internal/dal/dataobject"
@@ -39,6 +40,23 @@ func genUserNotifySettingsCacheKey(id int64, peerType int32, peerId int64) strin
 
 func (d *Dao) GetUserNotifySettings(ctx context.Context, id int64, peerType int32, peerId int64) (*mtproto.PeerNotifySettings, error) {
 	settings := mtproto.MakeTLPeerNotifySettings(nil).To_PeerNotifySettings()
+	if d.Postgres != nil {
+		do, err := d.Postgres.Store.NotifySettings.Select(ctx, id, peerType, peerId)
+		if err != nil {
+			return nil, err
+		}
+		if do == nil {
+			if peerType == mtproto.PEER_USERS || peerType == mtproto.PEER_CHATS || peerType == mtproto.PEER_BROADCASTS {
+				settings.ShowPreviews = mtproto.BoolTrue
+				settings.Silent = mtproto.BoolFalse
+				settings.MuteUntil = &wrapperspb.Int32Value{Value: 0}
+				settings.Sound = &wrapperspb.StringValue{Value: "default"}
+			}
+		} else {
+			setPeerNotifySettingsByDO(settings, do)
+		}
+		return settings, nil
+	}
 
 	err := d.CachedConn.QueryRow(
 		ctx,
@@ -133,6 +151,13 @@ func makeDOByPeerNotifySettings(settings *mtproto.PeerNotifySettings) (doMap map
 }
 
 func (d *Dao) SetUserPeerNotifySettings(ctx context.Context, id int64, peerType int32, peerId int64, settings *mtproto.PeerNotifySettings) error {
+	if d.Postgres != nil {
+		m := makeDOByPeerNotifySettings(settings)
+		return d.Postgres.InTx(ctx, func(tx pgx.Tx) error {
+			_, _, err := d.Postgres.Store.NotifySettings.InsertOrUpdateExtTx(ctx, tx, id, peerType, peerId, m)
+			return err
+		})
+	}
 	_, _, err := d.CachedConn.Exec(
 		ctx,
 		func(ctx context.Context, conn *sqlx.DB) (int64, int64, error) {
@@ -147,6 +172,12 @@ func (d *Dao) SetUserPeerNotifySettings(ctx context.Context, id int64, peerType 
 // ResetUserNotifySettings removes all per-peer overrides and invalidates every
 // cached peer value that was active for the user.
 func (d *Dao) ResetUserNotifySettings(ctx context.Context, id int64) error {
+	if d.Postgres != nil {
+		return d.Postgres.InTx(ctx, func(tx pgx.Tx) error {
+			_, err := d.Postgres.Store.NotifySettings.DeleteAllTx(ctx, tx, id)
+			return err
+		})
+	}
 	rows, err := d.UserNotifySettingsDAO.SelectAll(ctx, id)
 	if err != nil {
 		return err

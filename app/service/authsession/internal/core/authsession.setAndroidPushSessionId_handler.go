@@ -26,6 +26,12 @@ import (
 // AuthsessionSetAndroidPushSessionId
 // authsession.setAndroidPushSessionId auth_key_id:long session_id:long = Bool;
 func (c *AuthsessionCore) AuthsessionSetAndroidPushSessionId(in *authsession.TLAuthsessionSetAndroidPushSessionId) (*mtproto.Bool, error) {
+	if in == nil || in.GetAuthKeyId() == 0 {
+		return nil, mtproto.ErrAuthKeyInvalid
+	}
+	if in.GetUserId() <= 0 {
+		return nil, mtproto.ErrUserIdInvalid
+	}
 	var (
 		inKeyId = in.GetAuthKeyId()
 	)

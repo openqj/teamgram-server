@@ -26,7 +26,7 @@ import (
 // UserGetAuthorizationTTL
 // user.getAuthorizationTTL user_id:long = AccountDaysTTL;
 func (c *UserCore) UserGetAuthorizationTTL(in *user.TLUserGetAuthorizationTTL) (*mtproto.AccountDaysTTL, error) {
-	userDO, err := c.svcCtx.Dao.UsersDAO.SelectAuthorizationTTL(c.ctx, in.UserId)
+	userDO, err := c.svcCtx.Dao.SelectUserByID(c.ctx, in.UserId)
 	if err != nil {
 		c.Logger.Errorf("user.getAuthorizationTTL - error: %v", err)
 		return nil, err

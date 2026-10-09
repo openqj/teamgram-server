@@ -26,12 +26,17 @@ import (
 // SessionPushRpcResultData
 // session.pushRpcResultData auth_key_id:long session_id:long client_req_msg_id:long rpc_result_data:bytes = Bool;
 func (c *SessionCore) SessionPushRpcResultData(in *session.TLSessionPushRpcResultData) (*mtproto.Bool, error) {
+	if in == nil || in.PermAuthKeyId == 0 || len(in.RpcResultData) == 0 {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
 	mainAuth, err := c.getOrFetchMainAuthWrapper(in.PermAuthKeyId)
 	if err != nil {
 		c.Logger.Errorf("session.pushRpcResultData - %v", err)
 		return nil, err
 	}
-	_ = mainAuth.SyncRpcResultDataArrived(c.ctx, in.AuthKeyId, in.SessionId, in.ClientReqMsgId, in.RpcResultData)
+	if err := mainAuth.SyncRpcResultDataArrived(c.ctx, in.AuthKeyId, in.SessionId, in.ClientReqMsgId, in.RpcResultData); err != nil {
+		return nil, err
+	}
 
 	return mtproto.BoolTrue, nil
 }

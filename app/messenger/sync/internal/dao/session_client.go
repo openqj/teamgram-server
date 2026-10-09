@@ -21,15 +21,18 @@ package dao
 import (
 	"context"
 	"fmt"
+	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/teamgram/proto/mtproto"
 	sessionclient "github.com/teamgram/teamgram-server/app/interface/session/client"
 	"github.com/teamgram/teamgram-server/app/interface/session/session"
 
 	"github.com/zeromicro/go-zero/core/discov"
 	"github.com/zeromicro/go-zero/core/logx"
 	"github.com/zeromicro/go-zero/zrpc"
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	grpcStatus "google.golang.org/grpc/status"
 )
@@ -37,6 +40,7 @@ import (
 type sessionDataCtx struct {
 	ctx     context.Context
 	updates any
+	result  chan error
 }
 
 // SessionOptions comet options.
@@ -49,12 +53,14 @@ type SessionOptions struct {
 type Session struct {
 	serverId       string
 	client         sessionclient.SessionClient
+	conn           *grpc.ClientConn
 	sessionChan    []chan sessionDataCtx
 	sessionChanNum uint64
 	options        SessionOptions
 	ctx            context.Context
 	cancel         context.CancelFunc
 	unavailable    atomic.Bool // set when connection errors detected
+	workers        sync.WaitGroup
 }
 
 func isSessionConnError(err error) bool {
@@ -71,7 +77,7 @@ func isSessionConnError(err error) bool {
 
 // process
 func (c *Session) process(sessionChan chan sessionDataCtx) {
-	var err error
+	defer c.workers.Done()
 	for {
 		select {
 		case sessionData, ok := <-sessionChan:
@@ -80,102 +86,95 @@ func (c *Session) process(sessionChan chan sessionDataCtx) {
 				return
 			}
 
-			if c.unavailable.Load() {
-				logx.Errorf("session(%s) unavailable, dropping push", c.serverId)
-				continue
-			}
-
-			switch r := sessionData.updates.(type) {
-			case *session.TLSessionPushSessionUpdatesData:
-				_, err = c.client.SessionPushSessionUpdatesData(sessionData.ctx, r)
-				if err != nil {
-					logx.Errorf("c.client.PushSessionUpdates(%s, %v, reply) serverId:%s error(%v)", r, c.serverId, c.serverId, err)
-					if isSessionConnError(err) {
-						c.unavailable.Store(true)
-						logx.Errorf("session(%s) marked unavailable due to conn error", c.serverId)
-					}
-				}
-			case *session.TLSessionPushUpdatesData:
-				_, err = c.client.SessionPushUpdatesData(sessionData.ctx, r)
-				if err != nil {
-					logx.Errorf("c.client.PushUpdates(%s, %v, reply) serverId:%s error(%v)", r, c.serverId, c.serverId, err)
-					if isSessionConnError(err) {
-						c.unavailable.Store(true)
-						logx.Errorf("session(%s) marked unavailable due to conn error", c.serverId)
-					}
-				}
-			case *session.TLSessionPushRpcResultData:
-				_, err = c.client.SessionPushRpcResultData(sessionData.ctx, r)
-				if err != nil {
-					logx.Errorf("c.client.PushRpcResult(%s, %v, reply) serverId:%s error(%v)", r, c.serverId, c.serverId, err)
-					if isSessionConnError(err) {
-						c.unavailable.Store(true)
-						logx.Errorf("session(%s) marked unavailable due to conn error", c.serverId)
-					}
-				}
-			default:
-				logx.Errorf("invalid type: %#v", r)
-			}
+			err := c.deliver(sessionData.ctx, sessionData.updates)
+			c.unavailable.Store(isSessionConnError(err))
+			sessionData.result <- err
 		case <-c.ctx.Done():
 			return
 		}
 	}
 }
 
-func (c *Session) Close() (err error) {
-	finish := make(chan bool)
+func (c *Session) deliver(ctx context.Context, updates any) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	var reply *mtproto.Bool
+	var err error
+	switch in := updates.(type) {
+	case *session.TLSessionPushSessionUpdatesData:
+		reply, err = c.client.SessionPushSessionUpdatesData(ctx, in)
+	case *session.TLSessionPushUpdatesData:
+		reply, err = c.client.SessionPushUpdatesData(ctx, in)
+	case *session.TLSessionPushRpcResultData:
+		reply, err = c.client.SessionPushRpcResultData(ctx, in)
+	default:
+		return fmt.Errorf("session(%s) invalid push type %T", c.serverId, updates)
+	}
+	if err != nil {
+		return err
+	}
+	if !mtproto.FromBool(reply) {
+		return fmt.Errorf("session(%s) rejected push", c.serverId)
+	}
+	return nil
+}
+
+func (c *Session) Close() error {
+	c.cancel()
+	if c.conn != nil {
+		_ = c.conn.Close()
+	}
+	finish := make(chan struct{})
 	go func() {
-		for {
-			n := len(c.sessionChan)
-			for _, ch := range c.sessionChan {
-				n += len(ch)
-			}
-			if n == 0 {
-				finish <- true
-				return
-			}
-			time.Sleep(time.Second)
-		}
+		c.workers.Wait()
+		close(finish)
 	}()
 	select {
 	case <-finish:
-		logx.Info("close session client finish")
+		return nil
 	case <-time.After(5 * time.Second):
-		err = fmt.Errorf("close session(server:%s push:%d) timeout", c.serverId, len(c.sessionChan))
+		return fmt.Errorf("close session(%s) timeout", c.serverId)
 	}
-	c.cancel()
-	return
 }
 
-func (c *Session) PushUpdates(ctx context.Context, msg *session.TLSessionPushUpdatesData) (err error) {
-	if c.unavailable.Load() {
-		return fmt.Errorf("session(%s) unavailable", c.serverId)
-	}
+func (c *Session) enqueue(ctx context.Context, msg any) error {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	stop := context.AfterFunc(c.ctx, cancel)
+	defer stop()
+	result := make(chan error, 1)
 	idx := atomic.AddUint64(&c.sessionChanNum, 1) % c.options.RoutineSize
-	c.sessionChan[idx] <- sessionDataCtx{ctx: ctx, updates: msg}
-	return
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case c.sessionChan[idx] <- sessionDataCtx{ctx: ctx, updates: msg, result: result}:
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case err := <-result:
+		return err
+	}
 }
 
-func (c *Session) PushSessionUpdates(ctx context.Context, msg *session.TLSessionPushSessionUpdatesData) (err error) {
-	if c.unavailable.Load() {
-		return fmt.Errorf("session(%s) unavailable", c.serverId)
-	}
-	idx := atomic.AddUint64(&c.sessionChanNum, 1) % c.options.RoutineSize
-	c.sessionChan[idx] <- sessionDataCtx{ctx: ctx, updates: msg}
-	return
+func (c *Session) PushUpdates(ctx context.Context, msg *session.TLSessionPushUpdatesData) error {
+	return c.enqueue(ctx, msg)
 }
 
-func (c *Session) PushRpcResult(ctx context.Context, msg *session.TLSessionPushRpcResultData) (err error) {
-	if c.unavailable.Load() {
-		return fmt.Errorf("session(%s) unavailable", c.serverId)
-	}
-	idx := atomic.AddUint64(&c.sessionChanNum, 1) % c.options.RoutineSize
-	c.sessionChan[idx] <- sessionDataCtx{ctx: ctx, updates: msg}
-	return
+func (c *Session) PushSessionUpdates(ctx context.Context, msg *session.TLSessionPushSessionUpdatesData) error {
+	return c.enqueue(ctx, msg)
+}
+
+func (c *Session) PushRpcResult(ctx context.Context, msg *session.TLSessionPushRpcResultData) error {
+	return c.enqueue(ctx, msg)
 }
 
 // NewSession new a comet.
 func NewSession(c zrpc.RpcClientConf, options SessionOptions) (*Session, error) {
+	if len(c.Endpoints) == 0 || options.RoutineSize == 0 {
+		return nil, fmt.Errorf("session requires an endpoint and push workers")
+	}
 	sess := &Session{
 		serverId:    c.Endpoints[0],
 		sessionChan: make([]chan sessionDataCtx, options.RoutineSize),
@@ -188,10 +187,12 @@ func NewSession(c zrpc.RpcClientConf, options SessionOptions) (*Session, error) 
 		return nil, err
 	}
 	sess.client = sessionclient.NewSessionClient(cli)
+	sess.conn = cli.Conn()
 	sess.ctx, sess.cancel = context.WithCancel(context.Background())
 
 	for i := uint64(0); i < options.RoutineSize; i++ {
 		sess.sessionChan[i] = make(chan sessionDataCtx, options.RoutineChan)
+		sess.workers.Add(1)
 		go sess.process(sess.sessionChan[i])
 	}
 	return sess, nil

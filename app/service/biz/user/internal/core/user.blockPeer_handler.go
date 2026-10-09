@@ -17,7 +17,11 @@ import (
 // UserBlockPeer
 // user.blockPeer user_id:long peer_type:int peer_id:long = Bool;
 func (c *UserCore) UserBlockPeer(in *user.TLUserBlockPeer) (*mtproto.Bool, error) {
-	blocked := c.svcCtx.Dao.BlockUser(c.ctx, in.GetUserId(), in.GetPeerId())
-
-	return mtproto.ToBool(blocked), nil
+	if in.GetPeerType() != mtproto.PEER_USER || in.GetPeerId() <= 0 {
+		return nil, mtproto.ErrPeerIdInvalid
+	}
+	if err := c.svcCtx.Dao.BlockUser(c.ctx, in.GetUserId(), in.GetPeerId()); err != nil {
+		return nil, err
+	}
+	return mtproto.BoolTrue, nil
 }

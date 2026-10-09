@@ -24,6 +24,7 @@ func (c *UserCore) UserGetLastSeens(in *user.TLUserGetLastSeens) (*user.Vector_L
 	}
 
 	doList := make([]*dataobject.UserPresencesDO, len(in.Id))
+	errors := make([]error, len(in.Id))
 	mr.ForEach(
 		func(source chan<- interface{}) {
 			for i, v := range in.GetId() {
@@ -32,11 +33,17 @@ func (c *UserCore) UserGetLastSeens(in *user.TLUserGetLastSeens) (*user.Vector_L
 		},
 		func(item interface{}) {
 			id := item.(idxId)
-			do, _ := c.svcCtx.Dao.GetLastSeenAt(c.ctx, id.id)
+			do, err := c.svcCtx.Dao.GetLastSeenAt(c.ctx, id.id)
+			errors[id.idx] = err
 			if do != nil {
 				doList[id.idx] = do
 			}
 		})
+	for _, err := range errors {
+		if err != nil {
+			return nil, err
+		}
+	}
 
 	rValues := &user.Vector_LastSeenData{
 		Datas: make([]*user.LastSeenData, 0, len(doList)),

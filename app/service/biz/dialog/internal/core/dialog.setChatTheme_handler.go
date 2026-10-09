@@ -29,6 +29,9 @@ func (c *DialogCore) DialogSetChatTheme(in *dialog.TLDialogSetChatTheme) (*mtpro
 	if c == nil || c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.Postgres == nil || c.svcCtx.Dao.Postgres.Store == nil {
 		return nil, mtproto.ErrInternalServerError
 	}
+	if in == nil {
+		return nil, mtproto.ErrInputConstructorInvalid
+	}
 	tx, err := c.svcCtx.Dao.Postgres.Pool.Begin(c.ctx)
 	if err == nil {
 		defer func() { _ = tx.Rollback(c.ctx) }()
@@ -42,7 +45,9 @@ func (c *DialogCore) DialogSetChatTheme(in *dialog.TLDialogSetChatTheme) (*mtpro
 		}
 	}
 	if err != nil {
-		c.Logger.Errorf("dialog.setChatTheme - error: %v", err)
+		if c.Logger != nil {
+			c.Logger.Errorf("dialog.setChatTheme - error: %v", err)
+		}
 		return nil, err
 	}
 

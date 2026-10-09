@@ -10,10 +10,8 @@
 package core
 
 import (
-	"context"
 	"time"
 
-	"github.com/teamgram/marmota/pkg/stores/sqlx"
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/service/biz/dialog/dialog"
 	"github.com/teamgram/teamgram-server/app/service/biz/dialog/internal/dal/dataobject"
@@ -32,24 +30,21 @@ func (c *DialogCore) DialogInsertOrUpdateDialogFilter(in *dialog.TLDialogInsertO
 		return nil, err
 	}
 
-	_, _, err = c.svcCtx.Dao.CachedConn.Exec(
+	if c == nil || c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.Postgres == nil ||
+		c.svcCtx.Dao.Postgres.Store == nil || c.svcCtx.Dao.Postgres.Store.DialogFilters == nil {
+		return nil, mtproto.ErrMethodNotImpl
+	}
+	_, _, err = c.svcCtx.Dao.Postgres.Store.DialogFilters.InsertOrUpdate(
 		c.ctx,
-		func(ctx context.Context, conn *sqlx.DB) (int64, int64, error) {
-			_, _, err2 := c.svcCtx.Dao.DialogFiltersDAO.InsertOrUpdate(
-				ctx,
-				&dataobject.DialogFiltersDO{
-					UserId:         in.UserId,
-					DialogFilterId: in.Id,
-					IsChatlist:     isChatlist,
-					DialogFilter:   string(dialogFilterData),
-					OrderValue:     time.Now().Unix() << 32,
-					FromSuggested:  -1,
-					Deleted:        false,
-				})
-
-			return 0, 0, err2
-		},
-		dialog.GetDialogFilterCacheKey(in.UserId))
+		&dataobject.DialogFiltersDO{
+			UserId:         in.UserId,
+			DialogFilterId: in.Id,
+			IsChatlist:     isChatlist,
+			DialogFilter:   string(dialogFilterData),
+			OrderValue:     time.Now().Unix() << 32,
+			FromSuggested:  -1,
+			Deleted:        false,
+		})
 	if err != nil {
 		c.Logger.Errorf("dialog.insertOrUpdateDialogFilter - persist filter error: %v", err)
 		return nil, err

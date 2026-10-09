@@ -34,52 +34,30 @@ func miscSave(uid int64, method string, in any) error {
 	return persist.Default.Set("misc:"+strconv.FormatInt(uid, 10)+":"+method, string(raw))
 }
 
-// RPCInternalBotServer: Layer 229 methods previously returned ERR_ENTERPRISE_IS_BLOCKED.
+// RPCInternalBotServer: Layer 229 methods fail closed until the canonical bot
+// provider is wired. Persisting opaque request JSON and returning success would
+// make clients believe the operation was handled.
 
 func (c *ApiFullCore) HelpSetBotUpdatesStatus(in *mtproto.TLHelpSetBotUpdatesStatus) (*mtproto.Bool, error) {
-	uid, err := c.requireUserId()
-	if err != nil {
+	if _, err := c.requireUserId(); err != nil {
 		return nil, err
 	}
-	if err = miscSave(uid, "HelpSetBotUpdatesStatus", in); err != nil {
-		return nil, err
-	}
-	return mtproto.BoolTrue, nil
+	_ = in
+	return nil, mtproto.ErrMethodNotImpl
 }
 
 func (c *ApiFullCore) BotsSendCustomRequest(in *mtproto.TLBotsSendCustomRequest) (*mtproto.DataJSON, error) {
-	uid, err := c.requireUserId()
-	if err != nil {
+	if _, err := c.requireUserId(); err != nil {
 		return nil, err
 	}
-	key := "misc:" + strconv.FormatInt(uid, 10) + ":BotsSendCustomRequest:params"
-	data := ""
-	if in != nil && in.GetParams() != nil {
-		data = in.GetParams().GetData()
-	}
-	if data == "" {
-		stored, err := persist.Default.Get(key)
-		if err != nil {
-			return nil, err
-		}
-		if stored == "" {
-			stored = "{}"
-		}
-		return mtproto.MakeTLDataJSON(&mtproto.DataJSON{Data: stored}).To_DataJSON(), nil
-	}
-	if err = persist.Default.Set(key, data); err != nil {
-		return nil, err
-	}
-	return mtproto.MakeTLDataJSON(&mtproto.DataJSON{Data: data}).To_DataJSON(), nil
+	_ = in
+	return nil, mtproto.ErrMethodNotImpl
 }
 
 func (c *ApiFullCore) BotsAnswerWebhookJSONQuery(in *mtproto.TLBotsAnswerWebhookJSONQuery) (*mtproto.Bool, error) {
-	uid, err := c.requireUserId()
-	if err != nil {
+	if _, err := c.requireUserId(); err != nil {
 		return nil, err
 	}
-	if err = miscSave(uid, "BotsAnswerWebhookJSONQuery", in); err != nil {
-		return nil, err
-	}
-	return mtproto.BoolTrue, nil
+	_ = in
+	return nil, mtproto.ErrMethodNotImpl
 }

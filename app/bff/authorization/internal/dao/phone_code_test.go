@@ -16,6 +16,18 @@ type phoneCodeTestStore struct {
 	values map[string]string
 }
 
+type floodTestStore struct {
+	*phoneCodeTestStore
+	count int64
+}
+
+func (s *floodTestStore) EvalCtx(_ context.Context, _ string, _ string, _ ...any) (any, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.count++
+	return s.count, nil
+}
+
 func newPhoneCodeTestStore() *phoneCodeTestStore {
 	return &phoneCodeTestStore{values: make(map[string]string)}
 }
@@ -72,5 +84,18 @@ func TestDeletePhoneCodeRequiresMatchingHash(t *testing.T) {
 	}
 	if current, err := d.GetCachePhoneCode(context.Background(), authKeyID, phone); err != nil || current != nil {
 		t.Fatalf("current cancellation left challenge: value = %#v, error = %v", current, err)
+	}
+}
+
+func TestCheckCanDoActionRejectsPhoneFloodAtomically(t *testing.T) {
+	store := &floodTestStore{phoneCodeTestStore: newPhoneCodeTestStore()}
+	d := &Dao{kv: store}
+	for i := 0; i < 5; i++ {
+		if err := d.CheckCanDoAction(context.Background(), 42, "+15551234567", 1); err != nil {
+			t.Fatalf("attempt %d returned error: %v", i+1, err)
+		}
+	}
+	if err := d.CheckCanDoAction(context.Background(), 42, "+15551234567", 1); err != mtproto.ErrPhoneNumberFlood {
+		t.Fatalf("sixth attempt error = %v, want %v", err, mtproto.ErrPhoneNumberFlood)
 	}
 }

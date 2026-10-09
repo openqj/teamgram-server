@@ -2,15 +2,69 @@ package dao
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/teamgram/marmota/pkg/stores/sqlx"
 	"github.com/teamgram/proto/mtproto"
+	"github.com/teamgram/teamgram-server/app/messenger/msg/internal/dal/dao/postgres_dao"
 	"github.com/teamgram/teamgram-server/app/messenger/msg/internal/dal/dataobject"
 
 	"github.com/zeromicro/go-zero/core/jsonx"
 	"github.com/zeromicro/go-zero/core/logx"
 )
+
+func (d *Dao) loadMessagePtsPostgres(ctx context.Context, db postgres_dao.DB, box *mtproto.MessageBox) error {
+	err := db.QueryRow(ctx, `SELECT pts, pts_count FROM user_pts_updates
+ WHERE user_id = $1 AND update_data::jsonb->'message_MESSAGE'->>'id' = $2
+ AND update_type = $3 ORDER BY pts LIMIT 1`, box.UserId, fmt.Sprint(box.MessageId),
+		mtproto.GetUpdateType(mtproto.MakeTLUpdateNewMessage(nil).To_Update())).Scan(&box.Pts, &box.PtsCount)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return errors.New("messenger/msg: persisted message has no pts update")
+	}
+	return err
+}
+
+func (d *Dao) RestoreMessagePts(ctx context.Context, box *mtproto.MessageBox) error {
+	if d.Postgres == nil || d.Postgres.Pool == nil {
+		return errors.New("messenger/msg: postgres store is not configured")
+	}
+	return d.loadMessagePtsPostgres(ctx, d.Postgres.Pool, box)
+}
+
+func (d *Dao) LoadMessageReadHistoryUpdate(ctx context.Context, box *mtproto.MessageBox) (*mtproto.Update, error) {
+	if d.Postgres == nil || d.Postgres.Pool == nil || box == nil {
+		return nil, errors.New("messenger/msg: postgres store or message is not configured")
+	}
+	var data string
+	err := d.Postgres.Pool.QueryRow(ctx, `SELECT update_data FROM user_pts_updates
+ WHERE user_id=$1 AND update_type=$2 AND update_data::jsonb->>'max_id'=$3
+ AND update_data::jsonb->'peer_PEER'->>'chat_id'=$4 ORDER BY pts LIMIT 1`,
+		box.UserId, mtproto.GetUpdateType(mtproto.MakeTLUpdateReadHistoryInbox(nil).To_Update()), fmt.Sprint(box.MessageId), fmt.Sprint(box.PeerId)).Scan(&data)
+	if err != nil {
+		return nil, err
+	}
+	update := new(mtproto.Update)
+	if err := jsonx.UnmarshalFromString(data, update); err != nil {
+		return nil, err
+	}
+	return update, nil
+}
+
+func (d *Dao) AddToPtsQueueOn(ctx context.Context, tx postgres_dao.DB, userId int64, pts, ptsCount int32, update *mtproto.Update) (int32, error) {
+	updateData, err := jsonx.Marshal(update)
+	if err != nil {
+		return 0, err
+	}
+	do := &dataobject.UserPtsUpdatesDO{UserId: userId, Pts: pts, PtsCount: ptsCount, UpdateType: mtproto.GetUpdateType(update), UpdateData: string(updateData), Date2: time.Now().Unix()}
+	if d.Postgres == nil || d.Postgres.Store == nil || d.Postgres.Store.UserPtsUpdates == nil {
+		return 0, errors.New("messenger/msg: postgres pts store is not configured")
+	}
+	id, _, err := d.Postgres.Store.UserPtsUpdates.InsertOn(ctx, tx, do)
+	return int32(id), err
+}
 
 func (d *Dao) AddToPtsQueue(ctx context.Context, userId int64, pts, ptsCount int32, update *mtproto.Update) int32 {
 	i, err := d.AddToPtsQueueE(ctx, userId, pts, ptsCount, update)

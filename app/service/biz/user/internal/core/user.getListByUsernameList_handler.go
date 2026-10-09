@@ -20,7 +20,6 @@ package core
 
 import (
 	"github.com/teamgram/proto/mtproto"
-	"github.com/teamgram/teamgram-server/app/service/biz/user/internal/dal/dataobject"
 	"github.com/teamgram/teamgram-server/app/service/biz/user/user"
 )
 
@@ -33,28 +32,31 @@ func (c *UserCore) UserGetListByUsernameList(in *user.TLUserGetListByUsernameLis
 		}
 	)
 
-	if _, err := c.svcCtx.Dao.UsernameDAO.SelectListWithCB(c.ctx, in.Names, func(sz, i int, v *dataobject.UsernameDO) {
-		var (
-			peer *mtproto.Peer
-		)
-
-		switch v.PeerType {
-		case mtproto.PEER_USER:
-			peer = mtproto.MakePeerUser(v.PeerId)
-		case mtproto.PEER_CHANNEL:
-			peer = mtproto.MakePeerChannel(v.PeerId)
-		default:
-			return
-		}
-
-		rValues.Datas = append(rValues.Datas, user.MakeTLUsernameData(&user.UsernameData{
-			Username: v.Username,
-			Peer:     peer,
-			Editable: v.Editable,
-			Active:   v.Active,
-		}).To_UsernameData())
-	}); err != nil {
+	if doList, err := c.svcCtx.Dao.SelectUsernameList(c.ctx, in.Names); err != nil {
 		c.Logger.Errorf("username.getListByUsernameList - error: %v", err)
+	} else {
+		for i := range doList {
+			v := &doList[i]
+			var (
+				peer *mtproto.Peer
+			)
+
+			switch v.PeerType {
+			case mtproto.PEER_USER:
+				peer = mtproto.MakePeerUser(v.PeerId)
+			case mtproto.PEER_CHANNEL:
+				peer = mtproto.MakePeerChannel(v.PeerId)
+			default:
+				continue
+			}
+
+			rValues.Datas = append(rValues.Datas, user.MakeTLUsernameData(&user.UsernameData{
+				Username: v.Username,
+				Peer:     peer,
+				Editable: v.Editable,
+				Active:   v.Active,
+			}).To_UsernameData())
+		}
 	}
 
 	return rValues, nil

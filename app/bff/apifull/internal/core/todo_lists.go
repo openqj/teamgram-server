@@ -24,6 +24,7 @@ import (
 
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/persist"
+	"google.golang.org/protobuf/proto"
 )
 
 // RPCTodoListsServer: Layer 229 methods previously returned ERR_ENTERPRISE_IS_BLOCKED.
@@ -84,17 +85,17 @@ func (s *todoListState) upsert(list []*mtproto.TodoItem) []*mtproto.TodoItem {
 		if it == nil {
 			continue
 		}
-		cp := *it
+		cp := proto.Clone(it).(*mtproto.TodoItem)
 		if i, ok := index[cp.Id]; ok {
-			s.Items[i] = &cp
+			s.Items[i] = cp
 		} else {
-			s.Items = append(s.Items, &cp)
+			s.Items = append(s.Items, cp)
 			index[cp.Id] = len(s.Items) - 1
 			if _, exists := s.Done[cp.Id]; !exists {
 				s.Done[cp.Id] = false
 			}
 		}
-		added = append(added, &cp)
+		added = append(added, cp)
 	}
 	return added
 }

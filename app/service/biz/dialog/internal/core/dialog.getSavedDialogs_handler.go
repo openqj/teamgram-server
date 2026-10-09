@@ -23,12 +23,14 @@ import (
 
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/service/biz/dialog/dialog"
-	"github.com/teamgram/teamgram-server/app/service/biz/dialog/internal/dal/dataobject"
 )
 
 // DialogGetSavedDialogs
 // dialog.getSavedDialogs user_id:long exclude_pinned:Bool offset_date:int offset_id:int offset_peer:PeerUtil limit:int = SavedDialogList;
 func (c *DialogCore) DialogGetSavedDialogs(in *dialog.TLDialogGetSavedDialogs) (*dialog.SavedDialogList, error) {
+	if c == nil || c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.Postgres == nil || c.svcCtx.Dao.Postgres.Store == nil || c.svcCtx.Dao.Postgres.Store.SavedDialogs == nil {
+		return nil, mtproto.ErrMethodNotImpl
+	}
 	var (
 		excludePinned = mtproto.FromBool(in.GetExcludePinned())
 		meId          = in.GetUserId()
@@ -49,38 +51,31 @@ func (c *DialogCore) DialogGetSavedDialogs(in *dialog.TLDialogGetSavedDialogs) (
 	}
 
 	if excludePinned {
-		c.svcCtx.Dao.SavedDialogsDAO.SelectExcludePinnedDialogsWithCB(
-			c.ctx,
-			meId,
-			offsetId,
-			limit,
-			func(sz, i int, v *dataobject.SavedDialogsDO) {
-				dList.Dialogs = append(dList.Dialogs, c.svcCtx.Dao.MakeSavedDialog(v))
-			})
-		dList.Count = int32(c.svcCtx.Dao.CommonDAO.CalcSize(
-			c.ctx,
-			"saved_dialogs",
-			map[string]interface{}{
-				"user_id": meId,
-				"pinned":  0,
-				"deleted": 0,
-			}))
+		rows, err := c.svcCtx.Dao.Postgres.Store.SavedDialogs.SelectExcludePinnedDialogs(c.ctx, meId, offsetId, limit)
+		if err != nil {
+			return nil, err
+		}
+		for i := range rows {
+			dList.Dialogs = append(dList.Dialogs, c.svcCtx.Dao.MakeSavedDialog(&rows[i]))
+		}
+		count, err := c.svcCtx.Dao.Postgres.Store.SavedDialogs.Count(c.ctx, meId, true)
+		if err != nil {
+			return nil, err
+		}
+		dList.Count = int32(count)
 	} else {
-		c.svcCtx.Dao.SavedDialogsDAO.SelectDialogsWithCB(
-			c.ctx,
-			meId,
-			offsetId,
-			limit,
-			func(sz, i int, v *dataobject.SavedDialogsDO) {
-				dList.Dialogs = append(dList.Dialogs, c.svcCtx.Dao.MakeSavedDialog(v))
-			})
-		dList.Count = int32(c.svcCtx.Dao.CommonDAO.CalcSize(
-			c.ctx,
-			"saved_dialogs",
-			map[string]interface{}{
-				"user_id": meId,
-				"deleted": 0,
-			}))
+		rows, err := c.svcCtx.Dao.Postgres.Store.SavedDialogs.SelectDialogs(c.ctx, meId, offsetId, limit)
+		if err != nil {
+			return nil, err
+		}
+		for i := range rows {
+			dList.Dialogs = append(dList.Dialogs, c.svcCtx.Dao.MakeSavedDialog(&rows[i]))
+		}
+		count, err := c.svcCtx.Dao.Postgres.Store.SavedDialogs.Count(c.ctx, meId, false)
+		if err != nil {
+			return nil, err
+		}
+		dList.Count = int32(count)
 	}
 
 	return dList, nil

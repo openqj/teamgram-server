@@ -62,7 +62,9 @@ func (d *ChatInviteParticipantsDAO) insertOn(ctx context.Context, db DB, do *dat
 	err := db.QueryRow(ctx, `INSERT INTO chat_invite_participants
  (chat_id,link,user_id,requested,approved_by,date2,deleted)
  VALUES ($1,$2,$3,$4,$5,$6,$7)
- ON CONFLICT (link,user_id) DO UPDATE SET chat_id = EXCLUDED.chat_id
+ ON CONFLICT (link,user_id) DO UPDATE SET chat_id = EXCLUDED.chat_id,
+ requested = EXCLUDED.requested, approved_by = EXCLUDED.approved_by,
+ date2 = EXCLUDED.date2, deleted = EXCLUDED.deleted
  RETURNING id`, do.ChatId, do.Link, do.UserId,
 		do.Requested, do.ApprovedBy, do.Date2, do.Deleted).Scan(&id)
 	if err != nil {
@@ -83,6 +85,12 @@ func (d *ChatInviteParticipantsDAO) SelectListByLink(ctx context.Context, link s
 func (d *ChatInviteParticipantsDAO) CountByLink(ctx context.Context, link string, requested bool) (int64, error) {
 	var count int64
 	err := d.db.QueryRow(ctx, `SELECT COUNT(*) FROM chat_invite_participants WHERE link = $1 AND requested = $2`, link, requested).Scan(&count)
+	return count, err
+}
+
+func (d *ChatInviteParticipantsDAO) CountByLinkOn(ctx context.Context, tx DB, link string, requested bool) (int64, error) {
+	var count int64
+	err := tx.QueryRow(ctx, `SELECT COUNT(*) FROM chat_invite_participants WHERE link = $1 AND requested = $2`, link, requested).Scan(&count)
 	return count, err
 }
 

@@ -29,7 +29,7 @@ Telemetry:
   
 KV:
   - Host: redis:6379
-PostgresDSN: postgres://teamgram:teamgram@postgres:5432/teamgram?sslmode=disable
+PostgresDSN: ${TEAMGRAM_POSTGRES_DSN}
 
 SearchPostsFlood:
   TotalDaily: 10

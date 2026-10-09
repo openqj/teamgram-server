@@ -42,18 +42,18 @@ func (c *MediaCore) MediaUploadPhotoFile(in *media.TLMediaUploadPhotoFile) (*mtp
 	if photo == nil {
 		return nil, mtproto.ErrInternalServerError
 	}
-
-	if err = c.svcCtx.Dao.SavePhotoSizeV2(c.ctx, photo.GetId(), photo.GetSizes()); err != nil {
-		c.Logger.Errorf("media.uploadPhotoFile - error: %v", err)
-		return nil, err
+	if photo.GetId() <= 0 {
+		return nil, mtproto.ErrInternalServerError
 	}
 
-	if err = c.svcCtx.Dao.SavePhotoV2(c.ctx,
+	if err = c.svcCtx.Dao.SavePhotoAggregateV2(c.ctx,
 		photo.GetId(),
 		photo.GetAccessHash(),
 		photo.GetHasStickers(),
 		false,
-		inputFile.GetName()); err != nil {
+		inputFile.GetName(),
+		photo.GetSizes(),
+		nil); err != nil {
 		c.Logger.Errorf("media.uploadPhotoFile - save photo: %v", err)
 		return nil, err
 	}

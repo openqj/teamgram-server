@@ -20,10 +20,9 @@ package core
 
 import (
 	"encoding/json"
-	"fmt"
 
 	"github.com/teamgram/proto/mtproto"
-	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/persist"
+	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/domain"
 )
 
 // RPCBotMenuButtonServer: Layer 229 methods previously returned ERR_ENTERPRISE_IS_BLOCKED.
@@ -33,19 +32,25 @@ func (c *ApiFullCore) BotsSetBotMenuButton(in *mtproto.TLBotsSetBotMenuButton) (
 	if err != nil {
 		return nil, err
 	}
-	var target int64
-	var button *mtproto.BotMenuButton
-	if in != nil {
-		if u := in.GetUserId(); u != nil {
-			target = u.UserId
-		}
-		button = in.GetButton()
+	if in == nil || in.GetUserId() == nil {
+		return nil, mtproto.ErrInputConstructorInvalid
 	}
+	var target int64
+	if u := in.GetUserId(); u != nil {
+		target = u.UserId
+	}
+	if target <= 0 {
+		return nil, mtproto.ErrUserIdInvalid
+	}
+	button := in.GetButton()
 	raw, err := json.Marshal(button)
 	if err != nil {
 		return nil, err
 	}
-	if err := persist.Default.Set(botMenuButtonPersistKey(ownerId, target), string(raw)); err != nil {
+	if !domain.Ready() {
+		return nil, mtproto.ErrMethodNotImpl
+	}
+	if err = domain.SetBotMenuButton(ownerId, target, raw); err != nil {
 		return nil, err
 	}
 	return mtproto.BoolTrue, nil
@@ -56,26 +61,29 @@ func (c *ApiFullCore) BotsGetBotMenuButton(in *mtproto.TLBotsGetBotMenuButton) (
 	if err != nil {
 		return nil, err
 	}
-	var target int64
-	if in != nil {
-		if u := in.GetUserId(); u != nil {
-			target = u.UserId
-		}
+	if in == nil || in.GetUserId() == nil {
+		return nil, mtproto.ErrInputConstructorInvalid
 	}
-	raw, err := persist.Default.Get(botMenuButtonPersistKey(ownerId, target))
+	var target int64
+	if u := in.GetUserId(); u != nil {
+		target = u.UserId
+	}
+	if target <= 0 {
+		return nil, mtproto.ErrUserIdInvalid
+	}
+	if !domain.Ready() {
+		return nil, mtproto.ErrMethodNotImpl
+	}
+	raw, found, err := domain.GetBotMenuButton(ownerId, target)
 	if err != nil {
 		return nil, err
 	}
-	if raw == "" || raw == "null" {
+	if !found || len(raw) == 0 || string(raw) == "null" {
 		return mtproto.MakeTLBotMenuButton(&mtproto.BotMenuButton{}).To_BotMenuButton(), nil
 	}
 	button := &mtproto.BotMenuButton{}
-	if err := json.Unmarshal([]byte(raw), button); err != nil {
+	if err := json.Unmarshal(raw, button); err != nil {
 		return nil, err
 	}
 	return button, nil
-}
-
-func botMenuButtonPersistKey(ownerId, userId int64) string {
-	return fmt.Sprintf("botmenu:%d:%d", ownerId, userId)
 }

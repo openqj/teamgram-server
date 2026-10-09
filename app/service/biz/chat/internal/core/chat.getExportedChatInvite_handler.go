@@ -22,16 +22,17 @@ func (c *ChatCore) ChatGetExportedChatInvite(in *chat.TLChatGetExportedChatInvit
 	if err != nil {
 		return nil, err
 	}
+	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.Postgres == nil ||
+		c.svcCtx.Dao.Postgres.Pool == nil || c.svcCtx.Dao.Postgres.Store == nil ||
+		c.svcCtx.Dao.Postgres.Store.Invites == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
 	var (
 		link = chat.GetInviteHashByLink(in.Link)
 	)
 
 	var chatInviteDO *dataobject.ChatInvitesDO
-	if c.svcCtx.Dao.Postgres != nil && c.svcCtx.Dao.Postgres.Store != nil {
-		chatInviteDO, err = c.svcCtx.Dao.Postgres.Store.Invites.SelectByLink(c.ctx, link)
-	} else {
-		chatInviteDO, err = c.svcCtx.Dao.ChatInvitesDAO.SelectByLink(c.ctx, link)
-	}
+	chatInviteDO, err = c.svcCtx.Dao.Postgres.Store.Invites.SelectByLink(c.ctx, link)
 	if err != nil {
 		c.Logger.Errorf("chat.getExportedChatInvite - error: %v", err)
 		return nil, err

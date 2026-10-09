@@ -11,8 +11,6 @@ import (
 	"flag"
 	"fmt"
 
-	"github.com/teamgram/marmota/pkg/stores/sqlx"
-	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/service/media/internal/config"
 	"github.com/teamgram/teamgram-server/app/service/media/internal/svc"
 
@@ -24,8 +22,7 @@ var (
 )
 
 var (
-	cacheId    = int64(1401151020526600192)
-	cacheIdKey = "document#1401151020526600192"
+	cacheId = int64(1401151020526600192)
 )
 
 func main() {
@@ -43,19 +40,10 @@ func GetCacheDocument(svcCtx *svc.ServiceContext) {
 
 	// fmt.Println(document)
 
-	var (
-		document2 *mtproto.Document
-	)
-
-	svcCtx.Dao.CachedConn.QueryRow(
-		ctx,
-		&document2,
-		cacheIdKey,
-		func(ctx context.Context, conn *sqlx.DB, v interface{}) error {
-			document := svcCtx.Dao.GetDocumentById(ctx, cacheId)
-			*v.(**mtproto.Document) = document
-			return nil
-		})
+	document2, err := svcCtx.Dao.GetDocumentById(ctx, cacheId)
+	if err != nil {
+		panic(err)
+	}
 
 	fmt.Println(document2)
 }

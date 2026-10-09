@@ -27,7 +27,7 @@ import (
 // user.getUserDataByToken token:string = UserData;
 func (c *UserCore) UserGetUserDataByToken(in *user.TLUserGetUserDataByToken) (*mtproto.UserData, error) {
 	// TODO: performance optimization
-	botId, err := c.svcCtx.Dao.BotsDAO.SelectByToken(c.ctx, in.Token)
+	botId, err := c.svcCtx.Dao.SelectBotByToken(c.ctx, in.Token)
 	if err != nil {
 		return nil, err
 	}

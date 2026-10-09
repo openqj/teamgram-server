@@ -7,6 +7,7 @@
 package service
 
 import (
+	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/interface/gnetway/gateway"
 
 	"github.com/zeromicro/go-zero/core/logx"
@@ -34,11 +35,11 @@ func (s *Service) GatewayDataStream(stream grpc.BidiStreamingServer[gateway.Gate
 		}
 
 		// delegate to existing unary handler
-		_, rpcErr := s.RPCGatewayServer.GatewaySendDataToGateway(stream.Context(), sendData)
+		reply, rpcErr := s.RPCGatewayServer.GatewaySendDataToGateway(stream.Context(), sendData)
 
 		resp := &gateway.GatewayStreamResponse{
 			RequestId: req.GetRequestId(),
-			Success:   rpcErr == nil,
+			Success:   rpcErr == nil && reply != nil && mtproto.FromBool(reply),
 		}
 		if err := stream.Send(resp); err != nil {
 			logx.Errorf("GatewayDataStream Send error: %v", err)

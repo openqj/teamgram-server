@@ -21,15 +21,14 @@ import (
 )
 
 func TestMain(m *testing.M) {
-	dsn := os.Getenv("APIFULL_MYSQL_DSN")
-	if dsn == "" {
-		// These tests exercise the legacy audit fixture. Production APIFull
-		// coverage runs against PostgreSQL probes and does not require MySQL.
-		os.Exit(0)
+	if dsn := os.Getenv("APIFULL_POSTGRES_DSN"); dsn != "" {
+		if err := UsePostgres(dsn); err != nil {
+			panic(err)
+		}
+		os.Exit(m.Run())
 	}
-	if err := UseMySQL(dsn); err != nil {
-		panic(err)
-	}
+	// Keep database-backed probes opt-in while still running pure protocol
+	// and in-memory behavior tests.
 	os.Exit(m.Run())
 }
 
@@ -58,6 +57,9 @@ func TestLayer229ConstructorsRoundTrip(t *testing.T) {
 }
 
 func TestFirebaseAndWelcome(t *testing.T) {
+	if os.Getenv("APIFULL_POSTGRES_DSN") == "" {
+		t.Skip("database-backed Layer 229 probe requires APIFULL_POSTGRES_DSN")
+	}
 	md := &metadata.RpcMetadata{PermAuthKeyId: 77, UserId: 77}
 	intent, ok, err := Dispatch(nil, md, &mtproto.TLAuthInitFirebasePnvLogin{ApiId: 6, ApiHash: "abc"})
 	if err != nil || !ok {

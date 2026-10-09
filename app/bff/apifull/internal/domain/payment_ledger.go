@@ -70,7 +70,7 @@ type PremiumGrant struct {
 }
 
 // LockPaymentRequest serializes provider calls for one idempotency key across
-// APIFull instances. MySQL releases the named lock when its connection closes.
+// APIFull instances. Rolling back its transaction releases the advisory lock.
 func LockPaymentRequest(ctx context.Context, userID int64, requestKey string, wait time.Duration) (func(), error) {
 	if db == nil {
 		return nil, errors.New("domain PostgreSQL is not open")
@@ -81,35 +81,16 @@ func LockPaymentRequest(ctx context.Context, userID int64, requestKey string, wa
 	if wait <= 0 {
 		wait = 5 * time.Second
 	}
-	seconds := int(wait / time.Second)
-	if wait%time.Second != 0 {
-		seconds++
-	}
-	if seconds < 1 {
-		seconds = 1
-	}
 	keyHash := sha256.Sum256([]byte(strconv.FormatInt(userID, 10) + "\x00" + requestKey))
 	lockName := "apifull_payment:" + hex.EncodeToString(keyHash[:24])
-	conn, err := db.Conn(ctx)
+	release, acquired, err := lockPostgresTransaction(ctx, lockName, wait)
 	if err != nil {
 		return nil, err
 	}
-	var acquired sql.NullInt64
-	if err = conn.QueryRowContext(ctx, `SELECT GET_LOCK(?, ?)`, lockName, seconds).Scan(&acquired); err != nil {
-		_ = conn.Close()
-		return nil, err
-	}
-	if !acquired.Valid || acquired.Int64 != 1 {
-		_ = conn.Close()
+	if !acquired {
 		return nil, ErrPaymentRequestBusy
 	}
-	return func() {
-		releaseCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		var released sql.NullInt64
-		_ = conn.QueryRowContext(releaseCtx, `SELECT RELEASE_LOCK(?)`, lockName).Scan(&released)
-		_ = conn.Close()
-	}, nil
+	return release, nil
 }
 
 func BeginPaymentRequest(userID int64, requestKey, provider, fingerprint, currency string, amount, peerID int64, msgID int32) (PaymentRequest, error) {
@@ -126,9 +107,10 @@ func BeginPaymentRequest(userID int64, requestKey, provider, fingerprint, curren
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	result, err := tx.Exec(`INSERT IGNORE INTO apifull_payment_request
+	result, err := tx.Exec(`INSERT INTO apifull_payment_request
 		(user_id, request_key, provider, fingerprint, state, currency, amount, peer_id, msg_id, created_at, updated_at)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?)`, userID, requestKey, provider, fingerprint, PaymentStatePending, currency, amount, peerID, msgID, now, now)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+		ON CONFLICT (user_id, request_key) DO NOTHING`, userID, requestKey, provider, fingerprint, PaymentStatePending, currency, amount, peerID, msgID, now, now)
 	if err != nil {
 		return PaymentRequest{}, err
 	}
@@ -151,7 +133,7 @@ func BeginPaymentRequest(userID int64, requestKey, provider, fingerprint, curren
 	}
 	if _, err = tx.Exec(`INSERT INTO apifull_payment_ledger
 		(request_id, user_id, state, provider, currency, amount, created_at)
-		VALUES (?,?,?,?,?,?,?)`, request.ID, userID, PaymentStatePending, provider, currency, amount, now); err != nil {
+		VALUES ($1,$2,$3,$4,$5,$6,$7)`, request.ID, userID, PaymentStatePending, provider, currency, amount, now); err != nil {
 		return PaymentRequest{}, err
 	}
 	if err = tx.Commit(); err != nil {
@@ -192,12 +174,12 @@ func RejectPaymentRequest(userID int64, requestKey, fingerprint, reason string) 
 		return PaymentRequest{}, ErrPaymentRequestState
 	}
 	now := time.Now().Unix()
-	if _, err = tx.Exec(`UPDATE apifull_payment_request SET state=?, error_text=?, updated_at=? WHERE id=?`, PaymentStateRejected, reason, now, request.ID); err != nil {
+	if _, err = tx.Exec(`UPDATE apifull_payment_request SET state=$1, error_text=$2, updated_at=$3 WHERE id=$4`, PaymentStateRejected, reason, now, request.ID); err != nil {
 		return PaymentRequest{}, err
 	}
 	if _, err = tx.Exec(`INSERT INTO apifull_payment_ledger
 		(request_id, user_id, state, provider, transaction_id, currency, amount, created_at)
-		VALUES (?,?,?,?,?,?,?,?)`, request.ID, request.UserID, PaymentStateRejected, request.Provider, request.TransactionID, request.Currency, request.Amount, now); err != nil {
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`, request.ID, request.UserID, PaymentStateRejected, request.Provider, request.TransactionID, request.Currency, request.Amount, now); err != nil {
 		return PaymentRequest{}, err
 	}
 	request.State, request.ErrorText, request.UpdatedAt = PaymentStateRejected, reason, now
@@ -286,35 +268,26 @@ func settlePaymentRequest(userID int64, requestKey, fingerprint, transactionID, 
 	}
 	now := time.Now().Unix()
 	hash := sha256.Sum256(receipt)
-	if _, err = tx.Exec(`INSERT INTO apifull_payment_receipt
+	result, err := tx.Exec(`INSERT INTO apifull_payment_receipt
 		(request_id, user_id, provider, transaction_id, currency, amount, peer_id, msg_id, title, receipt, created_at)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?)`, request.ID, request.UserID, request.Provider, transactionID, currency, amount, peerID, msgID, title, receipt, now); err != nil {
-		if !isDuplicateKey(err) {
-			return PaymentRequest{}, PaymentReceipt{}, err
-		}
-		receiptRow, receiptErr := loadPaymentReceiptTx(tx, request.ID)
-		if receiptErr == nil && receiptRow.TransactionID == transactionID && equalHash(receiptRow.Receipt, receipt) {
-			if stars > 0 {
-				if err = insertStarsGrantTx(tx, userID, request.Provider, transactionID, stars); err != nil {
-					return PaymentRequest{}, PaymentReceipt{}, err
-				}
-			}
-			if err = tx.Commit(); err != nil {
-				return PaymentRequest{}, PaymentReceipt{}, err
-			}
-			return request, receiptRow, nil
-		}
-		if receiptErr != nil && receiptErr != sql.ErrNoRows {
-			return PaymentRequest{}, PaymentReceipt{}, receiptErr
-		}
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+		ON CONFLICT DO NOTHING`, request.ID, request.UserID, request.Provider, transactionID, currency, amount, peerID, msgID, title, receipt, now)
+	if err != nil {
+		return PaymentRequest{}, PaymentReceipt{}, err
+	}
+	inserted, err := result.RowsAffected()
+	if err != nil {
+		return PaymentRequest{}, PaymentReceipt{}, err
+	}
+	if inserted == 0 {
 		return PaymentRequest{}, PaymentReceipt{}, ErrPaymentTransactionConflict
 	}
-	if _, err = tx.Exec(`UPDATE apifull_payment_request SET state=?, transaction_id=?, updated_at=? WHERE id=?`, PaymentStateSettled, transactionID, now, request.ID); err != nil {
+	if _, err = tx.Exec(`UPDATE apifull_payment_request SET state=$1, transaction_id=$2, updated_at=$3 WHERE id=$4`, PaymentStateSettled, transactionID, now, request.ID); err != nil {
 		return PaymentRequest{}, PaymentReceipt{}, err
 	}
 	if _, err = tx.Exec(`INSERT INTO apifull_payment_ledger
 		(request_id, user_id, state, provider, transaction_id, currency, amount, receipt_hash, created_at)
-		VALUES (?,?,?,?,?,?,?,?,?)`, request.ID, request.UserID, PaymentStateSettled, request.Provider, transactionID, currency, amount, hex.EncodeToString(hash[:]), now); err != nil {
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`, request.ID, request.UserID, PaymentStateSettled, request.Provider, transactionID, currency, amount, hex.EncodeToString(hash[:]), now); err != nil {
 		return PaymentRequest{}, PaymentReceipt{}, err
 	}
 	if premiumMonths > 0 {
@@ -341,41 +314,7 @@ func insertStarsGrantTx(tx *sql.Tx, userID int64, provider, transactionID string
 	}
 	digest := sha256.Sum256([]byte(provider + "\x00" + transactionID))
 	idem := "payment:" + hex.EncodeToString(digest[:])
-	var existing int64
-	err := tx.QueryRow(`SELECT amount FROM apifull_star_tx WHERE user_id=? AND idem=? FOR UPDATE`, userID, idem).Scan(&existing)
-	if err == nil {
-		if existing != stars {
-			return ErrStarsIdempotencyConflict
-		}
-		return nil
-	}
-	if err != sql.ErrNoRows {
-		return err
-	}
-	if _, err = tx.Exec(`INSERT INTO apifull_stars (user_id, balance) VALUES (?,0)
-		ON DUPLICATE KEY UPDATE user_id=VALUES(user_id)`, userID); err != nil {
-		return err
-	}
-	balance, err := balanceForUpdate(tx, userID)
-	if err != nil {
-		return err
-	}
-	if err = validateStarsDelta(balance, stars); err != nil {
-		return err
-	}
-	if _, err = tx.Exec(`INSERT INTO apifull_star_tx (user_id, amount, idem) VALUES (?,?,?)`, userID, stars, idem); err != nil {
-		if isDuplicateKey(err) {
-			if readErr := tx.QueryRow(`SELECT amount FROM apifull_star_tx WHERE user_id=? AND idem=? FOR UPDATE`, userID, idem).Scan(&existing); readErr != nil {
-				return readErr
-			}
-			if existing == stars {
-				return nil
-			}
-			return ErrStarsIdempotencyConflict
-		}
-		return err
-	}
-	_, err = tx.Exec(`UPDATE apifull_stars SET balance=balance+? WHERE user_id=?`, stars, userID)
+	_, err := applyStarsTx(tx, userID, stars, idem)
 	return err
 }
 
@@ -386,16 +325,35 @@ func EnsurePremiumGrant(requestID, userID int64, provider, transactionID string,
 	if requestID <= 0 || userID <= 0 || strings.TrimSpace(provider) == "" || len(provider) > 32 || strings.TrimSpace(transactionID) == "" || len(transactionID) > 191 || months < 1 || months > 36 {
 		return ErrInvalidPaymentRequest
 	}
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err = insertPremiumGrantTx(tx, requestID, userID, provider, transactionID, months); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func insertPremiumGrantTx(tx *sql.Tx, requestID, userID int64, provider, transactionID string, months int32) error {
+	if requestID <= 0 || userID <= 0 || strings.TrimSpace(provider) == "" || len(provider) > 32 || strings.TrimSpace(transactionID) == "" || len(transactionID) > 191 || months < 1 || months > 36 {
+		return ErrInvalidPaymentRequest
+	}
 	now := time.Now().Unix()
-	_, err := db.Exec(`INSERT IGNORE INTO apifull_payment_entitlement_outbox
+	_, err := tx.Exec(`INSERT INTO apifull_payment_entitlement_outbox
 		(request_id, user_id, provider, transaction_id, months, state, attempts, next_attempt_at, created_at, updated_at)
-		VALUES (?,?,?,?,?,'pending',0,?,?,?)`, requestID, userID, provider, transactionID, months, now, now, now)
+		VALUES ($1,$2,$3,$4,$5,'pending',0,$6,$6,$6)
+		ON CONFLICT DO NOTHING`, requestID, userID, provider, transactionID, months, now)
 	if err != nil {
 		return err
 	}
 	var existing PremiumGrant
-	err = db.QueryRow(`SELECT request_id, user_id, provider, transaction_id, months FROM apifull_payment_entitlement_outbox WHERE request_id=?`, requestID).
+	err = tx.QueryRow(`SELECT request_id, user_id, provider, transaction_id, months FROM apifull_payment_entitlement_outbox WHERE request_id=$1 FOR UPDATE`, requestID).
 		Scan(&existing.RequestID, &existing.UserID, &existing.Provider, &existing.TransactionID, &existing.Months)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrPaymentTransactionConflict
+	}
 	if err != nil {
 		return err
 	}
@@ -405,48 +363,11 @@ func EnsurePremiumGrant(requestID, userID int64, provider, transactionID string,
 	return nil
 }
 
-func insertPremiumGrantTx(tx *sql.Tx, requestID, userID int64, provider, transactionID string, months int32) error {
-	if requestID <= 0 || userID <= 0 || strings.TrimSpace(provider) == "" || len(provider) > 32 || strings.TrimSpace(transactionID) == "" || len(transactionID) > 191 || months < 1 || months > 36 {
-		return ErrInvalidPaymentRequest
-	}
-	_, err := tx.Exec(`INSERT INTO apifull_payment_entitlement_outbox
-		(request_id, user_id, provider, transaction_id, months, state, attempts, next_attempt_at, created_at, updated_at)
-		VALUES (?,?,?,?,?,'pending',0,?,?,?)`, requestID, userID, provider, transactionID, months, time.Now().Unix(), time.Now().Unix(), time.Now().Unix())
-	if err != nil && isDuplicateKey(err) {
-		var existing PremiumGrant
-		err = tx.QueryRow(`SELECT request_id, user_id, provider, transaction_id, months FROM apifull_payment_entitlement_outbox WHERE request_id=? FOR UPDATE`, requestID).
-			Scan(&existing.RequestID, &existing.UserID, &existing.Provider, &existing.TransactionID, &existing.Months)
-		if err == nil && (existing.UserID != userID || existing.Provider != provider || existing.TransactionID != transactionID || existing.Months != months) {
-			return ErrPaymentTransactionConflict
-		}
-	}
-	return err
-}
-
 func LockPremiumGrantReconciler(ctx context.Context) (func(), bool, error) {
 	if db == nil {
 		return nil, false, errors.New("domain PostgreSQL is not open")
 	}
-	conn, err := db.Conn(ctx)
-	if err != nil {
-		return nil, false, err
-	}
-	var acquired sql.NullInt64
-	if err = conn.QueryRowContext(ctx, `SELECT GET_LOCK('apifull_premium_grant_reconciler', 0)`).Scan(&acquired); err != nil {
-		_ = conn.Close()
-		return nil, false, err
-	}
-	if !acquired.Valid || acquired.Int64 != 1 {
-		_ = conn.Close()
-		return nil, false, nil
-	}
-	return func() {
-		releaseCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		var released sql.NullInt64
-		_ = conn.QueryRowContext(releaseCtx, `SELECT RELEASE_LOCK('apifull_premium_grant_reconciler')`).Scan(&released)
-		_ = conn.Close()
-	}, true, nil
+	return lockPostgresTransaction(ctx, "apifull_premium_grant_reconciler", 0)
 }
 
 func CheckPremiumGrantOutbox(ctx context.Context) error {
@@ -468,8 +389,8 @@ func ListDuePremiumGrants(ctx context.Context, limit int) ([]PremiumGrant, error
 		limit = 100
 	}
 	rows, err := db.QueryContext(ctx, `SELECT request_id, user_id, provider, transaction_id, months
-		FROM apifull_payment_entitlement_outbox WHERE state='pending' AND next_attempt_at<=?
-		ORDER BY created_at, request_id LIMIT ?`, time.Now().Unix(), limit)
+		FROM apifull_payment_entitlement_outbox WHERE state='pending' AND next_attempt_at<=$1
+		ORDER BY created_at, request_id LIMIT $2`, time.Now().Unix(), limit)
 	if err != nil {
 		return nil, err
 	}
@@ -489,8 +410,15 @@ func CompletePremiumGrant(ctx context.Context, requestID int64) error {
 	if db == nil {
 		return errors.New("domain PostgreSQL is not open")
 	}
-	_, err := db.ExecContext(ctx, `UPDATE apifull_payment_entitlement_outbox SET state='complete', last_error='', updated_at=? WHERE request_id=?`, time.Now().Unix(), requestID)
-	return err
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err = tx.ExecContext(ctx, `UPDATE apifull_payment_entitlement_outbox SET state='complete', last_error='', updated_at=$1 WHERE request_id=$2`, time.Now().Unix(), requestID); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func RetryPremiumGrant(ctx context.Context, requestID int64, cause error) error {
@@ -507,12 +435,19 @@ func RetryPremiumGrant(ctx context.Context, requestID int64, cause error) error 
 	if len(message) > 255 {
 		message = message[:255]
 	}
-	_, err := db.ExecContext(ctx, `UPDATE apifull_payment_entitlement_outbox
-		SET next_attempt_at=UNIX_TIMESTAMP()+LEAST(900, CAST(POW(2, LEAST(attempts+1, 10)) AS UNSIGNED)),
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err = tx.ExecContext(ctx, `UPDATE apifull_payment_entitlement_outbox
+		SET next_attempt_at=$1+LEAST(900::bigint, power(2::numeric, LEAST(attempts+1, 10))::bigint),
 			attempts=attempts+1,
-			last_error=?, updated_at=UNIX_TIMESTAMP()
-		WHERE request_id=? AND state='pending'`, message, requestID)
-	return err
+			last_error=$2, updated_at=$1
+		WHERE request_id=$3 AND state='pending'`, time.Now().Unix(), message, requestID); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func LoadPaymentRequest(userID int64, requestKey string) (PaymentRequest, bool, error) {
@@ -556,7 +491,7 @@ func LoadPaymentReceiptByMessage(userID, peerID int64, msgID int32) (PaymentRece
 	}
 	var row PaymentReceipt
 	err := db.QueryRow(`SELECT request_id, user_id, provider, transaction_id, currency, amount, peer_id, msg_id, title, receipt, created_at
-		FROM apifull_payment_receipt WHERE user_id=? AND peer_id=? AND msg_id=?`, userID, peerID, msgID).
+		FROM apifull_payment_receipt WHERE user_id=$1 AND peer_id=$2 AND msg_id=$3`, userID, peerID, msgID).
 		Scan(&row.RequestID, &row.UserID, &row.Provider, &row.TransactionID, &row.Currency, &row.Amount, &row.PeerID, &row.MsgID, &row.Title, &row.Receipt, &row.CreatedAt)
 	if err == sql.ErrNoRows {
 		return PaymentReceipt{}, false, nil
@@ -570,7 +505,7 @@ func LoadPaymentReceiptByMessage(userID, peerID int64, msgID int32) (PaymentRece
 func loadPaymentRequestTx(q interface {
 	QueryRow(query string, args ...any) *sql.Row
 }, userID int64, requestKey string, lock bool) (PaymentRequest, error) {
-	query := `SELECT id, user_id, request_key, provider, fingerprint, state, transaction_id, currency, amount, peer_id, msg_id, error_text, created_at, updated_at FROM apifull_payment_request WHERE user_id=? AND request_key=?`
+	query := `SELECT id, user_id, request_key, provider, RTRIM(fingerprint), state, transaction_id, currency, amount, peer_id, msg_id, error_text, created_at, updated_at FROM apifull_payment_request WHERE user_id=$1 AND request_key=$2`
 	if lock {
 		query += ` FOR UPDATE`
 	}
@@ -584,7 +519,7 @@ func loadPaymentReceiptTx(q interface {
 }, requestID int64) (PaymentReceipt, error) {
 	var row PaymentReceipt
 	err := q.QueryRow(`SELECT request_id, user_id, provider, transaction_id, currency, amount, peer_id, msg_id, title, receipt, created_at
-		FROM apifull_payment_receipt WHERE request_id=?`, requestID).
+		FROM apifull_payment_receipt WHERE request_id=$1`, requestID).
 		Scan(&row.RequestID, &row.UserID, &row.Provider, &row.TransactionID, &row.Currency, &row.Amount, &row.PeerID, &row.MsgID, &row.Title, &row.Receipt, &row.CreatedAt)
 	return row, err
 }

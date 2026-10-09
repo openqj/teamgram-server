@@ -50,27 +50,18 @@ func (c *UserChannelProfilesCore) UsersGetSavedMusicByID(in *mtproto.TLUsersGetS
 	}
 
 	if targetID != c.MD.UserId {
-		privacy, err := c.svcCtx.Dao.UserClient.UserGetPrivacy(c.ctx, &user.TLUserGetPrivacy{
+		allowed, err := c.svcCtx.Dao.UserClient.UserCheckPrivacy(c.ctx, &user.TLUserCheckPrivacy{
 			UserId:  targetID,
 			KeyType: mtproto.SAVED_MUSIC,
+			PeerId:  c.MD.UserId,
 		})
 		if err != nil {
 			return nil, err
 		}
-		if privacy == nil {
-			return nil, mtproto.ErrUserPrivacyRestricted
+		if allowed == nil {
+			return nil, mtproto.ErrInternalServerError
 		}
-		var viewer *mtproto.ImmutableUser
-		if savedMusicPrivacyNeedsViewerData(privacy.GetDatas()) {
-			viewer, err = c.svcCtx.Dao.UserClient.UserGetImmutableUser(c.ctx, &user.TLUserGetImmutableUser{Id: c.MD.UserId})
-			if err != nil {
-				return nil, err
-			}
-			if viewer == nil || viewer.GetUser() == nil || viewer.GetUser().GetId() != c.MD.UserId {
-				return nil, mtproto.ErrUserPrivacyRestricted
-			}
-		}
-		if !savedMusicPrivacyAllows(privacy.GetDatas(), c.MD.UserId, target, viewer) {
+		if !mtproto.FromBool(allowed) {
 			return nil, mtproto.ErrUserPrivacyRestricted
 		}
 	}
@@ -162,105 +153,4 @@ func savedMusicTarget(selfID int64, input *mtproto.InputUser) (int64, int64, boo
 	default:
 		return 0, 0, false, mtproto.ErrUserIdInvalid
 	}
-}
-
-func savedMusicPrivacyNeedsViewerData(rules []*mtproto.PrivacyRule) bool {
-	for _, rule := range rules {
-		if rule != nil && (rule.GetPredicateName() == mtproto.Predicate_privacyValueAllowPremium ||
-			rule.GetPredicateName() == mtproto.Predicate_privacyValueAllowBots ||
-			rule.GetPredicateName() == mtproto.Predicate_privacyValueDisallowBots) {
-			return true
-		}
-	}
-	return false
-}
-
-func savedMusicPrivacyAllows(rules []*mtproto.PrivacyRule, viewerID int64, target, viewer *mtproto.ImmutableUser) bool {
-	base := ""
-	for _, rule := range rules {
-		if rule == nil {
-			return false
-		}
-		switch rule.GetPredicateName() {
-		case mtproto.Predicate_privacyValueAllowAll, mtproto.Predicate_privacyValueAllowContacts, mtproto.Predicate_privacyValueDisallowAll:
-			if base != "" {
-				return false
-			}
-			base = rule.GetPredicateName()
-		case mtproto.Predicate_privacyValueAllowUsers,
-			mtproto.Predicate_privacyValueDisallowUsers,
-			mtproto.Predicate_privacyValueDisallowContacts,
-			mtproto.Predicate_privacyValueAllowCloseFriends,
-			mtproto.Predicate_privacyValueAllowPremium,
-			mtproto.Predicate_privacyValueAllowBots,
-			mtproto.Predicate_privacyValueDisallowBots:
-		case mtproto.Predicate_privacyValueAllowChatParticipants, mtproto.Predicate_privacyValueDisallowChatParticipants:
-			return false
-		default:
-			return false
-		}
-	}
-	if base == "" {
-		return false
-	}
-
-	isContact := false
-	isCloseFriend := false
-	for _, contact := range target.GetContacts() {
-		if contact != nil && contact.GetContactUserId() == viewerID {
-			isContact = true
-			isCloseFriend = contact.GetCloseFriend()
-			break
-		}
-	}
-
-	viewerIsBot := viewer != nil && viewer.GetUser() != nil && viewer.GetUser().GetUserType() == user.UserTypeBot
-	viewerIsPremium := viewer != nil && viewer.GetUser() != nil && viewer.GetUser().GetPremium()
-
-	allowed := false
-	switch base {
-	case mtproto.Predicate_privacyValueAllowAll:
-		allowed = true
-	case mtproto.Predicate_privacyValueAllowContacts:
-		allowed = isContact
-	case mtproto.Predicate_privacyValueDisallowAll:
-		allowed = false
-	}
-	for _, rule := range rules {
-		switch rule.GetPredicateName() {
-		case mtproto.Predicate_privacyValueAllowUsers:
-			for _, id := range rule.GetUsers() {
-				if id == viewerID {
-					allowed = true
-				}
-			}
-		case mtproto.Predicate_privacyValueDisallowUsers:
-			for _, id := range rule.GetUsers() {
-				if id == viewerID {
-					return false
-				}
-			}
-		case mtproto.Predicate_privacyValueDisallowContacts:
-			if isContact {
-				return false
-			}
-		case mtproto.Predicate_privacyValueAllowCloseFriends:
-			if isCloseFriend {
-				allowed = true
-			}
-		case mtproto.Predicate_privacyValueAllowPremium:
-			if viewerIsPremium {
-				allowed = true
-			}
-		case mtproto.Predicate_privacyValueAllowBots:
-			if viewerIsBot {
-				allowed = true
-			}
-		case mtproto.Predicate_privacyValueDisallowBots:
-			if viewerIsBot {
-				return false
-			}
-		}
-	}
-	return allowed
 }

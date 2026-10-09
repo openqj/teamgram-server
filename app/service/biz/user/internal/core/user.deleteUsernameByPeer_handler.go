@@ -26,7 +26,7 @@ import (
 // UserDeleteUsernameByPeer
 // user.deleteUsernameByPeer peer_type:int peer_id:long = Bool;
 func (c *UserCore) UserDeleteUsernameByPeer(in *user.TLUserDeleteUsernameByPeer) (*mtproto.Bool, error) {
-	_, err := c.svcCtx.Dao.UsernameDAO.Delete2(c.ctx, in.PeerType, in.PeerId)
+	_, err := c.svcCtx.Dao.DeleteUsernameByPeer(c.ctx, in.PeerType, in.PeerId)
 	if err != nil {
 		c.Logger.Errorf("username.deleteUsernameByPeer - error: %v")
 		return nil, err

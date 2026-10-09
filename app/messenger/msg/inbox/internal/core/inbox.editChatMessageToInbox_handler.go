@@ -22,13 +22,27 @@ import (
 // InboxEditChatMessageToInbox
 // inbox.editChatMessageToInbox from_id:long peer_chat_id:long message:Message = Void;
 func (c *InboxCore) InboxEditChatMessageToInbox(in *inbox.TLInboxEditChatMessageToInbox) (*mtproto.Void, error) {
+	if in == nil || in.Message == nil || in.FromId <= 0 || in.PeerChatId <= 0 {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if c.svcCtx.ChatClient == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
 	chatUserIdList, err := c.svcCtx.ChatClient.ChatGetChatParticipantIdList(c.ctx, &chatpb.TLChatGetChatParticipantIdList{
 		ChatId: in.PeerChatId,
 	})
 	if err != nil {
 		c.Logger.Errorf("inbox.editChatMessageToInbox - error: %v", err)
 		return nil, err
+	} else if chatUserIdList == nil {
+		return nil, mtproto.ErrInternalServerError
 	} else if len(chatUserIdList.Datas) == 0 {
+		return mtproto.EmptyVoid, nil
+	}
+	if c.svcCtx.Dao.Postgres != nil {
+		if err := c.editLegacyInboxMessages(in.FromId, mtproto.PEER_CHAT, in.PeerChatId, chatUserIdList.GetDatas(), in.Message); err != nil {
+			return nil, err
+		}
 		return mtproto.EmptyVoid, nil
 	}
 

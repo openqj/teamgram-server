@@ -14,38 +14,40 @@ import (
 
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/service/biz/dialog/dialog"
-	"github.com/teamgram/teamgram-server/app/service/biz/dialog/internal/dal/dataobject"
 )
 
 // DialogEditPeerFolders
 // dialog.editPeerFolders user_id:long peer_dialog_list:Vector<long> folder_id:int = Vector<DialogPinnedExt>;
 func (c *DialogCore) DialogEditPeerFolders(in *dialog.TLDialogEditPeerFolders) (*dialog.Vector_DialogPinnedExt, error) {
+	store, err := c.pgStore()
+	if err != nil || store.Dialogs == nil {
+		return nil, mtproto.ErrMethodNotImpl
+	}
 	var (
 		dialogPinnedList dialog.DialogPinnedExtList
 	)
 
-	_, err := c.svcCtx.Dao.DialogsDAO.SelectPeerDialogListWithCB(c.ctx,
-		in.UserId,
-		in.PeerDialogList,
-		func(sz, i int, v *dataobject.DialogsDO) {
-			if in.FolderId == 0 {
-				if v.Pinned > 0 {
-					dialogPinnedList = append(dialogPinnedList, &dialog.DialogPinnedExt{
-						Order:    v.Pinned,
-						PeerType: v.PeerType,
-						PeerId:   v.PeerId,
-					})
-				}
-			} else {
-				if v.FolderPinned > 0 {
-					dialogPinnedList = append(dialogPinnedList, &dialog.DialogPinnedExt{
-						Order:    v.FolderPinned,
-						PeerType: v.PeerType,
-						PeerId:   v.PeerId,
-					})
-				}
+	rows, err := store.Dialogs.SelectPeerDialogList(c.ctx, in.UserId, in.PeerDialogList)
+	for i := range rows {
+		v := &rows[i]
+		if in.FolderId == 0 {
+			if v.Pinned > 0 {
+				dialogPinnedList = append(dialogPinnedList, &dialog.DialogPinnedExt{
+					Order:    v.Pinned,
+					PeerType: v.PeerType,
+					PeerId:   v.PeerId,
+				})
 			}
-		})
+		} else {
+			if v.FolderPinned > 0 {
+				dialogPinnedList = append(dialogPinnedList, &dialog.DialogPinnedExt{
+					Order:    v.FolderPinned,
+					PeerType: v.PeerType,
+					PeerId:   v.PeerId,
+				})
+			}
+		}
+	}
 	if err != nil {
 		c.Logger.Errorf("dialog.editPeerFolders - select peers error: %v", err)
 		return nil, err
@@ -53,26 +55,28 @@ func (c *DialogCore) DialogEditPeerFolders(in *dialog.TLDialogEditPeerFolders) (
 
 	if len(dialogPinnedList) > 0 {
 		if in.FolderId == 0 {
-			_, err = c.svcCtx.Dao.DialogsDAO.SelectPinnedDialogsWithCB(c.ctx,
-				in.UserId,
-				func(sz, i int, v *dataobject.DialogsDO) {
-					dialogPinnedList = append(dialogPinnedList, &dialog.DialogPinnedExt{
-						Order:    v.FolderPinned,
-						PeerType: v.PeerType,
-						PeerId:   v.PeerId,
-					})
+			pinnedRows, e := store.Dialogs.SelectPinnedDialogs(c.ctx, in.UserId)
+			err = e
+			for i := range pinnedRows {
+				v := &pinnedRows[i]
+				dialogPinnedList = append(dialogPinnedList, &dialog.DialogPinnedExt{
+					Order:    v.FolderPinned,
+					PeerType: v.PeerType,
+					PeerId:   v.PeerId,
 				})
+			}
 		} else {
-			_, err = c.svcCtx.Dao.DialogsDAO.SelectFolderPinnedDialogsWithCB(c.ctx,
-				in.UserId,
-				in.FolderId,
-				func(sz, i int, v *dataobject.DialogsDO) {
-					dialogPinnedList = append(dialogPinnedList, &dialog.DialogPinnedExt{
-						Order:    v.FolderPinned,
-						PeerType: v.PeerType,
-						PeerId:   v.PeerId,
-					})
+			pinnedRows, e := store.Dialogs.SelectFolderPinnedDialogsWithCB(c.ctx,
+				in.UserId, in.FolderId, nil)
+			err = e
+			for i := range pinnedRows {
+				v := &pinnedRows[i]
+				dialogPinnedList = append(dialogPinnedList, &dialog.DialogPinnedExt{
+					Order:    v.FolderPinned,
+					PeerType: v.PeerType,
+					PeerId:   v.PeerId,
 				})
+			}
 		}
 		if err != nil {
 			c.Logger.Errorf("dialog.editPeerFolders - select pinned peers error: %v", err)
@@ -84,7 +88,7 @@ func (c *DialogCore) DialogEditPeerFolders(in *dialog.TLDialogEditPeerFolders) (
 	sort.Sort(sd)
 
 	// update
-	if _, err = c.svcCtx.Dao.DialogsDAO.UpdatePeerDialogListFolderId(c.ctx, in.FolderId, in.UserId, in.PeerDialogList); err != nil {
+	if _, err = store.Dialogs.UpdatePeerDialogListFolderId(c.ctx, in.FolderId, in.UserId, in.PeerDialogList); err != nil {
 		c.Logger.Errorf("dialog.editPeerFolders - update folder error: %v", err)
 		return nil, err
 	}
@@ -98,7 +102,7 @@ func (c *DialogCore) DialogEditPeerFolders(in *dialog.TLDialogEditPeerFolders) (
 			}
 
 			//
-			if _, err = c.svcCtx.Dao.DialogsDAO.UpdatePeerDialogListPinned(c.ctx, 0, in.UserId, unpinnedList); err != nil {
+			if _, err = store.Dialogs.UpdatePeerDialogListPinned(c.ctx, 0, in.UserId, unpinnedList); err != nil {
 				c.Logger.Errorf("dialog.editPeerFolders - unpin peers error: %v", err)
 				return nil, err
 			}

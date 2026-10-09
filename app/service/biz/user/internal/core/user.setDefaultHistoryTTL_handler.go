@@ -19,6 +19,7 @@
 package core
 
 import (
+	"github.com/jackc/pgx/v5"
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/service/biz/user/internal/dal/dataobject"
 	"github.com/teamgram/teamgram-server/app/service/biz/user/user"
@@ -27,9 +28,13 @@ import (
 // UserSetDefaultHistoryTTL
 // user.setDefaultHistoryTTL user_id:long ttl:int = Bool;
 func (c *UserCore) UserSetDefaultHistoryTTL(in *user.TLUserSetDefaultHistoryTTL) (*mtproto.Bool, error) {
-	if _, _, err := c.svcCtx.Dao.DefaultHistoryTtlDAO.InsertOrUpdate(c.ctx, &dataobject.DefaultHistoryTtlDO{
-		UserId: in.GetUserId(),
-		Period: in.GetTtl(),
+	if err := c.requirePostgres(); err != nil {
+		return nil, err
+	}
+	value := &dataobject.DefaultHistoryTtlDO{UserId: in.GetUserId(), Period: in.GetTtl()}
+	if err := c.svcCtx.Dao.Postgres.InTx(c.ctx, func(tx pgx.Tx) error {
+		_, _, err := c.svcCtx.Dao.Postgres.Store.HistoryTTL.InsertOrUpdateTx(c.ctx, tx, value)
+		return err
 	}); err != nil {
 		c.Logger.Errorf("user.setDefaultHistoryTTL - error: %v", err)
 		return nil, err

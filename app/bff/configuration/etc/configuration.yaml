@@ -1,2 +1,3 @@
 Name: bff.configuration
 ListenOn: 0.0.0.0:21220
+PostgresDSN: ${TEAMGRAM_POSTGRES_DSN}

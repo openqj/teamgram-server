@@ -26,7 +26,16 @@ import (
 // AccountSetMainProfileTab
 // account.setMainProfileTab#5dee78b0 tab:ProfileTab = Bool;
 func (c *UserChannelProfilesCore) AccountSetMainProfileTab(in *mtproto.TLAccountSetMainProfileTab) (*mtproto.Bool, error) {
-	_, err := c.svcCtx.Dao.UserClient.UserSetMainProfileTab(c.ctx, &user.TLUserSetMainProfileTab{
+	if c == nil || c.MD == nil || c.MD.UserId <= 0 {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
+	if in == nil || in.GetTab() == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.UserClient == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
+	rV, err := c.svcCtx.Dao.UserClient.UserSetMainProfileTab(c.ctx, &user.TLUserSetMainProfileTab{
 		UserId: c.MD.UserId,
 		Tab:    in.GetTab(),
 	})
@@ -34,6 +43,9 @@ func (c *UserChannelProfilesCore) AccountSetMainProfileTab(in *mtproto.TLAccount
 		c.Logger.Errorf("account.setMainProfileTab - error: %v", err)
 		return nil, err
 	}
+	if rV == nil || (rV.GetPredicateName() != mtproto.Predicate_boolTrue && rV.GetPredicateName() != mtproto.Predicate_boolFalse) {
+		return nil, mtproto.ErrInternalServerError
+	}
 
-	return mtproto.BoolTrue, nil
+	return rV, nil
 }

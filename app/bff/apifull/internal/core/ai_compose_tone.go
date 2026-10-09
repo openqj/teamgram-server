@@ -15,11 +15,9 @@
 //
 // Author: teamgramio (teamgram.io@gmail.com)
 //
-
 package core
 
 import (
-	"encoding/json"
 	"fmt"
 	"hash/fnv"
 
@@ -27,8 +25,6 @@ import (
 	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/persist"
 	"google.golang.org/protobuf/types/known/wrapperspb"
 )
-
-// RPCAiComposeToneServer: Layer 229 methods previously returned ERR_ENTERPRISE_IS_BLOCKED.
 
 type storedAiTone struct {
 	ID            int64  `json:"id"`
@@ -43,34 +39,42 @@ type storedAiTone struct {
 	DisplayAuthor bool   `json:"display_author,omitempty"`
 }
 
-func aiToneKey(uid int64) string {
-	return fmt.Sprintf("b5:%d:", uid)
-}
-
 func loadAiTones(uid int64) ([]storedAiTone, error) {
-	raw, err := persist.Default.Get(aiToneKey(uid))
-	if err != nil || raw == "" {
+	tones, err := persist.LoadAITones(uid)
+	if err != nil {
 		return nil, err
 	}
-	if raw[0] != '[' && raw[0] != '{' {
-		return []storedAiTone{{ID: 1, Title: raw, Creator: true, AccessHash: 1}}, nil
-	}
-	var tones []storedAiTone
-	if err = json.Unmarshal([]byte(raw), &tones); err != nil {
-		return []storedAiTone{{ID: 1, Title: raw, Creator: true, AccessHash: 1}}, nil
-	}
-	return tones, nil
+	return storedAiTones(tones), nil
 }
 
-func saveAiTones(uid int64, tones []storedAiTone) error {
-	if tones == nil {
-		tones = []storedAiTone{}
-	}
-	b, err := json.Marshal(tones)
+func mutateAiTones(uid int64, mutate func([]storedAiTone) ([]storedAiTone, error)) ([]storedAiTone, error) {
+	tones, err := persist.MutateAITones(uid, func(current []persist.AITone) ([]persist.AITone, error) {
+		next, err := mutate(storedAiTones(current))
+		if err != nil {
+			return nil, err
+		}
+		return persistedAiTones(next), nil
+	})
 	if err != nil {
-		return err
+		return nil, err
 	}
-	return persist.Default.Set(aiToneKey(uid), string(b))
+	return storedAiTones(tones), nil
+}
+
+func storedAiTones(tones []persist.AITone) []storedAiTone {
+	out := make([]storedAiTone, 0, len(tones))
+	for _, tone := range tones {
+		out = append(out, storedAiTone{ID: tone.ID, Title: tone.Title, Prompt: tone.Prompt, Tone: tone.Tone, Slug: tone.Slug, EmojiID: tone.EmojiID, AccessHash: tone.AccessHash, Creator: tone.Creator, Saved: tone.Saved, DisplayAuthor: tone.DisplayAuthor})
+	}
+	return out
+}
+
+func persistedAiTones(tones []storedAiTone) []persist.AITone {
+	out := make([]persist.AITone, 0, len(tones))
+	for _, tone := range tones {
+		out = append(out, persist.AITone{ID: tone.ID, Title: tone.Title, Prompt: tone.Prompt, Tone: tone.Tone, Slug: tone.Slug, EmojiID: tone.EmojiID, AccessHash: tone.AccessHash, Creator: tone.Creator, Saved: tone.Saved, DisplayAuthor: tone.DisplayAuthor})
+	}
+	return out
 }
 
 func aiToneHash(tones []storedAiTone) int64 {
@@ -78,8 +82,8 @@ func aiToneHash(tones []storedAiTone) int64 {
 		return 0
 	}
 	h := fnv.New64a()
-	for _, t := range tones {
-		_, _ = fmt.Fprintf(h, "%d:%s:%s:%s\n", t.ID, t.Title, t.Prompt, t.Tone)
+	for _, tone := range tones {
+		_, _ = fmt.Fprintf(h, "%d:%s:%s:%s\n", tone.ID, tone.Title, tone.Prompt, tone.Tone)
 	}
 	v := int64(h.Sum64() & 0x7fffffffffffffff)
 	if v == 0 {
@@ -88,46 +92,34 @@ func aiToneHash(tones []storedAiTone) int64 {
 	return v
 }
 
-func aiToneToProto(t storedAiTone) *mtproto.AiComposeTone {
-	out := &mtproto.AiComposeTone{
-		Creator:       t.Creator,
-		Id:            t.ID,
-		AccessHash:    t.AccessHash,
-		Slug:          t.Slug,
-		Title:         t.Title,
-		Tone:          t.Tone,
-		EmojiId_INT64: t.EmojiID,
-	}
-	if t.Prompt != "" {
-		out.Prompt = wrapperspb.String(t.Prompt)
+func aiToneToProto(tone storedAiTone) *mtproto.AiComposeTone {
+	out := &mtproto.AiComposeTone{Creator: tone.Creator, Id: tone.ID, AccessHash: tone.AccessHash, Slug: tone.Slug, Title: tone.Title, Tone: tone.Tone, EmojiId_INT64: tone.EmojiID}
+	if tone.Prompt != "" {
+		out.Prompt = wrapperspb.String(tone.Prompt)
 	}
 	return mtproto.MakeTLAiComposeTone(out).To_AiComposeTone()
 }
 
 func aiTonesResult(tones []storedAiTone) *mtproto.Aicompose_Tones {
 	out := make([]*mtproto.AiComposeTone, 0, len(tones))
-	for _, t := range tones {
-		out = append(out, aiToneToProto(t))
+	for _, tone := range tones {
+		out = append(out, aiToneToProto(tone))
 	}
-	return mtproto.MakeTLAicomposeTones(&mtproto.Aicompose_Tones{
-		Hash:  aiToneHash(tones),
-		Tones: out,
-		Users: []*mtproto.User{},
-	}).To_Aicompose_Tones()
+	return mtproto.MakeTLAicomposeTones(&mtproto.Aicompose_Tones{Hash: aiToneHash(tones), Tones: out, Users: []*mtproto.User{}}).To_Aicompose_Tones()
 }
 
-func aiToneMatches(t storedAiTone, in *mtproto.InputAiComposeTone) bool {
+func aiToneMatches(tone storedAiTone, in *mtproto.InputAiComposeTone) bool {
 	if in == nil {
 		return false
 	}
 	if in.GetId() != 0 {
-		return t.ID == in.GetId()
+		return tone.ID == in.GetId()
 	}
 	if in.GetSlug() != "" {
-		return t.Slug == in.GetSlug()
+		return tone.Slug == in.GetSlug()
 	}
 	if in.GetTone() != "" {
-		return t.Tone == in.GetTone() || t.Title == in.GetTone()
+		return tone.Tone == in.GetTone() || tone.Title == in.GetTone()
 	}
 	return false
 }
@@ -144,29 +136,20 @@ func (c *ApiFullCore) AicomposeCreateTone(in *mtproto.TLAicomposeCreateTone) (*m
 	if err != nil {
 		return nil, err
 	}
-	if err := persistSetJSON(uid, "aicompose.createTone", in); err != nil {
-		return nil, err
-	}
-	tones, err := loadAiTones(uid)
-	if err != nil {
-		return nil, err
-	}
-	var next int64 = 1
-	for _, t := range tones {
-		if t.ID >= next {
-			next = t.ID + 1
-		}
-	}
-	tone := storedAiTone{ID: next, AccessHash: next, Creator: true}
+	tone := storedAiTone{Creator: true}
 	if in != nil {
-		tone.Title = in.GetTitle()
-		tone.Prompt = in.GetPrompt()
-		tone.EmojiID = in.GetEmojiId()
-		tone.DisplayAuthor = in.GetDisplayAuthor()
-		tone.Creator = true
+		tone.Title, tone.Prompt, tone.EmojiID, tone.DisplayAuthor = in.GetTitle(), in.GetPrompt(), in.GetEmojiId(), in.GetDisplayAuthor()
 	}
-	tones = append(tones, tone)
-	if err = saveAiTones(uid, tones); err != nil {
+	if _, err = mutateAiTones(uid, func(current []storedAiTone) ([]storedAiTone, error) {
+		next := int64(1)
+		for _, existing := range current {
+			if existing.ID >= next {
+				next = existing.ID + 1
+			}
+		}
+		tone.ID, tone.AccessHash = next, next
+		return append(current, tone), nil
+	}); err != nil {
 		return nil, err
 	}
 	return aiToneToProto(tone), nil
@@ -177,64 +160,54 @@ func (c *ApiFullCore) AicomposeUpdateTone(in *mtproto.TLAicomposeUpdateTone) (*m
 	if err != nil {
 		return nil, err
 	}
-	if err := persistSetJSON(uid, "aicompose.updateTone", in); err != nil {
-		return nil, err
-	}
-	tones, err := loadAiTones(uid)
-	if err != nil {
-		return nil, err
-	}
 	if in == nil {
 		return mtproto.MakeTLAiComposeTone(&mtproto.AiComposeTone{}).To_AiComposeTone(), nil
 	}
-	idx := -1
-	for i := range tones {
-		if aiToneMatches(tones[i], in.GetTone()) {
-			idx = i
+	var updated storedAiTone
+	found := false
+	if _, err = mutateAiTones(uid, func(tones []storedAiTone) ([]storedAiTone, error) {
+		for i := range tones {
+			if !aiToneMatches(tones[i], in.GetTone()) {
+				continue
+			}
+			if in.GetTitle() != nil {
+				tones[i].Title = in.GetTitle().GetValue()
+			}
+			if in.GetPrompt() != nil {
+				tones[i].Prompt = in.GetPrompt().GetValue()
+			}
+			if in.GetEmojiId() != nil {
+				tones[i].EmojiID = in.GetEmojiId().GetValue()
+			}
+			if in.GetDisplayAuthor() != nil {
+				tones[i].DisplayAuthor = mtproto.FromBool(in.GetDisplayAuthor())
+			}
+			if input := in.GetTone(); input != nil {
+				if input.GetSlug() != "" {
+					tones[i].Slug = input.GetSlug()
+				}
+				if input.GetTone() != "" {
+					tones[i].Tone = input.GetTone()
+				}
+				if input.GetCustomPrompt() != "" {
+					tones[i].Prompt = input.GetCustomPrompt()
+				}
+			}
+			updated, found = tones[i], true
 			break
 		}
-	}
-	if idx < 0 {
-		return mtproto.MakeTLAiComposeTone(&mtproto.AiComposeTone{}).To_AiComposeTone(), nil
-	}
-	if in.GetTitle() != nil {
-		tones[idx].Title = in.GetTitle().GetValue()
-	}
-	if in.GetPrompt() != nil {
-		tones[idx].Prompt = in.GetPrompt().GetValue()
-	}
-	if in.GetEmojiId() != nil {
-		tones[idx].EmojiID = in.GetEmojiId().GetValue()
-	}
-	if in.GetDisplayAuthor() != nil {
-		tones[idx].DisplayAuthor = mtproto.FromBool(in.GetDisplayAuthor())
-	}
-	if tone := in.GetTone(); tone != nil {
-		if tone.GetSlug() != "" {
-			tones[idx].Slug = tone.GetSlug()
-		}
-		if tone.GetTone() != "" {
-			tones[idx].Tone = tone.GetTone()
-		}
-		if tone.GetCustomPrompt() != "" {
-			tones[idx].Prompt = tone.GetCustomPrompt()
-		}
-	}
-	if err = saveAiTones(uid, tones); err != nil {
+		return tones, nil
+	}); err != nil {
 		return nil, err
 	}
-	return aiToneToProto(tones[idx]), nil
+	if !found {
+		return mtproto.MakeTLAiComposeTone(&mtproto.AiComposeTone{}).To_AiComposeTone(), nil
+	}
+	return aiToneToProto(updated), nil
 }
 
 func (c *ApiFullCore) AicomposeSaveTone(in *mtproto.TLAicomposeSaveTone) (*mtproto.Bool, error) {
 	uid, err := c.requireUserId()
-	if err != nil {
-		return nil, err
-	}
-	if err := persistSetJSON(uid, "aicompose.saveTone", in); err != nil {
-		return nil, err
-	}
-	tones, err := loadAiTones(uid)
 	if err != nil {
 		return nil, err
 	}
@@ -247,18 +220,19 @@ func (c *ApiFullCore) AicomposeSaveTone(in *mtproto.TLAicomposeSaveTone) (*mtpro
 		tone = in.GetTone()
 	}
 	found := false
-	for i := range tones {
-		if aiToneMatches(tones[i], tone) {
-			tones[i].Saved = saved
-			found = true
-			break
+	if _, err = mutateAiTones(uid, func(tones []storedAiTone) ([]storedAiTone, error) {
+		for i := range tones {
+			if aiToneMatches(tones[i], tone) {
+				tones[i].Saved, found = saved, true
+				break
+			}
 		}
+		return tones, nil
+	}); err != nil {
+		return nil, err
 	}
 	if !found {
 		return mtproto.BoolFalse, nil
-	}
-	if err = saveAiTones(uid, tones); err != nil {
-		return nil, err
 	}
 	return mtproto.BoolTrue, nil
 }
@@ -268,25 +242,20 @@ func (c *ApiFullCore) AicomposeDeleteTone(in *mtproto.TLAicomposeDeleteTone) (*m
 	if err != nil {
 		return nil, err
 	}
-	if err := persistSetJSON(uid, "aicompose.deleteTone", in); err != nil {
-		return nil, err
-	}
-	tones, err := loadAiTones(uid)
-	if err != nil {
-		return nil, err
-	}
 	var tone *mtproto.InputAiComposeTone
 	if in != nil {
 		tone = in.GetTone()
 	}
-	kept := tones[:0]
-	for _, t := range tones {
-		if tone != nil && aiToneMatches(t, tone) {
-			continue
+	if _, err = mutateAiTones(uid, func(tones []storedAiTone) ([]storedAiTone, error) {
+		kept := tones[:0]
+		for _, existing := range tones {
+			if tone != nil && aiToneMatches(existing, tone) {
+				continue
+			}
+			kept = append(kept, existing)
 		}
-		kept = append(kept, t)
-	}
-	if err = saveAiTones(uid, kept); err != nil {
+		return kept, nil
+	}); err != nil {
 		return nil, err
 	}
 	return mtproto.BoolTrue, nil
@@ -303,9 +272,9 @@ func (c *ApiFullCore) AicomposeGetTone(in *mtproto.TLAicomposeGetTone) (*mtproto
 	}
 	if in != nil && in.GetTone() != nil {
 		filtered := make([]storedAiTone, 0, 1)
-		for _, t := range tones {
-			if aiToneMatches(t, in.GetTone()) {
-				filtered = append(filtered, t)
+		for _, tone := range tones {
+			if aiToneMatches(tone, in.GetTone()) {
+				filtered = append(filtered, tone)
 			}
 		}
 		tones = filtered

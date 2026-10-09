@@ -1,12 +1,12 @@
 package core
 
 import (
-	"database/sql"
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
-	_ "github.com/go-sql-driver/mysql"
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/proto/mtproto/rpc/metadata"
 	"github.com/teamgram/teamgram-server/app/bff/apifull/channelview"
@@ -15,58 +15,17 @@ import (
 )
 
 func TestChannelsDeleteChannelOwnerTransactionRoundTrip(t *testing.T) {
-	db, err := sql.Open("mysql", isolatedAuditDSN(t))
+	db, err := persist.OpenPostgresDB(isolatedAuditDSN(t))
 	if err != nil {
-		t.Fatal("open isolated audit MySQL:", err)
+		t.Fatal("open PostgreSQL fixture connection:", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	for _, statement := range []string{
-		`CREATE TABLE IF NOT EXISTS chat_invites (
-			id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
-			chat_id BIGINT NOT NULL,
-			admin_id BIGINT NOT NULL,
-			link VARCHAR(64) NOT NULL,
-			permanent TINYINT NOT NULL DEFAULT 0,
-			revoked TINYINT NOT NULL DEFAULT 0,
-			request_needed TINYINT NOT NULL DEFAULT 0,
-			start_date BIGINT NOT NULL DEFAULT 0,
-			expire_date BIGINT NOT NULL DEFAULT 0,
-			usage_limit INT NOT NULL DEFAULT 0,
-			usage2 INT NOT NULL DEFAULT 0,
-			requested INT NOT NULL DEFAULT 0,
-			title VARCHAR(64) NOT NULL DEFAULT '',
-			date2 BIGINT NOT NULL
-		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
-		`CREATE TABLE IF NOT EXISTS chat_invite_participants (
-			id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
-			chat_id BIGINT NOT NULL,
-			link VARCHAR(64) NOT NULL,
-			user_id BIGINT NOT NULL,
-			requested TINYINT NOT NULL DEFAULT 0,
-			approved_by BIGINT NOT NULL DEFAULT 0,
-			date2 BIGINT NOT NULL
-		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
-		`CREATE TABLE IF NOT EXISTS apifull_channel_message_request (
-			channel_id BIGINT NOT NULL,
-			sender_user_id BIGINT NOT NULL,
-			random_id BIGINT NOT NULL,
-			message_id INT NOT NULL,
-			pts INT NOT NULL,
-			request_hash BINARY(32) NOT NULL,
-			created_at INT NOT NULL,
-			PRIMARY KEY (channel_id, sender_user_id, random_id),
-			KEY idx_apifull_channel_message_request_message (channel_id, message_id)
-		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
-	} {
-		if _, err = db.Exec(statement); err != nil {
-			t.Fatal("create shared invite test table:", err)
-		}
-	}
 
 	channelID := time.Now().UnixNano()
 	const owner int64 = 92041
 	const member int64 = 92042
 	callID := channelID + 1
+	inviteLink := fmt.Sprintf("delete-channel-%d", channelID)
 	legacyKey := chanDataKey(owner, channelID)
 	t.Cleanup(func() {
 		for _, query := range []string{
@@ -99,13 +58,13 @@ func TestChannelsDeleteChannelOwnerTransactionRoundTrip(t *testing.T) {
 	}
 	if _, err = db.Exec(`INSERT INTO apifull_channel_message_request
 		(channel_id, sender_user_id, random_id, message_id, pts, request_hash, created_at)
-		VALUES (?,?,?,?,?,?,?)`, channelID, owner, 91024001, 1, 1, make([]byte, 32), time.Now().Unix()); err != nil {
+		VALUES ($1,$2,$3,$4,$5,$6,$7)`, channelID, owner, 91024001, 1, 1, make([]byte, 32), time.Now().Unix()); err != nil {
 		t.Fatal("save channel message request mapping:", err)
 	}
-	if _, err = db.Exec(`INSERT INTO apifull_channel_message_hidden (user_id, channel_id, message_id) VALUES (?,?,?)`, member, channelID, 1); err != nil {
+	if _, err = db.Exec(`INSERT INTO apifull_channel_message_hidden (user_id, channel_id, message_id) VALUES ($1,$2,$3)`, member, channelID, 1); err != nil {
 		t.Fatal("save hidden-message row:", err)
 	}
-	if _, err = db.Exec(`INSERT INTO apifull_channel_read_state (user_id, channel_id, read_max_id) VALUES (?,?,?)`, member, channelID, 1); err != nil {
+	if _, err = db.Exec(`INSERT INTO apifull_channel_read_state (user_id, channel_id, read_max_id) VALUES ($1,$2,$3)`, member, channelID, 1); err != nil {
 		t.Fatal("save read-state row:", err)
 	}
 	if err = domain.SaveGroupCall(callID, callID, owner, channelID, "", "{}"); err != nil {
@@ -117,13 +76,13 @@ func TestChannelsDeleteChannelOwnerTransactionRoundTrip(t *testing.T) {
 	if _, err = db.Exec(`INSERT INTO chat_invites
 		(chat_id, admin_id, link, permanent, revoked, request_needed, start_date, expire_date,
 		usage_limit, usage2, requested, title, date2)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		channelID, owner, "delete-channel-invite", 0, 0, 0, 0, 0, 0, 0, 0, "", time.Now().Unix()); err != nil {
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+		channelID, owner, inviteLink, false, false, false, 0, 0, 0, 0, 0, "", time.Now().Unix()); err != nil {
 		t.Fatal("save channel invite:", err)
 	}
 	if _, err = db.Exec(`INSERT INTO chat_invite_participants
-		(chat_id, link, user_id, requested, approved_by, date2) VALUES (?,?,?,?,?,?)`,
-		channelID, "delete-channel-invite", member, 0, 0, time.Now().Unix()); err != nil {
+		(chat_id, link, user_id, requested, approved_by, date2) VALUES ($1,$2,$3,$4,$5,$6)`,
+		channelID, inviteLink, member, false, 0, time.Now().Unix()); err != nil {
 		t.Fatal("save channel invite participant:", err)
 	}
 
@@ -170,7 +129,7 @@ func TestChannelsDeleteChannelOwnerTransactionRoundTrip(t *testing.T) {
 	} {
 		var count int
 		queryArg := channelID
-		if name != "calls" {
+		if strings.HasPrefix(name, "call_") {
 			queryArg = callID
 		}
 		if err = db.QueryRow(query, queryArg).Scan(&count); err != nil {

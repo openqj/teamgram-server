@@ -231,7 +231,9 @@ func TestHTTPProviderRetriesServerFailures(t *testing.T) {
 func TestHTTPProviderRetriesNetworkFailures(t *testing.T) {
 	var requests atomic.Int32
 	provider := NewEmailProvider(&conf.SmsVerifyCodeConfig{
-		EmailProvider: "http", EmailSendCodeUrl: "http://provider.invalid/send", ProviderRetryCount: 1,
+		// The provider policy permits HTTP only for loopback test endpoints.
+		// The custom transport below prevents any network request.
+		EmailProvider: "http", EmailSendCodeUrl: "http://127.0.0.1:9/send", ProviderRetryCount: 1,
 	})
 	httpProvider := provider.(*httpProvider)
 	httpProvider.client.Transport = roundTripFunc(func(*http.Request) (*http.Response, error) {

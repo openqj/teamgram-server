@@ -10,9 +10,6 @@
 package core
 
 import (
-	"context"
-
-	"github.com/teamgram/marmota/pkg/stores/sqlx"
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/service/biz/dialog/dialog"
 )
@@ -30,18 +27,11 @@ func (c *DialogCore) DialogUpdateUserPinnedMessage(in *dialog.TLDialogUpdateUser
 	}
 
 	peerDialogId := mtproto.MakePeerDialogId(in.GetPeerType(), in.GetPeerId())
-	cacheKey := dialog.GetDialogCacheKeyByPeer(in.GetUserId(), in.GetPeerType(), in.GetPeerId())
-	_, _, err := c.svcCtx.Dao.CachedConn.Exec(
-		c.ctx,
-		func(ctx context.Context, _ *sqlx.DB) (int64, int64, error) {
-			rowsAffected, err := c.svcCtx.Dao.DialogsDAO.UpdatePinnedMsgId(
-				ctx,
-				in.GetPinnedMsgId(),
-				in.GetUserId(),
-				peerDialogId)
-			return 0, rowsAffected, err
-		},
-		cacheKey)
+	store, err := c.pgStore()
+	if err != nil || store.Dialogs == nil {
+		return nil, mtproto.ErrMethodNotImpl
+	}
+	_, err = store.Dialogs.UpdatePinnedMsgId(c.ctx, in.GetPinnedMsgId(), in.GetUserId(), peerDialogId)
 	if err != nil {
 		c.Logger.Errorf("dialog.updateUserPinnedMessage - error: %v", err)
 		return nil, err

@@ -50,9 +50,15 @@ func (c *ChatsCore) addChatUser(chatId int64, userId *mtproto.InputUser, fwdLimi
 		// 400	USER_ID_INVALID	The provided user ID is invalid
 		// 403	USER_NOT_MUTUAL_CONTACT	The provided user is not a mutual contact
 		// 403	USER_PRIVACY_RESTRICTED	The user's privacy settings do not allow you to do this
-		users, _ := c.svcCtx.Dao.UserClient.UserGetMutableUsers(c.ctx, &userpb.TLUserGetMutableUsers{
+		users, err := c.svcCtx.Dao.UserClient.UserGetMutableUsers(c.ctx, &userpb.TLUserGetMutableUsers{
 			Id: []int64{inviterId, addUser.PeerId},
 		})
+		if err != nil {
+			return nil, err
+		}
+		if users == nil {
+			return nil, mtproto.ErrInternalServerError
+		}
 
 		me, _ := users.GetImmutableUser(inviterId)
 		added, _ := users.GetImmutableUser(addUser.PeerId)
@@ -61,6 +67,10 @@ func (c *ChatsCore) addChatUser(chatId int64, userId *mtproto.InputUser, fwdLimi
 			c.Logger.Errorf("messages.addChatUser - error: %v", err)
 			return nil, err
 		}
+		if added.Deleted() || added.GetUser().GetUserType() == userpb.UserTypeDeleted ||
+			addUser.PeerType == mtproto.PEER_USER && (userId.GetAccessHash() == 0 || userId.GetAccessHash() != added.AccessHash()) {
+			return nil, mtproto.ErrUserIdInvalid
+		}
 
 		if added.IsBot() && added.BotNochats() {
 			err = mtproto.ErrBotGroupsBlocked
@@ -68,32 +78,19 @@ func (c *ChatsCore) addChatUser(chatId int64, userId *mtproto.InputUser, fwdLimi
 			return nil, err
 		}
 
-		rules, _ := c.svcCtx.Dao.UserClient.UserGetPrivacy(c.ctx, &userpb.TLUserGetPrivacy{
+		allowed, err := c.svcCtx.Dao.UserClient.UserCheckPrivacy(c.ctx, &userpb.TLUserCheckPrivacy{
 			UserId:  addUser.PeerId,
 			KeyType: mtproto.CHAT_INVITE,
+			PeerId:  inviterId,
 		})
-		if len(rules.Datas) > 0 {
-			// return true
-			allowAddChat := mtproto.CheckPrivacyIsAllow(
-				addUser.PeerId,
-				rules.Datas,
-				inviterId,
-				func(id, checkId int64) bool {
-					contact, _ := c.svcCtx.Dao.UserClient.UserCheckContact(c.ctx, &userpb.TLUserCheckContact{
-						UserId: id,
-						Id:     checkId,
-					})
-					return mtproto.FromBool(contact)
-				},
-				func(checkId int64, idList []int64) bool {
-					chatIdList, _ := mtproto.SplitChatAndChannelIdList(idList)
-					return c.svcCtx.Dao.ChatClient.CheckParticipantIsExist(c.ctx, checkId, chatIdList)
-				})
-			if !allowAddChat {
-				err = mtproto.ErrUserPrivacyRestricted
-				c.Logger.Errorf("not allow addChat: %v", err)
-				return nil, err
-			}
+		if err != nil {
+			return nil, err
+		}
+		if allowed == nil {
+			return nil, mtproto.ErrInternalServerError
+		}
+		if !mtproto.FromBool(allowed) {
+			return nil, mtproto.ErrUserPrivacyRestricted
 		}
 
 		isBot = added.IsBot()

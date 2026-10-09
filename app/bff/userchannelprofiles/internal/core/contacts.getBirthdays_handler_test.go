@@ -16,11 +16,31 @@ import (
 
 type birthdaysUserClientStub struct {
 	userclient.UserClient
-	err error
+	err     error
+	result  *userpb.Vector_ContactBirthday
+	request *userpb.TLUserGetMutableUsersV2
 }
 
 func (s *birthdaysUserClientStub) UserGetBirthdays(context.Context, *userpb.TLUserGetBirthdays) (*userpb.Vector_ContactBirthday, error) {
-	return nil, s.err
+	return s.result, s.err
+}
+
+func (s *birthdaysUserClientStub) UserGetMutableUsersV2(_ context.Context, in *userpb.TLUserGetMutableUsersV2) (*mtproto.MutableUsers, error) {
+	s.request = in
+	return &mtproto.MutableUsers{Users: []*mtproto.ImmutableUser{{User: &mtproto.UserData{Id: 7}}, {User: &mtproto.UserData{Id: 42}}}}, nil
+}
+
+func TestContactsGetBirthdaysHydratesPrivacyForViewer(t *testing.T) {
+	stub := &birthdaysUserClientStub{result: &userpb.Vector_ContactBirthday{Datas: []*mtproto.ContactBirthday{{ContactId: 7, Birthday: &mtproto.Birthday{Day: 1, Month: 1}}}}}
+	ctx := context.Background()
+	core := &UserChannelProfilesCore{ctx: ctx, MD: &metadata.RpcMetadata{UserId: 42}, Logger: logx.WithContext(ctx), svcCtx: &svc.ServiceContext{Dao: &dao.Dao{UserClient: stub}}}
+	got, err := core.ContactsGetBirthdays(&mtproto.TLContactsGetBirthdays{})
+	if err != nil || len(got.GetContacts()) != 1 || len(got.GetUsers()) != 1 {
+		t.Fatalf("birthdays = (%v, %v), want hydrated contact", got, err)
+	}
+	if in := stub.request; !in.GetPrivacy() || !in.GetHasTo() || len(in.GetTo()) != 1 || in.GetTo()[0] != 42 {
+		t.Fatalf("birthday users request = %v, want privacy for actual viewer", in)
+	}
 }
 
 func TestContactsGetBirthdaysRejectsUnauthenticatedAndNilRequest(t *testing.T) {

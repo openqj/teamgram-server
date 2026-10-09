@@ -19,7 +19,9 @@
 package svc
 
 import (
+	"context"
 	"errors"
+	"sync"
 
 	kafka "github.com/teamgram/marmota/pkg/mq"
 	"github.com/teamgram/marmota/pkg/net/rpcx"
@@ -42,16 +44,20 @@ type ServiceContext struct {
 	Config config.Config
 	plugin.MsgPlugin
 	*dao.Dao
+	stopDelivery  func()
+	closeProducer func() error
+	closeOnce     sync.Once
 }
 
 func NewServiceContext(c config.Config, plugin plugin.MsgPlugin) *ServiceContext {
 	if c.Postgres.DSN == "" {
 		panic(errors.New("messenger/msg/msg: Postgres.DSN is required"))
 	}
+	inboxProducer := kafka.MustKafkaProducer(c.InboxClient)
 	daoStore := &dao.Dao{
 		IDGenClient2:       idgen_client.NewIDGenClient2(rpcx.GetCachedRpcClient(c.IdgenClient)),
 		UserClient:         user_client.NewUserClient(rpcx.GetCachedRpcClient(c.UserClient)),
-		InboxClient:        inbox_client.NewInboxMqClient(kafka.MustKafkaProducer(c.InboxClient)),
+		InboxClient:        inbox_client.NewInboxMqClient(inboxProducer),
 		ChatClient:         chat_client.NewChatClient(rpcx.GetCachedRpcClient(c.ChatClient)),
 		SyncClient:         sync_client.NewSyncMqClient(kafka.GetCachedMQClient(c.SyncClient)),
 		DialogClient:       dialog_client.NewDialogClient(rpcx.GetCachedRpcClient(c.DialogClient)),
@@ -72,18 +78,35 @@ func NewServiceContext(c config.Config, plugin plugin.MsgPlugin) *ServiceContext
 	// stops startup instead of allowing a request path to reach MySQL.
 	pg, err := dao.NewPostgres(c.Postgres)
 	if err != nil {
+		_ = inboxProducer.Close()
 		panic(err)
 	}
 	daoStore.Postgres = pg
 	svcCtx := &ServiceContext{
-		Config:    c,
-		MsgPlugin: plugin,
-		Dao:       daoStore,
+		Config:        c,
+		MsgPlugin:     plugin,
+		Dao:           daoStore,
+		closeProducer: inboxProducer.Close,
 	}
 
 	if plugin == nil {
 		svcCtx.MsgPlugin = svcCtx.Dao
 	}
+	svcCtx.stopDelivery = daoStore.StartInboxDeliveryWorker(context.Background())
 
 	return svcCtx
+}
+
+func (s *ServiceContext) Close() {
+	s.closeOnce.Do(func() {
+		if s.stopDelivery != nil {
+			s.stopDelivery()
+		}
+		if s.closeProducer != nil {
+			_ = s.closeProducer()
+		}
+		if s.Dao != nil && s.Dao.Postgres != nil {
+			s.Dao.Postgres.Close()
+		}
+	})
 }

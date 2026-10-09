@@ -12,7 +12,6 @@ package core
 import (
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/service/biz/dialog/dialog"
-	"github.com/teamgram/teamgram-server/app/service/biz/dialog/internal/dal/dataobject"
 
 	"github.com/zeromicro/go-zero/core/jsonx"
 )
@@ -25,31 +24,34 @@ func (c *DialogCore) DialogGetAllDrafts(in *dialog.TLDialogGetAllDrafts) (*dialo
 		Datas: []*dialog.PeerWithDraftMessage{},
 	}
 
-	if _, err := c.svcCtx.Dao.DialogsDAO.SelectAllDraftsWithCB(
-		c.ctx,
-		in.UserId,
-		func(sz, i int, v *dataobject.DialogsDO) {
-			if v.DraftMessageData == "" {
-				return
-			}
-
-			draft := &mtproto.DraftMessage{}
-			if err := jsonx.UnmarshalFromString(v.DraftMessageData, &draft); err != nil {
-				c.Logger.Errorf("dialog.getAllDrafts - unmarshal draft: %v", err)
-				return
-			}
-			if draft == nil {
-				return
-			}
-
-			rValues.Datas = append(rValues.Datas,
-				dialog.MakeTLUpdateDraftMessage(&dialog.PeerWithDraftMessage{
-					Peer:  mtproto.MakePeer(v.PeerType, v.PeerId),
-					Draft: draft,
-				}).To_PeerWithDraftMessage())
-		}); err != nil {
-		c.Logger.Errorf("dialog.getAllDrafts - error: %v", err)
+	if c == nil || c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.Postgres == nil ||
+		c.svcCtx.Dao.Postgres.Store == nil || c.svcCtx.Dao.Postgres.Store.Dialogs == nil {
+		return nil, mtproto.ErrMethodNotImpl
+	}
+	rows, err := c.svcCtx.Dao.Postgres.Store.Dialogs.SelectAllDrafts(c.ctx, in.UserId)
+	if err != nil {
 		return nil, err
+	}
+	for i := range rows {
+		v := &rows[i]
+		if v.DraftMessageData == "" {
+			continue
+		}
+
+		draft := &mtproto.DraftMessage{}
+		if err := jsonx.UnmarshalFromString(v.DraftMessageData, &draft); err != nil {
+			c.Logger.Errorf("dialog.getAllDrafts - unmarshal draft: %v", err)
+			continue
+		}
+		if draft == nil {
+			continue
+		}
+
+		rValues.Datas = append(rValues.Datas,
+			dialog.MakeTLUpdateDraftMessage(&dialog.PeerWithDraftMessage{
+				Peer:  mtproto.MakePeer(v.PeerType, v.PeerId),
+				Draft: draft,
+			}).To_PeerWithDraftMessage())
 	}
 
 	return rValues, nil

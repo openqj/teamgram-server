@@ -20,7 +20,7 @@ import (
 // UserGetBotInfo
 // user.getBotInfo bot_id:long = BotInfo;
 func (c *UserCore) UserGetBotInfo(in *user.TLUserGetBotInfo) (*mtproto.BotInfo, error) {
-	botsDO, err := c.svcCtx.BotsDAO.Select(c.ctx, in.BotId)
+	botsDO, err := c.svcCtx.Dao.SelectBot(c.ctx, in.BotId)
 	if err != nil {
 		c.Logger.Errorf("user.getBotInfo - error: %v", err)
 		return nil, err
@@ -45,7 +45,7 @@ func (c *UserCore) UserGetBotInfo(in *user.TLUserGetBotInfo) (*mtproto.BotInfo, 
 	// TODO: HasPreviewMedias
 
 	// Commands
-	commands, err := c.svcCtx.Dao.BotCommandsDAO.SelectList(c.ctx, in.BotId)
+	commands, err := c.svcCtx.Dao.SelectBotCommands(c.ctx, in.BotId)
 	if err != nil {
 		c.Logger.Errorf("user.getBotInfo - load bot(%d) commands error: %v", in.BotId, err)
 		return nil, err

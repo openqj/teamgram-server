@@ -20,6 +20,7 @@ package dao
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/interface/gnetway/client"
@@ -83,6 +84,9 @@ func (c *Gateway) SendDataToGate(ctx context.Context, authKeyId, sessionId int64
 		return
 	}
 
-	b = mtproto.FromBool(res)
+	if res == nil || !mtproto.FromBool(res) {
+		return false, fmt.Errorf("gateway(%s) rejected session delivery", c.serverId)
+	}
+	b = true
 	return
 }

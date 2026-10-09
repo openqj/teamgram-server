@@ -13,6 +13,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/service/biz/chat/chat"
 	"github.com/teamgram/teamgram-server/app/service/biz/chat/internal/dal/dataobject"
@@ -21,6 +22,10 @@ import (
 // ChatAddChatUser
 // chat.addChatUser chat_id:long inviter_id:long user_id:long = MutableChat;
 func (c *ChatCore) ChatAddChatUser(in *chat.TLChatAddChatUser) (*mtproto.MutableChat, error) {
+	return c.chatAddChatUser(in, nil)
+}
+
+func (c *ChatCore) chatAddChatUser(in *chat.TLChatAddChatUser, updateInvite func(pgx.Tx) error) (*mtproto.MutableChat, error) {
 	var (
 		now                       = time.Now().Unix()
 		chat2                     *mtproto.MutableChat
@@ -112,6 +117,9 @@ func (c *ChatCore) ChatAddChatUser(in *chat.TLChatAddChatUser) (*mtproto.Mutable
 		chat2.Chat.Version++
 		chat2.Chat.Date = now
 		_, err = c.svcCtx.Dao.Postgres.Store.Chats.UpdateParticipantCountOn(c.ctx, tx, chat2.Chat.ParticipantsCount, chatId)
+	}
+	if err == nil && updateInvite != nil {
+		err = updateInvite(tx)
 	}
 	if err == nil {
 		err = tx.Commit(c.ctx)
