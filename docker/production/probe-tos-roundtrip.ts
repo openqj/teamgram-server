@@ -25,7 +25,7 @@ function sqlWrite(query: string): void {
 }
 
 function loadAuthKey(): string {
-  const body = sql(`SELECT k.body FROM auth_users u JOIN auth_keys k USING(auth_key_id)
+  const body = sql(`SELECT encode(k.body, 'base64') FROM auth_users u JOIN auth_keys k USING(auth_key_id)
     JOIN auth_key_infos i USING(auth_key_id) WHERE u.user_id=${userId} AND u.state=0 AND u.deleted=0
     AND k.deleted=0 AND i.deleted=0 AND i.auth_key_type=0 ORDER BY u.date_active DESC,u.id DESC LIMIT 1`);
   if (!body) throw new Error(`no active production auth key found for user ${userId}`);

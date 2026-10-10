@@ -59,6 +59,9 @@ func TestReportHandlersPersistAllSupportedMethods(t *testing.T) {
 	if got, err := core.MessagesReportFC78AF9B(&mtproto.TLMessagesReportFC78AF9B{Peer: peerUser, Id: []int32{1, 2}, Option: []byte("spam")}); got == nil || err != nil || got.GetPredicateName() != mtproto.Predicate_reportResultReported {
 		t.Fatalf("messages.report = (%v, %v)", got, err)
 	}
+	if got, err := core.MessagesReportReaction(&mtproto.TLMessagesReportReaction{Peer: peerUser, Id: 9, ReactionPeer: peerUser}); got == nil || err != nil || !mtproto.FromBool(got) {
+		t.Fatalf("messages.reportReaction = (%v, %v)", got, err)
+	}
 	if got, err := core.MessagesReportEncryptedSpam(&mtproto.TLMessagesReportEncryptedSpam{Peer: mtproto.MakeTLInputEncryptedChat(&mtproto.InputEncryptedChat{ChatId: int32(uid & 0x3fffffff)}).To_InputEncryptedChat()}); got == nil || err != nil {
 		t.Fatalf("messages.reportEncryptedSpam = (%v, %v)", got, err)
 	}
@@ -82,8 +85,8 @@ func TestReportHandlersPersistAllSupportedMethods(t *testing.T) {
 	if err := db.QueryRow(`SELECT COUNT(*) FROM apifull_report WHERE actor_user_id=$1`, uid).Scan(&count); err != nil {
 		t.Fatalf("count persisted reports: %v", err)
 	}
-	if count != 10 {
-		t.Fatalf("persisted report count = %d, want 10", count)
+	if count != 11 {
+		t.Fatalf("persisted report count = %d, want 11", count)
 	}
 	var peerCount int
 	if err := db.QueryRow(`SELECT COUNT(*) FROM apifull_report WHERE actor_user_id=$1 AND kind=$2`, uid, "account.reportPeer").Scan(&peerCount); err != nil {

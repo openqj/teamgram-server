@@ -124,3 +124,34 @@ func TestConsumeEmailLoginChallengeUsesPurposeBoundID(t *testing.T) {
 		t.Fatalf("replay error = %v, want EMAIL_VERIFY_EXPIRED", err)
 	}
 }
+
+func TestRevokeAuthLoginChallengesRevokesBothChannels(t *testing.T) {
+	store := &phoneChallengeStore{}
+	service := verification.NewChallengeService(store, verification.ChallengeSettings{
+		TTL: 2 * time.Minute, RateLimit: 10, RateWindow: time.Minute, MaxAttempts: 3,
+	}, phoneChallengeProvider{}, phoneChallengeProvider{})
+	const (
+		scope = "auth-key-93"
+		id    = "cancel-both"
+		code  = "12345"
+	)
+	for _, channel := range []verification.Channel{verification.ChannelSMS, verification.ChannelApp} {
+		if _, err := service.Issue(context.Background(), verification.IssueRequest{
+			Channel: channel, Purpose: challengePurposeAuthLogin, Subject: "+15551234567",
+			Scope: scope, ChallengeID: id, Code: code,
+		}); err != nil {
+			t.Fatalf("issue %s challenge: %v", channel, err)
+		}
+	}
+	if err := revokeAuthLoginChallenges(context.Background(), service, scope, id); err != nil {
+		t.Fatalf("revoke challenges: %v", err)
+	}
+	for _, channel := range []verification.Channel{verification.ChannelSMS, verification.ChannelApp} {
+		if _, err := service.Consume(context.Background(), verification.VerifyRequest{
+			Channel: channel, Purpose: challengePurposeAuthLogin, Scope: scope,
+			ChallengeID: id, Code: code,
+		}); !errors.Is(err, verification.ErrChallengeNotFound) {
+			t.Fatalf("consume revoked %s challenge error = %v, want not found", channel, err)
+		}
+	}
+}

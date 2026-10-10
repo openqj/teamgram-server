@@ -55,8 +55,18 @@ import (
 // AuthSignIn
 // auth.signIn#bcd51581 phone_number:string phone_code_hash:string phone_code:string = auth.Authorization;
 func (c *AuthorizationCore) AuthSignIn(in *mtproto.TLAuthSignIn) (*mtproto.Auth_Authorization, error) {
-	if c == nil || in == nil {
+	if c == nil {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
+	if in == nil {
 		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if c.MD == nil || c.MD.GetPermAuthKeyId() == 0 {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
+	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.AuthLogic == nil ||
+		c.svcCtx.Dao.UserClient == nil || c.svcCtx.Dao.AuthsessionClient == nil {
+		return nil, mtproto.ErrInternalServerError
 	}
 	var (
 		phoneCode     = in.GetPhoneCode_STRING()

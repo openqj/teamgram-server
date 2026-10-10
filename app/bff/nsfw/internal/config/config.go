@@ -24,5 +24,6 @@ import (
 
 type Config struct {
 	zrpc.RpcServerConf
-	UserClient zrpc.RpcClientConf
+	PostgresDSN string `json:",optional"`
+	UserClient  zrpc.RpcClientConf
 }

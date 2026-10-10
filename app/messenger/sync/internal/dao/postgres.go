@@ -24,7 +24,15 @@ func newPostgresDao(c config.Config) (*Postgres, error) {
 	}
 	if err := postgres.VerifySchema(context.Background(), pool,
 		`SELECT id,auth_id,user_id,seq,update_type,update_data,date2 FROM auth_seq_updates LIMIT 0`,
-		`SELECT id,user_id,pts,pts_count,update_type,update_data,date2 FROM user_pts_updates LIMIT 0`); err != nil {
+		`SELECT id,user_id,pts,pts_count,update_type,update_data,date2 FROM user_pts_updates LIMIT 0`,
+		// PrepareUpdates locks the permanent authorization rows before it
+		// journals a delivery. Verify every table used by that transaction at
+		// startup so a partially migrated database cannot accept Kafka work.
+		`SELECT auth_key_id,auth_key_type,deleted FROM auth_key_infos LIMIT 0`,
+		`SELECT auth_key_id,user_id,deleted FROM auth_users LIMIT 0`,
+		`SELECT auth_key_id,deleted FROM auth_keys LIMIT 0`,
+		`SELECT key,value,updated_at FROM idgen_counters LIMIT 0`,
+		`SELECT consumer_group,topic,partition_id,message_offset,user_id,request_hash,delivery_data,delivered,delivered_at FROM sync_delivery_receipts LIMIT 0`); err != nil {
 		pool.Close()
 		return nil, err
 	}

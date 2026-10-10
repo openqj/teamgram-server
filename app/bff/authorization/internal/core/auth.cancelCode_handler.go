@@ -19,6 +19,8 @@
 package core
 
 import (
+	"context"
+
 	"github.com/teamgram/proto/mtproto"
 	verification "github.com/teamgram/teamgram-server/pkg/code"
 	"github.com/teamgram/teamgram-server/pkg/phonenumber"
@@ -55,17 +57,35 @@ func (c *AuthorizationCore) AuthCancelCode(in *mtproto.TLAuthCancelCode) (*mtpro
 	if in.GetPhoneCodeHash() == "" {
 		return nil, mtproto.ErrPhoneCodeHashEmpty
 	}
-	if err = c.svcCtx.AuthLogic.DoAuthCancelCode(c.ctx, c.MD.PermAuthKeyId, phoneNumber, in.GetPhoneCodeHash()); err != nil {
-		return nil, err
+	// Revoke the shared challenges even when the legacy phone-code row has
+	// already expired or was evicted.  The shared challenge is independently
+	// usable by the sign-in verifier, so returning early here would leave a
+	// cancelled code replayable.  Keep the phone-code error as the response
+	// while making the revocation best effort for both channels.
+	phoneCodeErr := c.svcCtx.AuthLogic.DoAuthCancelCode(c.ctx, c.MD.PermAuthKeyId, phoneNumber, in.GetPhoneCodeHash())
+	revokeErr := revokeAuthLoginChallenges(c.ctx, c.svcCtx.Challenges, c.challengeScope(), in.GetPhoneCodeHash())
+	if phoneCodeErr != nil {
+		return nil, phoneCodeErr
 	}
-	for _, channel := range []verification.Channel{verification.ChannelSMS, verification.ChannelApp} {
-		if err = c.svcCtx.Challenges.Revoke(c.ctx, verification.VerifyRequest{
-			Channel: channel, Purpose: challengePurposeAuthLogin, Scope: c.challengeScope(),
-			ChallengeID: in.GetPhoneCodeHash(),
-		}); err != nil {
-			return nil, err
-		}
+	if revokeErr != nil {
+		return nil, revokeErr
 	}
 
 	return mtproto.BoolTrue, nil
+}
+
+// revokeAuthLoginChallenges attempts both challenge channels before returning
+// an error.  A provider failure for one channel must not leave the other
+// channel usable after auth.cancelCode has been requested.
+func revokeAuthLoginChallenges(ctx context.Context, challenges *verification.ChallengeService, scope, challengeID string) error {
+	var firstErr error
+	for _, channel := range []verification.Channel{verification.ChannelSMS, verification.ChannelApp} {
+		if err := challenges.Revoke(ctx, verification.VerifyRequest{
+			Channel: channel, Purpose: challengePurposeAuthLogin, Scope: scope,
+			ChallengeID: challengeID,
+		}); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
 }

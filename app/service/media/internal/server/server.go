@@ -10,7 +10,9 @@
 package server
 
 import (
+	"errors"
 	"flag"
+	"strings"
 
 	"github.com/teamgram/teamgram-server/app/service/media/internal/config"
 	"github.com/teamgram/teamgram-server/app/service/media/internal/server/grpc"
@@ -35,6 +37,9 @@ func New() *Server {
 func (s *Server) Initialize() error {
 	var c config.Config
 	conf.MustLoad(*configFile, &c, conf.UseEnv())
+	if strings.TrimSpace(c.Postgres.DSN) == "" {
+		return errors.New("media: Postgres.DSN is required")
+	}
 
 	logx.Infof("media config loaded")
 	ctx := svc.NewServiceContext(c)

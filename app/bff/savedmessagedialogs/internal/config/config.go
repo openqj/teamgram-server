@@ -25,11 +25,13 @@ import (
 
 type Config struct {
 	zrpc.RpcServerConf
+	PostgresDSN   string `json:",optional"`
 	UserClient    zrpc.RpcClientConf
 	ChatClient    zrpc.RpcClientConf
 	DialogClient  zrpc.RpcClientConf
 	UpdatesClient zrpc.RpcClientConf
 	SyncClient    *kafka.KafkaProducerConf
 	MessageClient zrpc.RpcClientConf
+	MsgClient     zrpc.RpcClientConf
 	// ChannelClient zrpc.RpcClientConf
 }

@@ -10,7 +10,9 @@
 package server
 
 import (
+	"errors"
 	"flag"
+	"strings"
 
 	"github.com/teamgram/teamgram-server/app/service/authsession/internal/config"
 	"github.com/teamgram/teamgram-server/app/service/authsession/internal/server/grpc"
@@ -35,6 +37,9 @@ func New() *Server {
 func (s *Server) Initialize() error {
 	var c config.Config
 	conf.MustLoad(*configFile, &c, conf.UseEnv())
+	if strings.TrimSpace(c.Postgres.DSN) == "" {
+		return errors.New("authsession: Postgres.DSN is required")
+	}
 
 	logx.Infof("authsession config loaded")
 	ctx, err := svc.NewServiceContext(c)

@@ -33,7 +33,7 @@ function postgres(query: string): string {
 
 function loadAuthKey(): string {
   const body = postgres(`
-    SELECT k.body FROM auth_users u
+    SELECT encode(k.body, 'base64') FROM auth_users u
     JOIN auth_keys k USING (auth_key_id)
     JOIN auth_key_infos i USING (auth_key_id)
     WHERE u.user_id=${userId} AND u.state=0 AND u.deleted=0

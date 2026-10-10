@@ -26,8 +26,14 @@ import (
 // AuthCheckPassword
 // auth.checkPassword#d18b4d16 password:InputCheckPasswordSRP = auth.Authorization;
 func (c *AuthorizationCore) AuthCheckPassword(in *mtproto.TLAuthCheckPassword) (*mtproto.Auth_Authorization, error) {
+	if c == nil || c.MD == nil {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
 	if c.MD.UserId <= 0 {
 		return nil, mtproto.ErrPasswordHashInvalid
+	}
+	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.UserClient == nil {
+		return nil, mtproto.ErrInternalServerError
 	}
 	var proof *mtproto.InputCheckPasswordSRP
 	if in != nil {

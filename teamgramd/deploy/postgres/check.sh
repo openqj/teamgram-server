@@ -11,19 +11,22 @@ if [[ ! -d "$migration_dir" ]]; then
 fi
 migration_dir=$(cd -- "$migration_dir" && pwd)
 shopt -s nullglob
-migrations=("$migration_dir"/[0-9][0-9][0-9]_*.sql)
-if [[ "${#migrations[@]}" -eq 0 ]]; then
+sql_files=("$migration_dir"/*.sql)
+if [[ "${#sql_files[@]}" -eq 0 ]]; then
   printf 'No numbered PostgreSQL migrations found: %s\n' "$migration_dir" >&2
   exit 1
 fi
 
+migrations=()
+
 seen_prefixes=""
-for migration in "${migrations[@]}"; do
+for migration in "${sql_files[@]}"; do
   basename=$(basename "$migration")
   if [[ ! "$basename" =~ ^[0-9]{3}_[A-Za-z0-9][A-Za-z0-9._-]*\.sql$ ]]; then
     printf 'Invalid PostgreSQL migration filename: %s\n' "$basename" >&2
     exit 1
   fi
+  migrations+=("$migration")
   prefix=${basename:0:3}
   case " $seen_prefixes " in
   *" $prefix "*)

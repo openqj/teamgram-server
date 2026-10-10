@@ -19,7 +19,10 @@
 package core
 
 import (
+	"errors"
+
 	"github.com/teamgram/proto/mtproto"
+	"github.com/teamgram/teamgram-server/app/bff/apifull/state"
 )
 
 // ChannelsConvertToGigagroup
@@ -32,25 +35,25 @@ func (c *ChatsCore) ChannelsConvertToGigagroup(in *mtproto.TLChannelsConvertToGi
 	if err != nil {
 		return nil, err
 	}
-	chat, err := c.loadMutableChat(channelId)
-	if err != nil {
-		return nil, err
+	if c.MD == nil || c.MD.UserId <= 0 {
+		return nil, mtproto.ErrAuthKeyInvalid
 	}
-	me, err := c.requireCreatorOrAdmin(chat, false)
+	channelState, err := state.ConvertChannelToGigagroup(c.MD.UserId, channelId, in.GetChannel().GetAccessHash())
 	if err != nil {
 		c.Logger.Errorf("channels.convertToGigagroup - error: %v", err)
-		return nil, err
+		switch {
+		case errors.Is(err, state.ErrInvalidChannelAccessHash), errors.Is(err, state.ErrChannelMissing), errors.Is(err, state.ErrChannelConversionInvalid):
+			return nil, mtproto.ErrChannelInvalid
+		case errors.Is(err, state.ErrChannelAdminRequired):
+			return nil, mtproto.ErrChatAdminRequired
+		default:
+			return nil, err
+		}
 	}
-
-	var accessHash int64
-	if migrated := chat.MigratedTo(); migrated != nil {
-		accessHash = migrated.GetAccessHash()
-	}
-	channel := megagroupChannel(channelId, accessHash, chat.Title(), me.IsChatMemberCreator(), true)
+	channel := megagroupChannel(channelState.ID, channelState.AccessHash, channelState.Title, channelState.Creator == c.MD.UserId, true)
 	updates := mtproto.MakeUpdatesByUpdatesChats(
 		[]*mtproto.Chat{channel},
-		mtproto.MakeTLUpdateChat(&mtproto.Update{ChatId_INT64: channelId}).To_Update(),
+		mtproto.MakeTLUpdateChannel(&mtproto.Update{ChannelId: channelId}).To_Update(),
 	)
-	c.pushChatUpdates(chat, updates)
 	return updates, nil
 }

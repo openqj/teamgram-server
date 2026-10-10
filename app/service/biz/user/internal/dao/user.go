@@ -105,6 +105,9 @@ func (d *Dao) CreateNewUserV2(
 			return nil, err
 		}
 		cacheUserData.UserData = d.MakeUserDataByDO(userDO)
+		// PostgreSQL deployments read user data directly from the authoritative
+		// store (see GetCacheUserDataWithError). The legacy CachedConn is unset
+		// by the PostgreSQL-only constructor, so do not call its cache backend.
 		return mtproto.MakeTLImmutableUser(&mtproto.ImmutableUser{User: cacheUserData.UserData, LastSeenAt: now}).To_ImmutableUser(), nil
 	}
 	if lastInsertId, _, err2 := d.UsersDAO.Insert(ctx, userDO); err2 != nil {

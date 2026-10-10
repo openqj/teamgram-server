@@ -8,4 +8,4 @@ RUN apt update -y && apt install -y ffmpeg psmisc && apt-get clean
 WORKDIR /app
 COPY --from=builder /app/teamgramd/ /app/
 RUN chmod +x /app/docker/entrypoint.sh
-ENTRYPOINT /app/docker/entrypoint.sh
+ENTRYPOINT ["/app/docker/entrypoint.sh"]

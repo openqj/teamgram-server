@@ -152,3 +152,23 @@ func TestMigratedChannelMessageIDsAndReadCursorAreMonotonic(t *testing.T) {
 		t.Fatalf("stored read cursor = %d, %v", got, err)
 	}
 }
+
+func TestConvertChannelToGigagroupPostgresRoundTrip(t *testing.T) {
+	requireMigrationDB(t)
+	channelID := time.Now().UnixNano()
+	creatorID := channelID + 1
+	cleanupMigrationChannel(t, channelID)
+	if err := SaveChannel(Channel{ID: channelID, AccessHash: channelID + 2, Creator: creatorID, Title: "gigagroup-test", Broadcast: true}); err != nil {
+		t.Fatal(err)
+	}
+	converted, err := ConvertChannelToGigagroup(creatorID, channelID, channelID+2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if converted.Broadcast || !converted.Megagroup || converted.ID != channelID {
+		t.Fatalf("converted channel = %+v", converted)
+	}
+	if _, err = ConvertChannelToGigagroup(creatorID, channelID, channelID+3); !errors.Is(err, ErrInvalidChannelAccessHash) {
+		t.Fatalf("stale access hash error = %v", err)
+	}
+}

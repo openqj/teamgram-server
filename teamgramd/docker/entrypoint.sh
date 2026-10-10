@@ -35,7 +35,31 @@
 #   done
 # }
 
-# createConfigs
+# Production images must be configured with the PostgreSQL 18 DSN.  The
+# web-isolated fixture is an explicit MySQL-only migration-boundary test and
+# supplies ISOLATED_MYSQL_DATABASE instead.
+if [ -z "${ISOLATED_MYSQL_DATABASE:-}" ]; then
+  : "${TEAMGRAM_POSTGRES_DSN:?TEAMGRAM_POSTGRES_DSN is required}"
+  case "$TEAMGRAM_POSTGRES_DSN" in
+    postgres://*|postgresql://*) ;;
+    *)
+      echo "refusing to start: TEAMGRAM_POSTGRES_DSN must use the PostgreSQL URI scheme" >&2
+      exit 1
+      ;;
+  esac
+
+  if grep -R -nE '^[[:space:]]*Mysql:' /app/etc2 >/dev/null 2>&1; then
+    echo "refusing to start: /app/etc2 contains a MySQL service configuration" >&2
+    exit 1
+  fi
+fi
+
+for config in authsession biz idgen media msg sync bff session; do
+  if [ ! -f "/app/etc2/${config}.yaml" ]; then
+    echo "refusing to start: missing runtime config /app/etc2/${config}.yaml" >&2
+    exit 1
+  fi
+done
 
 cd /app/bin
 exec ./runall-docker.sh

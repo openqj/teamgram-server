@@ -1,2 +1,9 @@
 Name: bff.savedmessagedialogs
 ListenOn: 0.0.0.0:27708
+PostgresDSN: ${TEAMGRAM_POSTGRES_DSN}
+MsgClient:
+  Etcd:
+    Hosts:
+      - etcd:2379
+    Key: messenger.msg
+  Timeout: 0

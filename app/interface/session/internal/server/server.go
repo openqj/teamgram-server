@@ -10,7 +10,9 @@
 package server
 
 import (
+	"errors"
 	"flag"
+	"strings"
 	"time"
 
 	"github.com/teamgram/teamgram-server/app/interface/session/internal/config"
@@ -36,6 +38,9 @@ func New() *Server {
 func (s *Server) Initialize() error {
 	var c config.Config
 	conf.MustLoad(*configFile, &c, conf.UseEnv())
+	if strings.TrimSpace(c.PostgresDSN) == "" {
+		return errors.New("session: PostgresDSN is required")
+	}
 
 	logx.Infof("session config loaded")
 

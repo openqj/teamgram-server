@@ -10,7 +10,9 @@
 package server
 
 import (
+	"errors"
 	"flag"
+	"strings"
 
 	"github.com/teamgram/teamgram-server/app/messenger/sync/internal/config"
 	"github.com/teamgram/teamgram-server/app/messenger/sync/internal/server/mq"
@@ -36,6 +38,9 @@ func New() *Server {
 func (s *Server) Initialize() error {
 	var c config.Config
 	conf.MustLoad(*configFile, &c, conf.UseEnv())
+	if strings.TrimSpace(c.Postgres.DSN) == "" {
+		return errors.New("messenger sync: Postgres.DSN is required")
+	}
 	logx.Infof("messenger sync config loaded")
 
 	if err := logx.SetUp(c.Log); err != nil {

@@ -100,6 +100,18 @@ func TestAuthorizationProviderGapInputErrors(t *testing.T) {
 	}
 }
 
+func TestAuthCheckPasswordRejectsMissingRuntimeContext(t *testing.T) {
+	var nilCore *AuthorizationCore
+	if result, err := nilCore.AuthCheckPassword(nil); result != nil || !errors.Is(err, mtproto.ErrAuthKeyUnregistered) {
+		t.Fatalf("nil check-password core = (%v, %v), want AUTH_KEY_UNREGISTERED", result, err)
+	}
+	c := newProviderGapCore()
+	c.MD.UserId = 91
+	if result, err := c.AuthCheckPassword(&mtproto.TLAuthCheckPassword{}); result != nil || !errors.Is(err, mtproto.ErrInternalServerError) {
+		t.Fatalf("missing check-password runtime = (%v, %v), want INTERNAL_SERVER_ERROR", result, err)
+	}
+}
+
 func TestAuthDropTempAuthKeysUsesAuthsessionProvider(t *testing.T) {
 	client := &tempAuthKeyDropClient{}
 	c := newProviderGapCore()

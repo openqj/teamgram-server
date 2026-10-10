@@ -160,7 +160,7 @@ func CommunityCanView(communityID, userID int64) (bool, error) {
 			)
 		)
 	)`,
-		communityID, userID, CommunityPeerUser, CommunityPeerChannel, userID).Scan(&allowed)
+		communityID, userID, CommunityPeerUser, CommunityPeerChannel).Scan(&allowed)
 	return allowed, err
 }
 

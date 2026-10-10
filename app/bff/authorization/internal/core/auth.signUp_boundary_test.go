@@ -44,3 +44,14 @@ func TestAuthSignUpRejectsMissingRuntimeDependencies(t *testing.T) {
 		t.Fatalf("sign up = (%v, %v), want INTERNAL_SERVER_ERROR", result, err)
 	}
 }
+
+func TestAuthSignInRejectsMissingRuntimeContext(t *testing.T) {
+	var nilCore *AuthorizationCore
+	if result, err := nilCore.AuthSignIn(nil); result != nil || !errors.Is(err, mtproto.ErrAuthKeyUnregistered) {
+		t.Fatalf("nil sign in core = (%v, %v), want AUTH_KEY_UNREGISTERED", result, err)
+	}
+	c := newBoundaryAuthorizationCore()
+	if result, err := c.AuthSignIn(&mtproto.TLAuthSignIn{}); result != nil || !errors.Is(err, mtproto.ErrInternalServerError) {
+		t.Fatalf("missing sign-in runtime = (%v, %v), want INTERNAL_SERVER_ERROR", result, err)
+	}
+}

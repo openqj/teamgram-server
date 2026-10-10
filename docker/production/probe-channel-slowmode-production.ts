@@ -108,7 +108,7 @@ function readChannelFlag(channelId: bigint, column: 'participants_hidden' | 'hid
 
 async function main() {
   const authKey = requiredValue(`
-    SELECT k.body
+    SELECT encode(k.body, 'base64')
     FROM auth_users u
     JOIN auth_keys k USING (auth_key_id)
     JOIN auth_key_infos i USING (auth_key_id)

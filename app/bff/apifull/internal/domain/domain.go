@@ -1039,6 +1039,8 @@ var (
 	ErrStarsBalanceOverflow     = errors.New("stars balance overflow")
 	ErrStarsBalanceExceeded     = errors.New("stars balance exceeded")
 	ErrGiftNotConvertible       = errors.New("gift cannot be converted")
+	ErrChannelConversionInvalid = errors.New("channel cannot be converted to a gigagroup")
+	ErrChannelAdminRequired     = errors.New("channel admin rights required")
 )
 
 type Channel struct {
@@ -1166,6 +1168,73 @@ func LoadChannel(id int64) (Channel, bool, error) {
 		ch.LocationLong = &locationLong.Float64
 	}
 	return ch, true, nil
+}
+
+// ConvertChannelToGigagroup changes a broadcast channel into a gigagroup in
+// one locked PostgreSQL transaction. The access hash is checked while the
+// row is locked so a stale client cannot mutate a different channel.
+func ConvertChannelToGigagroup(actorID, channelID, accessHash int64) (Channel, error) {
+	if db == nil {
+		return Channel{}, errors.New("domain PostgreSQL is not open")
+	}
+	if actorID <= 0 || channelID <= 0 || accessHash == 0 {
+		return Channel{}, ErrChannelConversionInvalid
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		return Channel{}, err
+	}
+	defer tx.Rollback()
+
+	var storedHash, creator int64
+	var broadcast, megagroup int
+	err = tx.QueryRow(`SELECT access_hash, creator_user_id, broadcast, megagroup
+		FROM apifull_channel WHERE id=$1 FOR UPDATE`, channelID).
+		Scan(&storedHash, &creator, &broadcast, &megagroup)
+	if err == sql.ErrNoRows {
+		return Channel{}, ErrChannelMissing
+	}
+	if err != nil {
+		return Channel{}, err
+	}
+	if storedHash != accessHash {
+		return Channel{}, ErrInvalidChannelAccessHash
+	}
+	if creator != actorID {
+		var rawRights string
+		err = tx.QueryRow(`SELECT admin_rights FROM apifull_channel_member
+			WHERE channel_id=$1 AND user_id=$2 FOR UPDATE`, channelID, actorID).Scan(&rawRights)
+		if err == sql.ErrNoRows {
+			return Channel{}, ErrChannelAdminRequired
+		}
+		if err != nil {
+			return Channel{}, err
+		}
+		var rights ChannelAdminRights
+		if json.Unmarshal([]byte(rawRights), &rights) != nil || !rights.ChangeInfo {
+			return Channel{}, ErrChannelAdminRequired
+		}
+	}
+	if megagroup != 0 {
+		return Channel{}, ErrChannelConversionInvalid
+	}
+	if broadcast == 0 {
+		return Channel{}, ErrChannelConversionInvalid
+	}
+	if _, err = tx.Exec(`UPDATE apifull_channel SET broadcast=0, megagroup=1 WHERE id=$1`, channelID); err != nil {
+		return Channel{}, err
+	}
+	if err = tx.Commit(); err != nil {
+		return Channel{}, err
+	}
+	channel, ok, err := LoadChannel(channelID)
+	if err != nil {
+		return Channel{}, err
+	}
+	if !ok {
+		return Channel{}, ErrChannelMissing
+	}
+	return channel, nil
 }
 
 // ListInactiveChannels returns channels owned by creatorID whose last

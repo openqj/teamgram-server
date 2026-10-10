@@ -10,12 +10,25 @@ import (
 	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/persist"
 )
 
+var (
+	ErrChannelMissing           = domain.ErrChannelMissing
+	ErrInvalidChannelAccessHash = domain.ErrInvalidChannelAccessHash
+	ErrChannelConversionInvalid = domain.ErrChannelConversionInvalid
+	ErrChannelAdminRequired     = domain.ErrChannelAdminRequired
+)
+
 func OpenPostgresReadOnly(dsn string) error {
 	return domain.OpenPostgresReadOnly(dsn)
 }
 
 func ClosePostgres() error {
 	return domain.Close()
+}
+
+// ConvertChannelToGigagroup persists the channel type transition after the
+// chats BFF has received and authenticated the Layer 229 request.
+func ConvertChannelToGigagroup(actorID, channelID, accessHash int64) (domain.Channel, error) {
+	return domain.ConvertChannelToGigagroup(actorID, channelID, accessHash)
 }
 
 // SetChannelEmojiStickerSet stores the channel emoji binding after the caller
