@@ -34,7 +34,7 @@ func TestEmojiCatalogPostgresRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = db.ExecContext(context.Background(), `INSERT INTO apifull_emoji_document(id,access_hash,date,alt,featured,profile,status) VALUES ($1,$2,123,$3,TRUE,TRUE,TRUE)`, docID, docID+1, emoticon)
+	_, err = db.ExecContext(context.Background(), `INSERT INTO apifull_emoji_document(id,access_hash,date,alt,featured,profile,status,group_photo) VALUES ($1,$2,123,$3,TRUE,TRUE,TRUE,TRUE)`, docID, docID+1, emoticon)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -69,6 +69,14 @@ func TestEmojiCatalogPostgresRoundTrip(t *testing.T) {
 	docs, err := c.MessagesGetCustomEmojiDocuments(&mtproto.TLMessagesGetCustomEmojiDocuments{DocumentId: []int64{docID}})
 	if err != nil || len(docs.GetDatas()) != 1 || docs.GetDatas()[0].GetId() != docID {
 		t.Fatalf("docs=%v err=%v", docs, err)
+	}
+	profile, err := c.AccountGetDefaultProfilePhotoEmojis(&mtproto.TLAccountGetDefaultProfilePhotoEmojis{})
+	if err != nil || !containsInt64(profile.GetDocumentId(), docID) {
+		t.Fatalf("profile photo emojis=%v err=%v", profile, err)
+	}
+	group, err := c.AccountGetDefaultGroupPhotoEmojis(&mtproto.TLAccountGetDefaultGroupPhotoEmojis{})
+	if err != nil || !containsInt64(group.GetDocumentId(), docID) {
+		t.Fatalf("group photo emojis=%v err=%v", group, err)
 	}
 	search, err := c.MessagesSearchCustomEmoji(&mtproto.TLMessagesSearchCustomEmoji{Emoticon: emoticon})
 	if err != nil || len(search.GetDocumentId()) != 1 || search.GetDocumentId()[0] != docID {

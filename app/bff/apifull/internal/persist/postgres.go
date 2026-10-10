@@ -456,6 +456,23 @@ func openPostgres(dsn string, createSchema bool) error {
 			_ = db.Close()
 			return err
 		}
+		if _, err = db.Exec(`CREATE TABLE IF NOT EXISTS apifull_quick_reply (
+			user_id BIGINT NOT NULL,
+			shortcut_id INTEGER NOT NULL CHECK (shortcut_id > 0),
+			shortcut VARCHAR(64) NOT NULL CHECK (char_length(shortcut) > 0),
+			message_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
+			position INTEGER NOT NULL DEFAULT 0 CHECK (position >= 0),
+			PRIMARY KEY (user_id, shortcut_id),
+			CONSTRAINT uq_apifull_quick_reply_shortcut UNIQUE (user_id, shortcut)
+		)`); err != nil {
+			_ = db.Close()
+			return err
+		}
+		if _, err = db.Exec(`CREATE INDEX IF NOT EXISTS idx_apifull_quick_reply_user_position
+			ON apifull_quick_reply (user_id, position, shortcut_id)`); err != nil {
+			_ = db.Close()
+			return err
+		}
 		if err = ensureStickerSchema(db); err != nil {
 			_ = db.Close()
 			return err
@@ -474,7 +491,11 @@ func openPostgres(dsn string, createSchema bool) error {
 		for _, query := range []string{
 			`SELECT k, v FROM apifull_kv LIMIT 0`,
 			`SELECT scope, game_key, user_id, score FROM apifull_game_score LIMIT 0`,
-			`SELECT id, autotranslation FROM apifull_channel LIMIT 0`,
+			`SELECT user_id, shortcut_id, shortcut, message_ids FROM apifull_quick_reply LIMIT 0`,
+			`SELECT id, autotranslation, emoji_status_document_id, emoji_status_until FROM apifull_channel LIMIT 0`,
+			`SELECT channel_id, user_id, joined_at, admin_rights, banned_rights FROM apifull_channel_member LIMIT 0`,
+			`SELECT channel_id, message_id, sender_user_id, date, message FROM apifull_channel_message LIMIT 0`,
+			`SELECT user_id, channel_id, read_max_id FROM apifull_channel_read_state LIMIT 0`,
 			`SELECT user_id, state FROM apifull_chatlist_state LIMIT 0`,
 			`SELECT slug, owner_user_id FROM apifull_chatlist_invite LIMIT 0`,
 			`SELECT user_id, id FROM apifull_ai_compose_tone LIMIT 0`,
@@ -501,6 +522,8 @@ func openPostgres(dsn string, createSchema bool) error {
 			`SELECT request_id, user_id, provider, transaction_id, months, state FROM apifull_payment_entitlement_outbox LIMIT 0`,
 			`SELECT user_id, name, phone, email, credentials_saved FROM apifull_payment_saved_info LIMIT 0`,
 			`SELECT id, from_user, to_user, slug, stars, saved FROM apifull_gift LIMIT 0`,
+			`SELECT username, owner_user_id, kind FROM apifull_username LIMIT 0`,
+			`SELECT id, access_hash, admin_id, participant_id, state FROM apifull_call LIMIT 0`,
 			`SELECT community_id, owner_user_id FROM apifull_community LIMIT 0`,
 			`SELECT community_id, peer_type, peer_id FROM apifull_community_peer LIMIT 0`,
 			`SELECT user_id, community_id FROM apifull_community_dialog_state LIMIT 0`,
@@ -510,6 +533,13 @@ func openPostgres(dsn string, createSchema bool) error {
 			`SELECT bot_user_id, group_admin_rights, broadcast_admin_rights FROM apifull_bot_default_admin_rights LIMIT 0`,
 			`SELECT channel_id, sticker_set_id, updated_by_user_id FROM apifull_channel_sticker_set LIMIT 0`,
 			`SELECT channel_id, sticker_set_id, updated_by_user_id FROM apifull_channel_emoji_sticker_set LIMIT 0`,
+			`SELECT id, access_hash, creator_user_id, channel_id, title FROM apifull_group_call LIMIT 0`,
+			`SELECT call_id, join_muted, messages_enabled FROM apifull_group_call_settings LIMIT 0`,
+			`SELECT call_id, creator_user_id, token_hash FROM apifull_group_call_invite LIMIT 0`,
+			`SELECT call_id, user_id, media_source, muted FROM apifull_group_call_participant LIMIT 0`,
+			`SELECT call_id, user_id, subscribed FROM apifull_group_call_subscription LIMIT 0`,
+			`SELECT call_id, user_id, send_as FROM apifull_group_call_send_as LIMIT 0`,
+			`SELECT call_id, public_key, block, params FROM apifull_group_call_conference LIMIT 0`,
 			`SELECT peer_key, topic_id, title, position FROM apifull_forum_topic LIMIT 0`,
 			`SELECT user_id, title FROM apifull_forum_user_title LIMIT 0`,
 			`SELECT channel_id, enabled, tabs, view_as_messages FROM apifull_forum_channel_settings LIMIT 0`,
@@ -518,6 +548,27 @@ func openPostgres(dsn string, createSchema bool) error {
 			`SELECT user_id, joined, allow_international, recent_sent FROM apifull_sms_job_member LIMIT 0`,
 			`SELECT job_id, user_id, phone_number, text, state FROM apifull_sms_job LIMIT 0`,
 			`SELECT id, user_id, event_time, event_type, peer_id, data FROM apifull_app_log LIMIT 0`,
+			`SELECT owner_user_id, url_hash, url, status, match_code FROM apifull_url_auth LIMIT 0`,
+			`SELECT id, call_id, user_id FROM apifull_call_artifact LIMIT 0`,
+			`SELECT id, channel_id, actor_user_id FROM apifull_channel_admin_log LIMIT 0`,
+			`SELECT id, channel_id, pts_from FROM apifull_channel_delivery_outbox LIMIT 0`,
+			`SELECT delivery_id, user_id, state FROM apifull_channel_delivery_recipient LIMIT 0`,
+			`SELECT channel_id, pts, pts_count FROM apifull_channel_event LIMIT 0`,
+			`SELECT user_id, channel_id, message_id FROM apifull_channel_message_content_read LIMIT 0`,
+			`SELECT user_id, channel_id, message_id FROM apifull_channel_message_hidden LIMIT 0`,
+			`SELECT channel_id, sender_user_id, random_id FROM apifull_channel_message_request LIMIT 0`,
+			`SELECT channel_id, last_message_id, pts FROM apifull_channel_message_seq LIMIT 0`,
+			`SELECT owner_user_id, bot_user_id, can_reply FROM apifull_connected_bot LIMIT 0`,
+			`SELECT owner_user_id, peer_type, peer_id FROM apifull_connected_bot_peer LIMIT 0`,
+			`SELECT id, call_id, sender_user_id FROM apifull_group_call_encrypted_message LIMIT 0`,
+			`SELECT id, call_id, sender_user_id FROM apifull_group_call_message LIMIT 0`,
+			`SELECT credential_id, user_id, name FROM apifull_passkey_credential LIMIT 0`,
+			`SELECT challenge, user_id, kind FROM apifull_passkey_session LIMIT 0`,
+			`SELECT id, access_hash, admin_user_id FROM apifull_secret_chat LIMIT 0`,
+			`SELECT chat_id, user_id, device_id FROM apifull_secret_chat_device_key LIMIT 0`,
+			`SELECT id, chat_id, sender_user_id FROM apifull_secret_message LIMIT 0`,
+			`SELECT user_id, last_qts, confirmed_qts FROM apifull_secret_user_state LIMIT 0`,
+			`SELECT id, user_id, charge_id FROM apifull_stars_refund LIMIT 0`,
 		} {
 			if _, err = db.Exec(query); err != nil {
 				_ = db.Close()

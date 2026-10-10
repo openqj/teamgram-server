@@ -19,6 +19,7 @@ package core
 
 import (
 	"github.com/teamgram/proto/mtproto"
+	"github.com/teamgram/teamgram-server/app/messenger/sync/sync"
 	chatpb "github.com/teamgram/teamgram-server/app/service/biz/chat/chat"
 	userpb "github.com/teamgram/teamgram-server/app/service/biz/user/user"
 )
@@ -49,6 +50,9 @@ func (c *ChatsCore) MessagesEditChatCreator(in *mtproto.TLMessagesEditChatCreato
 	if err != nil {
 		return nil, err
 	}
+	if chat.Creator() != c.MD.UserId {
+		return nil, mtproto.ErrChatAdminRequired
+	}
 	if _, err = c.requireCreatorOrAdmin(chat, false); err != nil {
 		c.Logger.Errorf("messages.editChatCreator - error: %v", err)
 		return nil, err
@@ -61,12 +65,15 @@ func (c *ChatsCore) MessagesEditChatCreator(in *mtproto.TLMessagesEditChatCreato
 	if to.IsChatMemberCreator() || chat.Creator() == target.PeerId {
 		return nil, mtproto.ErrChatNotModified
 	}
+	if err = c.svcCtx.Dao.CheckPassword(c.MD.UserId, in.Password); err != nil {
+		c.Logger.Errorf("messages.editChatCreator - password rejected: %v", err)
+		return nil, err
+	}
 
 	chat, err = c.svcCtx.Dao.ChatClient.Client().ChatEditChatAdmin(c.ctx, &chatpb.TLChatEditChatAdmin{
 		ChatId:          chatId,
 		OperatorId:      c.MD.UserId,
 		EditChatAdminId: target.PeerId,
-		IsAdmin:         mtproto.BoolTrue,
 	})
 	if err != nil {
 		c.Logger.Errorf("messages.editChatCreator - error: %v", err)
@@ -81,24 +88,50 @@ func (c *ChatsCore) MessagesEditChatCreator(in *mtproto.TLMessagesEditChatCreato
 		return nil
 	})
 
-	var users []*mtproto.User
 	mUsers, err := c.svcCtx.Dao.UserClient.UserGetMutableUsers(c.ctx, &userpb.TLUserGetMutableUsers{
 		Id: idList,
 	})
 	if err != nil {
 		c.Logger.Errorf("messages.editChatCreator - error: %v", err)
-	} else if mUsers != nil {
-		users = mUsers.GetUserListByIdList(c.MD.UserId, idList...)
+		return nil, err
+	}
+	if mUsers == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
+	if !mUsers.CheckExistUser(idList...) {
+		return nil, mtproto.ErrUserIdInvalid
 	}
 
 	updateChatParticipants := mtproto.MakeTLUpdateChatParticipants(&mtproto.Update{
 		Participants_CHATPARTICIPANTS: chat.ToChatParticipants(0),
 	}).To_Update()
 	updates := mtproto.MakeUpdatesByUpdatesUsersChats(
-		users,
+		mUsers.GetUserListByIdList(c.MD.UserId, idList...),
 		[]*mtproto.Chat{chat.ToUnsafeChat(c.MD.UserId)},
 		updateChatParticipants,
 	)
-	c.pushChatUpdates(chat, updates)
+	var pushErr error
+	chat.Walk(func(userID int64, participant *mtproto.ImmutableChatParticipant) error {
+		if pushErr != nil || participant == nil || !participant.IsChatMemberStateNormal() {
+			return pushErr
+		}
+		reply, err := c.svcCtx.Dao.SyncClient.SyncPushUpdates(c.ctx, &sync.TLSyncPushUpdates{
+			UserId: userID,
+			Updates: mtproto.MakeUpdatesByUpdatesUsersChats(
+				mUsers.GetUserListByIdList(userID, idList...),
+				[]*mtproto.Chat{chat.ToUnsafeChat(userID)},
+				updateChatParticipants,
+			),
+		})
+		if err != nil {
+			pushErr = err
+		} else if reply == nil {
+			pushErr = mtproto.ErrInternalServerError
+		}
+		return pushErr
+	})
+	if pushErr != nil {
+		return nil, pushErr
+	}
 	return updates, nil
 }

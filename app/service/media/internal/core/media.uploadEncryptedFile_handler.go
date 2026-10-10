@@ -18,7 +18,7 @@ import (
 // MediaUploadEncryptedFile
 // media.uploadEncryptedFile owner_id:long file:InputEncryptedFile = EncryptedFile;
 func (c *MediaCore) MediaUploadEncryptedFile(in *media.TLMediaUploadEncryptedFile) (*mtproto.EncryptedFile, error) {
-	if in == nil || in.GetOwnerId() <= 0 || in.GetFile() == nil || in.GetFile().GetId() <= 0 || in.GetFile().GetParts() <= 0 {
+	if in == nil || in.GetOwnerId() == 0 || in.GetFile() == nil || in.GetFile().GetId() <= 0 || in.GetFile().GetParts() <= 0 {
 		return nil, mtproto.ErrMediaInvalid
 	}
 
@@ -32,6 +32,13 @@ func (c *MediaCore) MediaUploadEncryptedFile(in *media.TLMediaUploadEncryptedFil
 	}
 	if file == nil {
 		return nil, mtproto.ErrMediaInvalid
+	}
+	if file.GetId() <= 0 || file.GetAccessHash() == 0 || file.GetSize2_INT64() <= 0 || file.GetDcId() <= 0 {
+		return nil, mtproto.ErrMediaInvalid
+	}
+	if err = c.svcCtx.Dao.SaveEncryptedFile(c.ctx, in.GetOwnerId(), file); err != nil {
+		c.Logger.Errorf("media.uploadEncryptedFile - persist metadata: %v", err)
+		return nil, err
 	}
 	return file, nil
 }

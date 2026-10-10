@@ -20,6 +20,7 @@ package core
 
 import (
 	"testing"
+	"time"
 
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/proto/mtproto/rpc/metadata"
@@ -30,9 +31,10 @@ func TestGameHighScoreRoundtrip(t *testing.T) {
 	c := &ApiFullCore{MD: &metadata.RpcMetadata{UserId: 1}}
 	peer := &mtproto.InputPeer{UserId: 1}
 	player := &mtproto.InputUser{UserId: 1}
-	inlineID := &mtproto.InputBotInlineMessageID{DcId: 2, Id_INT64: 9}
+	messageID := int32(time.Now().UnixNano() & 0x3fffffff)
+	inlineID := &mtproto.InputBotInlineMessageID{DcId: 2, Id_INT64: time.Now().UnixNano()}
 	for _, key := range []string{
-		gameScorePrefix + gamePeerKey(peer, 11),
+		gameScorePrefix + gamePeerKey(peer, messageID),
 		inlineGameScorePrefix + inlineGameKey(inlineID),
 	} {
 		if err := persist.Default.Set(key, ""); err != nil {
@@ -42,7 +44,7 @@ func TestGameHighScoreRoundtrip(t *testing.T) {
 
 	if _, err := c.MessagesSetGameScore(&mtproto.TLMessagesSetGameScore{
 		Peer:   peer,
-		Id:     11,
+		Id:     messageID,
 		UserId: player,
 		Score:  42,
 	}); err != nil {
@@ -50,7 +52,7 @@ func TestGameHighScoreRoundtrip(t *testing.T) {
 	}
 	if _, err := c.MessagesSetGameScore(&mtproto.TLMessagesSetGameScore{
 		Peer:   peer,
-		Id:     11,
+		Id:     messageID,
 		UserId: player,
 		Score:  42,
 	}); err != mtproto.ErrBotScoreNotModified {
@@ -58,7 +60,7 @@ func TestGameHighScoreRoundtrip(t *testing.T) {
 	}
 	got, err := c.MessagesGetGameHighScores(&mtproto.TLMessagesGetGameHighScores{
 		Peer:   peer,
-		Id:     11,
+		Id:     messageID,
 		UserId: player,
 	})
 	if err != nil {

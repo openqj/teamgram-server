@@ -298,6 +298,26 @@ func LoadEmojiDocumentIDs(ctx context.Context, kind string) ([]int64, error) {
 	return ids, rows.Err()
 }
 
+// EmojiDocumentInCatalog reports whether a document is explicitly published
+// for the requested catalog. Callers use this to reject arbitrary document
+// IDs at mutation boundaries.
+func EmojiDocumentInCatalog(ctx context.Context, id int64, kind string) (bool, error) {
+	if id <= 0 {
+		return false, nil
+	}
+	db, err := emojiDB()
+	if err != nil {
+		return false, err
+	}
+	column := map[string]string{"status": "status", "channel_status": "channel_status"}[kind]
+	if column == "" {
+		return false, errors.New("apifull: invalid emoji catalog")
+	}
+	var found bool
+	err = db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM apifull_emoji_document WHERE id=$1 AND `+column+`)`, id).Scan(&found)
+	return found, err
+}
+
 func LoadEmojiGroups(ctx context.Context, kind string) ([]EmojiGroupRecord, error) {
 	return loadEmojiGroups(ctx, kind)
 }

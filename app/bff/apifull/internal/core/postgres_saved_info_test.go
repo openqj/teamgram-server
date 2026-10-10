@@ -19,7 +19,9 @@ func TestPaymentInfoHandlersUsePostgresStore(t *testing.T) {
 	if err := domain.OpenPostgresReadOnly(dsn); err != nil {
 		t.Fatalf("open payment PostgreSQL: %v", err)
 	}
-	t.Cleanup(func() { _ = domain.Close() })
+	// TestMain owns the process-wide domain handle. Closing it here makes the
+	// result depend on test order and leaves later PostgreSQL-backed handlers
+	// observing a closed global store.
 	cleanup, err := persist.OpenPostgresDB(dsn)
 	if err != nil {
 		t.Fatalf("open cleanup PostgreSQL: %v", err)

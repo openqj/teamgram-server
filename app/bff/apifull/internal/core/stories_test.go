@@ -64,6 +64,97 @@ func TestStoryPageByIDUsesExclusiveSparseCursor(t *testing.T) {
 	}
 }
 
+func TestStoryMaxIDUsesPersistedMaximum(t *testing.T) {
+	stories := &userStoryStore{
+		Order: []int32{9, 1},
+		Items: map[int32]*mtproto.StoryItem{
+			1: mtproto.MakeTLStoryItem(&mtproto.StoryItem{Id: 1}).To_StoryItem(),
+			9: mtproto.MakeTLStoryItem(&mtproto.StoryItem{Id: 9}).To_StoryItem(),
+		},
+	}
+	if got := storyMaxID(stories); got != 9 {
+		t.Fatalf("storyMaxID() = %d, want 9", got)
+	}
+}
+
+func TestStoriesSendReactionRequiresReaction(t *testing.T) {
+	uid := int64(229903)
+	t.Cleanup(func() { _ = persist.Default.Set(storyKey(uid), "") })
+	item := mtproto.MakeTLStoryItem(&mtproto.StoryItem{Id: 1}).To_StoryItem()
+	if err := saveUserStories(uid, &userStoryStore{Order: []int32{1}, Items: map[int32]*mtproto.StoryItem{1: item}}); err != nil {
+		t.Fatal(err)
+	}
+	c := &ApiFullCore{MD: &metadata.RpcMetadata{UserId: uid}}
+	if got, err := c.StoriesSendReaction(&mtproto.TLStoriesSendReaction{Peer: mtproto.MakeTLInputPeerSelf(nil).To_InputPeer(), StoryId: 1}); got != nil || !sameRPCErrorCode(err, mtproto.ErrReactionEmpty) {
+		t.Fatalf("sendReaction(nil) = %v, %v; want nil result and REACTION_EMPTY", got, err)
+	}
+	peer := mtproto.MakeTLInputPeerSelf(nil).To_InputPeer()
+	if _, err := c.StoriesSendReaction(&mtproto.TLStoriesSendReaction{
+		Peer: peer, StoryId: 1,
+		Reaction: mtproto.MakeTLReactionEmoji(&mtproto.Reaction{Emoticon: "👍"}).To_Reaction(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.StoriesSendReaction(&mtproto.TLStoriesSendReaction{
+		Peer: peer, StoryId: 1,
+		Reaction: mtproto.MakeTLReactionEmpty(nil).To_Reaction(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	list, err := c.StoriesGetStoryReactionsList(&mtproto.TLStoriesGetStoryReactionsList{Peer: peer, Id: 1})
+	if err != nil || list == nil || list.GetCount() != 0 {
+		t.Fatalf("reactionEmpty should remove reaction: list=%#v err=%v", list, err)
+	}
+}
+
+func TestStoriesReactionListFiltersAndPaginates(t *testing.T) {
+	uid := int64(229904)
+	t.Cleanup(func() { _ = persist.Default.Set(storyKey(uid), "") })
+	item := mtproto.MakeTLStoryItem(&mtproto.StoryItem{Id: 1}).To_StoryItem()
+	if err := saveUserStories(uid, &userStoryStore{
+		Order:     []int32{1},
+		Items:     map[int32]*mtproto.StoryItem{1: item},
+		Reactions: map[int32][]storyReactionRec{1: {{UserId: 11, Emoticon: "👍"}, {UserId: 12, Emoticon: "❤️"}}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	c := &ApiFullCore{MD: &metadata.RpcMetadata{UserId: uid}}
+	list, err := c.StoriesGetStoryReactionsList(&mtproto.TLStoriesGetStoryReactionsList{
+		Peer:     mtproto.MakeTLInputPeerSelf(nil).To_InputPeer(),
+		Id:       1,
+		Reaction: mtproto.MakeTLReactionEmoji(&mtproto.Reaction{Emoticon: "👍"}).To_Reaction(),
+		Limit:    1,
+	})
+	if err != nil || list == nil || list.GetCount() != 1 || len(list.GetReactions()) != 1 || list.GetNextOffset() != nil {
+		t.Fatalf("filtered reaction list = %#v, %v", list, err)
+	}
+	list, err = c.StoriesGetStoryReactionsList(&mtproto.TLStoriesGetStoryReactionsList{
+		Peer: mtproto.MakeTLInputPeerSelf(nil).To_InputPeer(), Id: 1, Limit: 1,
+	})
+	if err != nil || list == nil || list.GetCount() != 2 || len(list.GetReactions()) != 1 || list.GetNextOffset().GetValue() != "1" {
+		t.Fatalf("paginated reaction list = %#v, %v", list, err)
+	}
+}
+
+func TestStoriesArchiveOmitsPinnedToTop(t *testing.T) {
+	uid := int64(229902)
+	t.Cleanup(func() { _ = persist.Default.Set(storyKey(uid), "") })
+	item := mtproto.MakeTLStoryItem(&mtproto.StoryItem{Id: 4, Pinned: true}).To_StoryItem()
+	if err := saveUserStories(uid, &userStoryStore{Order: []int32{4}, Items: map[int32]*mtproto.StoryItem{4: item}}); err != nil {
+		t.Fatal(err)
+	}
+	c := &ApiFullCore{MD: &metadata.RpcMetadata{UserId: uid}}
+	archive, err := c.StoriesGetStoriesArchive(&mtproto.TLStoriesGetStoriesArchive{
+		Peer: mtproto.MakeTLInputPeerSelf(nil).To_InputPeer(), Limit: 100,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(archive.GetPinnedToTop()) != 0 {
+		t.Fatalf("archive pinned_to_top = %v, want empty", archive.GetPinnedToTop())
+	}
+}
+
 func TestStoriesMethodsFailClosedWithoutProvider(t *testing.T) {
 	uid := int64(229901)
 	c := &ApiFullCore{MD: &metadata.RpcMetadata{UserId: uid}}

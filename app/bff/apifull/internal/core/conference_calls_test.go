@@ -18,15 +18,16 @@ func TestConferenceCallsFailClosedWithoutMediaBackend(t *testing.T) {
 	checks := []struct {
 		name string
 		call func() error
+		want error
 	}{
-		{"create", func() error { _, err := c.PhoneCreateConferenceCall7D0444BB(nil); return err }},
-		{"chain blocks", func() error { _, err := c.PhoneGetGroupCallChainBlocks(nil); return err }},
-		{"encrypted message", func() error { _, err := c.PhoneSendGroupCallEncryptedMessage(nil); return err }},
+		{"create", func() error { _, err := c.PhoneCreateConferenceCall7D0444BB(nil); return err }, mtproto.ErrMethodNotImpl},
+		{"chain blocks", func() error { _, err := c.PhoneGetGroupCallChainBlocks(nil); return err }, mtproto.ErrMethodNotImpl},
+		{"encrypted message", func() error { _, err := c.PhoneSendGroupCallEncryptedMessage(nil); return err }, mtproto.ErrGroupCallInvalid},
 	}
 	for _, check := range checks {
 		t.Run(check.name, func(t *testing.T) {
-			if err := check.call(); !errors.Is(err, mtproto.ErrMethodNotImpl) {
-				t.Fatalf("error = %v, want METHOD_NOT_IMPL", err)
+			if err := check.call(); !errors.Is(err, check.want) {
+				t.Fatalf("error = %v, want %v", err, check.want)
 			}
 		})
 	}
@@ -80,6 +81,12 @@ func TestConferenceBroadcastAndChainReadback(t *testing.T) {
 	}
 	if got := read.GetUpdates()[0].GetBlocks(); len(got) != 1 || string(got[0]) != "broadcast-block" {
 		t.Fatalf("chain read blocks = %#v, want broadcast block", got)
+	}
+	encrypted, err := c.PhoneSendGroupCallEncryptedMessage(&mtproto.TLPhoneSendGroupCallEncryptedMessage{
+		Call: input, EncryptedMessage: []byte("opaque-ciphertext"),
+	})
+	if err != nil || encrypted != mtproto.BoolTrue {
+		t.Fatalf("encrypted group-call message: result=%v err=%v", encrypted, err)
 	}
 
 	if _, err = c.PhoneGetGroupCallChainBlocks(&mtproto.TLPhoneGetGroupCallChainBlocks{

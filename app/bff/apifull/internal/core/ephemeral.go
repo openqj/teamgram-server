@@ -19,6 +19,7 @@
 package core
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"strconv"
@@ -34,8 +35,47 @@ import (
 // rest of APIFull state so retries cannot create duplicate random IDs.
 
 type ephemeralRecord struct {
-	Message  *mtproto.EphemeralMessage `json:"message"`
-	RandomID int64                     `json:"random_id,omitempty"`
+	Message     *mtproto.EphemeralMessage `json:"message"`
+	RandomID    int64                     `json:"random_id,omitempty"`
+	RequestHash string                    `json:"request_hash,omitempty"`
+}
+
+// ephemeralRequestHash captures the complete protocol request. The random ID
+// is included intentionally: the digest identifies the exact request that
+// claimed an ID, so reusing an ID with changed content cannot be mistaken for
+// a transport retry.
+func ephemeralRequestHash(in *mtproto.TLEphemeralSendMessage) (string, error) {
+	// Constructor is transport metadata and differs between the generated
+	// legacy RPC and the Layer 229 wrapper. Exclude it so those equivalent
+	// requests share the same idempotency key.
+	raw, err := json.Marshal(struct {
+		Peer        *mtproto.InputPeer        `json:"peer,omitempty"`
+		ReceiverID  *mtproto.InputUser        `json:"receiver_id,omitempty"`
+		QueryID     any                       `json:"query_id,omitempty"`
+		Message     string                    `json:"message"`
+		Entities    []*mtproto.MessageEntity  `json:"entities,omitempty"`
+		Media       *mtproto.InputMedia       `json:"media,omitempty"`
+		ReplyMarkup *mtproto.ReplyMarkup      `json:"reply_markup,omitempty"`
+		RichMessage *mtproto.InputRichMessage `json:"rich_message,omitempty"`
+		RandomID    int64                     `json:"random_id"`
+		ReplyTo     *mtproto.InputReplyTo     `json:"reply_to,omitempty"`
+	}{
+		Peer:        in.GetPeer(),
+		ReceiverID:  in.GetReceiverId(),
+		QueryID:     in.GetQueryId(),
+		Message:     in.GetMessage(),
+		Entities:    in.GetEntities(),
+		Media:       in.GetMedia(),
+		ReplyMarkup: in.GetReplyMarkup(),
+		RichMessage: in.GetRichMessage(),
+		RandomID:    in.GetRandomId(),
+		ReplyTo:     in.GetReplyTo(),
+	})
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(raw)
+	return fmt.Sprintf("%x", sum[:]), nil
 }
 
 func ephemeralRecords(raw string) ([]ephemeralRecord, error) {
@@ -132,6 +172,13 @@ func (c *ApiFullCore) EphemeralSendMessage(in *mtproto.TLEphemeralSendMessage) (
 	if in.GetMessage() == "" && in.GetMedia() == nil && in.GetRichMessage() == nil {
 		return nil, mtproto.ErrMessageEmpty
 	}
+	if in.GetRandomId() == 0 {
+		return nil, mtproto.ErrRandomIdEmpty
+	}
+	requestHash, err := ephemeralRequestHash(in)
+	if err != nil {
+		return nil, fmt.Errorf("hash ephemeral request: %w", err)
+	}
 	// APIFull has no media/rich-message resolver for ephemeral records. Do not
 	// persist an incomplete object while claiming success.
 	if in.GetMedia() != nil || in.GetRichMessage() != nil {
@@ -165,6 +212,9 @@ func (c *ApiFullCore) EphemeralSendMessage(in *mtproto.TLEphemeralSendMessage) (
 		if in.GetRandomId() != 0 {
 			for _, record := range records {
 				if record.RandomID == in.GetRandomId() && record.Message != nil {
+					if record.RequestHash != "" && record.RequestHash != requestHash {
+						return "", mtproto.ErrRandomIdDuplicate
+					}
 					message = record.Message
 					return raw, nil
 				}
@@ -192,7 +242,7 @@ func (c *ApiFullCore) EphemeralSendMessage(in *mtproto.TLEphemeralSendMessage) (
 			Entities:      in.GetEntities(),
 			ReplyMarkup:   in.GetReplyMarkup(),
 		}
-		records = append(records, ephemeralRecord{Message: message, RandomID: in.GetRandomId()})
+		records = append(records, ephemeralRecord{Message: message, RandomID: in.GetRandomId(), RequestHash: requestHash})
 		encoded, err := json.Marshal(records)
 		return string(encoded), err
 	})

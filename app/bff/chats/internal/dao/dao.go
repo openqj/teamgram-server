@@ -34,6 +34,7 @@ import (
 )
 
 type Dao struct {
+	PostgresDSN string
 	user_client.UserClient
 	ChatClient *chat_client.ChatClientHelper
 	msg_client.MsgClient
@@ -47,6 +48,7 @@ type Dao struct {
 
 func New(c config.Config) *Dao {
 	return &Dao{
+		PostgresDSN:       c.PostgresDSN,
 		UserClient:        user_client.NewUserClient(rpcx.GetCachedRpcClient(c.UserClient)),
 		ChatClient:        chat_client.NewChatClientHelper(rpcx.GetCachedRpcClient(c.ChatClient)),
 		MsgClient:         msg_client.NewMsgClient(rpcx.GetCachedRpcClient(c.MsgClient)),

@@ -50,13 +50,16 @@ func (c *ChatsCore) MessagesGetFutureChatCreatorAfterLeave(in *mtproto.TLMessage
 	mUsers, err := c.svcCtx.Dao.UserClient.UserGetMutableUsers(c.ctx, &userpb.TLUserGetMutableUsers{
 		Id: []int64{c.MD.UserId, userId},
 	})
-	if err == nil && mUsers != nil {
-		users := mUsers.GetUserListByIdList(c.MD.UserId, userId)
-		if len(users) > 0 && users[0] != nil {
-			return users[0], nil
-		}
-	} else if err != nil {
+	if err != nil {
 		c.Logger.Errorf("messages.getFutureChatCreatorAfterLeave - error: %v", err)
+		return nil, err
 	}
-	return mtproto.MakeTLUser(&mtproto.User{Id: userId}).To_User(), nil
+	if mUsers == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
+	users := mUsers.GetUserListByIdList(c.MD.UserId, userId)
+	if len(users) == 0 || users[0] == nil {
+		return nil, mtproto.ErrUserIdInvalid
+	}
+	return users[0], nil
 }

@@ -143,15 +143,24 @@ func CommunityCanView(communityID, userID int64) (bool, error) {
 	}
 	var allowed bool
 	err := db.QueryRow(`SELECT EXISTS (
-		SELECT 1 FROM apifull_community c WHERE c.community_id=$1 AND (
+		SELECT 1 FROM apifull_community c
+		WHERE c.community_id=$1 AND (
 			c.owner_user_id=$2 OR EXISTS (
 				SELECT 1 FROM apifull_community_peer cp
-				WHERE cp.community_id=c.community_id AND cp.peer_type=$3 AND cp.approved=TRUE AND cp.banned=FALSE
-				AND EXISTS (
-					SELECT 1 FROM apifull_channel ch WHERE ch.id=cp.peer_id AND (
-						ch.creator_user_id=$4 OR EXISTS (
-							SELECT 1 FROM apifull_channel_member cm WHERE cm.channel_id=ch.id AND cm.user_id=$5))))))`,
-		communityID, userID, CommunityPeerChannel, userID, userID).Scan(&allowed)
+				WHERE cp.community_id=c.community_id AND cp.approved=TRUE AND cp.banned=FALSE
+				  AND (
+					(cp.peer_type=$3 AND cp.peer_id=$2)
+					OR (cp.peer_type=$4 AND EXISTS (
+						SELECT 1 FROM apifull_channel ch
+						WHERE ch.id=cp.peer_id AND (
+							ch.creator_user_id=$2 OR EXISTS (
+								SELECT 1 FROM apifull_channel_member cm
+								WHERE cm.channel_id=ch.id AND cm.user_id=$2))))
+				  )
+			)
+		)
+	)`,
+		communityID, userID, CommunityPeerUser, CommunityPeerChannel, userID).Scan(&allowed)
 	return allowed, err
 }
 
@@ -169,10 +178,10 @@ func ListCommunitiesForUser(userID int64) ([]Community, error) {
 		WHERE c.owner_user_id=$2 OR EXISTS (
 			SELECT 1 FROM apifull_community_peer cp
 			WHERE cp.community_id=c.community_id AND cp.approved=TRUE AND cp.banned=FALSE
-			  AND cp.peer_type=$3 AND (cp.peer_id IN (
-				SELECT id FROM apifull_channel WHERE creator_user_id=$4 OR EXISTS (
-					SELECT 1 FROM apifull_channel_member cm WHERE cm.channel_id=apifull_channel.id AND cm.user_id=$5)))
-		) ORDER BY c.community_id`, userID, userID, CommunityPeerChannel, userID, userID)
+			  AND ((cp.peer_type=$3 AND cp.peer_id=$1) OR (cp.peer_type=$4 AND cp.peer_id IN (
+				SELECT id FROM apifull_channel WHERE creator_user_id=$2 OR EXISTS (
+					SELECT 1 FROM apifull_channel_member cm WHERE cm.channel_id=apifull_channel.id AND cm.user_id=$2))))
+		) ORDER BY c.community_id`, userID, userID, CommunityPeerUser, CommunityPeerChannel)
 	if err != nil {
 		return nil, err
 	}

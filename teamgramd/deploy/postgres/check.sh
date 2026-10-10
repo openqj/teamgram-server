@@ -20,6 +20,10 @@ fi
 seen_prefixes=""
 for migration in "${migrations[@]}"; do
   basename=$(basename "$migration")
+  if [[ ! "$basename" =~ ^[0-9]{3}_[A-Za-z0-9][A-Za-z0-9._-]*\.sql$ ]]; then
+    printf 'Invalid PostgreSQL migration filename: %s\n' "$basename" >&2
+    exit 1
+  fi
   prefix=${basename:0:3}
   case " $seen_prefixes " in
   *" $prefix "*)

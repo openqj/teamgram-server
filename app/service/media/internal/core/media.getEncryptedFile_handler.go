@@ -21,10 +21,10 @@ func (c *MediaCore) MediaGetEncryptedFile(in *media.TLMediaGetEncryptedFile) (*m
 		return nil, mtproto.ErrMediaInvalid
 	}
 
-	// Encrypted files are written by DFS, but this service has no authoritative
-	// metadata lookup that can verify the access hash before returning a file.
-	// Do not manufacture an EncryptedFile or bypass that check.
-	c.Logger.Errorf("media.getEncryptedFile - encrypted file metadata provider unavailable")
-
-	return nil, mtproto.ErrMethodNotImpl
+	file, err := c.svcCtx.Dao.GetEncryptedFile(c.ctx, in.GetId(), in.GetAccessHash())
+	if err != nil {
+		c.Logger.Errorf("media.getEncryptedFile - lookup: %v", err)
+		return nil, err
+	}
+	return file, nil
 }

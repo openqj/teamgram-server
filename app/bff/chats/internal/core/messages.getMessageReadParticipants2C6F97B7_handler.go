@@ -28,6 +28,12 @@ import (
 // MessagesGetMessageReadParticipants2C6F97B7
 // messages.getMessageReadParticipants#2c6f97b7 peer:InputPeer msg_id:int = Vector<long>;
 func (c *ChatsCore) MessagesGetMessageReadParticipants2C6F97B7(in *mtproto.TLMessagesGetMessageReadParticipants2C6F97B7) (*mtproto.Vector_Long, error) {
+	if in == nil || in.GetPeer() == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if c == nil || c.MD == nil || c.MD.UserId <= 0 {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
 	var (
 		peer       = mtproto.FromInputPeer2(c.MD.UserId, in.Peer)
 		rValueList = make([]int64, 0)

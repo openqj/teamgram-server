@@ -19,12 +19,18 @@
 package core
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
+	"strconv"
+	"strings"
+	"time"
 
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/bff/apifull/channelview"
 	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/domain"
+	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/persist"
+	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
 // RPCStatisticsServer: Layer 229 methods previously returned ERR_ENTERPRISE_IS_BLOCKED.
@@ -129,6 +135,111 @@ func countGraph(n int64) *mtproto.StatsGraph {
 			Data: fmt.Sprintf(`{"count":%d}`, n),
 		}).To_DataJSON(),
 	}).To_StatsGraph()
+}
+
+// statsGraphRecord is the compact process-state representation used for an
+// asynchronously produced graph. Graph data is intentionally kept as the
+// DataJSON payload instead of serializing generated TL structs into the KV
+// store. The owner and expiry fields prevent a token issued to one account
+// from being replayed by another account or retained indefinitely.
+type statsGraphRecord struct {
+	UserID    int64           `json:"user_id,omitempty"`
+	OwnerID   int64           `json:"owner_id,omitempty"`
+	Data      string          `json:"data,omitempty"`
+	JSON      json.RawMessage `json:"json,omitempty"`
+	ZoomToken string          `json:"zoom_token,omitempty"`
+	Error     string          `json:"error,omitempty"`
+	ExpiresAt int64           `json:"expires_at,omitempty"`
+}
+
+func statsGraphKeys(userID int64, token string) []string {
+	owner := strconv.FormatInt(userID, 10)
+	// The owner-scoped key is authoritative. The unscoped key is retained for
+	// graph tokens issued before owner binding was introduced.
+	return []string{
+		"stats:graph:" + owner + ":" + token,
+		"stats:graph:" + token,
+	}
+}
+
+func decodeStatsGraphRecord(raw string) (statsGraphRecord, bool) {
+	var record statsGraphRecord
+	if raw == "" || json.Unmarshal([]byte(raw), &record) != nil {
+		return statsGraphRecord{}, false
+	}
+	return record, record.Data != "" || len(record.JSON) != 0 || record.Error != ""
+}
+
+func statsGraphData(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	// Persisted records normally carry a string, but accepting an object keeps
+	// the loader compatible with JSONB rows written by PostgreSQL clients.
+	var value string
+	if json.Unmarshal([]byte(raw), &value) == nil {
+		return value
+	}
+	var object map[string]any
+	if json.Unmarshal([]byte(raw), &object) != nil {
+		return ""
+	}
+	if data, ok := object["data"].(string); ok {
+		return data
+	}
+	encoded, err := json.Marshal(object)
+	if err != nil {
+		return ""
+	}
+	return string(encoded)
+}
+
+func loadStatsGraph(userID int64, token string) (*mtproto.StatsGraph, error) {
+	for i, key := range statsGraphKeys(userID, token) {
+		raw, err := persist.Default.Get(key)
+		if err != nil {
+			return nil, err
+		}
+		record, ok := decodeStatsGraphRecord(raw)
+		if !ok {
+			continue
+		}
+		owner := record.UserID
+		if owner == 0 {
+			owner = record.OwnerID
+		}
+		// A legacy unscoped record must still carry its owner. Without that
+		// binding, any authenticated account could replay the token.
+		if owner == 0 && i > 0 {
+			return nil, mtproto.ErrGraphInvalidReload
+		}
+		if owner != 0 && owner != userID {
+			return nil, mtproto.ErrGraphInvalidReload
+		}
+		if record.ExpiresAt > 0 && record.ExpiresAt <= time.Now().Unix() {
+			return nil, mtproto.ErrGraphExpiredReload
+		}
+		if record.Error != "" {
+			return mtproto.MakeTLStatsGraphError(&mtproto.StatsGraph{
+				Error: record.Error,
+			}).To_StatsGraph(), nil
+		}
+		data := record.Data
+		if data == "" {
+			data = statsGraphData(string(record.JSON))
+		}
+		if data == "" {
+			return nil, mtproto.ErrGraphInvalidReload
+		}
+		graph := mtproto.MakeTLStatsGraph(&mtproto.StatsGraph{
+			Json: mtproto.MakeTLDataJSON(&mtproto.DataJSON{Data: data}).To_DataJSON(),
+		}).To_StatsGraph()
+		if record.ZoomToken != "" {
+			graph.ZoomToken = wrapperspb.String(record.ZoomToken)
+		}
+		return graph, nil
+	}
+	return nil, mtproto.ErrGraphInvalidReload
 }
 
 // resolveStatsChannel keeps statistics scoped to a real channel and to an
@@ -237,7 +348,8 @@ func (c *ApiFullCore) StatsGetBroadcastStats(in *mtproto.TLStatsGetBroadcastStat
 }
 
 func (c *ApiFullCore) StatsLoadAsyncGraph(in *mtproto.TLStatsLoadAsyncGraph) (*mtproto.StatsGraph, error) {
-	if _, err := c.requireUserId(); err != nil {
+	uid, err := c.requireUserId()
+	if err != nil {
 		return nil, err
 	}
 	if in == nil {
@@ -247,7 +359,10 @@ func (c *ApiFullCore) StatsLoadAsyncGraph(in *mtproto.TLStatsLoadAsyncGraph) (*m
 	if token == "" {
 		return nil, mtproto.ErrTokenEmpty
 	}
-	return nil, mtproto.ErrMethodNotImpl
+	if len(token) > 512 || strings.IndexByte(token, 0) >= 0 {
+		return nil, mtproto.ErrGraphInvalidReload
+	}
+	return loadStatsGraph(uid, token)
 }
 
 func (c *ApiFullCore) StatsGetMegagroupStats(in *mtproto.TLStatsGetMegagroupStats) (*mtproto.Stats_MegagroupStats, error) {
@@ -294,6 +409,9 @@ func (c *ApiFullCore) StatsGetMegagroupStats(in *mtproto.TLStatsGetMegagroupStat
 }
 
 func (c *ApiFullCore) validatePublicForwardsMessage(userID int64, input *mtproto.InputChannel, msgID int32) error {
+	if msgID <= 0 {
+		return mtproto.ErrMessageIdInvalid
+	}
 	ch, err := c.resolveMemberChannel(userID, input, inputChannelID(input))
 	if err != nil {
 		return err
@@ -313,9 +431,14 @@ func (c *ApiFullCore) StatsGetMessagePublicForwards5F150144(in *mtproto.TLStatsG
 	if in == nil {
 		return nil, mtproto.ErrChannelInvalid
 	}
+	if in.GetLimit() <= 0 {
+		return nil, mtproto.ErrLimitInvalid
+	}
 	if err = c.validatePublicForwardsMessage(uid, in.GetChannel(), in.GetMsgId()); err != nil {
 		return nil, err
 	}
+	// The message store does not retain a reverse public-forward index.  A
+	// validated source message therefore cannot produce a trustworthy result.
 	return nil, mtproto.ErrMethodNotImpl
 }
 
@@ -408,7 +531,7 @@ func (c *ApiFullCore) StatsGetStoryPublicForwards(in *mtproto.TLStatsGetStoryPub
 	default:
 		return nil, mtproto.ErrPeerIdInvalid
 	}
-	if in.GetId() == 0 {
+	if in.GetId() <= 0 {
 		return nil, mtproto.ErrStoryIdEmpty
 	}
 	stories, err := loadUserStories(uid)
@@ -418,6 +541,7 @@ func (c *ApiFullCore) StatsGetStoryPublicForwards(in *mtproto.TLStatsGetStoryPub
 	if stories.Items[in.GetId()] == nil {
 		return nil, mtproto.ErrStoryIdEmpty
 	}
+	// Stories currently have no reverse public-forward provider or index.
 	return nil, mtproto.ErrMethodNotImpl
 }
 
@@ -461,8 +585,13 @@ func (c *ApiFullCore) StatsGetMessagePublicForwards5630281B(in *mtproto.TLStatsG
 	if in == nil {
 		return nil, mtproto.ErrChannelInvalid
 	}
+	if in.GetLimit() <= 0 {
+		return nil, mtproto.ErrLimitInvalid
+	}
 	if err = c.validatePublicForwardsMessage(uid, in.GetChannel(), in.GetMsgId()); err != nil {
 		return nil, err
 	}
+	// The message store does not retain public-forward records or their
+	// hydrated entities, so this constructor also fails closed.
 	return nil, mtproto.ErrMethodNotImpl
 }

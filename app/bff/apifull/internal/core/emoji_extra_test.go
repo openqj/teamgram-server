@@ -6,6 +6,7 @@ import (
 
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/proto/mtproto/rpc/metadata"
+	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/persist"
 	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
@@ -29,7 +30,11 @@ func TestBackgroundEmoji81010(t *testing.T) {
 		t.Fatalf("user color request: %+v", client.request)
 	}
 	list, err := c.AccountGetDefaultBackgroundEmojis(nil)
-	if list != nil || !errors.Is(err, mtproto.ErrMethodNotImpl) {
+	if persist.StickerProviderReady() {
+		if err != nil || list == nil || len(list.GetDocumentId()) == 0 {
+			t.Fatalf("background emoji catalogue: %#v %v", list, err)
+		}
+	} else if list != nil || !errors.Is(err, mtproto.ErrMethodNotImpl) {
 		t.Fatalf("background emoji catalogue: %#v %v", list, err)
 	}
 	colors, err := c.HelpGetPeerColors(nil)

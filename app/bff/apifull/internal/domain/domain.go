@@ -143,6 +143,37 @@ func migratePostgres(conn *sql.DB) error {
 	if err := migrateDialect(tx, true); err != nil {
 		return err
 	}
+	if _, err := tx.Exec(`ALTER TABLE apifull_channel ADD COLUMN IF NOT EXISTS emoji_status_document_id BIGINT NOT NULL DEFAULT 0`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`ALTER TABLE apifull_channel ADD COLUMN IF NOT EXISTS emoji_status_until INT NOT NULL DEFAULT 0`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`CREATE TABLE IF NOT EXISTS apifull_url_auth (
+		owner_user_id BIGINT NOT NULL,
+		url_hash BIGINT NOT NULL,
+		url TEXT NOT NULL DEFAULT '',
+		status VARCHAR(16) NOT NULL CHECK (status IN ('requested', 'accepted')),
+		match_code TEXT NOT NULL DEFAULT '',
+		bot_id BIGINT NOT NULL DEFAULT 0,
+		msg_id INTEGER NOT NULL DEFAULT 0,
+		button_id INTEGER NOT NULL DEFAULT 0,
+		in_app_origin TEXT NOT NULL DEFAULT '',
+		date_created INTEGER NOT NULL DEFAULT 0,
+		date_active INTEGER NOT NULL DEFAULT 0,
+		updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		PRIMARY KEY (owner_user_id, url_hash)
+	)`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`CREATE INDEX IF NOT EXISTS idx_apifull_url_auth_match
+		ON apifull_url_auth (owner_user_id, match_code, status)`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`CREATE INDEX IF NOT EXISTS idx_apifull_url_auth_accepted
+		ON apifull_url_auth (owner_user_id, status, date_active, url_hash)`); err != nil {
+		return err
+	}
 	if _, err := tx.Exec(`CREATE TABLE IF NOT EXISTS apifull_payment_saved_info (
 		user_id BIGINT PRIMARY KEY,
 		name TEXT NOT NULL DEFAULT '',
@@ -700,6 +731,16 @@ func migrateDialect(conn sqlExecer, postgres bool) error {
 			KEY idx_apifull_group_call_message_call (call_id, id),
 			KEY idx_apifull_group_call_message_sender (call_id, sender_user_id, id)
 		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+		`CREATE TABLE IF NOT EXISTS apifull_group_call_encrypted_message (
+			id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+			call_id BIGINT NOT NULL,
+			sender_user_id BIGINT NOT NULL,
+			digest VARBINARY(32) NOT NULL,
+			encrypted_message MEDIUMBLOB NOT NULL,
+			date INT NOT NULL,
+			UNIQUE KEY uniq_apifull_group_call_encrypted_message (call_id, sender_user_id, digest),
+			KEY idx_apifull_group_call_encrypted_message_call (call_id, id)
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 		`CREATE TABLE IF NOT EXISTS apifull_channel_message (
 				channel_id BIGINT NOT NULL,
 				message_id INT NOT NULL,
@@ -1020,6 +1061,8 @@ type Channel struct {
 	BackgroundEmojiID        *int64
 	ProfileColor             *int32
 	ProfileBackgroundEmojiID *int64
+	EmojiStatusDocumentID    int64
+	EmojiStatusUntil         int32
 	PhotoID                  int64
 	PhotoDCID                int32
 	PhotoHasVideo            bool
@@ -1083,12 +1126,12 @@ func LoadChannel(id int64) (Channel, bool, error) {
 	var locationLat, locationLong sql.NullFloat64
 	err := db.QueryRow(`SELECT id, access_hash, COALESCE(migrated_from_chat_id, 0), creator_user_id, title, about, broadcast, megagroup, signatures_enabled,
 		signature_profiles_enabled, antispam, autotranslation, hidden_prehistory, participants_hidden, slowmode_seconds, color, background_emoji_id,
-		profile_color, profile_background_emoji_id, photo_id, photo_dc_id, photo_has_video,
+		profile_color, profile_background_emoji_id, emoji_status_document_id, emoji_status_until, photo_id, photo_dc_id, photo_has_video,
 		location_lat, location_long, location_address, username, COALESCE(discussion_group_id, 0), created_at
 		FROM apifull_channel WHERE id=?`, id).Scan(
 		&ch.ID, &ch.AccessHash, &ch.MigratedFromChatID, &ch.Creator, &ch.Title, &ch.About, &broadcast, &megagroup, &signatures, &signatureProfiles,
 		&antispam, &autotranslation, &hiddenPrehistory, &participantsHidden, &ch.SlowmodeSeconds, &color, &backgroundEmojiID, &profileColor,
-		&profileBackgroundEmojiID, &ch.PhotoID, &ch.PhotoDCID, &ch.PhotoHasVideo,
+		&profileBackgroundEmojiID, &ch.EmojiStatusDocumentID, &ch.EmojiStatusUntil, &ch.PhotoID, &ch.PhotoDCID, &ch.PhotoHasVideo,
 		&locationLat, &locationLong, &ch.LocationAddress, &ch.Username, &ch.DiscussionGroupID, &ch.CreatedAt)
 	if err == sql.ErrNoRows {
 		return Channel{}, false, nil
@@ -1185,6 +1228,45 @@ func UpdateChannelPhoto(userID, channelID, photoID int64, photoDCID int32, hasVi
 	}
 	if _, err = tx.Exec(`UPDATE apifull_channel SET photo_id=?, photo_dc_id=?, photo_has_video=? WHERE id=?`,
 		photoID, photoDCID, boolInt(hasVideo), channelID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// UpdateChannelEmojiStatus atomically changes a channel's document-backed
+// emoji status. The creator or an administrator with change-info rights may
+// perform the mutation; the channel row lock orders concurrent profile writes.
+func UpdateChannelEmojiStatus(actorID, channelID, documentID int64, until int32) error {
+	if db == nil {
+		return errors.New("domain PostgreSQL is not open")
+	}
+	if actorID <= 0 || channelID <= 0 || documentID < 0 || until < 0 {
+		return ErrInvalidChannelMember
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var creator int64
+	if err = tx.QueryRow(`SELECT creator_user_id FROM apifull_channel WHERE id=$1 FOR UPDATE`, channelID).Scan(&creator); err == sql.ErrNoRows {
+		return ErrChannelMissing
+	} else if err != nil {
+		return err
+	}
+	if actorID != creator {
+		var rawRights string
+		if err = tx.QueryRow(`SELECT admin_rights FROM apifull_channel_member WHERE channel_id=$1 AND user_id=$2`, channelID, actorID).Scan(&rawRights); err == sql.ErrNoRows {
+			return ErrNotCreator
+		} else if err != nil {
+			return err
+		}
+		var rights ChannelAdminRights
+		if rawRights == "" || json.Unmarshal([]byte(rawRights), &rights) != nil || !rights.ChangeInfo {
+			return ErrNotCreator
+		}
+	}
+	if _, err = tx.Exec(`UPDATE apifull_channel SET emoji_status_document_id=$1, emoji_status_until=$2 WHERE id=$3`, documentID, until, channelID); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -1395,6 +1477,7 @@ func DeleteChannel(userID, channelID int64) error {
 		`DELETE FROM apifull_group_call_subscription WHERE call_id IN (SELECT id FROM apifull_group_call WHERE channel_id=?)`,
 		`DELETE FROM apifull_group_call_send_as WHERE call_id IN (SELECT id FROM apifull_group_call WHERE channel_id=?)`,
 		`DELETE FROM apifull_group_call_message WHERE call_id IN (SELECT id FROM apifull_group_call WHERE channel_id=?)`,
+		`DELETE FROM apifull_group_call_encrypted_message WHERE call_id IN (SELECT id FROM apifull_group_call WHERE channel_id=?)`,
 		`DELETE FROM apifull_group_call WHERE channel_id=?`,
 		`DELETE FROM apifull_channel WHERE id=?`,
 	} {
@@ -2965,6 +3048,24 @@ func CreateGroupCallMessage(callID, senderID, randomID int64, message, sendAs st
 	return LoadGroupCallMessage(callID, randomID)
 }
 
+// SaveGroupCallEncryptedMessage durably records an opaque encrypted payload.
+// The digest makes retries idempotent without exposing plaintext or relying on
+// a client supplied random id, which this Layer 229 method does not carry.
+func SaveGroupCallEncryptedMessage(callID, senderID int64, encrypted []byte) error {
+	if db == nil {
+		return errors.New("domain PostgreSQL is not open")
+	}
+	if callID == 0 || senderID == 0 || len(encrypted) == 0 || len(encrypted) > 1<<20 {
+		return errors.New("invalid encrypted group call message")
+	}
+	digest := sha256.Sum256(encrypted)
+	_, err := db.Exec(`INSERT INTO apifull_group_call_encrypted_message
+		(call_id, sender_user_id, digest, encrypted_message, date)
+		VALUES (?,?,?,?,?) ON CONFLICT (call_id, sender_user_id, digest) DO NOTHING`,
+		callID, senderID, digest[:], encrypted, time.Now().Unix())
+	return err
+}
+
 func LoadGroupCallMessage(callID, randomID int64) (GroupCallMessage, bool, error) {
 	if db == nil {
 		return GroupCallMessage{}, false, errors.New("domain PostgreSQL is not open")
@@ -3077,6 +3178,7 @@ func DeleteGroupCall(id int64) (bool, error) {
 			"apifull_group_call_subscription",
 			"apifull_group_call_send_as",
 			"apifull_group_call_message",
+			"apifull_group_call_encrypted_message",
 		} {
 			if _, err = tx.Exec("DELETE FROM "+table+" WHERE call_id=?", id); err != nil {
 				return false, err

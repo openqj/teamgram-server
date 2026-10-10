@@ -18,6 +18,29 @@ func TestBuildMessageReadParticipantDates(t *testing.T) {
 	}
 }
 
+func TestGetMessageReadParticipants31RejectsNilRequestOrPeer(t *testing.T) {
+	c := &ChatsCore{}
+	for name, in := range map[string]*mtproto.TLMessagesGetMessageReadParticipants31C1C44F{
+		"nil request": nil,
+		"nil peer":    {},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got, err := c.MessagesGetMessageReadParticipants31C1C44F(in); got != nil || err != mtproto.ErrInputRequestInvalid {
+				t.Fatalf("result=(%+v, %v), want (nil, INPUT_REQUEST_INVALID)", got, err)
+			}
+		})
+	}
+}
+
+func TestGetMessageReadParticipants31RejectsMissingAuthentication(t *testing.T) {
+	in := &mtproto.TLMessagesGetMessageReadParticipants31C1C44F{
+		Peer: mtproto.MakeTLInputPeerChat(&mtproto.InputPeer{ChatId: 1}).To_InputPeer(),
+	}
+	if got, err := (&ChatsCore{}).MessagesGetMessageReadParticipants31C1C44F(in); got != nil || err != mtproto.ErrAuthKeyUnregistered {
+		t.Fatalf("result=(%+v, %v), want (nil, AUTH_KEY_UNREGISTERED)", got, err)
+	}
+}
+
 func TestValidateReadParticipantMessageRequiresRequestedChatAndOwner(t *testing.T) {
 	box := &mtproto.MessageBox{
 		UserId:    100,

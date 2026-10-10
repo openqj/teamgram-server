@@ -21,9 +21,12 @@ package core
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strconv"
 
 	"github.com/teamgram/proto/mtproto"
+	"github.com/teamgram/teamgram-server/app/bff/apifull/channelview"
+	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/domain"
 	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/persist"
 	"github.com/teamgram/teamgram-server/app/messenger/sync/sync"
 	userpb "github.com/teamgram/teamgram-server/app/service/biz/user/user"
@@ -225,12 +228,52 @@ func recentEmojiStatusHash(statuses []*mtproto.EmojiStatus) int64 {
 	return hash
 }
 
+// loadEmojiStatusCatalog returns document-backed status values from the
+// PostgreSQL emoji catalogue. The catalogue owns the available documents;
+// this boundary only maps their IDs to the Layer 229 status constructor.
+func loadEmojiStatusCatalog(c *ApiFullCore, kind string) ([]*mtproto.EmojiStatus, error) {
+	ids, err := persist.LoadEmojiDocumentIDs(stickerRequestContext(c), kind)
+	if err != nil {
+		return nil, customEmojiProviderError(c, err)
+	}
+	if len(ids) == 0 {
+		return nil, stickersProviderUnavailable(c)
+	}
+	statuses := make([]*mtproto.EmojiStatus, 0, len(ids))
+	for _, id := range ids {
+		if id <= 0 {
+			continue
+		}
+		statuses = append(statuses, mtproto.MakeTLEmojiStatus(&mtproto.EmojiStatus{
+			DocumentId: id,
+		}).To_EmojiStatus())
+	}
+	return statuses, nil
+}
+
+func emojiStatusesReply(hash int64, statuses []*mtproto.EmojiStatus) *mtproto.Account_EmojiStatuses {
+	currentHash := recentEmojiStatusHash(statuses)
+	if hash != 0 && hash == currentHash {
+		return mtproto.MakeTLAccountEmojiStatusesNotModified(&mtproto.Account_EmojiStatuses{}).To_Account_EmojiStatuses()
+	}
+	return mtproto.MakeTLAccountEmojiStatuses(&mtproto.Account_EmojiStatuses{
+		Hash: currentHash, Statuses: statuses,
+	}).To_Account_EmojiStatuses()
+}
+
 func (c *ApiFullCore) AccountGetDefaultEmojiStatuses(in *mtproto.TLAccountGetDefaultEmojiStatuses) (*mtproto.Account_EmojiStatuses, error) {
-	_ = in
 	if _, err := c.requireUserId(); err != nil {
 		return nil, err
 	}
-	return nil, mtproto.ErrMethodNotImpl
+	statuses, err := loadEmojiStatusCatalog(c, "status")
+	if err != nil {
+		return nil, err
+	}
+	var hash int64
+	if in != nil {
+		hash = in.GetHash()
+	}
+	return emojiStatusesReply(hash, statuses), nil
 }
 
 func (c *ApiFullCore) AccountGetRecentEmojiStatuses(in *mtproto.TLAccountGetRecentEmojiStatuses) (*mtproto.Account_EmojiStatuses, error) {
@@ -265,19 +308,36 @@ func (c *ApiFullCore) AccountClearRecentEmojiStatuses(in *mtproto.TLAccountClear
 }
 
 func (c *ApiFullCore) AccountGetChannelDefaultEmojiStatuses(in *mtproto.TLAccountGetChannelDefaultEmojiStatuses) (*mtproto.Account_EmojiStatuses, error) {
-	_ = in
 	if _, err := c.requireUserId(); err != nil {
 		return nil, err
 	}
-	return nil, mtproto.ErrMethodNotImpl
+	statuses, err := loadEmojiStatusCatalog(c, "channel_status")
+	if err != nil {
+		return nil, err
+	}
+	var hash int64
+	if in != nil {
+		hash = in.GetHash()
+	}
+	return emojiStatusesReply(hash, statuses), nil
 }
 
 func (c *ApiFullCore) AccountGetChannelRestrictedStatusEmojis(in *mtproto.TLAccountGetChannelRestrictedStatusEmojis) (*mtproto.EmojiList, error) {
-	_ = in
 	if _, err := c.requireUserId(); err != nil {
 		return nil, err
 	}
-	return nil, mtproto.ErrMethodNotImpl
+	ids, err := persist.LoadEmojiDocumentIDs(stickerRequestContext(c), "restricted_status")
+	if err != nil {
+		return nil, customEmojiProviderError(c, err)
+	}
+	if len(ids) == 0 {
+		return nil, stickersProviderUnavailable(c)
+	}
+	hash := emojiListHash(ids)
+	if in != nil && in.GetHash() != 0 && in.GetHash() == hash {
+		return mtproto.MakeTLEmojiListNotModified(&mtproto.EmojiList{Hash: hash}).To_EmojiList(), nil
+	}
+	return emojiListReply(ids, hash), nil
 }
 
 func (c *ApiFullCore) AccountGetCollectibleEmojiStatuses(in *mtproto.TLAccountGetCollectibleEmojiStatuses) (*mtproto.Account_EmojiStatuses, error) {
@@ -294,11 +354,69 @@ func (c *ApiFullCore) AccountGetCollectibleEmojiStatuses(in *mtproto.TLAccountGe
 }
 
 func (c *ApiFullCore) ChannelsUpdateEmojiStatus(in *mtproto.TLChannelsUpdateEmojiStatus) (*mtproto.Updates, error) {
-	_ = in
-	if _, err := c.requireUserId(); err != nil {
+	uid, err := c.requireUserId()
+	if err != nil {
 		return nil, err
 	}
-	return nil, mtproto.ErrMethodNotImpl
+	if in == nil || in.GetChannel() == nil || in.GetEmojiStatus() == nil {
+		return nil, mtproto.ErrInputConstructorInvalid
+	}
+	channelID := in.GetChannel().GetChannelId()
+	if channelID == 0 {
+		return nil, mtproto.ErrChannelInvalid
+	}
+	if _, err = c.resolveMemberChannel(uid, in.GetChannel(), channelID); err != nil {
+		return nil, err
+	}
+	status := in.GetEmojiStatus()
+	documentID := int64(0)
+	until := int32(0)
+	switch status.GetPredicateName() {
+	case mtproto.Predicate_emojiStatusEmpty:
+	case mtproto.Predicate_emojiStatus:
+		documentID = status.GetDocumentId()
+		if status.GetUntil_FLAGINT32() != nil {
+			until = status.GetUntil_FLAGINT32().GetValue()
+		}
+	case mtproto.Predicate_emojiStatusUntil:
+		documentID = status.GetDocumentId()
+		until = status.GetUntil_INT32()
+	case mtproto.Predicate_emojiStatusCollectible:
+		return nil, mtproto.ErrMethodNotImpl
+	default:
+		return nil, mtproto.ErrInputConstructorInvalid
+	}
+	if documentID < 0 || until < 0 {
+		return nil, mtproto.ErrDocumentInvalid
+	}
+	if documentID > 0 {
+		found, catalogErr := persist.EmojiDocumentInCatalog(stickerRequestContext(c), documentID, "channel_status")
+		if catalogErr != nil {
+			return nil, customEmojiProviderError(c, catalogErr)
+		}
+		if !found {
+			return nil, mtproto.ErrDocumentInvalid
+		}
+	}
+	if err = domain.UpdateChannelEmojiStatus(uid, channelID, documentID, until); err != nil {
+		switch {
+		case errors.Is(err, domain.ErrChannelMissing):
+			return nil, mtproto.ErrChannelInvalid
+		case errors.Is(err, domain.ErrNotCreator):
+			return nil, mtproto.ErrChatAdminRequired
+		default:
+			return nil, err
+		}
+	}
+	channel, ok, err := domain.LoadChannel(channelID)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, mtproto.ErrChannelInvalid
+	}
+	update := mtproto.MakeTLUpdateChannel(&mtproto.Update{ChannelId: channelID}).To_Update()
+	return mtproto.MakeUpdatesByUpdatesChats([]*mtproto.Chat{channelview.Chat(channel, channel.Creator == uid)}, update), nil
 }
 
 func (c *ApiFullCore) BotsUpdateUserEmojiStatus(in *mtproto.TLBotsUpdateUserEmojiStatus) (*mtproto.Bool, error) {

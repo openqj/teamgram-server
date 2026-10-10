@@ -25,6 +25,7 @@ import (
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/bff/apifull/channelview"
 	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/domain"
+	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/persist"
 	userpb "github.com/teamgram/teamgram-server/app/service/biz/user/user"
 )
 
@@ -90,11 +91,21 @@ func (c *ApiFullCore) AccountUpdateColor(in *mtproto.TLAccountUpdateColor) (*mtp
 }
 
 func (c *ApiFullCore) AccountGetDefaultBackgroundEmojis(in *mtproto.TLAccountGetDefaultBackgroundEmojis) (*mtproto.EmojiList, error) {
-	_ = in
 	if _, err := c.requireUserId(); err != nil {
 		return nil, err
 	}
-	return nil, mtproto.ErrMethodNotImpl
+	ids, err := persist.LoadEmojiDocumentIDs(stickerRequestContext(c), "background")
+	if err != nil {
+		return nil, customEmojiProviderError(c, err)
+	}
+	if len(ids) == 0 {
+		return nil, stickersProviderUnavailable(c)
+	}
+	hash := emojiListHash(ids)
+	if in != nil && in.GetHash() != 0 && in.GetHash() == hash {
+		return mtproto.MakeTLEmojiListNotModified(&mtproto.EmojiList{Hash: hash}).To_EmojiList(), nil
+	}
+	return emojiListReply(ids, hash), nil
 }
 
 type builtinPeerColor struct {

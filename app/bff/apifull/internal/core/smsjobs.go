@@ -117,7 +117,7 @@ func (c *ApiFullCore) SmsjobsGetSmsJob(in *mtproto.TLSmsjobsGetSmsJob) (*mtproto
 		return nil, err
 	}
 	if in == nil || in.GetJobId() == "" {
-		return nil, mtproto.ErrInputRequestInvalid
+		return nil, mtproto.ErrSmsjobIdInvalid
 	}
 	job, err := domain.GetSmsJob(uid, in.GetJobId())
 	if err != nil {
@@ -134,7 +134,7 @@ func (c *ApiFullCore) SmsjobsFinishJob(in *mtproto.TLSmsjobsFinishJob) (*mtproto
 		return nil, err
 	}
 	if in == nil || in.GetJobId() == "" {
-		return nil, mtproto.ErrInputRequestInvalid
+		return nil, mtproto.ErrSmsjobIdInvalid
 	}
 	failure := ""
 	if in.GetError() != nil {
@@ -163,10 +163,12 @@ func smsJobsError(err error) error {
 	switch {
 	case err == nil:
 		return nil
+	case errors.Is(err, domain.ErrSmsjobsNotJoined):
+		return mtproto.ErrNotJoined
 	case errors.Is(err, domain.ErrSmsJobIDInvalid):
-		return mtproto.ErrInputRequestInvalid
+		return mtproto.ErrSmsjobIdInvalid
 	case errors.Is(err, domain.ErrSmsJobNotFound):
-		return mtproto.ErrMethodNotImpl
+		return mtproto.ErrSmsjobIdInvalid
 	default:
 		return mtproto.ErrInternalServerError
 	}

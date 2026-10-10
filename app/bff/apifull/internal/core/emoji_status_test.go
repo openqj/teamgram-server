@@ -176,6 +176,9 @@ func TestEmojiStatusUpdatePropagatesSyncError(t *testing.T) {
 }
 
 func TestEmojiStatusMethodsFailClosedWithoutCatalogOrBackend(t *testing.T) {
+	if persist.StickerProviderReady() {
+		t.Skip("PostgreSQL emoji catalog is configured; catalog-backed behavior is covered by emoji_status_catalog_postgres_test.go")
+	}
 	c := &ApiFullCore{MD: &metadata.RpcMetadata{UserId: 987654325}}
 	tests := []struct {
 		name string

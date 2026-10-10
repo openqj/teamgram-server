@@ -659,11 +659,11 @@ func (c *ApiFullCore) MessagesSaveRecentSticker(in *mtproto.TLMessagesSaveRecent
 	if err != nil {
 		return nil, err
 	}
-	if in.GetId() == nil || inputDocumentID(in.GetId()) == 0 {
+	if in.GetId() == nil || inputDocumentID(in.GetId()) == 0 || in.GetId().GetAccessHash() == 0 {
 		return nil, mtproto.ErrStickerIdInvalid
 	}
 	unsave := in.GetUnsave() != nil && in.GetUnsave().GetPredicateName() == mtproto.Predicate_boolTrue
-	if err = persist.SaveRecentSticker(stickerRequestContext(c), uid, inputDocumentID(in.GetId()), in.GetAttached(), unsave); err != nil {
+	if err = persist.SaveRecentStickerWithAccessHash(stickerRequestContext(c), uid, inputDocumentID(in.GetId()), in.GetId().GetAccessHash(), in.GetAttached(), unsave); err != nil {
 		return nil, stickerProviderError(c, err)
 	}
 	return mtproto.BoolTrue, nil
@@ -741,7 +741,11 @@ func (c *ApiFullCore) MessagesGetAttachedStickers(in *mtproto.TLMessagesGetAttac
 	if in.GetMedia() == nil || in.GetMedia().GetId_INPUTDOCUMENT() == nil || in.GetMedia().GetId_INPUTDOCUMENT().GetId() == 0 {
 		return &mtproto.Vector_StickerSetCovered{Datas: []*mtproto.StickerSetCovered{}}, nil
 	}
-	sets, err := persist.StickerSetsForDocument(stickerRequestContext(c), uid, in.GetMedia().GetId_INPUTDOCUMENT().GetId())
+	doc := in.GetMedia().GetId_INPUTDOCUMENT()
+	if doc.GetAccessHash() == 0 {
+		return nil, mtproto.ErrStickerIdInvalid
+	}
+	sets, err := persist.StickerSetsForDocument(stickerRequestContext(c), uid, doc.GetId(), doc.GetAccessHash())
 	if err != nil {
 		return nil, stickerProviderError(c, err)
 	}
@@ -785,11 +789,11 @@ func (c *ApiFullCore) MessagesFaveSticker(in *mtproto.TLMessagesFaveSticker) (*m
 	if err != nil {
 		return nil, err
 	}
-	if in.GetId() == nil || inputDocumentID(in.GetId()) == 0 {
+	if in.GetId() == nil || inputDocumentID(in.GetId()) == 0 || in.GetId().GetAccessHash() == 0 {
 		return nil, mtproto.ErrStickerIdInvalid
 	}
 	unfave := in.GetUnfave() != nil && in.GetUnfave().GetPredicateName() == mtproto.Predicate_boolTrue
-	if err = persist.SaveFavouriteSticker(stickerRequestContext(c), uid, inputDocumentID(in.GetId()), unfave); err != nil {
+	if err = persist.SaveFavouriteStickerWithAccessHash(stickerRequestContext(c), uid, inputDocumentID(in.GetId()), in.GetId().GetAccessHash(), unfave); err != nil {
 		return nil, stickerProviderError(c, err)
 	}
 	return mtproto.BoolTrue, nil

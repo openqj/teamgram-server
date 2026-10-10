@@ -287,11 +287,20 @@ func (c *ApiFullCore) PhoneGetGroupCallChainBlocks(in *mtproto.TLPhoneGetGroupCa
 }
 
 func (c *ApiFullCore) PhoneSendGroupCallEncryptedMessage(in *mtproto.TLPhoneSendGroupCallEncryptedMessage) (*mtproto.Bool, error) {
-	_ = in
-	if _, err := c.requireUserId(); err != nil {
+	if in == nil || in.GetCall() == nil || in.GetCall().GetId() == 0 {
+		return nil, mtproto.ErrGroupCallInvalid
+	}
+	if len(in.GetEncryptedMessage()) == 0 || len(in.GetEncryptedMessage()) > 1<<20 {
+		return nil, mtproto.ErrEncryptedMessageInvalid
+	}
+	uid, record, _, err := c.loadAuthorizedGroupCall(in.GetCall())
+	if err != nil {
 		return nil, err
 	}
-	return nil, mtproto.ErrMethodNotImpl
+	if err = domain.SaveGroupCallEncryptedMessage(record.ID, uid, in.GetEncryptedMessage()); err != nil {
+		return nil, err
+	}
+	return mtproto.BoolTrue, nil
 }
 
 func (c *ApiFullCore) PhoneCreateConferenceCallDFC909AB(in *mtproto.TLPhoneCreateConferenceCallDFC909AB) (*mtproto.Phone_PhoneCall, error) {

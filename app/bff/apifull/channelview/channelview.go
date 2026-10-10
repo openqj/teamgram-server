@@ -28,6 +28,15 @@ func Chat(ch domain.Channel, creator bool) *mtproto.Chat {
 		Color_FLAGPEERCOLOR:         peerColor(ch.Color, ch.BackgroundEmojiID),
 		ProfileColor:                peerColor(ch.ProfileColor, ch.ProfileBackgroundEmojiID),
 	}
+	if ch.EmojiStatusDocumentID > 0 {
+		status := &mtproto.EmojiStatus{DocumentId: ch.EmojiStatusDocumentID}
+		if ch.EmojiStatusUntil > 0 {
+			status.Until_INT32 = ch.EmojiStatusUntil
+			out.EmojiStatus = mtproto.MakeTLEmojiStatusUntil(status).To_EmojiStatus()
+		} else {
+			out.EmojiStatus = mtproto.MakeTLEmojiStatus(status).To_EmojiStatus()
+		}
+	}
 	if ch.AccessHash != 0 {
 		out.AccessHash_FLAGINT64 = mtproto.MakeFlagsInt64(ch.AccessHash)
 	}

@@ -22,6 +22,8 @@ CREATE TABLE IF NOT EXISTS apifull_channel (
 			background_emoji_id BIGINT NULL,
 			profile_color INT NULL,
 			profile_background_emoji_id BIGINT NULL,
+			emoji_status_document_id BIGINT NOT NULL DEFAULT 0,
+			emoji_status_until INT NOT NULL DEFAULT 0,
 			photo_id BIGINT NOT NULL DEFAULT 0,
 			photo_dc_id INT NOT NULL DEFAULT 0,
 			photo_has_video SMALLINT NOT NULL DEFAULT 0,

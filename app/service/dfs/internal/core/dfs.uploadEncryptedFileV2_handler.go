@@ -10,11 +10,9 @@
 package core
 
 import (
-	"context"
 	"fmt"
 	"math/rand"
 
-	"github.com/teamgram/marmota/pkg/threading2"
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/service/dfs/dfs"
 )
@@ -38,15 +36,18 @@ func (c *DfsCore) DfsUploadEncryptedFileV2(in *dfs.TLDfsUploadEncryptedFileV2) (
 		c.Logger.Errorf("dfs.uploadDocumentFile - error: %v", err)
 		return nil, err
 	}
-	c.svcCtx.Dao.SetCacheFileInfo(c.ctx, encryptedFileId, fileInfo)
 	path := fmt.Sprintf("%d.dat", encryptedFileId)
 
-	threading2.GoSafeContext(c.ctx, func(ctx context.Context) {
-		_, err2 := c.svcCtx.Dao.PutEncryptedFile(ctx, path, c.svcCtx.Dao.NewSSDBReader(fileInfo))
-		if err2 != nil {
-			c.Logger.Errorf("dfs.uploadEncryptedFile - error: %v", err)
-		}
-	})
+	// The RPC response is the durable upload acknowledgement. Do not return an
+	// EncryptedFile while the object write is still running: a failed async
+	// write would leave clients with an identity that cannot be downloaded.
+	if _, err = c.svcCtx.Dao.PutEncryptedFile(c.ctx, path, c.svcCtx.Dao.NewSSDBReader(fileInfo)); err != nil {
+		c.Logger.Errorf("dfs.uploadEncryptedFile - error: %v", err)
+		return nil, err
+	}
+	if err = c.svcCtx.Dao.SetCacheFileInfo(c.ctx, encryptedFileId, fileInfo); err != nil {
+		c.Logger.Errorf("dfs.uploadEncryptedFile - cache metadata: %v", err)
+	}
 
 	encryptedFile := mtproto.MakeTLEncryptedFile(&mtproto.EncryptedFile{
 		Id:             encryptedFileId,

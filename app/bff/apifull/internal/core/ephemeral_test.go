@@ -26,10 +26,15 @@ func TestEphemeralSendAndDeleteRoundTrip(t *testing.T) {
 		t.Fatalf("send: reply=%+v err=%v", first, err)
 	}
 	second, err := c.EphemeralSendMessage(&mtproto.TLEphemeralSendMessage{
-		Peer: peer, Message: "different", RandomId: 81014001,
+		Peer: peer, Message: "hello", RandomId: 81014001,
 	})
 	if err != nil || second == nil || second.GetUpdates()[0].GetMessage_EPHEMERALMESSAGE().GetId() != first.GetUpdates()[0].GetMessage_EPHEMERALMESSAGE().GetId() {
 		t.Fatalf("idempotent send: reply=%+v err=%v", second, err)
+	}
+	if conflict, err := c.EphemeralSendMessage(&mtproto.TLEphemeralSendMessage{
+		Peer: peer, Message: "conflicting retry", RandomId: 81014001,
+	}); conflict != nil || !errors.Is(err, mtproto.ErrRandomIdDuplicate) {
+		t.Fatalf("conflicting retry: reply=%+v err=%v, want RANDOM_ID_DUPLICATE", conflict, err)
 	}
 
 	messageID := first.GetUpdates()[0].GetMessage_EPHEMERALMESSAGE().GetId()
@@ -48,6 +53,9 @@ func TestEphemeralSendAndDeleteRoundTrip(t *testing.T) {
 	if reply, err := c.EphemeralSendMessage(&mtproto.TLEphemeralSendMessage{Peer: peer}); reply != nil || !errors.Is(err, mtproto.ErrMessageEmpty) {
 		t.Fatalf("empty send: reply=%+v err=%v, want MESSAGE_EMPTY", reply, err)
 	}
+	if reply, err := c.EphemeralSendMessage(&mtproto.TLEphemeralSendMessage{Peer: peer, Message: "missing random id"}); reply != nil || !errors.Is(err, mtproto.ErrRandomIdEmpty) {
+		t.Fatalf("missing random id: reply=%+v err=%v, want RANDOM_ID_EMPTY", reply, err)
+	}
 	if reply, err := c.EphemeralDeleteMessage(&mtproto.TLEphemeralDeleteMessage{Id: 1}); reply != nil || !errors.Is(err, mtproto.ErrPeerIdInvalid) {
 		t.Fatalf("missing peer delete: reply=%+v err=%v, want PEER_ID_INVALID", reply, err)
 	}
@@ -59,6 +67,7 @@ func TestEphemeralSendAndDeleteRoundTrip(t *testing.T) {
 	target := mtproto.MakeTLInputPeerUser(&mtproto.InputPeer{UserId: receiverID}).To_InputPeer()
 	shared, err := c.EphemeralSendMessage(&mtproto.TLEphemeralSendMessage{
 		Peer: target, ReceiverId: mtproto.MakeTLInputUser(&mtproto.InputUser{UserId: receiverID}).To_InputUser(), Message: "shared",
+		RandomId: 81014004,
 	})
 	if err != nil || shared == nil {
 		t.Fatalf("shared send: reply=%+v err=%v", shared, err)
@@ -139,5 +148,68 @@ func TestEphemeralReportAndCallback(t *testing.T) {
 	}
 	if store.reads != 0 || store.writes != 0 {
 		t.Fatalf("unauthorized calls accessed store: reads=%d writes=%d", store.reads, store.writes)
+	}
+}
+
+func TestEphemeralGetCallbackAnswerFailClosed(t *testing.T) {
+	const uid int64 = 81014004
+	const callbackStateKey = "ephemeral:user:81014004:81014005"
+	const noteKey = "b14:81014004:"
+	store := &ephemeralStoreProbe{values: map[string]string{
+		callbackStateKey: `[{
+			"message":{"id":7,"message":"button","reply_markup":{"rows":[]}},
+			"callback_data":"server-owned-answer"
+		}]`,
+		noteKey: "sentinel",
+	}}
+	oldStore := persist.Default
+	persist.Use(store)
+	t.Cleanup(func() { persist.Use(oldStore) })
+
+	self := mtproto.MakeTLInputPeerSelf(nil).To_InputPeer()
+	other := mtproto.MakeTLInputPeerUser(&mtproto.InputPeer{UserId: 81014005}).To_InputPeer()
+	cases := []struct {
+		name string
+		in   *mtproto.TLEphemeralGetCallbackAnswer
+	}{
+		{name: "nil request"},
+		{name: "valid callback data", in: &mtproto.TLEphemeralGetCallbackAnswer{
+			Peer: self, Id: 7, Data: []byte("callback-data"),
+		}},
+		{name: "optional data absent", in: &mtproto.TLEphemeralGetCallbackAnswer{
+			Peer: self, Id: 7,
+		}},
+		{name: "invalid message id", in: &mtproto.TLEphemeralGetCallbackAnswer{
+			Peer: self, Id: 0, Data: []byte("callback-data"),
+		}},
+		{name: "foreign owner peer", in: &mtproto.TLEphemeralGetCallbackAnswer{
+			Peer: other, Id: 7, Data: []byte("callback-data"),
+		}},
+	}
+
+	c := &ApiFullCore{MD: &metadata.RpcMetadata{UserId: uid}}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			reads, writes := store.reads, store.writes
+			reply, err := c.EphemeralGetCallbackAnswer(tc.in)
+			if reply != nil || !errors.Is(err, mtproto.ErrMethodNotImpl) {
+				t.Fatalf("reply=%+v err=%v, want nil reply and METHOD_NOT_IMPL", reply, err)
+			}
+			if store.reads != reads || store.writes != writes {
+				t.Fatalf("callback request touched persistence: reads %d->%d writes %d->%d", reads, store.reads, writes, store.writes)
+			}
+		})
+	}
+	if store.values[callbackStateKey] == "" || store.values[noteKey] != "sentinel" {
+		t.Fatalf("fail-closed callback changed state: callback=%q note=%q", store.values[callbackStateKey], store.values[noteKey])
+	}
+
+	unauthorized := &ApiFullCore{MD: &metadata.RpcMetadata{}}
+	reads, writes := store.reads, store.writes
+	if reply, err := unauthorized.EphemeralGetCallbackAnswer(cases[1].in); reply != nil || !errors.Is(err, mtproto.ErrAuthKeyUnregistered) {
+		t.Fatalf("unauthorized reply=%+v err=%v, want AUTH_KEY_UNREGISTERED", reply, err)
+	}
+	if store.reads != reads || store.writes != writes {
+		t.Fatalf("unauthorized callback touched persistence: reads %d->%d writes %d->%d", reads, store.reads, writes, store.writes)
 	}
 }

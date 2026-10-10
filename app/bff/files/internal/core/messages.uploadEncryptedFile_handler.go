@@ -20,12 +20,15 @@ package core
 
 import (
 	"github.com/teamgram/proto/mtproto"
-	"github.com/teamgram/teamgram-server/app/service/dfs/dfs"
+	"github.com/teamgram/teamgram-server/app/service/media/media"
 )
 
 // MessagesUploadEncryptedFile
 // messages.uploadEncryptedFile#5057c497 peer:InputEncryptedChat file:InputEncryptedFile = EncryptedFile;
 func (c *FilesCore) MessagesUploadEncryptedFile(in *mtproto.TLMessagesUploadEncryptedFile) (*mtproto.EncryptedFile, error) {
+	if c == nil || c.MD == nil || c.MD.PermAuthKeyId == 0 || c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.MediaClient == nil {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
 	if in == nil || in.GetPeer() == nil || in.GetPeer().GetChatId() <= 0 || in.GetPeer().GetAccessHash() == 0 {
 		c.Logger.Errorf("messages.uploadEncryptedFile - invalid encrypted chat")
 		return nil, mtproto.ErrEncryptionIdInvalid
@@ -51,9 +54,11 @@ func (c *FilesCore) MessagesUploadEncryptedFile(in *mtproto.TLMessagesUploadEncr
 		return nil, mtproto.ErrFileIdInvalid
 	}
 
-	// Same part store as upload.saveFilePart; DFS assembles it into an EncryptedFile.
-	encrypted, err := c.svcCtx.Dao.DfsClient.DfsUploadEncryptedFileV2(c.ctx, &dfs.TLDfsUploadEncryptedFileV2{
-		Creator: c.MD.PermAuthKeyId,
+	// Media persists the returned identity in PostgreSQL after DFS has
+	// durably accepted the object. This keeps getEncryptedFile authoritative
+	// across cache expiry and service restarts.
+	encrypted, err := c.svcCtx.Dao.MediaClient.MediaUploadEncryptedFile(c.ctx, &media.TLMediaUploadEncryptedFile{
+		OwnerId: c.MD.PermAuthKeyId,
 		File:    file,
 	})
 	if err != nil {

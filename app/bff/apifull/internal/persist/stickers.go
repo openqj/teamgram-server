@@ -16,6 +16,8 @@ import (
 
 var ErrStickerProviderUnavailable = errors.New("sticker provider requires PostgreSQL")
 var ErrStickerSetOwnerMismatch = errors.New("sticker set owner mismatch")
+var ErrStickerDocumentAccessMismatch = errors.New("sticker document access hash mismatch")
+var ErrStickerDocumentNotFound = errors.New("sticker document not found")
 
 // ensureStickerSchema is used only by the application-owned OpenPostgres
 // path (tests and local bootstrap). Production uses 031_apifull_stickers.sql
@@ -70,17 +72,18 @@ type StickerDocumentInput struct {
 }
 
 type StickerDocument struct {
-	ID         int64
-	AccessHash int64
-	SetID      int64
-	Position   int32
-	Alt        string
-	Keywords   string
-	MimeType   string
-	SizeBytes  int64
-	DCID       int32
-	FileRef    []byte
-	Date       int32
+	ID            int64
+	AccessHash    int64
+	SetID         int64
+	SetAccessHash int64
+	Position      int32
+	Alt           string
+	Keywords      string
+	MimeType      string
+	SizeBytes     int64
+	DCID          int32
+	FileRef       []byte
+	Date          int32
 }
 
 type StickerSet struct {
@@ -160,10 +163,11 @@ type stickerQueryer interface {
 }
 
 func loadStickerDocuments(ctx context.Context, q stickerQueryer, setID int64) ([]StickerDocument, error) {
-	rows, err := q.QueryContext(ctx, `SELECT id, access_hash, set_id, position, alt,
- keywords, mime_type, size_bytes, dc_id, file_reference,
- EXTRACT(EPOCH FROM created_at)::bigint FROM apifull_sticker
- WHERE set_id=$1 ORDER BY position, id`, setID)
+	rows, err := q.QueryContext(ctx, `SELECT s.id, s.access_hash, s.set_id, ss.access_hash, s.position, s.alt,
+ s.keywords, s.mime_type, s.size_bytes, s.dc_id, s.file_reference,
+ EXTRACT(EPOCH FROM s.created_at)::bigint FROM apifull_sticker s
+	JOIN apifull_sticker_set ss ON ss.id=s.set_id
+ WHERE s.set_id=$1 ORDER BY s.position, s.id`, setID)
 	if err != nil {
 		return nil, err
 	}
@@ -172,7 +176,7 @@ func loadStickerDocuments(ctx context.Context, q stickerQueryer, setID int64) ([
 	for rows.Next() {
 		var d StickerDocument
 		var date int64
-		if err = rows.Scan(&d.ID, &d.AccessHash, &d.SetID, &d.Position, &d.Alt,
+		if err = rows.Scan(&d.ID, &d.AccessHash, &d.SetID, &d.SetAccessHash, &d.Position, &d.Alt,
 			&d.Keywords, &d.MimeType, &d.SizeBytes, &d.DCID, &d.FileRef, &date); err != nil {
 			return nil, err
 		}
@@ -420,7 +424,7 @@ func CreateStickerSet(ctx context.Context, ownerID int64, title, shortName strin
 		if err != nil {
 			return nil, err
 		}
-		doc.SetID, doc.Position, doc.AccessHash, doc.Alt, doc.Keywords = set.ID, int32(i), input.AccessHash, input.Alt, input.Keywords
+		doc.SetID, doc.SetAccessHash, doc.Position, doc.AccessHash, doc.Alt, doc.Keywords = set.ID, set.AccessHash, int32(i), input.AccessHash, input.Alt, input.Keywords
 		doc.MimeType, doc.SizeBytes, doc.DCID, doc.FileRef, doc.Date = input.MimeType, input.SizeBytes, input.DCID, input.FileRef, int32(time.Now().Unix())
 		set.Documents = append(set.Documents, doc)
 	}
@@ -724,6 +728,13 @@ func SetFeaturedRead(ctx context.Context, userID int64, ids []int64) error {
 }
 
 func SaveRecentSticker(ctx context.Context, userID, stickerID int64, attached, unsave bool) error {
+	return SaveRecentStickerWithAccessHash(ctx, userID, stickerID, 0, attached, unsave)
+}
+
+// SaveRecentStickerWithAccessHash records recent state only for the exact
+// Telegram document access hash supplied by the caller. The zero-hash wrapper
+// remains for internal callers that already resolved the document.
+func SaveRecentStickerWithAccessHash(ctx context.Context, userID, stickerID, accessHash int64, attached, unsave bool) error {
 	db, err := stickerDB()
 	if err != nil {
 		return err
@@ -735,6 +746,18 @@ func SaveRecentSticker(ctx context.Context, userID, stickerID int64, attached, u
 	defer tx.Rollback()
 	if err = lockStickerUserTx(ctx, tx, userID); err != nil {
 		return err
+	}
+	if accessHash != 0 {
+		var storedHash int64
+		if err = tx.QueryRowContext(ctx, `SELECT access_hash FROM apifull_sticker WHERE id=$1`, stickerID).Scan(&storedHash); err != nil {
+			if err == sql.ErrNoRows {
+				return ErrStickerDocumentNotFound
+			}
+			return err
+		}
+		if storedHash != accessHash {
+			return ErrStickerDocumentAccessMismatch
+		}
 	}
 	if unsave {
 		_, err = tx.ExecContext(ctx, `DELETE FROM apifull_sticker_user_recent WHERE user_id=$1 AND sticker_id=$2 AND attached=$3`, userID, stickerID, attached)
@@ -768,6 +791,12 @@ func ClearRecentStickers(ctx context.Context, userID int64, attached bool) error
 }
 
 func SaveFavouriteSticker(ctx context.Context, userID, stickerID int64, unfave bool) error {
+	return SaveFavouriteStickerWithAccessHash(ctx, userID, stickerID, 0, unfave)
+}
+
+// SaveFavouriteStickerWithAccessHash records favourite state only for the
+// exact Telegram document access hash supplied by the caller.
+func SaveFavouriteStickerWithAccessHash(ctx context.Context, userID, stickerID, accessHash int64, unfave bool) error {
 	db, err := stickerDB()
 	if err != nil {
 		return err
@@ -779,6 +808,18 @@ func SaveFavouriteSticker(ctx context.Context, userID, stickerID int64, unfave b
 	defer tx.Rollback()
 	if err = lockStickerUserTx(ctx, tx, userID); err != nil {
 		return err
+	}
+	if accessHash != 0 {
+		var storedHash int64
+		if err = tx.QueryRowContext(ctx, `SELECT access_hash FROM apifull_sticker WHERE id=$1`, stickerID).Scan(&storedHash); err != nil {
+			if err == sql.ErrNoRows {
+				return ErrStickerDocumentNotFound
+			}
+			return err
+		}
+		if storedHash != accessHash {
+			return ErrStickerDocumentAccessMismatch
+		}
 	}
 	if unfave {
 		_, err = tx.ExecContext(ctx, `DELETE FROM apifull_sticker_user_favourite WHERE user_id=$1 AND sticker_id=$2`, userID, stickerID)
@@ -805,7 +846,7 @@ func listStickerDocuments(ctx context.Context, query string, args ...any) ([]Sti
 	for rows.Next() {
 		var d StickerDocument
 		var date int64
-		if err = rows.Scan(&d.ID, &d.AccessHash, &d.SetID, &d.Position, &d.Alt, &d.Keywords, &d.MimeType, &d.SizeBytes, &d.DCID, &d.FileRef, &date); err != nil {
+		if err = rows.Scan(&d.ID, &d.AccessHash, &d.SetID, &d.SetAccessHash, &d.Position, &d.Alt, &d.Keywords, &d.MimeType, &d.SizeBytes, &d.DCID, &d.FileRef, &date); err != nil {
 			return nil, err
 		}
 		d.Date = int32(date)
@@ -816,15 +857,15 @@ func listStickerDocuments(ctx context.Context, query string, args ...any) ([]Sti
 
 func ListRecentStickers(ctx context.Context, userID int64, attached bool, limit int32) ([]StickerDocument, error) {
 	limit = normalizeStickerLimit(limit)
-	return listStickerDocuments(ctx, `SELECT s.id,s.access_hash,s.set_id,s.position,s.alt,s.keywords,s.mime_type,s.size_bytes,s.dc_id,s.file_reference,
- EXTRACT(EPOCH FROM r.saved_at)::bigint FROM apifull_sticker s JOIN apifull_sticker_user_recent r ON r.sticker_id=s.id
+	return listStickerDocuments(ctx, `SELECT s.id,s.access_hash,s.set_id,ss.access_hash,s.position,s.alt,s.keywords,s.mime_type,s.size_bytes,s.dc_id,s.file_reference,
+ EXTRACT(EPOCH FROM r.saved_at)::bigint FROM apifull_sticker s JOIN apifull_sticker_set ss ON ss.id=s.set_id JOIN apifull_sticker_user_recent r ON r.sticker_id=s.id
  WHERE r.user_id=$1 AND r.attached=$2 ORDER BY r.saved_at DESC LIMIT $3`, userID, attached, limit)
 }
 
 func ListFavouriteStickers(ctx context.Context, userID int64, limit int32) ([]StickerDocument, error) {
 	limit = normalizeStickerLimit(limit)
-	return listStickerDocuments(ctx, `SELECT s.id,s.access_hash,s.set_id,s.position,s.alt,s.keywords,s.mime_type,s.size_bytes,s.dc_id,s.file_reference,
- EXTRACT(EPOCH FROM s.created_at)::bigint FROM apifull_sticker s JOIN apifull_sticker_user_favourite f ON f.sticker_id=s.id
+	return listStickerDocuments(ctx, `SELECT s.id,s.access_hash,s.set_id,ss.access_hash,s.position,s.alt,s.keywords,s.mime_type,s.size_bytes,s.dc_id,s.file_reference,
+ EXTRACT(EPOCH FROM s.created_at)::bigint FROM apifull_sticker s JOIN apifull_sticker_set ss ON ss.id=s.set_id JOIN apifull_sticker_user_favourite f ON f.sticker_id=s.id
  WHERE f.user_id=$1 ORDER BY f.saved_at DESC LIMIT $2`, userID, limit)
 }
 
@@ -833,19 +874,19 @@ func SearchStickerDocuments(ctx context.Context, userID int64, queryText, emotic
 	if offset < 0 {
 		offset = 0
 	}
-	return listStickerDocuments(ctx, `SELECT DISTINCT s.id,s.access_hash,s.set_id,s.position,s.alt,s.keywords,s.mime_type,s.size_bytes,s.dc_id,s.file_reference,
+	return listStickerDocuments(ctx, `SELECT DISTINCT s.id,s.access_hash,s.set_id,ss.access_hash,s.position,s.alt,s.keywords,s.mime_type,s.size_bytes,s.dc_id,s.file_reference,
  EXTRACT(EPOCH FROM s.created_at)::bigint FROM apifull_sticker s JOIN apifull_sticker_set ss ON ss.id=s.set_id
  WHERE (lower(s.alt) LIKE lower($1) OR lower(s.keywords) LIKE lower($1) OR lower(ss.title) LIKE lower($1) OR lower(ss.short_name) LIKE lower($1))
  AND ($2='' OR s.alt=$2) ORDER BY s.id OFFSET $3 LIMIT $4`, "%"+queryText+"%", emoticon, offset, limit)
 }
 
-func StickerSetsForDocument(ctx context.Context, userID, documentID int64) ([]StickerSet, error) {
+func StickerSetsForDocument(ctx context.Context, userID, documentID, accessHash int64) ([]StickerSet, error) {
 	db, err := stickerDB()
 	if err != nil {
 		return nil, err
 	}
 	rows, err := db.QueryContext(ctx, `SELECT DISTINCT ss.id FROM apifull_sticker_set ss
- JOIN apifull_sticker s ON s.set_id=ss.id WHERE s.id=$1`, documentID)
+	JOIN apifull_sticker s ON s.set_id=ss.id WHERE s.id=$1 AND s.access_hash=$2`, documentID, accessHash)
 	if err != nil {
 		return nil, err
 	}
@@ -860,6 +901,17 @@ func StickerSetsForDocument(ctx context.Context, userID, documentID int64) ([]St
 	}
 	if err = rows.Err(); err != nil {
 		return nil, err
+	}
+	if len(ids) == 0 {
+		var storedHash int64
+		err = db.QueryRowContext(ctx, `SELECT access_hash FROM apifull_sticker WHERE id=$1`, documentID).Scan(&storedHash)
+		if err == sql.ErrNoRows {
+			return nil, ErrStickerDocumentNotFound
+		}
+		if err != nil {
+			return nil, err
+		}
+		return nil, ErrStickerDocumentAccessMismatch
 	}
 	sets := make([]StickerSet, 0, len(ids))
 	for _, id := range ids {

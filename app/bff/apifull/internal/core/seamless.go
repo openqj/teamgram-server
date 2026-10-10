@@ -42,6 +42,30 @@ func (c *ApiFullCore) AccountGetWebAuthorizations(in *mtproto.TLAccountGetWebAut
 		return nil, err
 	}
 	_ = in
+	if persist.URLAuthPostgresEnabled() {
+		items, err := persist.ListURLAuth(userID)
+		if err != nil {
+			return nil, err
+		}
+		auths := make([]*mtproto.WebAuthorization, 0, len(items))
+		users := make([]*mtproto.User, 0, len(items))
+		seen := map[int64]struct{}{}
+		for _, item := range items {
+			auths = append(auths, mtproto.MakeTLWebAuthorization(&mtproto.WebAuthorization{
+				Hash: item.Hash, BotId: item.BotID, Domain: seamlessDomain(item.URL),
+				DateCreated: item.DateCreated, DateActive: item.DateActive,
+			}).To_WebAuthorization())
+			if item.BotID != 0 {
+				if _, ok := seen[item.BotID]; !ok {
+					seen[item.BotID] = struct{}{}
+					users = append(users, mtproto.MakeTLUser(&mtproto.User{Id: item.BotID}).To_User())
+				}
+			}
+		}
+		return mtproto.MakeTLAccountWebAuthorizations(&mtproto.Account_WebAuthorizations{
+			Authorizations: auths, Users: users,
+		}).To_Account_WebAuthorizations(), nil
+	}
 	st, err := loadAcctWebState(userID)
 	if err != nil {
 		return nil, err
@@ -90,6 +114,12 @@ func (c *ApiFullCore) AccountResetWebAuthorization(in *mtproto.TLAccountResetWeb
 	if in != nil {
 		hash = in.GetHash()
 	}
+	if persist.URLAuthPostgresEnabled() {
+		if err := persist.ResetURLAuth(userID, hash); err != nil {
+			return nil, err
+		}
+		return mtproto.BoolTrue, nil
+	}
 	st, err := loadAcctWebState(userID)
 	if err != nil {
 		return nil, err
@@ -120,6 +150,12 @@ func (c *ApiFullCore) AccountResetWebAuthorizations(in *mtproto.TLAccountResetWe
 		return nil, err
 	}
 	_ = in
+	if persist.URLAuthPostgresEnabled() {
+		if err := persist.ResetURLAuths(userID); err != nil {
+			return nil, err
+		}
+		return mtproto.BoolTrue, nil
+	}
 	if err := saveAcctWebState(userID, acctWeb{}); err != nil {
 		return nil, err
 	}
@@ -134,6 +170,13 @@ func (c *ApiFullCore) MessagesRequestUrlAuth(in *mtproto.TLMessagesRequestUrlAut
 	urlValue := ""
 	if in != nil && in.GetUrl() != nil {
 		urlValue = in.GetUrl().GetValue()
+	}
+	if persist.URLAuthPostgresEnabled() {
+		record := urlAuthRecordFromRequest(in, urlValue)
+		if err := persist.RequestURLAuth(userID, record); err != nil {
+			return nil, err
+		}
+		return mtproto.MakeTLUrlAuthResultDefault(&mtproto.UrlAuthResult{}).To_UrlAuthResult(), nil
 	}
 	if err := acctPut(acctKey(userID, "urlauth"), acctURL{URL: urlValue, Status: "request"}); err != nil {
 		return nil, err
@@ -157,6 +200,17 @@ func (c *ApiFullCore) MessagesAcceptUrlAuth(in *mtproto.TLMessagesAcceptUrlAuth)
 			matchCode = in.GetMatchCode().GetValue()
 		}
 		botID = seamlessBotID(in.GetPeer())
+	}
+	if persist.URLAuthPostgresEnabled() {
+		record := urlAuthRecordFromAccept(in, urlValue, matchCode, botID)
+		stored, err := persist.AcceptURLAuth(userID, record)
+		if err != nil {
+			return nil, err
+		}
+		return mtproto.MakeTLUrlAuthResultAccepted(&mtproto.UrlAuthResult{
+			Url_FLAGSTRING: wrapperspb.String(stored.URL),
+			Url_STRING:     stored.URL,
+		}).To_UrlAuthResult(), nil
 	}
 	if err := acctPut(acctKey(userID, "urlauth"), acctURL{URL: urlValue, Status: "accepted", MatchCode: matchCode}); err != nil {
 		return nil, err
@@ -218,6 +272,12 @@ func (c *ApiFullCore) MessagesDeclineUrlAuth(in *mtproto.TLMessagesDeclineUrlAut
 	if in != nil {
 		urlValue = in.GetUrl()
 	}
+	if persist.URLAuthPostgresEnabled() {
+		if err := persist.DeclineURLAuth(userID, seamlessURLHash(urlValue), urlValue); err != nil {
+			return nil, err
+		}
+		return mtproto.BoolTrue, nil
+	}
 	if err := acctPut(acctKey(userID, "urlauth"), acctURL{URL: urlValue, Status: "declined"}); err != nil {
 		return nil, err
 	}
@@ -260,6 +320,16 @@ func (c *ApiFullCore) MessagesCheckUrlAuthMatchCode(in *mtproto.TLMessagesCheckU
 		rawURL = in.GetUrl()
 	}
 	if code == "" {
+		return mtproto.BoolFalse, nil
+	}
+	if persist.URLAuthPostgresEnabled() {
+		matched, err := persist.CheckURLAuthMatchCode(userID, rawURL, code)
+		if err != nil {
+			return nil, err
+		}
+		if matched {
+			return mtproto.BoolTrue, nil
+		}
 		return mtproto.BoolFalse, nil
 	}
 	stored, err := loadAcctURL(userID)
@@ -368,4 +438,36 @@ func seamlessBotID(p *mtproto.InputPeer) int64 {
 		return p.GetChannelId()
 	}
 	return p.GetChatId()
+}
+
+func urlAuthRecordFromRequest(in *mtproto.TLMessagesRequestUrlAuth, rawURL string) persist.URLAuthRecord {
+	record := persist.URLAuthRecord{Hash: seamlessURLHash(rawURL), URL: rawURL}
+	if in == nil {
+		return record
+	}
+	record.BotID = seamlessBotID(in.GetPeer())
+	if in.GetMsgId() != nil {
+		record.MsgID = in.GetMsgId().GetValue()
+	}
+	if in.GetButtonId() != nil {
+		record.ButtonID = in.GetButtonId().GetValue()
+	}
+	if in.GetInAppOrigin() != nil {
+		record.InAppOrigin = in.GetInAppOrigin().GetValue()
+	}
+	return record
+}
+
+func urlAuthRecordFromAccept(in *mtproto.TLMessagesAcceptUrlAuth, rawURL, matchCode string, botID int64) persist.URLAuthRecord {
+	record := persist.URLAuthRecord{Hash: seamlessURLHash(rawURL), URL: rawURL, MatchCode: matchCode, BotID: botID}
+	if in == nil {
+		return record
+	}
+	if in.GetMsgId() != nil {
+		record.MsgID = in.GetMsgId().GetValue()
+	}
+	if in.GetButtonId() != nil {
+		record.ButtonID = in.GetButtonId().GetValue()
+	}
+	return record
 }

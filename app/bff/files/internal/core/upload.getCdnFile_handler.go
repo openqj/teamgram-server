@@ -21,7 +21,7 @@ package core
 import "github.com/teamgram/proto/mtproto"
 
 // UploadGetCdnFile
-// upload.getCdnFile#2000bcc3 file_token:bytes offset:int limit:int = upload.CdnFile;
+// upload.getCdnFile#395f69da file_token:bytes offset:long limit:int = upload.CdnFile;
 func (c *FilesCore) UploadGetCdnFile(in *mtproto.TLUploadGetCdnFile) (*mtproto.Upload_CdnFile, error) {
 	if in == nil {
 		return nil, mtproto.ErrInputRequestInvalid

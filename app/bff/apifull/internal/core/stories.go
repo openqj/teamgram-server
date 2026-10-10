@@ -28,6 +28,7 @@ import (
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/domain"
 	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/persist"
+	chatpb "github.com/teamgram/teamgram-server/app/service/biz/chat/chat"
 	"github.com/teamgram/teamgram-server/app/service/dfs/dfs"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/wrapperspb"
@@ -371,9 +372,10 @@ func (s *userStoryStore) putReaction(id int32, userID int64, rx *mtproto.Reactio
 	if item == nil {
 		return
 	}
-	item.SentReaction = rx
-	list := s.Reactions[id]
-	if rx == nil {
+	remove := rx == nil || rx.GetPredicateName() == mtproto.Predicate_reactionEmpty
+	if remove {
+		item.SentReaction = nil
+		list := s.Reactions[id]
 		kept := list[:0]
 		for _, existing := range list {
 			if existing.UserId != userID {
@@ -387,6 +389,8 @@ func (s *userStoryStore) putReaction(id int32, userID int64, rx *mtproto.Reactio
 		}
 		return
 	}
+	item.SentReaction = rx
+	list := s.Reactions[id]
 	rec := storyReactionRec{UserId: userID, Date: now}
 	if rx != nil {
 		rec.Emoticon = rx.GetEmoticon()
@@ -437,10 +441,28 @@ func mutateOwnStoriesE(userID int64, fn func(*userStoryStore) error) (*userStory
 }
 
 func storyMaxID(s *userStoryStore) int32 {
-	if s == nil || len(s.Order) == 0 {
+	if s == nil {
 		return 0
 	}
-	return s.Order[len(s.Order)-1]
+	// Order is a presentation sequence and may be sparse or restored from an
+	// older store with a non-monotonic order. The read cursor is an ID, so it
+	// must use the greatest persisted story ID rather than the last slice item.
+	// Older records may contain only Order, so retain that as a read fallback.
+	maxID := int32(0)
+	if len(s.Items) > 0 {
+		for id := range s.Items {
+			if id > maxID {
+				maxID = id
+			}
+		}
+		return maxID
+	}
+	for _, id := range s.Order {
+		if id > maxID {
+			maxID = id
+		}
+	}
+	return maxID
 }
 
 func storyStealthMode(s *userStoryStore) *mtproto.StoriesStealthMode {
@@ -502,6 +524,11 @@ func (c *ApiFullCore) StoriesSendStory(in *mtproto.TLStoriesSendStory) (*mtproto
 			return storyUpdates(uid, stories.Items[existing]), nil
 		}
 	}
+	for _, albumID := range in.GetAlbums() {
+		if stories.Albums[albumID] == nil {
+			return nil, mtproto.ErrInputRequestInvalid
+		}
+	}
 	media, err := c.uploadStoryMedia(uid, in.GetMedia())
 	if err != nil {
 		return nil, err
@@ -537,11 +564,6 @@ func (c *ApiFullCore) StoriesSendStory(in *mtproto.TLStoriesSendStory) (*mtproto
 			MediaAreas: in.GetMediaAreas(),
 			Albums:     append([]int32(nil), in.GetAlbums()...),
 		}).To_StoryItem()
-		for _, albumID := range in.GetAlbums() {
-			if next.Albums[albumID] == nil {
-				return mtproto.ErrInputRequestInvalid
-			}
-		}
 		next.Items[item.GetId()] = item
 		next.Order = append(next.Order, item.GetId())
 		if in.GetRandomId() != 0 {
@@ -775,7 +797,11 @@ func (c *ApiFullCore) StoriesGetStoriesArchive(in *mtproto.TLStoriesGetStoriesAr
 		return nil, err
 	}
 	items := stories.list(nil, false)
-	return storiesBox(storyPageByID(items, in.GetOffsetId(), in.GetLimit())), nil
+	box := storiesBox(storyPageByID(items, in.GetOffsetId(), in.GetLimit()))
+	// stories.getStoriesArchive does not return pinned_to_top. TDLib treats a
+	// non-empty field here as a malformed archive response.
+	box.PinnedToTop = nil
+	return box, nil
 }
 
 func (c *ApiFullCore) StoriesGetStoriesByID(in *mtproto.TLStoriesGetStoriesByID) (*mtproto.Stories_Stories, error) {
@@ -881,6 +907,13 @@ func (c *ApiFullCore) StoriesGetStoryViewsList(in *mtproto.TLStoriesGetStoryView
 		limit = 100
 	}
 	start := 0
+	if raw := strings.TrimSpace(in.GetOffset()); raw != "" {
+		parsed, parseErr := strconv.Atoi(raw)
+		if parseErr != nil || parsed < 0 {
+			return nil, mtproto.ErrOffsetInvalid
+		}
+		start = parsed
+	}
 	if in.GetOffsetId() > 0 {
 		for start < len(views) && int64(views[start].GetUserId()) <= in.GetOffsetId() {
 			start++
@@ -894,6 +927,10 @@ func (c *ApiFullCore) StoriesGetStoryViewsList(in *mtproto.TLStoriesGetStoryView
 		end = len(views)
 	}
 	views = views[start:end]
+	var nextOffset *wrapperspb.StringValue
+	if end < len(stories.Viewers[in.GetId()]) {
+		nextOffset = wrapperspb.String(strconv.Itoa(end))
+	}
 	reactions := stories.Reactions[in.GetId()]
 	return mtproto.MakeTLStoriesStoryViewsList(&mtproto.Stories_StoryViewsList{
 		Count:          int32(len(stories.Viewers[in.GetId()])),
@@ -902,6 +939,7 @@ func (c *ApiFullCore) StoriesGetStoryViewsList(in *mtproto.TLStoriesGetStoryView
 		Views:          views,
 		Chats:          []*mtproto.Chat{},
 		Users:          []*mtproto.User{},
+		NextOffset:     nextOffset,
 	}).To_Stories_StoryViewsList(), nil
 }
 
@@ -1026,7 +1064,7 @@ func (c *ApiFullCore) StoriesSendReaction(in *mtproto.TLStoriesSendReaction) (*m
 	if err != nil {
 		return nil, err
 	}
-	if in.GetReaction() != nil && in.GetReaction().GetPredicateName() == "" {
+	if in.GetReaction() == nil || in.GetReaction().GetPredicateName() == "" {
 		return nil, mtproto.ErrReactionEmpty
 	}
 	var updated *userStoryStore
@@ -1064,10 +1102,27 @@ func (c *ApiFullCore) StoriesGetAllReadPeerStories(in *mtproto.TLStoriesGetAllRe
 	if in == nil {
 		return nil, storiesProviderUnavailable(c)
 	}
-	if _, err := c.requireUserId(); err != nil {
+	uid, stories, err := c.ownStoryStore(nil, nil)
+	if err != nil {
 		return nil, err
 	}
-	return mtproto.MakeTLUpdates(&mtproto.Updates{Updates: []*mtproto.Update{}, Users: []*mtproto.User{}, Chats: []*mtproto.Chat{}, Date: int32(time.Now().Unix())}).To_Updates(), nil
+	maxID := storyMaxID(stories)
+	if maxID > stories.ReadMax {
+		if _, err = mutateOwnStoriesE(uid, func(next *userStoryStore) error {
+			next.ReadMax = maxID
+			return nil
+		}); err != nil {
+			return nil, err
+		}
+	}
+	if maxID == 0 {
+		return mtproto.MakeUpdatesByUpdates(), nil
+	}
+	update := mtproto.MakeTLUpdateReadStories(&mtproto.Update{
+		Peer_PEER: mtproto.MakeTLPeerUser(&mtproto.Peer{UserId: uid}).To_Peer(),
+		MaxId:     maxID,
+	}).To_Update()
+	return mtproto.MakeUpdatesByUpdates(update), nil
 }
 
 func (c *ApiFullCore) StoriesGetPeerMaxIDs78499170(in *mtproto.TLStoriesGetPeerMaxIDs78499170) (*mtproto.Vector_RecentStory, error) {
@@ -1094,10 +1149,31 @@ func (c *ApiFullCore) StoriesGetChatsToSend(in *mtproto.TLStoriesGetChatsToSend)
 	if in == nil {
 		return nil, storiesProviderUnavailable(c)
 	}
-	if _, err := c.requireUserId(); err != nil {
+	uid, err := c.requireUserId()
+	if err != nil {
 		return nil, err
 	}
-	return mtproto.MakeTLMessagesChats(&mtproto.Messages_Chats{Chats: []*mtproto.Chat{}, Count: 0}).To_Messages_Chats(), nil
+	d := c.apifullDao()
+	if d == nil || d.ChatClient == nil {
+		return nil, mtproto.ErrMethodNotImpl
+	}
+	chats, err := d.ChatGetMyChatList(callContext(c), &chatpb.TLChatGetMyChatList{
+		UserId: uid, IsCreator: mtproto.BoolTrue,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if chats == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
+	result := make([]*mtproto.Chat, 0, len(chats.GetDatas()))
+	for _, mutable := range chats.GetDatas() {
+		if mutable == nil {
+			continue
+		}
+		result = append(result, mutable.ToUnsafeChat(uid))
+	}
+	return mtproto.MakeTLMessagesChats(&mtproto.Messages_Chats{Chats: result, Count: int32(len(result))}).To_Messages_Chats(), nil
 }
 
 func (c *ApiFullCore) StoriesTogglePeerStoriesHidden(in *mtproto.TLStoriesTogglePeerStoriesHidden) (*mtproto.Bool, error) {
@@ -1139,24 +1215,47 @@ func (c *ApiFullCore) StoriesGetStoryReactionsList(in *mtproto.TLStoriesGetStory
 	reactions := stories.Reactions[in.GetId()]
 	result := make([]*mtproto.StoryReaction, 0, len(reactions))
 	for _, reaction := range reactions {
+		converted := reactionFromRec(reaction)
+		if in.GetReaction() != nil && !proto.Equal(converted, in.GetReaction()) {
+			continue
+		}
 		result = append(result, mtproto.MakeTLStoryReaction(&mtproto.StoryReaction{
 			PeerId:   mtproto.MakeTLPeerUser(&mtproto.Peer{UserId: reaction.UserId}).To_Peer(),
 			Date:     reaction.Date,
-			Reaction: reactionFromRec(reaction),
+			Reaction: converted,
 		}).To_StoryReaction())
 	}
+	filteredCount := len(result)
 	limit := in.GetLimit()
 	if limit <= 0 || limit > 100 {
 		limit = 100
 	}
-	if int(limit) < len(result) {
-		result = result[:limit]
+	start := 0
+	if raw := strings.TrimSpace(in.GetOffset().GetValue()); raw != "" {
+		parsed, parseErr := strconv.Atoi(raw)
+		if parseErr != nil || parsed < 0 {
+			return nil, mtproto.ErrOffsetInvalid
+		}
+		start = parsed
+	}
+	if start > len(result) {
+		start = len(result)
+	}
+	end := start + int(limit)
+	if end > len(result) {
+		end = len(result)
+	}
+	page := result[start:end]
+	var nextOffset *wrapperspb.StringValue
+	if end < len(result) {
+		nextOffset = wrapperspb.String(strconv.Itoa(end))
 	}
 	return mtproto.MakeTLStoriesStoryReactionsList(&mtproto.Stories_StoryReactionsList{
-		Count:     int32(len(reactions)),
-		Reactions: result,
-		Chats:     []*mtproto.Chat{},
-		Users:     []*mtproto.User{},
+		Count:      int32(filteredCount),
+		Reactions:  page,
+		Chats:      []*mtproto.Chat{},
+		Users:      []*mtproto.User{},
+		NextOffset: nextOffset,
 	}).To_Stories_StoryReactionsList(), nil
 }
 

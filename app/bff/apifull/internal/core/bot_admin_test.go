@@ -10,18 +10,10 @@ import (
 
 func TestBotAdminStateRoundTrip81017(t *testing.T) {
 	c := &ApiFullCore{MD: &metadata.RpcMetadata{UserId: 81017}}
-	var err error
-	if _, err = c.MessagesToggleBotInAttachMenu(&mtproto.TLMessagesToggleBotInAttachMenu{
+	if got, err := c.MessagesToggleBotInAttachMenu(&mtproto.TLMessagesToggleBotInAttachMenu{
 		Bot: &mtproto.InputUser{UserId: 81017},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	got, err := c.MessagesGetAttachMenuBot(nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.GetBot().GetBotId() != 81017 {
-		t.Fatalf("bot id %d", got.GetBot().GetBotId())
+	}); got != nil || !errors.Is(err, mtproto.ErrUserIdInvalid) {
+		t.Fatalf("attach menu without user provider: got=%v err=%v, want USER_ID_INVALID", got, err)
 	}
 
 	if got, err := c.BotsSetCustomVerification(&mtproto.TLBotsSetCustomVerification{}); got != nil || !errors.Is(err, mtproto.ErrMethodNotImpl) {

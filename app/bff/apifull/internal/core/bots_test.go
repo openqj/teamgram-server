@@ -140,6 +140,10 @@ func TestBotWritesNilError(t *testing.T) {
 			if !errors.Is(err, mtproto.ErrMethodNotImpl) {
 				t.Fatalf("%s: got %v, want METHOD_NOT_IMPL", fn.name, err)
 			}
+		} else if fn.name == "attach menu" {
+			if !errors.Is(err, mtproto.ErrInputUserDeactivated) {
+				t.Fatalf("%s: got %v, want INPUT_USER_DEACTIVATED", fn.name, err)
+			}
 		} else if err != nil {
 			t.Fatalf("%s: got %v", fn.name, err)
 		}

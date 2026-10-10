@@ -102,7 +102,7 @@ func TestStarsUnavailableDoesNotAccessPersistence(t *testing.T) {
 		{"refund stars charge", func() (bool, error) {
 			result, err := c.PaymentsRefundStarsCharge(&mtproto.TLPaymentsRefundStarsCharge{ChargeId: "charge"})
 			return result != nil, err
-		}, mtproto.ErrMethodNotImpl},
+		}, mtproto.ErrInputConstructorInvalid},
 		{"top-up options", func() (bool, error) {
 			result, err := c.PaymentsGetStarsTopupOptions(nil)
 			return result != nil, err

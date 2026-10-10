@@ -80,8 +80,12 @@ func TestPaidProductMethodsFailClosedWithoutPersistence(t *testing.T) {
 	for _, tc := range calls {
 		t.Run(tc.name, func(t *testing.T) {
 			result, err := tc.invoke()
-			if result || !errors.Is(err, mtproto.ErrMethodNotImpl) {
-				t.Fatalf("result present=%v err=%v, want nil result and METHOD_NOT_IMPL", result, err)
+			want := mtproto.ErrMethodNotImpl
+			if tc.name == "bank card data" {
+				want = mtproto.ErrPaymentUnsupported
+			}
+			if result || !errors.Is(err, want) {
+				t.Fatalf("result present=%v err=%v, want nil result and %v", result, err, want)
 			}
 		})
 	}

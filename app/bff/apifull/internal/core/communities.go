@@ -365,6 +365,13 @@ func (c *ApiFullCore) CommunitiesToggleCommunityCollapsedInDialogs(in *mtproto.T
 	if err != nil {
 		return nil, err
 	}
+	canView, err := domain.CommunityCanView(community.ID, userID)
+	if err != nil {
+		return nil, mtproto.ErrInternalServerError
+	}
+	if !canView {
+		return nil, mtproto.ErrUserNotParticipant
+	}
 	if err = domain.SetCommunityCollapsed(userID, community.ID, in.GetCollapsed()); err != nil {
 		return nil, communityError(err)
 	}
@@ -519,7 +526,7 @@ func (c *ApiFullCore) CommunitiesGetParticipantJoinedChats(in *mtproto.TLCommuni
 	if !domain.Ready() {
 		return nil, mtproto.ErrMethodNotImpl
 	}
-	community, _, err := c.resolveCommunity(in.GetCommunity())
+	community, _, err := c.requireCommunityOwner(userID, in.GetCommunity())
 	if err != nil {
 		return nil, err
 	}

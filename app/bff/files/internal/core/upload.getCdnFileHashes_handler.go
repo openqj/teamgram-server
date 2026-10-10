@@ -23,7 +23,7 @@ import (
 )
 
 // UploadGetCdnFileHashes
-// upload.getCdnFileHashes#4da54231 file_token:bytes offset:int = Vector<FileHash>;
+// upload.getCdnFileHashes#91dc3f31 file_token:bytes offset:long = Vector<FileHash>;
 func (c *FilesCore) UploadGetCdnFileHashes(in *mtproto.TLUploadGetCdnFileHashes) (*mtproto.Vector_FileHash, error) {
 	if in == nil {
 		return nil, mtproto.ErrInputRequestInvalid

@@ -29,6 +29,12 @@ func stickerProviderError(c *ApiFullCore, err error) error {
 	if errors.Is(err, persist.ErrStickerSetOwnerMismatch) {
 		return mtproto.ErrStickersetInvalid
 	}
+	if errors.Is(err, persist.ErrStickerDocumentAccessMismatch) {
+		return mtproto.ErrStickerIdInvalid
+	}
+	if errors.Is(err, persist.ErrStickerDocumentNotFound) {
+		return mtproto.ErrStickerIdInvalid
+	}
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
 		if strings.Contains(pgErr.ConstraintName, "short_name") {
@@ -51,7 +57,7 @@ func stickerDocumentFromRecord(d persist.StickerDocument) *mtproto.Document {
 			Alt: d.Alt,
 			Stickerset: mtproto.MakeTLInputStickerSetID(&mtproto.InputStickerSet{
 				Id:         d.SetID,
-				AccessHash: d.AccessHash,
+				AccessHash: d.SetAccessHash,
 			}).To_InputStickerSet(),
 		}).To_DocumentAttribute(),
 	}

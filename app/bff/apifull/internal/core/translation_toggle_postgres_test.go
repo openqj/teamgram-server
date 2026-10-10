@@ -16,14 +16,9 @@ func TestTogglePeerTranslationsPostgresRoundTrip(t *testing.T) {
 	if dsn == "" {
 		t.Skip("APIFULL_POSTGRES_DSN must point to an isolated PostgreSQL 18 database")
 	}
-	previous := persist.Default
 	if err := persist.OpenPostgresReadOnly(dsn); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() {
-		_ = persist.ClosePostgres()
-		persist.Default = previous
-	})
 
 	uid := time.Now().UnixNano()
 	peer := mtproto.MakeTLInputPeerUser(&mtproto.InputPeer{UserId: 90201, AccessHash: 90202}).To_InputPeer()

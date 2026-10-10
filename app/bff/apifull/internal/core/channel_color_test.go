@@ -6,6 +6,7 @@ import (
 
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/proto/mtproto/rpc/metadata"
+	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/persist"
 	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
@@ -57,7 +58,11 @@ func TestChannelsUpdateColorRoundTrip(t *testing.T) {
 	}
 
 	personal, err := ownerCore.AccountGetDefaultBackgroundEmojis(nil)
-	if personal != nil || !errors.Is(err, mtproto.ErrMethodNotImpl) {
+	if persist.StickerProviderReady() {
+		if err != nil || personal == nil {
+			t.Fatalf("background emoji catalogue: result=%+v err=%v", personal, err)
+		}
+	} else if personal != nil || !errors.Is(err, mtproto.ErrMethodNotImpl) {
 		t.Fatalf("missing background emoji catalogue: result=%+v err=%v", personal, err)
 	}
 	outsiderCore := &ApiFullCore{MD: &metadata.RpcMetadata{UserId: outsider}}

@@ -171,6 +171,9 @@ func (d *ChatParticipantsDAO) UpdateParticipantType(ctx context.Context, partici
 func (d *ChatParticipantsDAO) UpdateParticipantTypeOn(ctx context.Context, tx DB, participantType int32, id int64) (int64, error) {
 	return d.update(ctx, tx, `UPDATE chat_participants SET participant_type = $1 WHERE id = $2`, participantType, id)
 }
+func (d *ChatParticipantsDAO) UpdateParticipantTypeAndRightsOn(ctx context.Context, tx DB, participantType, adminRights int32, id int64) (int64, error) {
+	return d.update(ctx, tx, `UPDATE chat_participants SET participant_type = $1, admin_rights = $2 WHERE id = $3`, participantType, adminRights, id)
+}
 func (d *ChatParticipantsDAO) UpdateRank(ctx context.Context, rank string, id int64) (int64, error) {
 	return d.update(ctx, d.db, `UPDATE chat_participants SET rank2 = $1 WHERE id = $2`, rank, id)
 }

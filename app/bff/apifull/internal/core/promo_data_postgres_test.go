@@ -19,7 +19,8 @@ func TestPromoDataHidePostgresRoundTripAndConcurrentUpdates(t *testing.T) {
 	if err := persist.OpenPostgresReadOnly(dsn); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = persist.ClosePostgres() })
+	// TestMain owns the process-wide PostgreSQL store; keep it open for the
+	// remainder of the package suite.
 
 	uid := time.Now().UnixNano()
 	key := promoHideKey(uid)

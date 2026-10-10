@@ -17,38 +17,26 @@
 
 package core
 
-import (
-	"fmt"
-
-	"github.com/teamgram/proto/mtproto"
-	"github.com/teamgram/proto/mtproto/crypto"
-	"github.com/teamgram/teamgram-server/app/bff/authorization/model"
-)
+import "github.com/teamgram/proto/mtproto"
 
 // AccountConfirmBotConnection
 // account.confirmBotConnection#67ed1f68 bot_id:InputUser = Bool;
 func (c *AccountCore) AccountConfirmBotConnection(in *mtproto.TLAccountConfirmBotConnection) (*mtproto.Bool, error) {
-	botId := confirmBotUserId(in.GetBotId(), c.MD.UserId)
-	if botId == 0 {
-		// No bot-connection verifier in this build. Empty query is not stored.
-		return mtproto.BoolFalse, nil
+	if c == nil || c.MD == nil || c.MD.UserId <= 0 {
+		return nil, mtproto.ErrAuthKeyUnregistered
 	}
-
-	token := crypto.GenerateStringNonce(16)
-	key := fmt.Sprintf("bot_connection_%d", botId)
-	codeData := &model.PhoneCodeTransaction{
-		AuthKeyId:     c.MD.PermAuthKeyId,
-		SessionId:     c.MD.SessionId,
-		PhoneNumber:   key,
-		PhoneCode:     token,
-		PhoneCodeHash: token,
-		State:         model.CodeStateOk,
+	if in == nil || in.GetBotId() == nil {
+		return nil, mtproto.ErrInputRequestInvalid
 	}
-	if err := c.svcCtx.Dao.PutCachePhoneCode(c.ctx, c.MD.PermAuthKeyId, key, codeData); err != nil {
-		c.Logger.Errorf("account.confirmBotConnection - store token error: %v", err)
-		return nil, err
+	botID := confirmBotUserId(in.GetBotId(), c.MD.UserId)
+	if botID <= 0 || in.GetBotId().GetPredicateName() == mtproto.Predicate_inputUserEmpty {
+		return nil, mtproto.ErrUserIdInvalid
 	}
-	return mtproto.BoolTrue, nil
+	// Telegram confirmation requires an authoritative bot-connection verifier
+	// and a durable confirmation record. No such provider is configured here;
+	// fail closed instead of minting a local token that clients could mistake
+	// for a confirmed connection.
+	return nil, mtproto.ErrMethodNotImpl
 }
 
 func confirmBotUserId(bot *mtproto.InputUser, selfUserId int64) int64 {

@@ -26,8 +26,9 @@ import (
 const smsJobRecentWindow = 30 * 24 * 60 * 60
 
 var (
-	ErrSmsJobIDInvalid = errors.New("sms job id is invalid")
-	ErrSmsJobNotFound  = errors.New("sms job does not exist")
+	ErrSmsJobIDInvalid  = errors.New("sms job id is invalid")
+	ErrSmsJobNotFound   = errors.New("sms job does not exist")
+	ErrSmsjobsNotJoined = errors.New("sms jobs user is not joined")
 )
 
 // SmsJobRecord is the durable assignment delivered to a Telegram client.
@@ -64,6 +65,15 @@ func validateSmsJobUser(userID int64) error {
 		return errors.New("domain PostgreSQL is not open")
 	}
 	return nil
+}
+
+func requireSmsjobsJoined(tx *sql.Tx, userID int64) error {
+	var joined bool
+	err := tx.QueryRow(`SELECT joined FROM apifull_sms_job_member WHERE user_id=$1 FOR UPDATE`, userID).Scan(&joined)
+	if errors.Is(err, sql.ErrNoRows) || (err == nil && !joined) {
+		return ErrSmsjobsNotJoined
+	}
+	return err
 }
 
 // SmsjobsEligibility returns the current monthly sent count. The Telegram
@@ -115,6 +125,9 @@ func SmsjobsLeave(userID int64) error {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
+	if err = requireSmsjobsJoined(tx, userID); err != nil {
+		return err
+	}
 	_, err = tx.Exec(`UPDATE apifull_sms_job_member SET joined=FALSE, updated_at=CURRENT_TIMESTAMP WHERE user_id=$1`, userID)
 	if err != nil {
 		return err
@@ -132,18 +145,18 @@ func SmsjobsUpdateSettings(userID int64, allowInternational bool) error {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	_, err = tx.Exec(`INSERT INTO apifull_sms_job_member (user_id, allow_international, updated_at)
-		VALUES ($1, $2, CURRENT_TIMESTAMP)
-		ON CONFLICT (user_id) DO UPDATE SET allow_international=EXCLUDED.allow_international,
-		updated_at=CURRENT_TIMESTAMP`, userID, allowInternational)
+	if err = requireSmsjobsJoined(tx, userID); err != nil {
+		return err
+	}
+	_, err = tx.Exec(`UPDATE apifull_sms_job_member SET allow_international=$2,
+		updated_at=CURRENT_TIMESTAMP WHERE user_id=$1`, userID, allowInternational)
 	if err != nil {
 		return err
 	}
 	return tx.Commit()
 }
 
-// SmsjobsStatus reads a user's counters. A missing member is a valid empty
-// status, which lets clients render the opt-in state before joining.
+// SmsjobsStatus reads a joined user's counters.
 func SmsjobsStatus(userID int64) (SmsJobStatus, error) {
 	if err := validateSmsJobUser(userID); err != nil {
 		return SmsJobStatus{}, err
@@ -151,11 +164,12 @@ func SmsjobsStatus(userID int64) (SmsJobStatus, error) {
 	var out SmsJobStatus
 	var recentSent, recentSince, totalSent, totalSince int64
 	var lastGift sql.NullString
-	err := db.QueryRow(`SELECT allow_international, recent_sent, recent_since, total_sent,
+	var joined bool
+	err := db.QueryRow(`SELECT joined, allow_international, recent_sent, recent_since, total_sent,
 		total_since, last_gift_slug FROM apifull_sms_job_member WHERE user_id=$1`, userID).
-		Scan(&out.AllowInternational, &recentSent, &recentSince, &totalSent, &totalSince, &lastGift)
-	if errors.Is(err, sql.ErrNoRows) {
-		return out, nil
+		Scan(&joined, &out.AllowInternational, &recentSent, &recentSince, &totalSent, &totalSince, &lastGift)
+	if errors.Is(err, sql.ErrNoRows) || (err == nil && !joined) {
+		return SmsJobStatus{}, ErrSmsjobsNotJoined
 	}
 	if err != nil {
 		return SmsJobStatus{}, err

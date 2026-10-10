@@ -35,17 +35,41 @@ function loadAuthKey(): string {
   return Buffer.from(body, 'base64').toString('hex');
 }
 
+function storyRaw(): string {
+  // Stories moved from the legacy KV row to the deployment-owned JSONB table.
+  // Resolve the relation first so this probe remains usable during a rolling
+  // migration where one database still has only the legacy layout.
+  const hasStoryTable = sql(`SELECT (to_regclass('public.apifull_story_state') IS NOT NULL)::int`);
+  if (hasStoryTable === '1') {
+    const state = sql(`SELECT state::text FROM apifull_story_state WHERE user_id=${userId}`);
+    if (state) return state;
+  }
+  return sql(`SELECT v FROM apifull_kv WHERE k='story:${userId}'`);
+}
+
 function storySnapshot(): string {
-  const value = sql(`SELECT v FROM apifull_kv WHERE k='story:${userId}'`);
+  const value = storyRaw();
   if (!value) throw new Error(`no production story record found for user ${userId}`);
   return createHash('sha256').update(value).digest('hex');
 }
 
 function storyViewsBaseline(): string {
-  return sql(`SELECT jsonb_array_length(v::jsonb->'order'), (SELECT count(*) FROM jsonb_object_keys(v::jsonb->'items')),
-      (SELECT count(*) FROM jsonb_object_keys(v::jsonb->'viewers')), (SELECT count(*) FROM jsonb_object_keys(v::jsonb->'reactions')),
-      ((v::jsonb #> '{items,1,views}') IS NOT NULL)::int
-    FROM apifull_kv WHERE k='story:${userId}'`);
+  const value = storyRaw();
+  if (!value) throw new Error(`no production story record found for user ${userId}`);
+  const state = JSON.parse(value) as {
+    order?: unknown[];
+    items?: Record<string, unknown>;
+    viewers?: Record<string, unknown>;
+    reactions?: Record<string, unknown>;
+  };
+  const itemOne = state.items?.['1'] as { views?: unknown } | undefined;
+  return [
+    state.order?.length || 0,
+    Object.keys(state.items || {}).length,
+    Object.keys(state.viewers || {}).length,
+    Object.keys(state.reactions || {}).length,
+    itemOne?.views == null ? 0 : 1,
+  ].join('\t');
 }
 
 function int32(value: number): Uint8Array {
