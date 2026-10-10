@@ -21,6 +21,7 @@ package server
 import (
 	"errors"
 	"flag"
+	"strings"
 
 	"github.com/teamgram/teamgram-server/app/bff/apifull/state"
 	"github.com/teamgram/teamgram-server/app/bff/chats/internal/config"
@@ -45,7 +46,7 @@ func New() *Server {
 func (s *Server) Initialize() error {
 	var c config.Config
 	conf.MustLoad(*configFile, &c, conf.UseEnv())
-	if c.PostgresDSN == "" {
+	if strings.TrimSpace(c.PostgresDSN) == "" {
 		return errors.New("chats: PostgresDSN is required")
 	}
 

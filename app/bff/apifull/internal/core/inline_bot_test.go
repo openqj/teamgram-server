@@ -72,3 +72,51 @@ func TestInlineBotRoundtrip(t *testing.T) {
 		t.Fatalf("guest result: got=%v err=%v, want METHOD_NOT_IMPL", got, err)
 	}
 }
+
+func TestInputInlineMessageMalformedPredicateDoesNotPanic(t *testing.T) {
+	message := inputInlineMessageToOutput(&mtproto.InputBotInlineMessage{
+		PredicateName: "input",
+		Message:       "preserved",
+	})
+	if message == nil || message.GetPredicateName() != mtproto.Predicate_botInlineMessageText || message.GetMessage() != "preserved" {
+		t.Fatalf("converted malformed predicate = %+v", message)
+	}
+}
+
+func TestInlineResultPredicateValidation(t *testing.T) {
+	for _, tc := range []struct {
+		predicate string
+		want      error
+	}{
+		{predicate: "", want: nil},
+		{predicate: mtproto.Predicate_inputBotInlineResult, want: nil},
+		{predicate: mtproto.Predicate_inputBotInlineResultPhoto, want: mtproto.ErrMethodNotImpl},
+		{predicate: mtproto.Predicate_inputBotInlineResultDocument, want: mtproto.ErrMethodNotImpl},
+		{predicate: "unknownInlineResult", want: mtproto.ErrInputConstructorInvalid},
+	} {
+		t.Run(tc.predicate, func(t *testing.T) {
+			if err := validateInlineResultPredicate(tc.predicate); !errors.Is(err, tc.want) {
+				t.Fatalf("predicate %q: err=%v, want=%v", tc.predicate, err, tc.want)
+			}
+		})
+	}
+}
+
+func TestInlineMessagePredicateValidation(t *testing.T) {
+	for _, tc := range []struct {
+		predicate string
+		want      error
+	}{
+		{predicate: "", want: nil},
+		{predicate: mtproto.Predicate_inputBotInlineMessageText, want: nil},
+		{predicate: mtproto.Predicate_inputBotInlineMessageGame, want: mtproto.ErrMethodNotImpl},
+		{predicate: mtproto.Predicate_inputBotInlineMessageMediaInvoice, want: mtproto.ErrMethodNotImpl},
+		{predicate: "unknownInlineMessage", want: mtproto.ErrInputConstructorInvalid},
+	} {
+		t.Run(tc.predicate, func(t *testing.T) {
+			if err := validateInlineMessagePredicate(tc.predicate); !errors.Is(err, tc.want) {
+				t.Fatalf("predicate %q: err=%v, want=%v", tc.predicate, err, tc.want)
+			}
+		})
+	}
+}

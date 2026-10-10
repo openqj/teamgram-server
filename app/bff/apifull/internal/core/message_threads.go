@@ -20,7 +20,6 @@ package core
 
 import (
 	"fmt"
-	"strconv"
 	"sync"
 
 	"github.com/teamgram/proto/mtproto"
@@ -47,15 +46,7 @@ func discussionReadKey(userID int64, peer *mtproto.InputPeer, msgID int32) strin
 }
 
 func loadDiscussionReadMaxID(key string) (int32, error) {
-	raw, err := persist.Default.Get(key)
-	if err != nil || raw == "" {
-		return 0, err
-	}
-	value, err := strconv.ParseInt(raw, 10, 32)
-	if err != nil {
-		return 0, err
-	}
-	return int32(value), nil
+	return persist.GetDiscussionReadMaxID(key)
 }
 
 func (c *ApiFullCore) ContactsBlockFromReplies(in *mtproto.TLContactsBlockFromReplies) (*mtproto.Updates, error) {
@@ -571,7 +562,7 @@ func (c *ApiFullCore) MessagesReadDiscussion(in *mtproto.TLMessagesReadDiscussio
 		return nil, err
 	}
 	if in.GetReadMaxId() > current {
-		if err = persist.Default.Set(key, strconv.FormatInt(int64(in.GetReadMaxId()), 10)); err != nil {
+		if err = persist.AdvanceDiscussionReadMaxID(key, in.GetReadMaxId()); err != nil {
 			return nil, err
 		}
 	}

@@ -25,6 +25,9 @@ import (
 // PaymentsAssignAppStoreTransaction
 // payments.assignAppStoreTransaction#80ed747d receipt:bytes purpose:InputStorePaymentPurpose = Updates;
 func (c *PremiumCore) PaymentsAssignAppStoreTransaction(in *mtproto.TLPaymentsAssignAppStoreTransaction) (*mtproto.Updates, error) {
+	if _, err := c.requireUserId(); err != nil {
+		return nil, err
+	}
 	if in == nil || len(in.GetReceipt()) == 0 {
 		return nil, mtproto.ErrPaymentProviderInvalid
 	}

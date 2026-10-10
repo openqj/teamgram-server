@@ -21,6 +21,7 @@ package server
 import (
 	"errors"
 	"flag"
+	"strings"
 
 	inbox_helper "github.com/teamgram/teamgram-server/app/messenger/msg/inbox"
 	"github.com/teamgram/teamgram-server/app/messenger/msg/internal/config"
@@ -50,7 +51,7 @@ func New() *Server {
 func (s *Server) Initialize() error {
 	var c config.Config
 	conf.MustLoad(*configFile, &c, conf.UseEnv())
-	if c.Postgres.DSN == "" {
+	if strings.TrimSpace(c.Postgres.DSN) == "" {
 		return errors.New("msg: Postgres.DSN is required")
 	}
 

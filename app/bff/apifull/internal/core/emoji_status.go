@@ -252,13 +252,39 @@ func loadEmojiStatusCatalog(c *ApiFullCore, kind string) ([]*mtproto.EmojiStatus
 }
 
 func emojiStatusesReply(hash int64, statuses []*mtproto.EmojiStatus) *mtproto.Account_EmojiStatuses {
-	currentHash := recentEmojiStatusHash(statuses)
-	if hash != 0 && hash == currentHash {
+	return emojiStatusesReplyWithHash(hash, recentEmojiStatusHash(statuses), statuses)
+}
+
+func emojiStatusesReplyWithHash(requestedHash, currentHash int64, statuses []*mtproto.EmojiStatus) *mtproto.Account_EmojiStatuses {
+	if requestedHash != 0 && requestedHash == currentHash {
 		return mtproto.MakeTLAccountEmojiStatusesNotModified(&mtproto.Account_EmojiStatuses{}).To_Account_EmojiStatuses()
 	}
 	return mtproto.MakeTLAccountEmojiStatuses(&mtproto.Account_EmojiStatuses{
 		Hash: currentHash, Statuses: statuses,
 	}).To_Account_EmojiStatuses()
+}
+
+func collectibleEmojiStatusHash(statuses []*mtproto.EmojiStatus) int64 {
+	hash := recentEmojiStatusHash(statuses)
+	for _, status := range statuses {
+		if status == nil || status.GetPredicateName() != mtproto.Predicate_emojiStatusCollectible {
+			continue
+		}
+		for _, value := range []string{status.GetTitle(), status.GetSlug()} {
+			for _, b := range []byte(value) {
+				hash = hash*31 + int64(b)
+			}
+		}
+		hash = hash*31 + status.GetPatternDocumentId()
+		hash = hash*31 + int64(status.GetCenterColor())
+		hash = hash*31 + int64(status.GetEdgeColor())
+		hash = hash*31 + int64(status.GetPatternColor())
+		hash = hash*31 + int64(status.GetTextColor())
+	}
+	if hash < 0 {
+		return -hash
+	}
+	return hash
 }
 
 func (c *ApiFullCore) AccountGetDefaultEmojiStatuses(in *mtproto.TLAccountGetDefaultEmojiStatuses) (*mtproto.Account_EmojiStatuses, error) {
@@ -341,16 +367,42 @@ func (c *ApiFullCore) AccountGetChannelRestrictedStatusEmojis(in *mtproto.TLAcco
 }
 
 func (c *ApiFullCore) AccountGetCollectibleEmojiStatuses(in *mtproto.TLAccountGetCollectibleEmojiStatuses) (*mtproto.Account_EmojiStatuses, error) {
-	if _, err := c.requireUserId(); err != nil {
+	uid, err := c.requireUserId()
+	if err != nil {
 		return nil, err
 	}
-	// Collectible status ownership is not persisted by this deployment. Return
-	// an empty catalog so clients can complete initialization and cache it.
-	_ = in
-	return mtproto.MakeTLAccountEmojiStatuses(&mtproto.Account_EmojiStatuses{
-		Hash:     0,
-		Statuses: []*mtproto.EmojiStatus{},
-	}).To_Account_EmojiStatuses(), nil
+	rows, err := persist.LoadCollectibleEmojiStatuses(stickerRequestContext(c), uid)
+	if err != nil {
+		return nil, customEmojiProviderError(c, err)
+	}
+	if len(rows) == 0 {
+		// Do not return an empty success: without provider-owned rows the
+		// client cannot distinguish "no inventory" from an unavailable
+		// collectible provider and would cache a synthetic catalogue.
+		return nil, stickersProviderUnavailable(c)
+	}
+	statuses := make([]*mtproto.EmojiStatus, 0, len(rows))
+	for _, row := range rows {
+		if row.CollectibleID <= 0 || row.DocumentID <= 0 {
+			return nil, mtproto.ErrInternalServerError
+		}
+		statuses = append(statuses, mtproto.MakeTLEmojiStatusCollectible(&mtproto.EmojiStatus{
+			CollectibleId:     row.CollectibleID,
+			DocumentId:        row.DocumentID,
+			Title:             row.Title,
+			Slug:              row.Slug,
+			PatternDocumentId: row.PatternDocumentID,
+			CenterColor:       row.CenterColor,
+			EdgeColor:         row.EdgeColor,
+			PatternColor:      row.PatternColor,
+			TextColor:         row.TextColor,
+		}).To_EmojiStatus())
+	}
+	var hash int64
+	if in != nil {
+		hash = in.GetHash()
+	}
+	return emojiStatusesReplyWithHash(hash, collectibleEmojiStatusHash(statuses), statuses), nil
 }
 
 func (c *ApiFullCore) ChannelsUpdateEmojiStatus(in *mtproto.TLChannelsUpdateEmojiStatus) (*mtproto.Updates, error) {

@@ -26,6 +26,16 @@ import (
 // AccountSetAccountTTL
 // account.setAccountTTL#2442485e ttl:AccountDaysTTL = Bool;
 func (c *AccountCore) AccountSetAccountTTL(in *mtproto.TLAccountSetAccountTTL) (*mtproto.Bool, error) {
+	if c == nil || c.MD == nil || c.MD.GetPermAuthKeyId() == 0 || c.MD.GetUserId() == 0 {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
+	if in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.UserClient == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
+
 	// TODO(@benqi): Check ttl
 	// 1 * 30 * 24 * 60 * 60,
 	// 3 * 30 * 24 * 60 * 60,
@@ -50,13 +60,18 @@ func (c *AccountCore) AccountSetAccountTTL(in *mtproto.TLAccountSetAccountTTL) (
 		return nil, err
 	}
 
-	if _, err := c.svcCtx.Dao.UserClient.UserSetAccountDaysTTL(c.ctx, &userpb.TLUserSetAccountDaysTTL{
+	result, err := c.svcCtx.Dao.UserClient.UserSetAccountDaysTTL(c.ctx, &userpb.TLUserSetAccountDaysTTL{
 		UserId: c.MD.UserId,
 		Ttl:    ttl,
-	}); err != nil {
+	})
+	if err != nil {
 		c.Logger.Errorf("account.setAccountTTL - error: %v", err)
 		return nil, err
 	}
+	if result == nil {
+		c.Logger.Errorf("account.setAccountTTL - user service returned no result")
+		return nil, mtproto.ErrInternalServerError
+	}
 
-	return mtproto.BoolTrue, nil
+	return result, nil
 }

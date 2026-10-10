@@ -52,6 +52,13 @@ func (c *AccountCore) AccountSendChangePhoneCode(in *mtproto.TLAccountSendChange
 	if in == nil || in.GetSettings() == nil {
 		return nil, mtproto.ErrInputRequestInvalid
 	}
+	if c == nil || c.MD == nil || c.MD.GetPermAuthKeyId() == 0 || c.MD.GetUserId() == 0 {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
+	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.AuthLogic == nil ||
+		c.svcCtx.Challenges == nil || c.svcCtx.Dao.UserClient == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
 	settings := in.GetSettings()
 	// ## Possible errors
 	// Code	Type	Description

@@ -81,6 +81,58 @@ func TestAuthorizationProviderGapsFailClosed(t *testing.T) {
 	}
 }
 
+func TestAuthorizationProviderRejectsMalformedApplicationCredentials(t *testing.T) {
+	apiID, apiHash := validAuthAPI()
+	cases := []struct {
+		name string
+		call func(*AuthorizationCore) error
+	}{
+		{
+			name: "bot api id",
+			call: func(c *AuthorizationCore) error {
+				_, err := c.AuthImportBotAuthorization(&mtproto.TLAuthImportBotAuthorization{
+					ApiId: 0, ApiHash: apiHash, BotAuthToken: "bot-token",
+				})
+				return err
+			},
+		},
+		{
+			name: "bot api hash",
+			call: func(c *AuthorizationCore) error {
+				_, err := c.AuthImportBotAuthorization(&mtproto.TLAuthImportBotAuthorization{
+					ApiId: 100, ApiHash: "not-hex", BotAuthToken: "bot-token",
+				})
+				return err
+			},
+		},
+		{
+			name: "web api id",
+			call: func(c *AuthorizationCore) error {
+				_, err := c.AuthImportWebTokenAuthorization(&mtproto.TLAuthImportWebTokenAuthorization{
+					ApiId: 0, ApiHash: apiHash, WebAuthToken: "web-token",
+				})
+				return err
+			},
+		},
+		{
+			name: "web api hash",
+			call: func(c *AuthorizationCore) error {
+				_, err := c.AuthImportWebTokenAuthorization(&mtproto.TLAuthImportWebTokenAuthorization{
+					ApiId: apiID, ApiHash: "not-hex", WebAuthToken: "web-token",
+				})
+				return err
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := tc.call(newProviderGapCore()); !errors.Is(err, mtproto.ErrApiIdInvalid) {
+				t.Fatalf("error = %v, want API_ID_INVALID", err)
+			}
+		})
+	}
+}
+
 func TestAuthorizationProviderGapInputErrors(t *testing.T) {
 	c := newProviderGapCore()
 	if result, err := c.AuthDropTempAuthKeys(nil); result != nil || !errors.Is(err, mtproto.ErrInputRequestInvalid) {

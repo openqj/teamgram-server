@@ -29,3 +29,15 @@ The settlement provider response is JSON and must include:
 The provider must sign the exact response body with HMAC-SHA256 using `PaymentProviderSigningKey` and return the lowercase hexadecimal digest in `X-Teamgram-Payment-Signature` as `sha256=<digest>`. APIFull rejects mismatched user, beneficiary, form, request key, fingerprint, product, offer, Stars quantity, known price terms, missing transaction ID, or invalid signature. Form-discovery responses use the same HMAC header and must return a typed `payments.paymentFormStars` with the matching offer metadata.
 
 On acceptance, APIFull atomically writes the payment request, receipt, payment ledger entry, Stars transaction, and balance update. A duplicate request returns the settled result without another provider call or Stars credit. Missing endpoint or signing key fails closed. Production settlement requires the provider endpoint, credentials, matching active catalog offers, and a real transaction acceptance run.
+
+Read-only catalog and account operations use the same signed response header. The
+request `operation` values are `get_stars_revenue_stats`,
+`get_stars_revenue_withdrawal_url`, `get_stars_revenue_ads_account_url`,
+`export_invoice`, `get_premium_gift_code_options`,
+`get_stars_giveaway_options`, `get_giveaway_info`, and `check_gift_code`. Every response must carry
+`verified: true` and the authenticated `user_id`; APIFull rejects a mismatched
+user, malformed TL predicate, negative amount/date, or an unsigned response.
+Exported invoice, withdrawal, and ads URLs must be HTTPS. Gift-code and
+giveaway options are provider-owned catalog data and are not treated as an
+entitlement until a separate mutation workflow commits the corresponding
+transaction.

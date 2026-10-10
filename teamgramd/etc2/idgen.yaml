@@ -25,3 +25,9 @@ NodeId: 1
 
 Postgres:
   DSN: ${TEAMGRAM_POSTGRES_DSN}
+  MaxConns: 16
+  MinConns: 2
+  MaxConnLifetime: 1h
+  MaxConnIdleTime: 30m
+  HealthCheckPeriod: 1m
+  ConnectTimeout: 10s

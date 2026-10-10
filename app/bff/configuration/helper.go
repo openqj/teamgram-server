@@ -17,7 +17,8 @@ import (
 )
 
 type (
-	Config = config.Config
+	Config     = config.Config
+	HelpConfig = config.HelpConfig
 )
 
 func New(c Config) *service.Service {

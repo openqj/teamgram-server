@@ -10,6 +10,12 @@ import (
 	internal "github.com/teamgram/teamgram-server/app/bff/apifull/internal/persist"
 )
 
+var (
+	ErrSponsoredChannelMissing      = internal.ErrSponsoredChannelMissing
+	ErrSponsoredChannelAccessHash   = internal.ErrSponsoredChannelAccessHash
+	ErrSponsoredChannelUnauthorized = internal.ErrSponsoredChannelUnauthorized
+)
+
 // Store is the process-wide blob store shared with apifull.
 type Store interface {
 	Get(key string) (string, error)
@@ -62,6 +68,18 @@ func ClosePostgres() error {
 // store. The batch is committed atomically by the internal persistence layer.
 func SaveAppLogEvents(ctx context.Context, userID int64, events []*mtproto.InputAppEvent) error {
 	return internal.SaveAppLogEvents(ctx, userID, events)
+}
+
+func SetSponsoredMessagesEnabled(ctx context.Context, userID int64, enabled bool) error {
+	return internal.SetSponsoredMessagesEnabled(ctx, userID, enabled)
+}
+
+func RecordSponsoredEvent(ctx context.Context, userID int64, eventType string, randomID []byte, payload any) error {
+	return internal.RecordSponsoredEvent(ctx, userID, eventType, randomID, payload)
+}
+
+func SetSponsoredChannelRestriction(ctx context.Context, actorID, channelID, accessHash int64, restricted bool) error {
+	return internal.SetSponsoredChannelRestriction(ctx, actorID, channelID, accessHash, restricted)
 }
 
 type live struct{}

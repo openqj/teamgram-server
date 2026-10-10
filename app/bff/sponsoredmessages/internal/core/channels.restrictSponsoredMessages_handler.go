@@ -18,12 +18,19 @@
 
 package core
 
-import "github.com/teamgram/proto/mtproto"
+import (
+	"errors"
+	"time"
+
+	"github.com/teamgram/proto/mtproto"
+	"github.com/teamgram/teamgram-server/app/bff/apifull/persist"
+)
 
 // ChannelsRestrictSponsoredMessages
 // channels.restrictSponsoredMessages#9ae91519 channel:InputChannel restricted:Bool = Updates;
 func (c *SponsoredMessagesCore) ChannelsRestrictSponsoredMessages(in *mtproto.TLChannelsRestrictSponsoredMessages) (*mtproto.Updates, error) {
-	if _, err := c.requireSponsoredUser(); err != nil {
+	uid, err := c.requireSponsoredUser()
+	if err != nil {
 		return nil, err
 	}
 	if in == nil {
@@ -39,15 +46,23 @@ func (c *SponsoredMessagesCore) ChannelsRestrictSponsoredMessages(in *mtproto.TL
 			return nil, mtproto.ErrChannelInvalid
 		}
 	case mtproto.Predicate_inputChannelFromMessage:
-		if channel.GetChannelId() <= 0 || channel.GetPeer() == nil || channel.GetMsgId() <= 0 {
-			return nil, mtproto.ErrChannelInvalid
-		}
+		return nil, mtproto.ErrMethodNotImpl
 	default:
 		return nil, mtproto.ErrChannelInvalid
 	}
 	switch in.GetRestricted().GetPredicateName() {
 	case mtproto.Predicate_boolTrue, mtproto.Predicate_boolFalse:
-		return nil, mtproto.ErrMethodNotImpl
+		if err = persist.SetSponsoredChannelRestriction(c.ctx, uid, channel.GetChannelId(), channel.GetAccessHash(), mtproto.FromBool(in.GetRestricted())); err != nil {
+			switch {
+			case errors.Is(err, persist.ErrSponsoredChannelMissing), errors.Is(err, persist.ErrSponsoredChannelAccessHash):
+				return nil, mtproto.ErrChannelInvalid
+			case errors.Is(err, persist.ErrSponsoredChannelUnauthorized):
+				return nil, mtproto.ErrChatAdminRequired
+			default:
+				return nil, err
+			}
+		}
+		return mtproto.MakeTLUpdates(&mtproto.Updates{Updates: []*mtproto.Update{}, Users: []*mtproto.User{}, Chats: []*mtproto.Chat{}, Date: int32(time.Now().Unix())}).To_Updates(), nil
 	default:
 		return nil, mtproto.ErrInputRequestInvalid
 	}

@@ -26,7 +26,11 @@ import (
 // help.getInviteText#4d392343 = help.InviteText;
 func (c *ConfigurationCore) HelpGetInviteText(in *mtproto.TLHelpGetInviteText) (*mtproto.Help_InviteText, error) {
 	_ = in
-
-	// No invite text is stored.
-	return mtproto.MakeTLHelpInviteText(&mtproto.Help_InviteText{}).To_Help_InviteText(), nil
+	cfg, err := c.helpConfig()
+	if err != nil {
+		return nil, err
+	}
+	return mtproto.MakeTLHelpInviteText(&mtproto.Help_InviteText{
+		Message: cfg.InviteText,
+	}).To_Help_InviteText(), nil
 }

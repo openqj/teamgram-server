@@ -203,10 +203,11 @@ func ProlongWebViewQuery(userID, queryID int64, ttl time.Duration) (bool, error)
 		return false, err
 	}
 	defer func() { _ = tx.Rollback() }()
+	var requestID string
 	var expires time.Time
-	err = tx.QueryRow(`SELECT expires_at FROM apifull_webview_request
+	err = tx.QueryRow(`SELECT request_id, expires_at FROM apifull_webview_request
 		WHERE user_id = $1 AND payload->>'query_id' = $2 AND expires_at > CURRENT_TIMESTAMP
-		ORDER BY updated_at DESC LIMIT 1 FOR UPDATE`, userID, fmt.Sprintf("%d", queryID)).Scan(&expires)
+		ORDER BY updated_at DESC LIMIT 1 FOR UPDATE`, userID, fmt.Sprintf("%d", queryID)).Scan(&requestID, &expires)
 	if err == sql.ErrNoRows {
 		return false, nil
 	}
@@ -214,8 +215,7 @@ func ProlongWebViewQuery(userID, queryID int64, ttl time.Duration) (bool, error)
 		return false, err
 	}
 	if _, err = tx.Exec(`UPDATE apifull_webview_request SET expires_at = CURRENT_TIMESTAMP + $1::interval,
-		updated_at = CURRENT_TIMESTAMP WHERE user_id = $2 AND payload->>'query_id' = $3
-		AND expires_at > CURRENT_TIMESTAMP`, fmt.Sprintf("%d seconds", int64(ttl/time.Second)), userID, fmt.Sprintf("%d", queryID)); err != nil {
+		updated_at = CURRENT_TIMESTAMP WHERE request_id = $2 AND user_id = $3`, fmt.Sprintf("%d seconds", int64(ttl/time.Second)), requestID, userID); err != nil {
 		return false, err
 	}
 	if err = tx.Commit(); err != nil {

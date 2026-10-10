@@ -18,7 +18,7 @@ func TestInlineBotUnauthed(t *testing.T) {
 
 func TestInlineBotSetResultsUnavailable(t *testing.T) {
 	c := &ApiFullCore{MD: &metadata.RpcMetadata{UserId: 1}}
-	if got, err := c.MessagesSetInlineBotResults(nil); got != nil || !errors.Is(err, mtproto.ErrMethodNotImpl) {
+	if got, err := c.MessagesSetInlineBotResults(&mtproto.TLMessagesSetInlineBotResults{QueryId: 1}); got != nil || !errors.Is(err, mtproto.ErrMethodNotImpl) {
 		t.Fatalf("set results: got=%v err=%v, want METHOD_NOT_IMPL", got, err)
 	}
 }

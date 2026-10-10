@@ -69,3 +69,28 @@ func (p *Postgres) SavePhoto(ctx context.Context, photo *dataobject.PhotosDO, si
 		return nil
 	})
 }
+
+// SaveDocument persists a document and all of its thumbnail metadata as one
+// aggregate. Upload handlers must not acknowledge a document while leaving
+// only part of its media metadata durable.
+func (p *Postgres) SaveDocument(ctx context.Context, document *dataobject.DocumentsDO, thumbs []*dataobject.PhotoSizesDO, videoThumbs []*dataobject.VideoSizesDO) error {
+	if p == nil || p.Pool == nil {
+		return errors.New("media: PostgreSQL store is not initialized")
+	}
+	return postgres.WithTx(ctx, p.Pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+		if _, _, err := p.DocumentsDAO.InsertTx(ctx, tx, document); err != nil {
+			return err
+		}
+		for _, thumb := range thumbs {
+			if _, _, err := p.PhotoSizesDAO.InsertTx(ctx, tx, thumb); err != nil {
+				return err
+			}
+		}
+		for _, thumb := range videoThumbs {
+			if _, _, err := p.VideoSizesDAO.InsertTx(ctx, tx, thumb); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}

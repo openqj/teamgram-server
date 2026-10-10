@@ -17,13 +17,21 @@ import (
 // MessageGetUnreadMentionsCount
 // message.getUnreadMentionsCount user_id:long peer_type:int peer_id:long = Int32;
 func (c *MessageCore) MessageGetUnreadMentionsCount(in *message.TLMessageGetUnreadMentionsCount) (*mtproto.Int32, error) {
+	if in == nil || in.UserId <= 0 || in.PeerId <= 0 {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
 	var (
 		sz int64
 	)
 
 	switch in.PeerType {
 	case mtproto.PEER_CHAT:
-		sz, _ = c.svcCtx.Dao.CountUnreadMentions(c.ctx, in.UserId, mtproto.PEER_CHAT, in.PeerId)
+		var err error
+		sz, err = c.svcCtx.Dao.CountUnreadMentions(c.ctx, in.UserId, mtproto.PEER_CHAT, in.PeerId)
+		if err != nil {
+			c.Logger.Errorf("message.getUnreadMentionsCount - error: %v", err)
+			return nil, err
+		}
 	case mtproto.PEER_CHANNEL:
 		sz = 0
 	default:

@@ -336,7 +336,18 @@ func (m *Dao) SaveDocumentV2(ctx context.Context, fileName string, document *mtp
 		return err
 	}
 	data.Sha256 = hash
-
-	data.Id, _, err = m.documentsStore().Insert(ctx, data)
-	return err
+	photoSizes := make([]*dataobject.PhotoSizesDO, 0, len(document.GetThumbs()))
+	for _, size := range document.GetThumbs() {
+		if sizeDO := makePhotoSizesDO(document.GetId(), size); sizeDO != nil {
+			photoSizes = append(photoSizes, sizeDO)
+		}
+	}
+	videoSizes, err := makeVideoSizesDO(document.GetId(), document.GetVideoThumbs())
+	if err != nil {
+		return err
+	}
+	if m.Postgres == nil {
+		return fmt.Errorf("media: PostgreSQL store is not initialized")
+	}
+	return m.Postgres.SaveDocument(ctx, data, photoSizes, videoSizes)
 }

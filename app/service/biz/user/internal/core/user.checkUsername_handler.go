@@ -29,6 +29,9 @@ func (c *UserCore) UserCheckUsername(in *user.TLUserCheckUsername) (*user.Userna
 	if in == nil {
 		return nil, mtproto.ErrInputRequestInvalid
 	}
+	if err := c.requirePostgres(); err != nil {
+		return nil, err
+	}
 	if !user.CheckUsernameInvalid(in.GetUsername()) {
 		return nil, mtproto.ErrUsernameInvalid
 	}

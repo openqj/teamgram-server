@@ -20,6 +20,7 @@ func Chat(ch domain.Channel, creator bool) *mtproto.Chat {
 		Signatures:                  ch.Signatures,
 		SignatureProfiles:           ch.SignatureProfiles,
 		Autotranslation:             ch.Autotranslation,
+		BroadcastMessagesAllowed:    ch.BroadcastMessagesAllowed,
 		SlowmodeEnabled:             ch.SlowmodeSeconds > 0,
 		Creator:                     creator,
 		Date:                        int32(ch.CreatedAt),
@@ -42,6 +43,9 @@ func Chat(ch domain.Channel, creator bool) *mtproto.Chat {
 	}
 	if ch.Username != "" {
 		out.Username = mtproto.MakeFlagsString(ch.Username)
+	}
+	if ch.PaidMessagesStars != nil {
+		out.SendPaidMessagesStars = wrapperspb.Int64(*ch.PaidMessagesStars)
 	}
 	return mtproto.MakeTLChannel(out).To_Chat()
 }

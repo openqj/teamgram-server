@@ -31,7 +31,7 @@ func (c *UserCore) UserCreateManagedBot(in *user.BotRegistryCreateBotRequest) (*
 }
 
 func (c *UserCore) requireBotCreator() (int64, error) {
-	if c.MD == nil || c.MD.GetUserId() <= 0 {
+	if c == nil || c.MD == nil || c.MD.GetUserId() <= 0 {
 		return 0, mtproto.ErrForbiddenUserBotInvalid
 	}
 	if c.svcCtx == nil || c.svcCtx.Dao == nil {

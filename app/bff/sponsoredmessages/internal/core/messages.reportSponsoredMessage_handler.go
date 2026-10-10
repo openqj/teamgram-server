@@ -18,19 +18,28 @@
 
 package core
 
-import "github.com/teamgram/proto/mtproto"
+import (
+	"encoding/hex"
+
+	"github.com/teamgram/proto/mtproto"
+)
 
 // MessagesReportSponsoredMessage
 // messages.reportSponsoredMessage#12cbf0c4 random_id:bytes option:bytes = channels.SponsoredMessageReportResult;
 func (c *SponsoredMessagesCore) MessagesReportSponsoredMessage(in *mtproto.TLMessagesReportSponsoredMessage) (*mtproto.Channels_SponsoredMessageReportResult, error) {
-	if _, err := c.requireSponsoredUser(); err != nil {
+	uid, err := c.requireSponsoredUser()
+	if err != nil {
 		return nil, err
 	}
 	if in == nil {
 		return nil, mtproto.ErrInputRequestInvalid
 	}
-	if _, err := sponsoredRandom(in.GetRandomId()); err != nil {
+	rid, err := sponsoredRandom(in.GetRandomId())
+	if err != nil {
 		return nil, err
 	}
-	return nil, mtproto.ErrMethodNotImpl
+	if err = sponsoredSet(c.ctx, uid, "message_report:"+rid, map[string]any{"random_id": rid, "option": hex.EncodeToString(in.GetOption())}); err != nil {
+		return nil, err
+	}
+	return mtproto.MakeTLChannelsSponsoredMessageReportResultReported(nil).To_Channels_SponsoredMessageReportResult(), nil
 }

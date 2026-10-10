@@ -14,6 +14,9 @@ func (c *UserCore) UserGetCreatedBots(in *user.BotRegistryGetCreatedBotsRequest)
 	if in == nil {
 		return nil, mtproto.ErrInputConstructorInvalid
 	}
+	if err := c.requirePostgres(); err != nil {
+		return nil, err
+	}
 	if c.MD == nil || c.MD.GetUserId() <= 0 {
 		return nil, mtproto.ErrAuthKeyUnregistered
 	}
@@ -41,6 +44,9 @@ func (c *UserCore) UserGetCreatedBots(in *user.BotRegistryGetCreatedBotsRequest)
 func (c *UserCore) UserGetAdminedBots(in *user.BotRegistryGetAdminedBotsRequest) (*user.Vector_ImmutableUser, error) {
 	if in == nil {
 		return nil, mtproto.ErrInputConstructorInvalid
+	}
+	if err := c.requirePostgres(); err != nil {
+		return nil, err
 	}
 	if c.MD == nil || c.MD.GetUserId() <= 0 {
 		return nil, mtproto.ErrAuthKeyUnregistered

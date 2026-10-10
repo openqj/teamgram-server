@@ -26,6 +26,16 @@ import (
 // AccountSetAuthorizationTTL
 // account.setAuthorizationTTL#bf899aa0 authorization_ttl_days:int = Bool;
 func (c *AuthorizationCore) AccountSetAuthorizationTTL(in *mtproto.TLAccountSetAuthorizationTTL) (*mtproto.Bool, error) {
+	if c == nil || c.MD == nil || c.MD.GetPermAuthKeyId() == 0 || c.MD.GetUserId() == 0 {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
+	if in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.UserClient == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
+
 	value := in.GetAuthorizationTtlDays()
 	switch value {
 	case 30:
@@ -42,14 +52,19 @@ func (c *AuthorizationCore) AccountSetAuthorizationTTL(in *mtproto.TLAccountSetA
 		return nil, err
 	}
 
-	if _, err := c.svcCtx.Dao.UserClient.UserSetAuthorizationTTL(
+	result, err := c.svcCtx.Dao.UserClient.UserSetAuthorizationTTL(
 		c.ctx,
 		&user.TLUserSetAuthorizationTTL{
 			UserId: c.MD.UserId,
 			Ttl:    in.AuthorizationTtlDays,
-		}); err != nil {
+		})
+	if err != nil {
 		c.Logger.Errorf("account.setAuthorizationTTL - error: %v", err)
 		return nil, err
 	}
-	return mtproto.BoolTrue, nil
+	if result == nil {
+		c.Logger.Errorf("account.setAuthorizationTTL - user service returned no result")
+		return nil, mtproto.ErrInternalServerError
+	}
+	return result, nil
 }

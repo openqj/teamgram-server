@@ -66,6 +66,62 @@ func TestEmojiStatusCatalogPostgresRoundTrip(t *testing.T) {
 	}
 }
 
+func TestCollectibleEmojiStatusCatalogPostgresRoundTrip(t *testing.T) {
+	if !persist.StickerProviderReady() {
+		t.Skip("APIFULL_POSTGRES_DSN is not configured")
+	}
+	db, err := persist.OpenPostgresDB(os.Getenv("APIFULL_POSTGRES_DSN"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	uid := int64(884000000 + os.Getpid()%100000)
+	docID := uid + 1
+	collectibleID := uid + 2
+	_, err = db.ExecContext(context.Background(), `
+		INSERT INTO apifull_emoji_document (id, access_hash)
+		VALUES ($1, $2)
+		ON CONFLICT (id) DO NOTHING`, docID, docID+100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.ExecContext(context.Background(), `
+		INSERT INTO apifull_collectible_emoji_status
+			(owner_user_id, collectible_id, document_id, title, slug,
+			 pattern_document_id, center_color, edge_color, pattern_color, text_color)
+		VALUES ($1, $2, $3, 'Aurora', 'aurora', $4, $5, $6, $7, $8)`,
+		uid, collectibleID, docID, docID+3, 1, 2, 3, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = db.Exec(`DELETE FROM apifull_collectible_emoji_status WHERE owner_user_id=$1`, uid)
+		_, _ = db.Exec(`DELETE FROM apifull_emoji_document WHERE id=$1`, docID)
+	})
+
+	c := &ApiFullCore{MD: &metadata.RpcMetadata{UserId: uid}}
+	full, err := c.AccountGetCollectibleEmojiStatuses(&mtproto.TLAccountGetCollectibleEmojiStatuses{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if full.GetPredicateName() != mtproto.Predicate_account_emojiStatuses || len(full.GetStatuses()) != 1 {
+		t.Fatalf("collectible statuses=%v", full)
+	}
+	status := full.GetStatuses()[0]
+	if status.GetPredicateName() != mtproto.Predicate_emojiStatusCollectible ||
+		status.GetCollectibleId() != collectibleID || status.GetDocumentId() != docID ||
+		status.GetTitle() != "Aurora" || status.GetSlug() != "aurora" ||
+		status.GetPatternDocumentId() != docID+3 || status.GetCenterColor() != 1 ||
+		status.GetEdgeColor() != 2 || status.GetPatternColor() != 3 || status.GetTextColor() != 4 {
+		t.Fatalf("collectible status=%v", status)
+	}
+	same, err := c.AccountGetCollectibleEmojiStatuses(&mtproto.TLAccountGetCollectibleEmojiStatuses{Hash: full.GetHash()})
+	if err != nil || same.GetPredicateName() != mtproto.Predicate_account_emojiStatusesNotModified {
+		t.Fatalf("same hash result=%v err=%v", same, err)
+	}
+}
+
 func containsEmojiStatusDocument(statuses []*mtproto.EmojiStatus, id int64) bool {
 	for _, status := range statuses {
 		if status != nil && status.GetDocumentId() == id {

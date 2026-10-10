@@ -26,21 +26,22 @@ func TestPostgresStarsRefundIsAtomicAndIdempotent(t *testing.T) {
 		t.Fatalf("balance before refund = %d err=%v", balance, err)
 	}
 
-	first, err := CommitStarsRefund(userID, chargeID, "stars-provider", "refund-1", 25, []byte(`{"refund":true}`))
+	refundTransactionID := fmt.Sprintf("refund-%d", userID)
+	first, err := CommitStarsRefund(userID, chargeID, "stars-provider", refundTransactionID, 25, []byte(`{"refund":true}`))
 	if err != nil || first.State != StarsRefundStateComplete || first.Stars != 25 {
 		t.Fatalf("first refund = %+v err=%v", first, err)
 	}
 	if balance, err := StarsBalance(userID); err != nil || balance != 0 {
 		t.Fatalf("balance after refund = %d err=%v", balance, err)
 	}
-	second, err := CommitStarsRefund(userID, chargeID, "stars-provider", "refund-1", 25, []byte(`{"refund":true}`))
+	second, err := CommitStarsRefund(userID, chargeID, "stars-provider", refundTransactionID, 25, []byte(`{"refund":true}`))
 	if err != nil || second.ID != first.ID || second.RefundTransactionID != first.RefundTransactionID {
 		t.Fatalf("idempotent refund = %+v err=%v first=%+v", second, err, first)
 	}
 	if balance, err := StarsBalance(userID); err != nil || balance != 0 {
 		t.Fatalf("balance after replay = %d err=%v", balance, err)
 	}
-	if _, err = CommitStarsRefund(userID, chargeID, "stars-provider", "refund-2", 24, []byte(`{"refund":true}`)); !errors.Is(err, ErrStarsRefundConflict) {
+	if _, err = CommitStarsRefund(userID, chargeID, "stars-provider", refundTransactionID+"-conflict", 24, []byte(`{"refund":true}`)); !errors.Is(err, ErrStarsRefundConflict) {
 		t.Fatalf("conflicting replay error = %v, want ErrStarsRefundConflict", err)
 	}
 	if _, err = CommitStarsRefund(userID, chargeID+"-missing", "stars-provider", "refund-3", 25, []byte(`{"refund":true}`)); !errors.Is(err, ErrStarsChargeNotFound) {

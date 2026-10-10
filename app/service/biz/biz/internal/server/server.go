@@ -34,6 +34,7 @@ import (
 	"github.com/teamgram/teamgram-server/app/service/biz/updates/updates"
 	user_helper "github.com/teamgram/teamgram-server/app/service/biz/user"
 	"github.com/teamgram/teamgram-server/app/service/biz/user/user"
+	"strings"
 
 	"github.com/zeromicro/go-zero/core/conf"
 	"github.com/zeromicro/go-zero/core/logx"
@@ -55,7 +56,7 @@ func New() *Server {
 func (s *Server) Initialize() error {
 	var c config.Config
 	conf.MustLoad(*configFile, &c, conf.UseEnv())
-	if c.Postgres.DSN == "" {
+	if strings.TrimSpace(c.Postgres.DSN) == "" {
 		return errors.New("biz: Postgres.DSN is required")
 	}
 

@@ -11,6 +11,7 @@ package svc
 
 import (
 	"errors"
+	"strings"
 
 	kafka "github.com/teamgram/marmota/pkg/mq"
 	"github.com/teamgram/marmota/pkg/net/rpcx"
@@ -30,7 +31,7 @@ type ServiceContext struct {
 }
 
 func NewServiceContext(c config.Config) *ServiceContext {
-	if c.Postgres.DSN == "" {
+	if strings.TrimSpace(c.Postgres.DSN) == "" {
 		panic(errors.New("messenger/msg/inbox: Postgres.DSN is required"))
 	}
 	daoStore := &dao.Dao{

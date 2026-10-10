@@ -98,8 +98,40 @@ func TestAccountGetTmpPasswordFailsClosed(t *testing.T) {
 		Password: &mtproto.InputCheckPasswordSRP{SrpId: 1, A: []byte{1}, M1: []byte{1}},
 		Period:   60,
 	})
-	if result != nil || !errors.Is(err, mtproto.ErrMethodNotImpl) {
-		t.Fatalf("AccountGetTmpPassword() = (%#v, %v), want (nil, METHOD_NOT_IMPL)", result, err)
+	if result != nil || !errors.Is(err, mtproto.ErrTmpPasswordDisabled) {
+		t.Fatalf("AccountGetTmpPassword() = (%#v, %v), want (nil, TMP_PASSWORD_DISABLED)", result, err)
+	}
+}
+
+func TestPaymentsSendPaymentFormRejectsEmptySavedTmpPassword(t *testing.T) {
+	uid := int64(902009)
+	core := &ApiFullCore{MD: &metadata.RpcMetadata{UserId: uid}}
+	credentials := mtproto.MakeTLInputPaymentCredentialsSaved(&mtproto.InputPaymentCredentials{
+		Id: "saved-card",
+	}).To_InputPaymentCredentials()
+	result, err := core.PaymentsSendPaymentForm(&mtproto.TLPaymentsSendPaymentForm{
+		Invoice:     premiumSelfSubscriptionInvoiceForTest("empty-tmp-password"),
+		FormId:      1,
+		Credentials: credentials,
+	})
+	if result != nil || !errors.Is(err, mtproto.ErrTmpPasswordDisabled) {
+		t.Fatalf("PaymentsSendPaymentForm() = (%#v, %v), want (nil, TMP_PASSWORD_DISABLED)", result, err)
+	}
+}
+
+func TestPaymentsSendPaymentFormRecognizesSavedCredentialsByConstructor(t *testing.T) {
+	uid := int64(902010)
+	core := &ApiFullCore{MD: &metadata.RpcMetadata{UserId: uid}}
+	result, err := core.PaymentsSendPaymentForm(&mtproto.TLPaymentsSendPaymentForm{
+		Invoice: premiumSelfSubscriptionInvoiceForTest("constructor-only-saved"),
+		FormId:  1,
+		Credentials: &mtproto.InputPaymentCredentials{
+			Constructor: mtproto.TLConstructor_CRC32_inputPaymentCredentialsSaved,
+			Id:          "saved-card",
+		},
+	})
+	if result != nil || !errors.Is(err, mtproto.ErrTmpPasswordDisabled) {
+		t.Fatalf("PaymentsSendPaymentForm() = (%#v, %v), want constructor-only saved credentials to require TMP_PASSWORD_DISABLED", result, err)
 	}
 }
 
@@ -287,6 +319,80 @@ func TestPaymentsGetPaymentFormUsesVerifiedProviderForm(t *testing.T) {
 	}
 	if err = got.Encode(mtproto.NewEncodeBuf(4096), 229); err != nil {
 		t.Fatalf("verified payment form did not encode: %v", err)
+	}
+}
+
+func TestPaymentsExportInvoiceUsesVerifiedProviderURL(t *testing.T) {
+	const userID int64 = 902007
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			Operation string `json:"operation"`
+			UserID    int64  `json:"user_id"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Errorf("decode export request: %v", err)
+			return
+		}
+		if request.Operation != "export_invoice" || request.UserID != userID {
+			t.Errorf("export request = %+v", request)
+		}
+		writeSignedPaymentProviderResponse(t, w, paymentExportInvoiceProviderResponse{
+			Verified: true,
+			UserID:   userID,
+			URL:      "https://payments.example.test/invoice/exported",
+		})
+	}))
+	defer server.Close()
+	c := &ApiFullCore{
+		ctx:    context.Background(),
+		svcCtx: &svc.ServiceContext{Config: config.Config{PaymentProviderEndpoint: server.URL, PaymentProviderSigningKey: paymentProviderTestSigningKey}},
+		MD:     &metadata.RpcMetadata{UserId: userID},
+	}
+	got, err := c.PaymentsExportInvoice(&mtproto.TLPaymentsExportInvoice{
+		InvoiceMedia: mtproto.MakeTLInputMediaEmpty(nil).To_InputMedia(),
+	})
+	if err != nil || got == nil || got.GetUrl() != "https://payments.example.test/invoice/exported" {
+		t.Fatalf("exported invoice = (%#v, %v)", got, err)
+	}
+	if err = got.Encode(mtproto.NewEncodeBuf(512), 229); err != nil {
+		t.Fatalf("exported invoice did not encode: %v", err)
+	}
+}
+
+func TestPaymentsGetBankCardDataUsesVerifiedProviderData(t *testing.T) {
+	const userID int64 = 902008
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			Operation string `json:"operation"`
+			UserID    int64  `json:"user_id"`
+			Number    string `json:"number"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Errorf("decode bank-card request: %v", err)
+			return
+		}
+		if request.Operation != "get_bank_card_data" || request.UserID != userID || request.Number != "4111111111111111" {
+			t.Errorf("bank-card request = %+v", request)
+		}
+		writeSignedPaymentProviderResponse(t, w, paymentBankCardProviderResponse{
+			Verified: true,
+			UserID:   userID,
+			Number:   request.Number,
+			Data: &mtproto.Payments_BankCardData{
+				Title:    "Visa",
+				OpenUrls: []*mtproto.BankCardOpenUrl{{Url: "https://payments.example.test/card"}},
+			},
+		})
+	}))
+	defer server.Close()
+	c := &ApiFullCore{
+		ctx:    context.Background(),
+		svcCtx: &svc.ServiceContext{Config: config.Config{PaymentProviderEndpoint: server.URL, PaymentProviderSigningKey: paymentProviderTestSigningKey}},
+		MD:     &metadata.RpcMetadata{UserId: userID},
+	}
+	got, err := c.PaymentsGetBankCardData(&mtproto.TLPaymentsGetBankCardData{Number: "4111111111111111"})
+	if err != nil || got == nil || got.GetTitle() != "Visa" || len(got.GetOpenUrls()) != 1 || got.GetOpenUrls()[0].GetUrl() != "https://payments.example.test/card" {
+		t.Fatalf("bank-card data = (%#v, %v)", got, err)
 	}
 }
 

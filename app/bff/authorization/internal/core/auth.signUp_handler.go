@@ -180,10 +180,12 @@ func (c *AuthorizationCore) AuthSignUp(in *mtproto.TLAuthSignUp) (*mtproto.Auth_
 	})
 	if bindErr != nil {
 		c.Logger.Errorf("bindAuthKeyUser error: %v", bindErr)
+		c.cleanupSignupUser(user.User.Id, phoneNumber)
 		return nil, mtproto.ErrInternalServerError
 	}
 	if bindHash == nil || bindHash.GetV() == 0 {
 		c.Logger.Errorf("bindAuthKeyUser did not persist")
+		c.cleanupSignupUser(user.User.Id, phoneNumber)
 		return nil, mtproto.ErrInternalServerError
 	}
 
@@ -203,6 +205,30 @@ func (c *AuthorizationCore) AuthSignUp(in *mtproto.TLAuthSignUp) (*mtproto.Auth_
 			c.onContactSignUp(ctx, c.MD.PermAuthKeyId, user.Id(), phoneNumber)
 		},
 	).(*mtproto.Auth_Authorization), nil
+}
+
+// cleanupSignupUser compensates the user-service mutation when the separate
+// authsession binding cannot be committed. Without this cleanup a retryable
+// RPC failure would leave an unreachable account occupying the phone number.
+func (c *AuthorizationCore) cleanupSignupUser(userID int64, phone string) {
+	if c == nil || c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.UserClient == nil || userID <= 0 {
+		return
+	}
+	if c.svcCtx.Dao.AuthsessionClient != nil && c.MD != nil && c.MD.PermAuthKeyId != 0 {
+		if _, err := c.svcCtx.Dao.AuthsessionClient.AuthsessionUnbindAuthKeyUser(c.ctx, &authsession.TLAuthsessionUnbindAuthKeyUser{
+			AuthKeyId: c.MD.PermAuthKeyId,
+			UserId:    userID,
+		}); err != nil {
+			c.Logger.Errorf("cleanup signup auth key %d for user %d: %v", c.MD.PermAuthKeyId, userID, err)
+		}
+	}
+	if _, err := c.svcCtx.Dao.UserClient.UserDeleteUser(c.ctx, &userpb.TLUserDeleteUser{
+		UserId: userID,
+		Phone:  phone,
+		Reason: "auth.signUp authsession binding failed",
+	}); err != nil {
+		c.Logger.Errorf("cleanup signup user %d after authsession bind failure: %v", userID, err)
+	}
 }
 
 const maxSignupNameRunes = 64

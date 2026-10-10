@@ -32,12 +32,8 @@ func (c *SponsoredMessagesCore) ContactsGetSponsoredPeers(in *mtproto.TLContacts
 		return nil, mtproto.ErrInputRequestInvalid
 	}
 
-	// Sponsored peers are optional inventory. Until an ad provider is
-	// configured, report the protocol's empty result instead of failing every
-	// contact search with METHOD_NOT_IMPL.
-	return mtproto.MakeTLContactsSponsoredPeersEmpty(&mtproto.Contacts_SponsoredPeers{
-		Peers: []*mtproto.SponsoredPeer{},
-		Chats: []*mtproto.Chat{},
-		Users: []*mtproto.User{},
-	}).To_Contacts_SponsoredPeers(), nil
+	// An empty inventory is not equivalent to an unavailable inventory: clients
+	// use this method to decide whether sponsored results are supported. Without
+	// an authoritative ad provider, fail closed instead of fabricating success.
+	return nil, mtproto.ErrMethodNotImpl
 }

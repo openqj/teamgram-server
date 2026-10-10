@@ -56,8 +56,11 @@ sha256_file() {
   fi
 }
 
+# Serialize bootstrap of the migration catalog as well as individual files.
+# CREATE TABLE IF NOT EXISTS still races while PostgreSQL creates the relation
+# type, so the first runner must hold the same lock used below.
 "$psql_bin" "$DATABASE_URL" --set=ON_ERROR_STOP=1 \
-  --command='CREATE TABLE IF NOT EXISTS schema_migrations (version text PRIMARY KEY, checksum text NOT NULL, applied_at timestamptz NOT NULL DEFAULT now())'
+  --command="BEGIN; SELECT pg_advisory_xact_lock(hashtextextended('teamgram-schema-migrations', 0)); CREATE TABLE IF NOT EXISTS schema_migrations (version text PRIMARY KEY, checksum text NOT NULL, applied_at timestamptz NOT NULL DEFAULT now()); COMMIT;"
 
 wrapper=$(mktemp "${TMPDIR:-/tmp}/teamgram-postgres-migration.XXXXXX.sql")
 cleanup_wrapper() { rm -f "$wrapper"; }

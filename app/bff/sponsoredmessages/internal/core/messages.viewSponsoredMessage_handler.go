@@ -25,14 +25,19 @@ import (
 // MessagesViewSponsoredMessage
 // messages.viewSponsoredMessage#269e3643 random_id:bytes = Bool;
 func (c *SponsoredMessagesCore) MessagesViewSponsoredMessage(in *mtproto.TLMessagesViewSponsoredMessage) (*mtproto.Bool, error) {
-	if _, err := c.requireSponsoredUser(); err != nil {
+	uid, err := c.requireSponsoredUser()
+	if err != nil {
 		return nil, err
 	}
 	if in == nil {
 		return nil, mtproto.ErrInputRequestInvalid
 	}
-	if _, err := sponsoredRandom(in.GetRandomId()); err != nil {
+	rid, err := sponsoredRandom(in.GetRandomId())
+	if err != nil {
 		return nil, err
 	}
-	return nil, mtproto.ErrMethodNotImpl
+	if err = sponsoredSet(c.ctx, uid, "message_view:"+rid, map[string]any{"random_id": rid}); err != nil {
+		return nil, err
+	}
+	return mtproto.BoolTrue, nil
 }

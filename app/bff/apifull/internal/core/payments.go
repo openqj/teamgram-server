@@ -22,6 +22,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -160,10 +161,16 @@ type paymentValidationProviderResponse struct {
 // metadata used by payments.getBankCardData. APIFull never stores the number
 // or any card data; it only validates and forwards the signed response.
 type paymentBankCardProviderResponse struct {
-	Verified bool                          `json:"verified"`
-	UserID   int64                         `json:"user_id"`
-	Number   string                        `json:"number"`
+	Verified bool                           `json:"verified"`
+	UserID   int64                          `json:"user_id"`
+	Number   string                         `json:"number"`
 	Data     *mtproto.Payments_BankCardData `json:"data"`
+}
+
+type paymentExportInvoiceProviderResponse struct {
+	Verified bool   `json:"verified"`
+	UserID   int64  `json:"user_id"`
+	URL      string `json:"url"`
 }
 
 func normalizeBankCardData(data *mtproto.Payments_BankCardData) bool {
@@ -921,12 +928,90 @@ func paymentFingerprint(in *mtproto.TLPaymentsSendPaymentForm) string {
 	return hex.EncodeToString(h[:])
 }
 
+func paymentCredentialsPredicate(credentials *mtproto.InputPaymentCredentials) string {
+	if credentials == nil {
+		return ""
+	}
+	// Unit callers and older generated wrappers may carry only the TL
+	// constructor. Preserve the wire union semantics before inspecting fields.
+	predicate := credentials.GetPredicateName()
+	constructorPredicate := ""
+	switch credentials.GetConstructor() {
+	case mtproto.TLConstructor_CRC32_inputPaymentCredentialsSaved:
+		constructorPredicate = mtproto.Predicate_inputPaymentCredentialsSaved
+	case mtproto.TLConstructor_CRC32_inputPaymentCredentials:
+		constructorPredicate = mtproto.Predicate_inputPaymentCredentials
+	case mtproto.TLConstructor_CRC32_inputPaymentCredentialsApplePay:
+		constructorPredicate = mtproto.Predicate_inputPaymentCredentialsApplePay
+	case mtproto.TLConstructor_CRC32_inputPaymentCredentialsGooglePay:
+		constructorPredicate = mtproto.Predicate_inputPaymentCredentialsGooglePay
+	}
+	if constructorPredicate != "" && predicate != "" && predicate != constructorPredicate {
+		return ""
+	}
+	if constructorPredicate != "" {
+		return constructorPredicate
+	}
+	return predicate
+}
+
+func (c *ApiFullCore) validateTmpPaymentPassword(userID int64, credentials *mtproto.InputPaymentCredentials) error {
+	if paymentCredentialsPredicate(credentials) != mtproto.Predicate_inputPaymentCredentialsSaved {
+		return nil
+	}
+	if len(credentials.GetTmpPassword()) == 0 {
+		return mtproto.ErrTmpPasswordDisabled
+	}
+	if !domain.PostgresEnabled() {
+		return mtproto.ErrPaymentUnsupported
+	}
+	ok, err := domain.ValidateTmpPassword(c.secretContext(), userID, credentials.GetTmpPassword())
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return mtproto.ErrTmpPasswordDisabled
+	}
+	return nil
+}
+
 func (c *ApiFullCore) AccountGetTmpPassword(in *mtproto.TLAccountGetTmpPassword) (*mtproto.Account_TmpPassword, error) {
-	if _, err := c.requireUserId(); err != nil {
+	userID, err := c.requireUserId()
+	if err != nil {
 		return nil, err
 	}
-	// APIFull has no temporary payment-password issuer or consumer.
-	return nil, mtproto.ErrMethodNotImpl
+	if in == nil || in.GetPassword() == nil {
+		return nil, mtproto.ErrInputConstructorInvalid
+	}
+	period := in.GetPeriod()
+	if period < 60 || period > 86400 {
+		return nil, mtproto.ErrTmpPasswordDisabled
+	}
+	if !domain.PostgresEnabled() {
+		return nil, mtproto.ErrTmpPasswordDisabled
+	}
+	state, err := loadAcctPassword(userID)
+	if err != nil {
+		return nil, err
+	}
+	if len(state.Secret) == 0 {
+		return nil, mtproto.ErrTmpPasswordDisabled
+	}
+	if err = checkStoredPassword(userID, state, in.GetPassword()); err != nil {
+		return nil, err
+	}
+	token := make([]byte, 32)
+	if _, err = rand.Read(token); err != nil {
+		return nil, mtproto.ErrInternalServerError
+	}
+	validUntil := time.Now().Unix() + int64(period)
+	if err = domain.StoreTmpPassword(c.secretContext(), userID, token, validUntil); err != nil {
+		return nil, err
+	}
+	return mtproto.MakeTLAccountTmpPassword(&mtproto.Account_TmpPassword{
+		TmpPassword: token,
+		ValidUntil:  int32(validUntil),
+	}).To_Account_TmpPassword(), nil
 }
 
 func (c *ApiFullCore) MessagesSetBotShippingResults(in *mtproto.TLMessagesSetBotShippingResults) (*mtproto.Bool, error) {
@@ -1112,6 +1197,12 @@ func (c *ApiFullCore) PaymentsSendPaymentForm(in *mtproto.TLPaymentsSendPaymentF
 	}
 	if in.GetCredentials() == nil {
 		return nil, mtproto.ErrPaymentProviderInvalid
+	}
+	if paymentCredentialsPredicate(in.GetCredentials()) == "" {
+		return nil, mtproto.ErrPaymentProviderInvalid
+	}
+	if err = c.validateTmpPaymentPassword(uid, in.GetCredentials()); err != nil {
+		return nil, err
 	}
 	if !selfPremiumSubscriptionInvoice(in.GetInvoice()) || in.GetFormId() <= 0 {
 		return nil, mtproto.ErrPaymentUnsupported
@@ -1306,13 +1397,26 @@ func (c *ApiFullCore) PaymentsGetBankCardData(in *mtproto.TLPaymentsGetBankCardD
 }
 
 func (c *ApiFullCore) PaymentsExportInvoice(in *mtproto.TLPaymentsExportInvoice) (*mtproto.Payments_ExportedInvoice, error) {
-	if _, err := c.requireUserId(); err != nil {
+	uid, err := c.requireUserId()
+	if err != nil {
 		return nil, err
 	}
 	if in == nil || in.GetInvoiceMedia() == nil {
 		return nil, mtproto.ErrInvoicePayloadInvalid
 	}
-	return nil, mtproto.ErrPaymentUnsupported
+	var response paymentExportInvoiceProviderResponse
+	if err = c.callStarsRevenueProvider(c.secretContext(), struct {
+		Operation    string              `json:"operation"`
+		UserID       int64               `json:"user_id"`
+		InvoiceMedia *mtproto.InputMedia `json:"invoice_media"`
+		TargetUserID *mtproto.InputUser  `json:"target_user_id,omitempty"`
+	}{"export_invoice", uid, in.GetInvoiceMedia(), in.GetUserId()}, &response); err != nil {
+		return nil, err
+	}
+	if !response.Verified || response.UserID != uid || !validRevenueURL(response.URL) {
+		return nil, mtproto.ErrPaymentProviderInvalid
+	}
+	return mtproto.MakeTLPaymentsExportedInvoice(&mtproto.Payments_ExportedInvoice{Url: strings.TrimSpace(response.URL)}).To_Payments_ExportedInvoice(), nil
 }
 
 func (c *ApiFullCore) PaymentsRequestRecurringPayment(in *mtproto.TLPaymentsRequestRecurringPayment) (*mtproto.Updates, error) {

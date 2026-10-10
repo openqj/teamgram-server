@@ -203,6 +203,12 @@ func TestPasskeyAccountMethodsFailClosedWithoutProvider(t *testing.T) {
 	}
 }
 
+func TestPasskeyStorageConflictMapsToInvalidCredential(t *testing.T) {
+	if got := passkeyStorageError(dao.ErrCredentialConflict); !errors.Is(got, mtproto.ErrAuthTokenInvalid) {
+		t.Fatalf("passkeyStorageError(ErrCredentialConflict) = %v, want AUTH_TOKEN_INVALID", got)
+	}
+}
+
 func TestPasskeySourceDcIsLocalOnly(t *testing.T) {
 	if err := validatePasskeySourceDc(1, 1); err != nil {
 		t.Fatalf("local source DC rejected: %v", err)

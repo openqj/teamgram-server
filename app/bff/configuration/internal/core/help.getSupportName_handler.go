@@ -27,7 +27,13 @@ import (
 func (c *ConfigurationCore) HelpGetSupportName(in *mtproto.TLHelpGetSupportName) (*mtproto.Help_SupportName, error) {
 	_ = in
 
-	// No support user is configured for this deployment.  The typed empty name
-	// is the protocol response and keeps clients from decoding a nil result.
-	return mtproto.MakeTLHelpSupportName(&mtproto.Help_SupportName{}).To_Help_SupportName(), nil
+	cfg, err := c.helpConfig()
+	if err != nil {
+		return nil, err
+	}
+	// The support username is deployment-owned.  Returning the typed empty
+	// constructor when it is unset preserves Telegram's no-support semantics.
+	return mtproto.MakeTLHelpSupportName(&mtproto.Help_SupportName{
+		Name: cfg.SupportUserUsername,
+	}).To_Help_SupportName(), nil
 }

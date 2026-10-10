@@ -39,3 +39,24 @@ func TestMediaUploadHandlersRejectMalformedEnvelopes(t *testing.T) {
 		})
 	}
 }
+
+func TestMediaReadHandlersRejectNilRequests(t *testing.T) {
+	var c *MediaCore
+	tests := []struct {
+		name string
+		call func() error
+	}{
+		{name: "photo", call: func() error { _, err := c.MediaGetPhoto(nil); return err }},
+		{name: "document", call: func() error { _, err := c.MediaGetDocument(nil); return err }},
+		{name: "document list", call: func() error { _, err := c.MediaGetDocumentList(nil); return err }},
+		{name: "photo size list", call: func() error { _, err := c.MediaGetPhotoSizeList(nil); return err }},
+		{name: "video size list", call: func() error { _, err := c.MediaGetVideoSizeList(nil); return err }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := tt.call(); !errors.Is(err, mtproto.ErrInputRequestInvalid) {
+				t.Fatalf("error = %v, want INPUT_REQUEST_INVALID", err)
+			}
+		})
+	}
+}

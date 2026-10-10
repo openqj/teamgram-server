@@ -32,6 +32,8 @@ CREATE TABLE IF NOT EXISTS apifull_channel (
 			location_address VARCHAR(255) NOT NULL DEFAULT '',
 			username VARCHAR(64) NOT NULL DEFAULT '',
 			discussion_group_id BIGINT NULL,
+			broadcast_messages_allowed SMALLINT NOT NULL DEFAULT 0,
+			send_paid_messages_stars BIGINT NULL,
 			created_at INT NOT NULL,
 
 			CONSTRAINT uniq_apifull_channel_migrated_chat UNIQUE (migrated_from_chat_id)

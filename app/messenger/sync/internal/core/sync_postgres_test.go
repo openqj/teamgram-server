@@ -11,8 +11,8 @@ import (
 	"github.com/teamgram/teamgram-server/app/messenger/sync/internal/svc"
 	"github.com/teamgram/teamgram-server/app/messenger/sync/internal/testutil"
 	"github.com/teamgram/teamgram-server/app/messenger/sync/sync"
-	chat_client "github.com/teamgram/teamgram-server/app/service/biz/chat/client"
 	"github.com/teamgram/teamgram-server/app/service/biz/chat/chat"
+	chat_client "github.com/teamgram/teamgram-server/app/service/biz/chat/client"
 	status_client "github.com/teamgram/teamgram-server/app/service/status/client"
 	"github.com/teamgram/teamgram-server/app/service/status/status"
 )

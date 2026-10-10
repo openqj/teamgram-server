@@ -19,12 +19,16 @@
 package core
 
 import (
+	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/service/biz/user/user"
 )
 
 // UserCheckBots
 // user.checkBots id:Vector<long> = Vector<long>;
 func (c *UserCore) UserCheckBots(in *user.TLUserCheckBots) (*user.Vector_Long, error) {
+	if in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
 	if err := c.requirePostgres(); err != nil {
 		return nil, err
 	}

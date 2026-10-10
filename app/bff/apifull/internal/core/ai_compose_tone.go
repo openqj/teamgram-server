@@ -1,11 +1,12 @@
 // Copyright 2026 Teamgram Authors
-//  All rights reserved.
+//
+//	All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//   http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -14,7 +15,6 @@
 // limitations under the License.
 //
 // Author: teamgramio (teamgram.io@gmail.com)
-//
 package core
 
 import (
@@ -113,7 +113,12 @@ func aiToneMatches(tone storedAiTone, in *mtproto.InputAiComposeTone) bool {
 		return false
 	}
 	if in.GetId() != 0 {
-		return tone.ID == in.GetId()
+		if tone.ID != in.GetId() {
+			return false
+		}
+		// Keep compatibility with callers that omit the hash, but reject a
+		// supplied hash for another tone.
+		return in.GetAccessHash() == 0 || tone.AccessHash == in.GetAccessHash()
 	}
 	if in.GetSlug() != "" {
 		return tone.Slug == in.GetSlug()
@@ -136,10 +141,11 @@ func (c *ApiFullCore) AicomposeCreateTone(in *mtproto.TLAicomposeCreateTone) (*m
 	if err != nil {
 		return nil, err
 	}
-	tone := storedAiTone{Creator: true}
-	if in != nil {
-		tone.Title, tone.Prompt, tone.EmojiID, tone.DisplayAuthor = in.GetTitle(), in.GetPrompt(), in.GetEmojiId(), in.GetDisplayAuthor()
+	if in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
 	}
+	tone := storedAiTone{Creator: true}
+	tone.Title, tone.Prompt, tone.EmojiID, tone.DisplayAuthor = in.GetTitle(), in.GetPrompt(), in.GetEmojiId(), in.GetDisplayAuthor()
 	if _, err = mutateAiTones(uid, func(current []storedAiTone) ([]storedAiTone, error) {
 		next := int64(1)
 		for _, existing := range current {
@@ -161,7 +167,10 @@ func (c *ApiFullCore) AicomposeUpdateTone(in *mtproto.TLAicomposeUpdateTone) (*m
 		return nil, err
 	}
 	if in == nil {
-		return mtproto.MakeTLAiComposeTone(&mtproto.AiComposeTone{}).To_AiComposeTone(), nil
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if in.GetTone() == nil {
+		return nil, mtproto.ErrInputRequestInvalid
 	}
 	var updated storedAiTone
 	found := false
@@ -211,14 +220,11 @@ func (c *ApiFullCore) AicomposeSaveTone(in *mtproto.TLAicomposeSaveTone) (*mtpro
 	if err != nil {
 		return nil, err
 	}
-	saved := true
-	if in != nil && in.GetUnsave() != nil {
-		saved = !mtproto.FromBool(in.GetUnsave())
+	if in == nil || in.GetTone() == nil || in.GetUnsave() == nil {
+		return nil, mtproto.ErrInputRequestInvalid
 	}
-	var tone *mtproto.InputAiComposeTone
-	if in != nil {
-		tone = in.GetTone()
-	}
+	saved := !mtproto.FromBool(in.GetUnsave())
+	tone := in.GetTone()
 	found := false
 	if _, err = mutateAiTones(uid, func(tones []storedAiTone) ([]storedAiTone, error) {
 		for i := range tones {
@@ -242,10 +248,10 @@ func (c *ApiFullCore) AicomposeDeleteTone(in *mtproto.TLAicomposeDeleteTone) (*m
 	if err != nil {
 		return nil, err
 	}
-	var tone *mtproto.InputAiComposeTone
-	if in != nil {
-		tone = in.GetTone()
+	if in == nil || in.GetTone() == nil {
+		return nil, mtproto.ErrInputRequestInvalid
 	}
+	tone := in.GetTone()
 	if _, err = mutateAiTones(uid, func(tones []storedAiTone) ([]storedAiTone, error) {
 		kept := tones[:0]
 		for _, existing := range tones {
@@ -266,11 +272,17 @@ func (c *ApiFullCore) AicomposeGetTone(in *mtproto.TLAicomposeGetTone) (*mtproto
 	if err != nil {
 		return nil, err
 	}
+	if in == nil || in.GetTone() == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
 	tones, err := loadAiTones(uid)
 	if err != nil {
 		return nil, err
 	}
-	if in != nil && in.GetTone() != nil {
+	if in == nil || in.GetTone() == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if in.GetTone() != nil {
 		filtered := make([]storedAiTone, 0, 1)
 		for _, tone := range tones {
 			if aiToneMatches(tone, in.GetTone()) {
@@ -287,14 +299,15 @@ func (c *ApiFullCore) AicomposeGetTones(in *mtproto.TLAicomposeGetTones) (*mtpro
 	if err != nil {
 		return nil, err
 	}
+	if in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
 	tones, err := loadAiTones(uid)
 	if err != nil {
 		return nil, err
 	}
 	var hash int64
-	if in != nil {
-		hash = in.GetHash()
-	}
+	hash = in.GetHash()
 	if len(tones) > 0 && hash != 0 && hash == aiToneHash(tones) {
 		return mtproto.MakeTLAicomposeTonesNotModified(&mtproto.Aicompose_Tones{}).To_Aicompose_Tones(), nil
 	}

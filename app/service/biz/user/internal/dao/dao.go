@@ -20,6 +20,7 @@ package dao
 
 import (
 	"errors"
+	"strings"
 
 	"github.com/teamgram/marmota/pkg/net/rpcx"
 	"github.com/teamgram/marmota/pkg/stores/sqlc"
@@ -37,7 +38,7 @@ type Dao struct {
 
 // New new a dao and return.
 func New(c config.Config) *Dao {
-	if c.Postgres.DSN == "" {
+	if strings.TrimSpace(c.Postgres.DSN) == "" {
 		panic(errors.New("biz/user: Postgres.DSN is required"))
 	}
 	dao := &Dao{MediaClient: media_client.NewMediaClient(rpcx.GetCachedRpcClient(c.MediaClient))}

@@ -38,7 +38,7 @@ func TestMiniBotPermissionAndWebViewRequestPostgres(t *testing.T) {
 		BotID:     botID,
 		Kind:      "requestWebView",
 		Payload:   `{"query_id":"9981","url":"https://example.test/app"}`,
-		ExpiresAt:  time.Now().UTC().Add(2 * time.Minute),
+		ExpiresAt: time.Now().UTC().Add(2 * time.Minute),
 	}
 	if err := PutWebViewRequest(request); err != nil {
 		t.Fatal(err)

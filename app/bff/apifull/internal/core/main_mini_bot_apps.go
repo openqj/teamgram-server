@@ -20,7 +20,10 @@ package core
 
 import (
 	"encoding/json"
+	"net/url"
 	"strconv"
+	"strings"
+	"unicode/utf8"
 
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/persist"
@@ -62,8 +65,17 @@ func (c *ApiFullCore) BotsGetPopularAppBots(in *mtproto.TLBotsGetPopularAppBots)
 }
 
 func (c *ApiFullCore) BotsAddPreviewMedia(in *mtproto.TLBotsAddPreviewMedia) (*mtproto.BotPreviewMedia, error) {
-	uid, err := c.requireUserId()
+	uid, err := c.requirePreviewBot(inBotAddPreviewMedia(in))
 	if err != nil {
+		return nil, err
+	}
+	if in == nil || in.GetMedia() == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if err = validatePreviewLangCode(in.GetLangCode()); err != nil {
+		return nil, err
+	}
+	if err = validatePreviewMedia(in.GetMedia()); err != nil {
 		return nil, err
 	}
 	if err = miniAppPut(uid, "bots.addPreviewMedia", in); err != nil {
@@ -89,8 +101,20 @@ func (c *ApiFullCore) BotsAddPreviewMedia(in *mtproto.TLBotsAddPreviewMedia) (*m
 }
 
 func (c *ApiFullCore) BotsEditPreviewMedia(in *mtproto.TLBotsEditPreviewMedia) (*mtproto.BotPreviewMedia, error) {
-	uid, err := c.requireUserId()
+	uid, err := c.requirePreviewBot(inBotEditPreviewMedia(in))
 	if err != nil {
+		return nil, err
+	}
+	if in == nil || in.GetMedia() == nil || in.GetNewMedia() == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if err = validatePreviewLangCode(in.GetLangCode()); err != nil {
+		return nil, err
+	}
+	if err = validatePreviewMedia(in.GetMedia()); err != nil {
+		return nil, err
+	}
+	if err = validatePreviewMedia(in.GetNewMedia()); err != nil {
 		return nil, err
 	}
 	if err = miniAppPut(uid, "bots.editPreviewMedia", in); err != nil {
@@ -132,9 +156,20 @@ func (c *ApiFullCore) BotsEditPreviewMedia(in *mtproto.TLBotsEditPreviewMedia) (
 }
 
 func (c *ApiFullCore) BotsDeletePreviewMedia(in *mtproto.TLBotsDeletePreviewMedia) (*mtproto.Bool, error) {
-	uid, err := c.requireUserId()
+	uid, err := c.requirePreviewBot(inBotDeletePreviewMedia(in))
 	if err != nil {
 		return nil, err
+	}
+	if in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if err = validatePreviewLangCode(in.GetLangCode()); err != nil {
+		return nil, err
+	}
+	for _, media := range in.GetMedia() {
+		if err = validatePreviewMedia(media); err != nil {
+			return nil, err
+		}
 	}
 	if err = miniAppPut(uid, "bots.deletePreviewMedia", in); err != nil {
 		return nil, err
@@ -168,9 +203,20 @@ func (c *ApiFullCore) BotsDeletePreviewMedia(in *mtproto.TLBotsDeletePreviewMedi
 }
 
 func (c *ApiFullCore) BotsReorderPreviewMedias(in *mtproto.TLBotsReorderPreviewMedias) (*mtproto.Bool, error) {
-	uid, err := c.requireUserId()
+	uid, err := c.requirePreviewBot(inBotReorderPreviewMedias(in))
 	if err != nil {
 		return nil, err
+	}
+	if in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if err = validatePreviewLangCode(in.GetLangCode()); err != nil {
+		return nil, err
+	}
+	for _, media := range in.GetOrder() {
+		if err = validatePreviewMedia(media); err != nil {
+			return nil, err
+		}
 	}
 	if err = miniAppPut(uid, "bots.reorderPreviewMedias", in); err != nil {
 		return nil, err
@@ -190,6 +236,94 @@ func (c *ApiFullCore) BotsReorderPreviewMedias(in *mtproto.TLBotsReorderPreviewM
 		}
 	}
 	return mtproto.BoolTrue, nil
+}
+
+func inBotAddPreviewMedia(in *mtproto.TLBotsAddPreviewMedia) *mtproto.InputUser {
+	if in == nil {
+		return nil
+	}
+	return in.GetBot()
+}
+
+func inBotEditPreviewMedia(in *mtproto.TLBotsEditPreviewMedia) *mtproto.InputUser {
+	if in == nil {
+		return nil
+	}
+	return in.GetBot()
+}
+
+func inBotDeletePreviewMedia(in *mtproto.TLBotsDeletePreviewMedia) *mtproto.InputUser {
+	if in == nil {
+		return nil
+	}
+	return in.GetBot()
+}
+
+func inBotReorderPreviewMedias(in *mtproto.TLBotsReorderPreviewMedias) *mtproto.InputUser {
+	if in == nil {
+		return nil
+	}
+	return in.GetBot()
+}
+
+func (c *ApiFullCore) requirePreviewBot(bot *mtproto.InputUser) (int64, error) {
+	uid, err := c.requireUserId()
+	if err != nil {
+		return 0, err
+	}
+	botID, err := c.verifyMiniBot(bot)
+	if err != nil {
+		return 0, err
+	}
+	if botID != uid {
+		return 0, mtproto.ErrUserIdInvalid
+	}
+	return uid, nil
+}
+
+func validatePreviewLangCode(lang string) error {
+	if !utf8.ValidString(lang) || utf8.RuneCountInString(lang) > 16 || strings.TrimSpace(lang) != lang {
+		return mtproto.ErrLangCodeInvalid
+	}
+	for _, r := range lang {
+		if r < 'a' || r > 'z' {
+			if r < 'A' || r > 'Z' {
+				if r < '0' || r > '9' {
+					if r != '-' && r != '_' {
+						return mtproto.ErrLangCodeInvalid
+					}
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func validatePreviewMedia(media *mtproto.InputMedia) error {
+	if media == nil {
+		return mtproto.ErrInputConstructorInvalid
+	}
+	switch media.GetPredicateName() {
+	case mtproto.Predicate_inputMediaWebPage:
+		raw := strings.TrimSpace(media.GetUrl())
+		parsed, err := url.ParseRequestURI(raw)
+		if err != nil || parsed.Scheme != "https" || parsed.Host == "" {
+			return mtproto.ErrWebdocumentUrlInvalid
+		}
+	case mtproto.Predicate_inputMediaPhoto:
+		// BotPreviewMedia embeds a full MessageMedia constructor. The current
+		// APIFull provider cannot hydrate the canonical Photo object (sizes,
+		// access hash and DC), so returning an ID-only photo would be invalid
+		// Telegram wire data.
+		return mtproto.ErrMethodNotImpl
+	case mtproto.Predicate_inputMediaDocument:
+		// See the Photo branch above: do not acknowledge a document without a
+		// canonical media provider that can hydrate its required fields.
+		return mtproto.ErrMethodNotImpl
+	default:
+		return mtproto.ErrMethodNotImpl
+	}
+	return nil
 }
 
 func (c *ApiFullCore) BotsGetPreviewInfo(in *mtproto.TLBotsGetPreviewInfo) (*mtproto.Bots_PreviewInfo, error) {

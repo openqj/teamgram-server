@@ -17,5 +17,8 @@ import (
 // MediaGetDocument
 // media.getDocument id:long = Document;
 func (c *MediaCore) MediaGetDocument(in *media.TLMediaGetDocument) (*mtproto.Document, error) {
+	if in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
 	return c.svcCtx.Dao.GetDocumentById(c.ctx, in.GetId())
 }

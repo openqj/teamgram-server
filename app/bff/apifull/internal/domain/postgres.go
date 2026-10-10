@@ -33,26 +33,39 @@ func openPostgresDomain(dsn string, readOnly bool) error {
 	if strings.TrimSpace(dsn) == "" {
 		return errors.New("apifull: PostgreSQL DSN is required")
 	}
+	storeOpened := false
 	if readOnly {
 		if err := persist.OpenPostgresReadOnly(dsn); err != nil {
 			return err
 		}
+		storeOpened = true
 	} else if err := persist.OpenPostgres(dsn); err != nil {
 		return err
+	} else {
+		storeOpened = true
 	}
 	conn, err := persist.OpenPostgresDB(dsn)
 	if err != nil {
+		if storeOpened {
+			_ = persist.ClosePostgres()
+		}
 		return err
 	}
 	conn.SetMaxOpenConns(postgresMaxOpenConns)
 	conn.SetMaxIdleConns(postgresMaxOpenConns)
 	if err = conn.Ping(); err != nil {
 		_ = conn.Close()
+		if storeOpened {
+			_ = persist.ClosePostgres()
+		}
 		return err
 	}
 	if !readOnly {
 		if err = migratePostgres(conn); err != nil {
 			_ = conn.Close()
+			if storeOpened {
+				_ = persist.ClosePostgres()
+			}
 			return err
 		}
 	}

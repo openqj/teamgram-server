@@ -11,13 +11,11 @@ package core
 
 import (
 	"bytes"
-	"context"
 	"fmt"
 	"image"
 	"math/rand"
 
 	"github.com/teamgram/marmota/pkg/bytes2"
-	"github.com/teamgram/marmota/pkg/threading2"
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/service/dfs/dfs"
 	"github.com/teamgram/teamgram-server/app/service/dfs/internal/imaging"
@@ -185,26 +183,14 @@ func (c *DfsCore) DfsUploadDocumentFileV2(in *dfs.TLDfsUploadDocumentFileV2) (*m
 		}
 	}
 
-	return threading2.WrapperGoFunc(
-		c.ctx,
-		document,
-		func(ctx context.Context) {
-			if isThumb {
-				_, err2 := c.svcCtx.Dao.PutDocumentFile(
-					ctx,
-					fmt.Sprintf("%d.dat", documentId),
-					bytes.NewReader(cacheData))
-				if err2 != nil {
-					c.Logger.Errorf("dfs.uploadDocumentFile - error: %v", err2)
-				}
-			} else {
-				_, err2 := c.svcCtx.Dao.PutDocumentFile(
-					ctx,
-					fmt.Sprintf("%d.dat", documentId),
-					c.svcCtx.Dao.NewSSDBReader(r.DfsFileInfo))
-				if err2 != nil {
-					c.Logger.Errorf("dfs.uploadDocumentFile - error: %v", err2)
-				}
-			}
-		}).(*mtproto.Document), nil
+	if isThumb {
+		if _, err = c.svcCtx.Dao.PutDocumentFile(c.ctx, fmt.Sprintf("%d.dat", documentId), bytes.NewReader(cacheData)); err != nil {
+			c.Logger.Errorf("dfs.uploadDocumentFile - error: %v", err)
+			return nil, err
+		}
+	} else if _, err = c.svcCtx.Dao.PutDocumentFile(c.ctx, fmt.Sprintf("%d.dat", documentId), c.svcCtx.Dao.NewSSDBReader(r.DfsFileInfo)); err != nil {
+		c.Logger.Errorf("dfs.uploadDocumentFile - error: %v", err)
+		return nil, err
+	}
+	return document, nil
 }

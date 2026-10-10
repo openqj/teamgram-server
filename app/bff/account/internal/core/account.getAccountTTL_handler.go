@@ -26,12 +26,26 @@ import (
 // AccountGetAccountTTL
 // account.getAccountTTL#8fc711d = AccountDaysTTL;
 func (c *AccountCore) AccountGetAccountTTL(in *mtproto.TLAccountGetAccountTTL) (*mtproto.AccountDaysTTL, error) {
+	if c == nil || c.MD == nil || c.MD.GetPermAuthKeyId() == 0 || c.MD.GetUserId() == 0 {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
+	if in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.UserClient == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
+
 	days, err := c.svcCtx.Dao.UserClient.UserGetAccountDaysTTL(c.ctx, &userpb.TLUserGetAccountDaysTTL{
 		UserId: c.MD.UserId,
 	})
 	if err != nil {
 		c.Logger.Errorf("account.getAccountTTL - error: %v", err)
 		return nil, err
+	}
+	if days == nil {
+		c.Logger.Errorf("account.getAccountTTL - user service returned no result")
+		return nil, mtproto.ErrInternalServerError
 	}
 
 	return mtproto.MakeTLAccountDaysTTL(&mtproto.AccountDaysTTL{

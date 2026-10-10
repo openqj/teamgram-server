@@ -31,7 +31,7 @@ func (c *UserCore) UserUpdateBotData(in *user.TLUserUpdateBotData) (*mtproto.Boo
 		return nil, mtproto.ErrInputRequestInvalid
 	}
 	if c == nil || c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.Postgres == nil ||
-		c.svcCtx.Dao.Postgres.Store == nil || c.svcCtx.Dao.Postgres.Store.Bots == nil {
+		c.svcCtx.Dao.Postgres.Pool == nil || c.svcCtx.Dao.Postgres.Store == nil || c.svcCtx.Dao.Postgres.Store.Bots == nil {
 		return nil, mtproto.ErrMethodNotImpl
 	}
 	if c.MD == nil || c.MD.GetUserId() <= 0 {

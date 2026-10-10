@@ -19,6 +19,8 @@
 package dao
 
 import (
+	"strings"
+
 	kafka "github.com/teamgram/marmota/pkg/mq"
 	"github.com/teamgram/marmota/pkg/net/rpcx"
 	"github.com/teamgram/marmota/pkg/stores/kv"
@@ -39,7 +41,7 @@ type Dao struct {
 }
 
 func New(c config.Config) *Dao {
-	if c.PostgresDSN == "" {
+	if strings.TrimSpace(c.PostgresDSN) == "" {
 		panic("qrcode: PostgresDSN is required")
 	}
 	kvStore := kv.NewStore(c.KV)

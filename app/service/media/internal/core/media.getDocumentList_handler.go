@@ -10,12 +10,16 @@
 package core
 
 import (
+	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/service/media/media"
 )
 
 // MediaGetDocumentList
 // media.getDocumentList id_list:Vector<long> = Vector<Document>;
 func (c *MediaCore) MediaGetDocumentList(in *media.TLMediaGetDocumentList) (*media.Vector_Document, error) {
+	if in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
 	documents, err := c.svcCtx.Dao.GetDocumentListByIdList(c.ctx, in.IdList)
 	if err != nil {
 		return nil, err

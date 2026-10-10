@@ -11,6 +11,7 @@ package dao
 
 import (
 	"context"
+	"strings"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/teamgram/teamgram-server/app/service/biz/updates/internal/config"
@@ -46,7 +47,7 @@ type UserPtsUpdatesStore interface {
 }
 
 func New(c config.Config) *Dao {
-	if c.Postgres.DSN == "" {
+	if strings.TrimSpace(c.Postgres.DSN) == "" {
 		panic("updates: Postgres.DSN is required")
 	}
 	pg, err := newPostgresDao(c)

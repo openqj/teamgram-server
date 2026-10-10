@@ -1,7 +1,11 @@
 package persist
 
 import (
+	"database/sql"
 	"errors"
+	"fmt"
+	"strconv"
+	"strings"
 	"sync"
 )
 
@@ -185,4 +189,89 @@ func Update(key string, fn func(string) (string, error)) error {
 		}
 	}
 	return errors.New("apifull: concurrent state update failed")
+}
+
+// GetDiscussionReadMaxID reads a discussion read cursor. PostgreSQL-backed
+// processes use the typed cursor table; test and legacy stores retain the
+// canonical KV key behavior.
+func GetDiscussionReadMaxID(key string) (int32, error) {
+	if store, ok := Default.(*postgresStore); ok {
+		userID, peerType, peerID, messageID, ok := parseDiscussionReadKey(key)
+		if !ok {
+			return 0, fmt.Errorf("apifull: invalid discussion read key %q", key)
+		}
+		var value int32
+		err := store.db.QueryRow(`SELECT read_max_id FROM apifull_discussion_read_state
+			WHERE user_id=$1 AND peer_type=$2 AND peer_id=$3 AND message_id=$4`,
+			userID, peerType, peerID, messageID).Scan(&value)
+		if err == sql.ErrNoRows {
+			return 0, nil
+		}
+		return value, err
+	}
+	raw, err := Default.Get(key)
+	if err != nil || raw == "" {
+		return 0, err
+	}
+	value, err := strconv.ParseInt(raw, 10, 32)
+	if err != nil {
+		return 0, err
+	}
+	return int32(value), nil
+}
+
+// AdvanceDiscussionReadMaxID advances a discussion cursor atomically. The
+// PostgreSQL path performs the monotonic update in one transaction so two
+// BFF instances cannot overwrite a newer read marker with an older one.
+func AdvanceDiscussionReadMaxID(key string, readMaxID int32) error {
+	if readMaxID < 0 {
+		return fmt.Errorf("apifull: negative discussion read cursor")
+	}
+	if store, ok := Default.(*postgresStore); ok {
+		userID, peerType, peerID, messageID, ok := parseDiscussionReadKey(key)
+		if !ok {
+			return fmt.Errorf("apifull: invalid discussion read key %q", key)
+		}
+		tx, err := store.db.Begin()
+		if err != nil {
+			return err
+		}
+		defer func() { _ = tx.Rollback() }()
+		if _, err = tx.Exec(`INSERT INTO apifull_discussion_read_state
+			(user_id, peer_type, peer_id, message_id, read_max_id)
+			VALUES ($1, $2, $3, $4, $5)
+			ON CONFLICT (user_id, peer_type, peer_id, message_id) DO UPDATE
+			SET read_max_id=GREATEST(apifull_discussion_read_state.read_max_id, EXCLUDED.read_max_id),
+				updated_at=CURRENT_TIMESTAMP`,
+			userID, peerType, peerID, messageID, readMaxID); err != nil {
+			return err
+		}
+		return tx.Commit()
+	}
+	return Update(key, func(raw string) (string, error) {
+		current := int64(0)
+		if raw != "" {
+			value, err := strconv.ParseInt(raw, 10, 32)
+			if err != nil {
+				return "", err
+			}
+			current = value
+		}
+		if int64(readMaxID) <= current {
+			return strconv.FormatInt(current, 10), nil
+		}
+		return strconv.FormatInt(int64(readMaxID), 10), nil
+	})
+}
+
+func parseDiscussionReadKey(key string) (userID int64, peerType int32, peerID int64, messageID int32, ok bool) {
+	parts := strings.Split(key, ":")
+	if len(parts) != 6 || parts[0] != "discussion" || parts[1] != "read" {
+		return 0, 0, 0, 0, false
+	}
+	u, err1 := strconv.ParseInt(parts[2], 10, 64)
+	p, err2 := strconv.ParseInt(parts[3], 10, 32)
+	i, err3 := strconv.ParseInt(parts[4], 10, 64)
+	m, err4 := strconv.ParseInt(parts[5], 10, 32)
+	return u, int32(p), i, int32(m), err1 == nil && err2 == nil && err3 == nil && err4 == nil && u > 0 && p > 0 && i > 0 && m > 0
 }

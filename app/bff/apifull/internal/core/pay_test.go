@@ -115,15 +115,15 @@ func TestStarsUnavailableDoesNotAccessPersistence(t *testing.T) {
 		{"revenue stats", func() (bool, error) {
 			result, err := c.PaymentsGetStarsRevenueStats(nil)
 			return result != nil, err
-		}, mtproto.ErrMethodNotImpl},
+		}, mtproto.ErrInputConstructorInvalid},
 		{"revenue withdrawal URL", func() (bool, error) {
 			result, err := c.PaymentsGetStarsRevenueWithdrawalUrl(nil)
 			return result != nil, err
-		}, mtproto.ErrMethodNotImpl},
+		}, mtproto.ErrInputConstructorInvalid},
 		{"revenue ads account URL", func() (bool, error) {
 			result, err := c.PaymentsGetStarsRevenueAdsAccountUrl(nil)
 			return result != nil, err
-		}, mtproto.ErrMethodNotImpl},
+		}, mtproto.ErrInputConstructorInvalid},
 	}
 
 	for _, tc := range calls {

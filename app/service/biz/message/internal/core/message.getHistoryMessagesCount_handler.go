@@ -17,6 +17,9 @@ import (
 // MessageGetHistoryMessagesCount
 // message.getHistoryMessagesCount user_id:long peer_type:int peer_id:long = Int32;
 func (c *MessageCore) MessageGetHistoryMessagesCount(in *message.TLMessageGetHistoryMessagesCount) (*mtproto.Int32, error) {
+	if in == nil || in.UserId <= 0 || in.PeerId <= 0 {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
 	var (
 		count    int64
 		dialogId = mtproto.MakeDialogId(in.UserId, in.PeerType, in.PeerId)
@@ -24,7 +27,12 @@ func (c *MessageCore) MessageGetHistoryMessagesCount(in *message.TLMessageGetHis
 
 	switch in.PeerType {
 	case mtproto.PEER_SELF, mtproto.PEER_USER, mtproto.PEER_CHAT:
-		count, _ = c.svcCtx.Dao.CountMessageHistory(c.ctx, in.UserId, dialogId.A, dialogId.B)
+		var err error
+		count, err = c.svcCtx.Dao.CountMessageHistory(c.ctx, in.UserId, dialogId.A, dialogId.B)
+		if err != nil {
+			c.Logger.Errorf("message.getHistoryMessagesCount - error: %v", err)
+			return nil, err
+		}
 	case mtproto.PEER_CHANNEL:
 		// Channel history is owned by the native channel service.
 		count = 0

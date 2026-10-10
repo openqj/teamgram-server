@@ -3,7 +3,7 @@ set -eu
 
 repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 workspace_root=$(dirname "$repo_root")
-image_tag=${IMAGE_TAG:-teamgram-server-latest:20261008-r29-prod}
+image_tag=${IMAGE_TAG:-teamgram-server-latest:20261011-r29-prod}
 
 # Build from the workspace root so the image contains the current proto and
 # teamgramd/etc2 PostgreSQL runtime configuration, not a stale base image copy.

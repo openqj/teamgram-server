@@ -19,6 +19,8 @@
 package dao
 
 import (
+	"strings"
+
 	"github.com/teamgram/marmota/pkg/net/rpcx"
 	"github.com/teamgram/teamgram-server/app/service/biz/chat/plugin"
 
@@ -38,7 +40,7 @@ type Dao struct {
 
 // New new a dao and return.
 func New(c config.Config, plugin plugin.ChatPlugin) (dao *Dao) {
-	if c.Postgres.DSN == "" {
+	if strings.TrimSpace(c.Postgres.DSN) == "" {
 		panic("chat: Postgres.DSN is required")
 	}
 	dao = &Dao{

@@ -20,6 +20,7 @@ package config
 
 import (
 	kafka "github.com/teamgram/marmota/pkg/mq"
+	configuration_helper "github.com/teamgram/teamgram-server/app/bff/configuration"
 	passkeyhelper "github.com/teamgram/teamgram-server/app/bff/passkey"
 	qrcodehelper "github.com/teamgram/teamgram-server/app/bff/qrcode"
 	"github.com/teamgram/teamgram-server/pkg/code/conf"
@@ -41,31 +42,32 @@ type Config struct {
 	SyncClient                    *kafka.KafkaProducerConf
 	DfsClient                     zrpc.RpcClientConf
 	StatusClient                  zrpc.RpcClientConf
-	PostgresDSN                   string                       `json:",optional"`
-	PaymentProviderEndpoint       string                       `json:",optional"`
-	PaymentProviderKey            string                       `json:",optional"`
-	PaymentProviderSigningKey     string                       `json:",optional"`
-	PaymentProviderTimeoutSeconds int                          `json:",optional"`
-	AuthProviderEndpoint          string                       `json:",optional"`
-	AuthProviderKey               string                       `json:",optional"`
-	AuthProviderSigningKey        string                       `json:",optional"`
-	AuthProviderTimeoutSeconds    int                          `json:",optional"`
-	GroupCallMediaEndpoint        string                       `json:",optional"`
-	GroupCallMediaAPIKey          string                       `json:",optional"`
-	GroupCallMediaSigningKey      string                       `json:",optional"`
-	GroupCallMediaRTMPHost        string                       `json:",optional"`
-	GroupCallMediaTimeoutSeconds  int                          `json:",optional"`
-	TurnHost                      string                       `json:",optional"`
-	TurnPort                      int32                        `json:",optional"`
-	TurnUsername                  string                       `json:",optional"`
-	TurnPassword                  string                       `json:",optional"`
-	TurnSharedSecret              string                       `json:",optional"`
-	TurnCredentialTTLSeconds      int                          `json:",optional"`
-	Passkey                       passkeyhelper.ProviderConfig `json:",optional"`
-	QrCode                        qrcodehelper.ProviderConfig  `json:",optional"`
-	SearchPostsFlood              SearchPostsFloodConfig       `json:",optional"`
-	SignInServiceNotification     []conf.MessageEntityConfig   `json:",optional"`
-	SignInMessage                 []conf.MessageEntityConfig   `json:",optional"`
+	PostgresDSN                   string                          `json:",optional"`
+	PaymentProviderEndpoint       string                          `json:",optional"`
+	PaymentProviderKey            string                          `json:",optional"`
+	PaymentProviderSigningKey     string                          `json:",optional"`
+	PaymentProviderTimeoutSeconds int                             `json:",optional"`
+	AuthProviderEndpoint          string                          `json:",optional"`
+	AuthProviderKey               string                          `json:",optional"`
+	AuthProviderSigningKey        string                          `json:",optional"`
+	AuthProviderTimeoutSeconds    int                             `json:",optional"`
+	GroupCallMediaEndpoint        string                          `json:",optional"`
+	GroupCallMediaAPIKey          string                          `json:",optional"`
+	GroupCallMediaSigningKey      string                          `json:",optional"`
+	GroupCallMediaRTMPHost        string                          `json:",optional"`
+	GroupCallMediaTimeoutSeconds  int                             `json:",optional"`
+	TurnHost                      string                          `json:",optional"`
+	TurnPort                      int32                           `json:",optional"`
+	TurnUsername                  string                          `json:",optional"`
+	TurnPassword                  string                          `json:",optional"`
+	TurnSharedSecret              string                          `json:",optional"`
+	TurnCredentialTTLSeconds      int                             `json:",optional"`
+	Passkey                       passkeyhelper.ProviderConfig    `json:",optional"`
+	QrCode                        qrcodehelper.ProviderConfig     `json:",optional"`
+	SearchPostsFlood              SearchPostsFloodConfig          `json:",optional"`
+	SignInServiceNotification     []conf.MessageEntityConfig      `json:",optional"`
+	SignInMessage                 []conf.MessageEntityConfig      `json:",optional"`
+	Help                          configuration_helper.HelpConfig `json:",optional"`
 }
 
 type SearchPostsFloodConfig struct {

@@ -12,6 +12,7 @@ package svc
 import (
 	"context"
 	"errors"
+	"strings"
 
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/service/authsession/authsession"
@@ -50,6 +51,14 @@ type AuthSessionDAO interface {
 	UnbindAuthUser(context.Context, int64, int64) error
 }
 
+// AuthorizationListerWithError is implemented by authoritative runtimes that
+// can preserve storage failures. The legacy generated DAO method cannot grow
+// an error return without breaking isolated callers, so handlers discover
+// this capability separately.
+type AuthorizationListerWithError interface {
+	GetAuthorizationsWithError(context.Context, int64, int64) ([]*mtproto.Authorization, error)
+}
+
 type TempAuthKeyDropper interface {
 	DropTempAuthKeys(context.Context, int64, []int64) error
 }
@@ -68,7 +77,7 @@ func (s *ServiceContext) GetLangPack(ctx context.Context, keyID int64) string {
 }
 
 func NewServiceContext(c config.Config) (*ServiceContext, error) {
-	if c.Postgres.DSN == "" {
+	if strings.TrimSpace(c.Postgres.DSN) == "" {
 		return nil, errors.New("authsession: Postgres.DSN is required")
 	}
 	pg, err := dao.NewPostgres(c)

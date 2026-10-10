@@ -29,6 +29,9 @@ func TestPreparedInlineMessagesPostgresRoundTrip(t *testing.T) {
 	if dsn == "" {
 		t.Skip("APIFULL_POSTGRES_DSN must point to an isolated PostgreSQL 18 database")
 	}
+	if err := persist.OpenPostgresReadOnly(dsn); err != nil {
+		t.Skipf("PostgreSQL schema unavailable: %v", err)
+	}
 	if !persist.PostgresEnabled() {
 		t.Fatal("APIFull PostgreSQL store is not initialized")
 	}

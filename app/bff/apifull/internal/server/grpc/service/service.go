@@ -20,6 +20,7 @@ package service
 
 import (
 	"context"
+	"strings"
 	"sync"
 
 	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/core"
@@ -42,7 +43,7 @@ func (s *Service) GetServiceContext() *svc.ServiceContext {
 }
 
 func (s *Service) StartWorkers() {
-	if s == nil || s.svcCtx == nil || s.svcCtx.Config.PostgresDSN == "" {
+	if s == nil || s.svcCtx == nil || strings.TrimSpace(s.svcCtx.Config.PostgresDSN) == "" {
 		return
 	}
 	s.workerMu.Lock()

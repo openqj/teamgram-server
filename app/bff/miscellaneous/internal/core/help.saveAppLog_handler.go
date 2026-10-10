@@ -20,6 +20,7 @@ package core
 
 import (
 	"context"
+	"strings"
 
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/bff/apifull/persist"
@@ -35,7 +36,7 @@ func (c *MiscellaneousCore) HelpSaveAppLog(in *mtproto.TLHelpSaveAppLog) (*mtpro
 	// The composite BFF opens the shared PostgreSQL store before registering
 	// this service. Standalone miscellaneous startup does the same in server.
 	// Keep direct unit callers compatible when no service context is present.
-	if c != nil && c.svcCtx != nil && c.svcCtx.Config.PostgresDSN != "" {
+	if c != nil && c.svcCtx != nil && strings.TrimSpace(c.svcCtx.Config.PostgresDSN) != "" {
 		userID := int64(0)
 		if c.MD != nil {
 			userID = c.MD.UserId

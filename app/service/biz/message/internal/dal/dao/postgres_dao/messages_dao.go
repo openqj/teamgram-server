@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/service/biz/message/internal/dal/dataobject"
 )
 
@@ -130,11 +131,7 @@ func (d *MessagesDAO) SelectByMessageDataId(ctx context.Context, userID, dialogM
 // SelectByMessageDataIdUserIdList returns a dialog message for each requested user.
 func (d *MessagesDAO) SelectByMessageDataIdUserIdList(ctx context.Context, dialogMessageID int64, userIDs []int64) ([]dataobject.MessagesDO, error) {
 	if len(userIDs) == 0 {
-		rows, err := d.db.Query(ctx, `SELECT `+messageColumns+` FROM messages WHERE dialog_message_id = $1 AND deleted = FALSE`, dialogMessageID)
-		if err != nil {
-			return nil, err
-		}
-		return scanMessages(rows)
+		return []dataobject.MessagesDO{}, nil
 	}
 	rows, err := d.db.Query(ctx, `SELECT `+messageColumns+` FROM messages WHERE dialog_message_id = $1 AND user_id = ANY($2::bigint[]) AND deleted = FALSE`, dialogMessageID, userIDs)
 	if err != nil {
@@ -482,7 +479,7 @@ ORDER BY user_message_box_id ASC LIMIT $5`, userID, savedPeerType, savedPeerID, 
 func (d *MessagesDAO) SelectBackwardSavedByOffsetDateLimit(ctx context.Context, userID int64, savedPeerType int32, savedPeerID int64, date2 int64, limit int32) ([]dataobject.MessagesDO, error) {
 	rows, err := d.db.Query(ctx, `SELECT `+messageColumns+` FROM messages
 WHERE user_id = $1 AND saved_peer_type = $2 AND saved_peer_id = $3
-  AND date2 <= $4 AND deleted = FALSE
+  AND date2 < $4 AND deleted = FALSE
 ORDER BY date2 DESC, user_message_box_id DESC LIMIT $5`, userID, savedPeerType, savedPeerID, date2, limit)
 	if err != nil {
 		return nil, err
@@ -535,7 +532,7 @@ ORDER BY user_message_box_id ASC LIMIT $5`, userID, dialogID1, dialogID2, offset
 func (d *MessagesDAO) SelectBackwardByOffsetDateLimit(ctx context.Context, userID, dialogID1, dialogID2 int64, date2 int64, limit int32) ([]dataobject.MessagesDO, error) {
 	rows, err := d.db.Query(ctx, `SELECT `+messageColumns+` FROM messages
 WHERE user_id = $1 AND dialog_id1 = $2 AND dialog_id2 = $3
-  AND date2 <= $4 AND deleted = FALSE
+  AND date2 < $4 AND deleted = FALSE
 ORDER BY date2 DESC, user_message_box_id DESC LIMIT $5`, userID, dialogID1, dialogID2, date2, limit)
 	if err != nil {
 		return nil, err
@@ -556,9 +553,17 @@ ORDER BY date2 ASC, user_message_box_id ASC LIMIT $5`, userID, dialogID1, dialog
 
 func (d *MessagesDAO) CountByMediaType(ctx context.Context, userID, dialogID1, dialogID2 int64, mediaType int32) (int64, error) {
 	var count int64
-	err := d.db.QueryRow(ctx, `SELECT count(*) FROM messages
+	query := `SELECT count(*) FROM messages
 WHERE user_id = $1 AND dialog_id1 = $2 AND dialog_id2 = $3
-  AND message_filter_type = $4 AND deleted = FALSE`, userID, dialogID1, dialogID2, mediaType).Scan(&count)
+  AND message_filter_type = $4 AND deleted = FALSE`
+	args := []any{userID, dialogID1, dialogID2, mediaType}
+	if mediaType == mtproto.MEDIA_PHOTOVIDEO {
+		query = `SELECT count(*) FROM messages
+WHERE user_id = $1 AND dialog_id1 = $2 AND dialog_id2 = $3
+  AND message_filter_type IN ($4, $5, $6) AND deleted = FALSE`
+		args = []any{userID, dialogID1, dialogID2, mtproto.MEDIA_PHOTOVIDEO, mtproto.MEDIA_PHOTOS_ONLY, mtproto.MEDIA_VIDEOS_ONLY}
+	}
+	err := d.db.QueryRow(ctx, query, args...).Scan(&count)
 	return count, err
 }
 
@@ -588,8 +593,9 @@ WHERE user_id = $1 AND peer_type = $2 AND peer_id = $3
 func (d *MessagesDAO) SelectBackwardUnreadMentionsByOffsetIdLimit(ctx context.Context, userID, dialogID1, dialogID2 int64, offsetID, minID, maxID, limit int32) ([]dataobject.MessagesDO, error) {
 	rows, err := d.db.Query(ctx, `SELECT `+messageColumns+` FROM messages
 WHERE user_id = $1 AND dialog_id1 = $2 AND dialog_id2 = $3
-  AND user_message_box_id < $4 AND user_message_box_id >= $5
-  AND ($6 = 0 OR user_message_box_id <= $6)
+  AND user_message_box_id < $4
+  AND ($5 = 0 OR user_message_box_id > $5)
+  AND ($6 = 0 OR user_message_box_id < $6)
   AND mentioned = TRUE AND media_unread = TRUE AND deleted = FALSE
 ORDER BY user_message_box_id DESC LIMIT $7`, userID, dialogID1, dialogID2, offsetID, minID, maxID, limit)
 	if err != nil {
@@ -601,8 +607,9 @@ ORDER BY user_message_box_id DESC LIMIT $7`, userID, dialogID1, dialogID2, offse
 func (d *MessagesDAO) SelectForwardUnreadMentionsByOffsetIdLimit(ctx context.Context, userID, dialogID1, dialogID2 int64, offsetID, minID, maxID, limit int32) ([]dataobject.MessagesDO, error) {
 	rows, err := d.db.Query(ctx, `SELECT `+messageColumns+` FROM messages
 WHERE user_id = $1 AND dialog_id1 = $2 AND dialog_id2 = $3
-  AND user_message_box_id >= $4 AND user_message_box_id >= $5
-  AND ($6 = 0 OR user_message_box_id <= $6)
+  AND user_message_box_id >= $4
+  AND ($5 = 0 OR user_message_box_id > $5)
+  AND ($6 = 0 OR user_message_box_id < $6)
   AND mentioned = TRUE AND media_unread = TRUE AND deleted = FALSE
 ORDER BY user_message_box_id ASC LIMIT $7`, userID, dialogID1, dialogID2, offsetID, minID, maxID, limit)
 	if err != nil {

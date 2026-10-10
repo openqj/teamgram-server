@@ -20,13 +20,27 @@ package core
 
 import (
 	"github.com/teamgram/proto/mtproto"
+	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
 // HelpGetAppUpdate
 // help.getAppUpdate#522d5a7d source:string = help.AppUpdate;
 func (c *ConfigurationCore) HelpGetAppUpdate(in *mtproto.TLHelpGetAppUpdate) (*mtproto.Help_AppUpdate, error) {
-	_ = in
-
-	// No app update is stored.
-	return mtproto.MakeTLHelpNoAppUpdate(nil).To_Help_AppUpdate(), nil
+	cfg, err := c.helpConfig()
+	if err != nil {
+		return nil, err
+	}
+	if cfg.AppUpdateVersion == "" && cfg.AppUpdateText == "" && cfg.AppUpdateURL == "" {
+		return mtproto.MakeTLHelpNoAppUpdate(nil).To_Help_AppUpdate(), nil
+	}
+	update := &mtproto.Help_AppUpdate{
+		CanNotSkip: cfg.AppUpdateCanNotSkip,
+		Id:         cfg.AppUpdateID,
+		Version:    cfg.AppUpdateVersion,
+		Text:       cfg.AppUpdateText,
+	}
+	if cfg.AppUpdateURL != "" {
+		update.Url = wrapperspb.String(cfg.AppUpdateURL)
+	}
+	return mtproto.MakeTLHelpAppUpdate(update).To_Help_AppUpdate(), nil
 }

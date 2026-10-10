@@ -20,6 +20,12 @@ import (
 // UserGetBotInfo
 // user.getBotInfo bot_id:long = BotInfo;
 func (c *UserCore) UserGetBotInfo(in *user.TLUserGetBotInfo) (*mtproto.BotInfo, error) {
+	if in == nil || in.GetBotId() <= 0 {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if err := c.requirePostgres(); err != nil {
+		return nil, err
+	}
 	botsDO, err := c.svcCtx.Dao.SelectBot(c.ctx, in.BotId)
 	if err != nil {
 		c.Logger.Errorf("user.getBotInfo - error: %v", err)

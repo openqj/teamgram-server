@@ -330,6 +330,9 @@ func (c *ApiFullCore) BotsCanSendMessage(in *mtproto.TLBotsCanSendMessage) (*mtp
 	if !persist.PostgresEnabled() {
 		return nil, mtproto.ErrMethodNotImpl
 	}
+	if in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
 	botID, err := c.verifyMiniBot(in.GetBot())
 	if err != nil {
 		return nil, err
@@ -351,6 +354,9 @@ func (c *ApiFullCore) BotsAllowSendMessage(in *mtproto.TLBotsAllowSendMessage) (
 	}
 	if !persist.PostgresEnabled() {
 		return nil, mtproto.ErrMethodNotImpl
+	}
+	if in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
 	}
 	botID, err := c.verifyMiniBot(in.GetBot())
 	if err != nil {
@@ -385,6 +391,9 @@ func (c *ApiFullCore) BotsRequestWebViewButton(in *mtproto.TLBotsRequestWebViewB
 	}
 	if !persist.PostgresEnabled() {
 		return nil, mtproto.ErrMethodNotImpl
+	}
+	if in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
 	}
 	userID, err := c.verifyMiniUser(uid, in.GetUserId())
 	if err != nil {
@@ -421,6 +430,9 @@ func (c *ApiFullCore) BotsGetRequestedWebViewButton(in *mtproto.TLBotsGetRequest
 	}
 	if !persist.PostgresEnabled() {
 		return nil, mtproto.ErrMethodNotImpl
+	}
+	if in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
 	}
 	botID, err := c.verifyMiniBot(in.GetBot())
 	if err != nil {

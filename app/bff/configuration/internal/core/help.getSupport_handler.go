@@ -26,10 +26,12 @@ import (
 // help.getSupport#9cdf08cd = help.Support;
 func (c *ConfigurationCore) HelpGetSupport(in *mtproto.TLHelpGetSupport) (*mtproto.Help_Support, error) {
 	_ = in
-
-	// No support user in this package's config; userEmpty allows id 0.
+	cfg, err := c.helpConfig()
+	if err != nil {
+		return nil, err
+	}
 	return mtproto.MakeTLHelpSupport(&mtproto.Help_Support{
-		PhoneNumber: "",
-		User:        mtproto.MakeTLUserEmpty(&mtproto.User{Id: 0}).To_User(),
+		PhoneNumber: cfg.SupportPhoneNumber,
+		User:        supportUser(cfg),
 	}).To_Help_Support(), nil
 }

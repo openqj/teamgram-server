@@ -209,7 +209,7 @@ func TestEmojiStatusMethodsFailClosedWithoutCatalogOrBackend(t *testing.T) {
 			name: "collectible statuses",
 			call: func() (bool, error) {
 				result, err := c.AccountGetCollectibleEmojiStatuses(&mtproto.TLAccountGetCollectibleEmojiStatuses{})
-				return result != nil && len(result.GetStatuses()) == 0, err
+				return result != nil, err
 			},
 		},
 		{
@@ -236,12 +236,6 @@ func TestEmojiStatusMethodsFailClosedWithoutCatalogOrBackend(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if tt.name == "collectible statuses" {
-				if result, err := tt.call(); !result || err != nil {
-					t.Fatalf("call() = (%v, %v), want empty success", result, err)
-				}
-				return
-			}
 			if result, err := tt.call(); result || !errors.Is(err, mtproto.ErrMethodNotImpl) {
 				t.Fatalf("call() = (%v, %v), want METHOD_NOT_IMPL", result, err)
 			}

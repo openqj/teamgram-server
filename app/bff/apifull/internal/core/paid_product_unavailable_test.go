@@ -40,7 +40,10 @@ func TestPaidProductMethodsFailClosedWithoutPersistence(t *testing.T) {
 			return result != nil, err
 		}},
 		{"extended media", func() (bool, error) {
-			result, err := c.MessagesGetExtendedMedia(&mtproto.TLMessagesGetExtendedMedia{Id: []int32{1}})
+			result, err := c.MessagesGetExtendedMedia(&mtproto.TLMessagesGetExtendedMedia{
+				Peer: mtproto.MakeTLInputPeerSelf(&mtproto.InputPeer{}).To_InputPeer(),
+				Id:   []int32{1},
+			})
 			return result != nil, err
 		}},
 		{"paid messages revenue", func() (bool, error) {
@@ -49,10 +52,6 @@ func TestPaidProductMethodsFailClosedWithoutPersistence(t *testing.T) {
 		}},
 		{"paid messages exception", func() (bool, error) {
 			result, err := c.AccountToggleNoPaidMessagesException(nil)
-			return result != nil, err
-		}},
-		{"paid messages price", func() (bool, error) {
-			result, err := c.ChannelsUpdatePaidMessagesPrice(nil)
 			return result != nil, err
 		}},
 		{"paid reaction send", func() (bool, error) {
@@ -91,5 +90,13 @@ func TestPaidProductMethodsFailClosedWithoutPersistence(t *testing.T) {
 	}
 	if store.reads != 0 || store.writes != 0 {
 		t.Fatalf("unavailable paid-product methods accessed persistence: reads=%d writes=%d", store.reads, store.writes)
+	}
+}
+
+func TestChannelsUpdatePaidMessagesPriceRejectsMissingRequest(t *testing.T) {
+	c := &ApiFullCore{MD: &metadata.RpcMetadata{UserId: 1}}
+	result, err := c.ChannelsUpdatePaidMessagesPrice(nil)
+	if result != nil || !errors.Is(err, mtproto.ErrChannelInvalid) {
+		t.Fatalf("result=%v err=%v, want nil result and CHANNEL_INVALID", result, err)
 	}
 }

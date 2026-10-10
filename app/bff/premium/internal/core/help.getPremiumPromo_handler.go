@@ -25,17 +25,13 @@ import (
 // HelpGetPremiumPromo
 // help.getPremiumPromo#b81b93d4 = help.PremiumPromo;
 func (c *PremiumCore) HelpGetPremiumPromo(in *mtproto.TLHelpGetPremiumPromo) (*mtproto.Help_PremiumPromo, error) {
-	_ = in
-
-	// No store is configured. Empty period and user lists advertise nothing to buy.
-	return mtproto.MakeTLHelpPremiumPromo(&mtproto.Help_PremiumPromo{
-		StatusText:     "Telegram Premium is not offered on this server.",
-		StatusEntities: []*mtproto.MessageEntity{},
-		VideoSections:  []string{},
-		Videos:         []*mtproto.Document{},
-		PeriodOptions:  []*mtproto.PremiumSubscriptionOption{},
-		Users:          []*mtproto.User{},
-		Currency:       "USD",
-		MonthlyAmount:  0,
-	}).To_Help_PremiumPromo(), nil
+	if _, err := c.requireUserId(); err != nil {
+		return nil, err
+	}
+	if in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	// No Premium offer catalogue or purchase provider is configured. An empty
+	// promo with a zero price would be indistinguishable from a real offer.
+	return nil, mtproto.ErrMethodNotImpl
 }

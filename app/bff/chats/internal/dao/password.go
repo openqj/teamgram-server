@@ -1,6 +1,8 @@
 package dao
 
 import (
+	"strings"
+
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/pkg/twofa"
 )
@@ -8,7 +10,7 @@ import (
 // CheckPassword verifies the one-time SRP proof against the deployment-owned
 // PostgreSQL proof store.  Creator transfer must never proceed without it.
 func (d *Dao) CheckPassword(userID int64, proof *mtproto.InputCheckPasswordSRP) error {
-	if d == nil || d.PostgresDSN == "" || userID <= 0 || proof == nil {
+	if d == nil || strings.TrimSpace(d.PostgresDSN) == "" || userID <= 0 || proof == nil {
 		return mtproto.ErrPasswordHashInvalid
 	}
 	store, err := twofa.OpenPostgresProofStore(d.PostgresDSN)

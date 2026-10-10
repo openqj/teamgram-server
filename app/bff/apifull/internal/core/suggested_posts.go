@@ -18,60 +18,29 @@
 
 package core
 
-import (
-	"fmt"
-	"strconv"
-
-	"github.com/teamgram/proto/mtproto"
-	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/persist"
-)
+import "github.com/teamgram/proto/mtproto"
 
 // RPCSuggestedPostsServer: Layer 229 methods previously returned ERR_ENTERPRISE_IS_BLOCKED.
 
-func b16PostKey(userID int64) string {
-	return fmt.Sprintf("b16:%d:post", userID)
-}
-
-func suggestedNote(in *mtproto.TLMessagesToggleSuggestedPostApproval) string {
-	if in == nil {
-		return ""
-	}
-	if cmt := in.GetRejectComment(); cmt != nil && cmt.GetValue() != "" {
-		return cmt.GetValue()
-	}
-	if in.GetMsgId() != 0 {
-		return strconv.FormatInt(int64(in.GetMsgId()), 10)
-	}
-	return ""
-}
-
 func (c *ApiFullCore) MessagesToggleSuggestedPostApproval(in *mtproto.TLMessagesToggleSuggestedPostApproval) (*mtproto.Updates, error) {
-	uid, err := c.requireUserId()
-	if err != nil {
+	if _, err := c.requireUserId(); err != nil {
 		return nil, err
 	}
-	if err = restPut(uid, "messages.toggleSuggestedPostApproval", in); err != nil {
-		return nil, err
+	if in == nil || in.GetPeer() == nil {
+		return nil, mtproto.ErrPeerIdInvalid
 	}
-	note := suggestedNote(in)
-	if note != "" {
-		if err = persist.Default.Set(b16PostKey(uid), note); err != nil {
-			return nil, err
-		}
-	} else {
-		note, err = persist.Default.Get(b16PostKey(uid))
-		if err != nil {
-			return nil, err
-		}
+	switch in.GetPeer().GetPredicateName() {
+	case mtproto.Predicate_inputPeerSelf,
+		mtproto.Predicate_inputPeerUser,
+		mtproto.Predicate_inputPeerChat,
+		mtproto.Predicate_inputPeerChannel:
+	default:
+		return nil, mtproto.ErrPeerIdInvalid
 	}
-	up := &mtproto.Updates{
-		Message: note,
-		Updates: []*mtproto.Update{},
-		Users:   []*mtproto.User{},
-		Chats:   []*mtproto.Chat{},
+	if in.GetMsgId() <= 0 {
+		return nil, mtproto.ErrMsgIdInvalid
 	}
-	if in != nil && in.GetMsgId() != 0 {
-		up.Id = in.GetMsgId()
-	}
-	return mtproto.MakeTLUpdates(up).To_Updates(), nil
+	// No authoritative suggested-post state or message update consumer is wired.
+	// Returning METHOD_NOT_IMPL avoids reporting a synthetic approval to clients.
+	return nil, mtproto.ErrMethodNotImpl
 }

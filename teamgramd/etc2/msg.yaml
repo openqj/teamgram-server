@@ -24,8 +24,12 @@ Telemetry:
 
 Postgres:
   DSN: ${TEAMGRAM_POSTGRES_DSN}
-  MaxConns: 64
-  MinConns: 8
+  MaxConns: 8
+  MinConns: 1
+  MaxConnLifetime: 1h
+  MaxConnIdleTime: 30m
+  HealthCheckPeriod: 1m
+  ConnectTimeout: 10s
   
 Cache:
   - Host: redis:6379

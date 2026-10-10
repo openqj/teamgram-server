@@ -10,12 +10,16 @@
 package core
 
 import (
+	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/service/media/media"
 )
 
 // MediaGetVideoSizeList
 // media.getVideoSizeList size_id = VideoSizeList;
 func (c *MediaCore) MediaGetVideoSizeList(in *media.TLMediaGetVideoSizeList) (*media.VideoSizeList, error) {
+	if in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
 	cData, err := c.svcCtx.Dao.GetCachePhotoData(c.ctx, in.GetSizeId())
 	if err != nil {
 		c.Logger.Errorf("media.getVideoSizeList - error: %v", err)

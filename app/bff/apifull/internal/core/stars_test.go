@@ -18,6 +18,7 @@ import (
 	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/domain"
 	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/persist"
 	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/svc"
+	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
 func TestStarsStatusUnavailableWithoutCanonicalLedger(t *testing.T) {
@@ -160,6 +161,96 @@ func TestStarsPageDefaultsAndValidation(t *testing.T) {
 	}
 	if _, _, err = starsPage("0", -1); !errors.Is(err, mtproto.ErrLimitInvalid) {
 		t.Fatalf("starsPage invalid limit = %v, want LIMIT_INVALID", err)
+	}
+}
+
+func TestStarsRevenueMethodsUseVerifiedProvider(t *testing.T) {
+	const uid int64 = 902701
+	peer := mtproto.MakeTLInputPeerSelf(&mtproto.InputPeer{}).To_InputPeer()
+	graph := mtproto.MakeTLStatsGraph(&mtproto.StatsGraph{
+		Json: mtproto.MakeTLDataJSON(&mtproto.DataJSON{Data: `{"points":[1,2]}`}).To_DataJSON(),
+	}).To_StatsGraph()
+	status := mtproto.MakeTLStarsRevenueStatus(&mtproto.StarsRevenueStatus{
+		WithdrawalEnabled:            true,
+		CurrentBalance_STARSAMOUNT:   mtproto.MakeTLStarsAmount(&mtproto.StarsAmount{Amount: 50}).To_StarsAmount(),
+		AvailableBalance_STARSAMOUNT: mtproto.MakeTLStarsAmount(&mtproto.StarsAmount{Amount: 40}).To_StarsAmount(),
+		OverallRevenue_STARSAMOUNT:   mtproto.MakeTLStarsAmount(&mtproto.StarsAmount{Amount: 80}).To_StarsAmount(),
+	}).To_StarsRevenueStatus()
+	stats := mtproto.MakeTLPaymentsStarsRevenueStats(&mtproto.Payments_StarsRevenueStats{
+		RevenueGraph: graph,
+		Status:       status,
+		UsdRate:      1.25,
+	}).To_Payments_StarsRevenueStats()
+	var operations []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			Operation string `json:"operation"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Errorf("decode revenue request: %v", err)
+			return
+		}
+		operations = append(operations, request.Operation)
+		switch request.Operation {
+		case "get_stars_revenue_stats":
+			writeSignedPaymentProviderResponse(t, w, starsRevenueStatsProviderResponse{Verified: true, UserID: uid, Stats: stats})
+		case "get_stars_revenue_withdrawal_url", "get_stars_revenue_ads_account_url":
+			writeSignedPaymentProviderResponse(t, w, starsRevenueURLProviderResponse{Verified: true, UserID: uid, URL: "https://payments.example.test/account"})
+		default:
+			http.Error(w, "unexpected operation", http.StatusBadRequest)
+		}
+	}))
+	defer server.Close()
+	c := &ApiFullCore{
+		ctx:    context.Background(),
+		svcCtx: &svc.ServiceContext{Config: config.Config{PaymentProviderEndpoint: server.URL, PaymentProviderSigningKey: paymentProviderTestSigningKey}},
+		MD:     &metadata.RpcMetadata{UserId: uid},
+	}
+	gotStats, err := c.PaymentsGetStarsRevenueStats(&mtproto.TLPaymentsGetStarsRevenueStats{Peer: peer})
+	if err != nil || gotStats == nil || gotStats.GetStatus() == nil || gotStats.GetStatus().GetOverallRevenue_STARSAMOUNT() == nil || gotStats.GetStatus().GetOverallRevenue_STARSAMOUNT().GetAmount() != 80 {
+		t.Fatalf("revenue stats = (%#v, %v)", gotStats, err)
+	}
+	if err = gotStats.Encode(mtproto.NewEncodeBuf(4096), 229); err != nil {
+		t.Fatalf("revenue stats did not encode: %v", err)
+	}
+	password := &mtproto.InputCheckPasswordSRP{SrpId: 1, A: []byte{1}, M1: []byte{1}}
+	gotURL, err := c.PaymentsGetStarsRevenueWithdrawalUrl(&mtproto.TLPaymentsGetStarsRevenueWithdrawalUrl{
+		Peer: peer, Amount: wrapperspb.Int64(10), Password: password,
+	})
+	if err != nil || gotURL == nil || gotURL.GetUrl() != "https://payments.example.test/account" {
+		t.Fatalf("withdrawal URL = (%#v, %v)", gotURL, err)
+	}
+	if err = gotURL.Encode(mtproto.NewEncodeBuf(512), 229); err != nil {
+		t.Fatalf("withdrawal URL did not encode: %v", err)
+	}
+	adsURL, err := c.PaymentsGetStarsRevenueAdsAccountUrl(&mtproto.TLPaymentsGetStarsRevenueAdsAccountUrl{Peer: peer})
+	if err != nil || adsURL == nil || adsURL.GetUrl() != "https://payments.example.test/account" {
+		t.Fatalf("ads URL = (%#v, %v)", adsURL, err)
+	}
+	if err = adsURL.Encode(mtproto.NewEncodeBuf(512), 229); err != nil {
+		t.Fatalf("ads URL did not encode: %v", err)
+	}
+	want := []string{"get_stars_revenue_stats", "get_stars_revenue_withdrawal_url", "get_stars_revenue_ads_account_url"}
+	if fmt.Sprint(operations) != fmt.Sprint(want) {
+		t.Fatalf("provider operations = %v, want %v", operations, want)
+	}
+}
+
+func TestStarsRevenueMethodsRejectMalformedProviderData(t *testing.T) {
+	const uid int64 = 902702
+	peer := mtproto.MakeTLInputPeerSelf(&mtproto.InputPeer{}).To_InputPeer()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		writeSignedPaymentProviderResponse(t, w, starsRevenueURLProviderResponse{Verified: true, UserID: uid, URL: "http://insecure.example.test/account"})
+	}))
+	defer server.Close()
+	c := &ApiFullCore{
+		ctx:    context.Background(),
+		svcCtx: &svc.ServiceContext{Config: config.Config{PaymentProviderEndpoint: server.URL, PaymentProviderSigningKey: paymentProviderTestSigningKey}},
+		MD:     &metadata.RpcMetadata{UserId: uid},
+	}
+	got, err := c.PaymentsGetStarsRevenueAdsAccountUrl(&mtproto.TLPaymentsGetStarsRevenueAdsAccountUrl{Peer: peer})
+	if got != nil || !errors.Is(err, mtproto.ErrPaymentProviderInvalid) {
+		t.Fatalf("ads URL = (%#v, %v), want provider-invalid refusal", got, err)
 	}
 }
 

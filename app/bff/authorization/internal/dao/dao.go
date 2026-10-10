@@ -20,6 +20,7 @@ package dao
 
 import (
 	"flag"
+	"strings"
 
 	kafka "github.com/teamgram/marmota/pkg/mq"
 	"github.com/teamgram/marmota/pkg/net/rpcx"
@@ -61,7 +62,7 @@ type Dao struct {
 }
 
 func New(c config.Config) *Dao {
-	if c.PostgresDSN == "" {
+	if strings.TrimSpace(c.PostgresDSN) == "" {
 		panic("authorization: PostgresDSN is required")
 	}
 	// Password, recovery and authorization transition state is shared with the

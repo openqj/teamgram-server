@@ -432,6 +432,37 @@ func openPostgres(dsn string, createSchema bool) error {
 		_ = db.Close()
 		return fmt.Errorf("apifull: PostgreSQL 18 is required (server_version_num=%d)", serverVersionNum)
 	}
+	if !createSchema {
+		// Standalone BFFs use the read-only startup path and rely on the
+		// deployment migrations. Verify the shared migration ledger and KV
+		// table before accepting requests instead of silently starting against
+		// an empty database.
+		for _, query := range []string{
+			`SELECT version FROM schema_migrations LIMIT 0`,
+			`SELECT k, v FROM apifull_kv LIMIT 0`,
+			`SELECT bot_user_id, restricted, add_users FROM apifull_bot_access_settings LIMIT 0`,
+			`SELECT bot_user_id, pending_updates_count, message FROM apifull_bot_updates_status LIMIT 0`,
+			`SELECT user_id, peer_type, peer_id, message_id, read_max_id FROM apifull_discussion_read_state LIMIT 0`,
+			`SELECT owner_user_id, collectible_id, document_id FROM apifull_collectible_emoji_status LIMIT 0`,
+		} {
+			if _, err = db.Exec(query); err != nil {
+				_ = db.Close()
+				return fmt.Errorf("apifull: required PostgreSQL schema is unavailable: %w", err)
+			}
+		}
+		var latestApplied bool
+		if err = db.QueryRow(`SELECT EXISTS (
+			SELECT 1 FROM schema_migrations
+			WHERE version = '063_apifull_bot_updates_status'
+		)`).Scan(&latestApplied); err != nil {
+			_ = db.Close()
+			return fmt.Errorf("apifull: migration journal is unavailable: %w", err)
+		}
+		if !latestApplied {
+			_ = db.Close()
+			return errors.New("apifull: PostgreSQL migrations are incomplete (063_apifull_bot_updates_status is required)")
+		}
+	}
 	if createSchema {
 		if _, err = db.Exec(`CREATE TABLE IF NOT EXISTS apifull_kv (
 			k TEXT PRIMARY KEY,
@@ -485,6 +516,33 @@ func openPostgres(dsn string, createSchema bool) error {
 			_ = db.Close()
 			return err
 		}
+		if _, err = db.Exec(`CREATE TABLE IF NOT EXISTS apifull_bot_access_settings (
+			bot_user_id BIGINT PRIMARY KEY,
+			restricted BOOLEAN NOT NULL DEFAULT FALSE,
+			add_users JSONB NOT NULL DEFAULT '[]'::jsonb,
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			CONSTRAINT apifull_bot_access_settings_users_array CHECK (jsonb_typeof(add_users) = 'array')
+		)`); err != nil {
+			_ = db.Close()
+			return err
+		}
+		if _, err = db.Exec(`CREATE TABLE IF NOT EXISTS apifull_discussion_read_state (
+			user_id BIGINT NOT NULL CHECK (user_id > 0),
+			peer_type INTEGER NOT NULL CHECK (peer_type > 0),
+			peer_id BIGINT NOT NULL CHECK (peer_id > 0),
+			message_id INTEGER NOT NULL CHECK (message_id > 0),
+			read_max_id INTEGER NOT NULL CHECK (read_max_id >= 0),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			PRIMARY KEY (user_id, peer_type, peer_id, message_id)
+		)`); err != nil {
+			_ = db.Close()
+			return err
+		}
+		if _, err = db.Exec(`CREATE INDEX IF NOT EXISTS idx_apifull_discussion_read_state_user
+			ON apifull_discussion_read_state (user_id, updated_at DESC)`); err != nil {
+			_ = db.Close()
+			return err
+		}
 	} else {
 		// Production processes use the deployment-owned schema and must fail
 		// before serving requests when migrations were not applied.
@@ -508,6 +566,7 @@ func openPostgres(dsn string, createSchema bool) error {
 			`SELECT lang_code, keyword FROM apifull_emoji_keyword LIMIT 0`,
 			`SELECT id, access_hash FROM apifull_emoji_document LIMIT 0`,
 			`SELECT kind, title FROM apifull_emoji_group LIMIT 0`,
+			`SELECT owner_user_id, collectible_id, document_id FROM apifull_collectible_emoji_status LIMIT 0`,
 			`SELECT user_id, message_id, received_at FROM apifull_message_delivery_report LIMIT 0`,
 			`SELECT id, actor_user_id, kind, target_type, target_id, dedupe_key, payload, state FROM apifull_report LIMIT 0`,
 			`SELECT user_id, takeout_id FROM apifull_takeout_session LIMIT 0`,
@@ -521,7 +580,12 @@ func openPostgres(dsn string, createSchema bool) error {
 			`SELECT request_id, user_id, provider, transaction_id, receipt FROM apifull_payment_receipt LIMIT 0`,
 			`SELECT request_id, user_id, provider, transaction_id, months, state FROM apifull_payment_entitlement_outbox LIMIT 0`,
 			`SELECT user_id, name, phone, email, credentials_saved FROM apifull_payment_saved_info LIMIT 0`,
+			`SELECT user_id, token_digest, valid_until FROM apifull_tmp_password LIMIT 0`,
 			`SELECT id, from_user, to_user, slug, stars, saved FROM apifull_gift LIMIT 0`,
+			`SELECT id, owner_user_id, title, position FROM apifull_gift_collection LIMIT 0`,
+			`SELECT collection_id, gift_id, position FROM apifull_gift_collection_item LIMIT 0`,
+			`SELECT owner_user_id, peer_type, peer_id, enabled FROM apifull_gift_notification_setting LIMIT 0`,
+			`SELECT owner_user_id, gift_id, position FROM apifull_gift_pin LIMIT 0`,
 			`SELECT username, owner_user_id, kind FROM apifull_username LIMIT 0`,
 			`SELECT id, access_hash, admin_id, participant_id, state FROM apifull_call LIMIT 0`,
 			`SELECT community_id, owner_user_id FROM apifull_community LIMIT 0`,
@@ -529,6 +593,9 @@ func openPostgres(dsn string, createSchema bool) error {
 			`SELECT user_id, community_id FROM apifull_community_dialog_state LIMIT 0`,
 			`SELECT user_id, bot_id, can_send FROM apifull_mini_bot_permission LIMIT 0`,
 			`SELECT request_id, user_id, bot_id, kind, payload, expires_at FROM apifull_webview_request LIMIT 0`,
+			`SELECT bot_user_id, restricted, add_users FROM apifull_bot_access_settings LIMIT 0`,
+			`SELECT bot_user_id, pending_updates_count, message FROM apifull_bot_updates_status LIMIT 0`,
+			`SELECT user_id, peer_type, peer_id, message_id, read_max_id FROM apifull_discussion_read_state LIMIT 0`,
 			`SELECT owner_user_id, bot_user_id, button FROM apifull_bot_menu_button LIMIT 0`,
 			`SELECT bot_user_id, group_admin_rights, broadcast_admin_rights FROM apifull_bot_default_admin_rights LIMIT 0`,
 			`SELECT channel_id, sticker_set_id, updated_by_user_id FROM apifull_channel_sticker_set LIMIT 0`,
@@ -548,6 +615,9 @@ func openPostgres(dsn string, createSchema bool) error {
 			`SELECT user_id, joined, allow_international, recent_sent FROM apifull_sms_job_member LIMIT 0`,
 			`SELECT job_id, user_id, phone_number, text, state FROM apifull_sms_job LIMIT 0`,
 			`SELECT id, user_id, event_time, event_type, peer_id, data FROM apifull_app_log LIMIT 0`,
+			`SELECT user_id, enabled FROM apifull_sponsored_user_setting LIMIT 0`,
+			`SELECT user_id, event_type, random_id, payload FROM apifull_sponsored_event LIMIT 0`,
+			`SELECT channel_id, actor_user_id, restricted FROM apifull_sponsored_channel_policy LIMIT 0`,
 			`SELECT owner_user_id, url_hash, url, status, match_code FROM apifull_url_auth LIMIT 0`,
 			`SELECT id, call_id, user_id FROM apifull_call_artifact LIMIT 0`,
 			`SELECT id, channel_id, actor_user_id FROM apifull_channel_admin_log LIMIT 0`,

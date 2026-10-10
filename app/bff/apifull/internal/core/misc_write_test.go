@@ -13,3 +13,10 @@ func TestHelpSetBotUpdatesStatusFailsClosed(t *testing.T) {
 		t.Fatalf("err = %v, want METHOD_NOT_IMPL", err)
 	}
 }
+
+func TestHelpSetBotUpdatesStatusRequiresBotProvider(t *testing.T) {
+	c := &ApiFullCore{MD: &metadata.RpcMetadata{UserId: 1}}
+	if _, err := c.HelpSetBotUpdatesStatus(&mtproto.TLHelpSetBotUpdatesStatus{PendingUpdatesCount: 1}); err != mtproto.ErrMethodNotImpl {
+		t.Fatalf("err = %v, want METHOD_NOT_IMPL when the authoritative User provider is absent", err)
+	}
+}

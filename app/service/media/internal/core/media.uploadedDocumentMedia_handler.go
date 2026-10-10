@@ -50,11 +50,6 @@ func (c *MediaCore) MediaUploadedDocumentMedia(in *media.TLMediaUploadedDocument
 			return nil, mtproto.ErrMediaInvalid
 		}
 
-		if len(document.GetThumbs()) > 0 {
-			if err = c.svcCtx.Dao.SavePhotoSizeV2(c.ctx, document.GetId(), document.GetThumbs()); err != nil {
-				return nil, err
-			}
-		}
 		if err = c.svcCtx.Dao.SaveDocumentV2(c.ctx, media.GetFile().GetName(), document); err != nil {
 			return nil, err
 		}
@@ -71,11 +66,6 @@ func (c *MediaCore) MediaUploadedDocumentMedia(in *media.TLMediaUploadedDocument
 			return nil, mtproto.ErrMediaInvalid
 		}
 
-		if len(document.GetThumbs()) > 0 {
-			if err = c.svcCtx.Dao.SavePhotoSizeV2(c.ctx, document.GetId(), document.GetThumbs()); err != nil {
-				return nil, err
-			}
-		}
 		if err = c.svcCtx.Dao.SaveDocumentV2(c.ctx, media.GetFile().GetName(), document); err != nil {
 			return nil, err
 		}
@@ -92,11 +82,6 @@ func (c *MediaCore) MediaUploadedDocumentMedia(in *media.TLMediaUploadedDocument
 			return nil, mtproto.ErrMediaInvalid
 		}
 
-		if len(document.GetThumbs()) > 0 {
-			if err = c.svcCtx.Dao.SavePhotoSizeV2(c.ctx, document.GetId(), document.GetThumbs()); err != nil {
-				return nil, err
-			}
-		}
 		if err = c.svcCtx.Dao.SaveDocumentV2(c.ctx, media.GetFile().GetName(), document); err != nil {
 			return nil, err
 		}

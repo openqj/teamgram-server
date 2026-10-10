@@ -295,6 +295,7 @@ func (s *Server) Initialize() error {
 			configuration_helper.New(configuration_helper.Config{
 				RpcServerConf: c.RpcServerConf,
 				PostgresDSN:   c.PostgresDSN,
+				Help:          c.Help,
 			}))
 
 		// qrcode_helper
@@ -573,6 +574,7 @@ func (s *Server) Initialize() error {
 				DialogClient:  c.BizServiceClient,
 				SyncClient:    c.SyncClient,
 				MessageClient: c.BizServiceClient,
+				MsgClient:     c.MsgClient,
 			}))
 
 		// userchannelprofileshelper

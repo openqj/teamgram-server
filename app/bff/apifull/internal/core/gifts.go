@@ -364,13 +364,74 @@ func (c *ApiFullCore) PaymentsGetStarGiftWithdrawalUrl(in *mtproto.TLPaymentsGet
 }
 
 func (c *ApiFullCore) PaymentsToggleChatStarGiftNotifications(in *mtproto.TLPaymentsToggleChatStarGiftNotifications) (*mtproto.Bool, error) {
-	_ = in
-	return nil, c.giftsUnavailable()
+	uid, err := c.requireUserId()
+	if err != nil {
+		return nil, err
+	}
+	if in == nil || in.GetPeer() == nil {
+		return nil, mtproto.ErrInputConstructorInvalid
+	}
+	peerType, peerID, err := giftPreferencePeer(uid, in.GetPeer())
+	if err != nil {
+		return nil, err
+	}
+	if err = domain.SetGiftNotificationSetting(uid, peerType, peerID, in.GetEnabled()); err != nil {
+		return nil, giftDomainError(err)
+	}
+	return mtproto.BoolTrue, nil
 }
 
 func (c *ApiFullCore) PaymentsToggleStarGiftsPinnedToTop(in *mtproto.TLPaymentsToggleStarGiftsPinnedToTop) (*mtproto.Bool, error) {
-	_ = in
-	return nil, c.giftsUnavailable()
+	uid, err := c.requireUserId()
+	if err != nil {
+		return nil, err
+	}
+	if in == nil || in.GetPeer() == nil {
+		return nil, mtproto.ErrInputConstructorInvalid
+	}
+	peerType, peerID, err := giftPreferencePeer(uid, in.GetPeer())
+	if err != nil {
+		return nil, err
+	}
+	// The local inventory is owner-scoped. A peer for another user or a chat
+	// would require the authoritative gift/message provider to resolve its
+	// inventory and is therefore rejected before any write.
+	if peerType != mtproto.PEER_SELF && !(peerType == mtproto.PEER_USER && peerID == uid) {
+		return nil, mtproto.ErrPeerIdInvalid
+	}
+	refs := make([]domain.GiftRef, 0, len(in.GetStargift()))
+	for _, gift := range in.GetStargift() {
+		if gift == nil {
+			return nil, mtproto.ErrInputConstructorInvalid
+		}
+		predicate := gift.GetPredicateName()
+		if predicate != "" && predicate != mtproto.Predicate_inputSavedStarGiftSlug {
+			return nil, mtproto.ErrMethodNotImpl
+		}
+		if gift.GetMsgId() != 0 || gift.GetPeer() != nil || gift.GetSavedId() < 0 {
+			return nil, mtproto.ErrMethodNotImpl
+		}
+		ref := domain.GiftRef{ID: gift.GetSavedId(), Slug: gift.GetSlug()}
+		if ref.ID == 0 && (ref.Slug == "" || ref.Slug != strings.TrimSpace(ref.Slug)) {
+			return nil, mtproto.ErrInputConstructorInvalid
+		}
+		refs = append(refs, ref)
+	}
+	if err = domain.SetGiftPinnedOrder(uid, refs); err != nil {
+		return nil, giftDomainError(err)
+	}
+	return mtproto.BoolTrue, nil
+}
+
+func giftPreferencePeer(selfID int64, peer *mtproto.InputPeer) (int32, int64, error) {
+	if !validThreadInputPeer(selfID, peer) {
+		return 0, 0, mtproto.ErrPeerIdInvalid
+	}
+	peerType, peerID := apifullPeerTypeID(selfID, peer)
+	if peerID <= 0 || (peerType != mtproto.PEER_SELF && peerType != mtproto.PEER_USER && peerType != mtproto.PEER_CHAT && peerType != mtproto.PEER_CHANNEL) {
+		return 0, 0, mtproto.ErrPeerIdInvalid
+	}
+	return peerType, peerID, nil
 }
 
 func (c *ApiFullCore) PaymentsGetResaleStarGifts(in *mtproto.TLPaymentsGetResaleStarGifts) (*mtproto.Payments_ResaleStarGifts, error) {

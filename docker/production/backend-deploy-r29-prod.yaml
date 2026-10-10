@@ -1,6 +1,7 @@
 services:
   postgres:
     image: postgres:18
+    container_name: teamgram-postgres
     environment:
       POSTGRES_DB: "${POSTGRES_DB:?POSTGRES_DB is required}"
       POSTGRES_USER: "${POSTGRES_USER:?POSTGRES_USER is required}"
@@ -31,7 +32,7 @@ services:
       - teamgram_net
 
   backend:
-    image: teamgram-server-latest:20261008-r29-prod
+    image: "${TEAMGRAM_BACKEND_IMAGE:?TEAMGRAM_BACKEND_IMAGE is required}"
     build: !reset null
     depends_on:
       postgres-migrate:

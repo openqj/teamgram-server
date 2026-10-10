@@ -8,7 +8,7 @@ import (
 	"github.com/teamgram/proto/mtproto/rpc/metadata"
 )
 
-func TestAccountToggleSponsoredMessagesFailsClosed(t *testing.T) {
+func TestAccountToggleSponsoredMessagesValidation(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		in   *mtproto.TLAccountToggleSponsoredMessages
@@ -26,17 +26,23 @@ func TestAccountToggleSponsoredMessagesFailsClosed(t *testing.T) {
 		{
 			name: "enable",
 			in:   &mtproto.TLAccountToggleSponsoredMessages{Enabled: mtproto.BoolTrue},
-			want: mtproto.ErrMethodNotImpl,
+			want: nil,
 		},
 		{
 			name: "disable",
 			in:   &mtproto.TLAccountToggleSponsoredMessages{Enabled: mtproto.BoolFalse},
-			want: mtproto.ErrMethodNotImpl,
+			want: nil,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			core := &SponsoredMessagesCore{MD: &metadata.RpcMetadata{UserId: 42}}
 			got, err := core.AccountToggleSponsoredMessages(tc.in)
+			if tc.want == nil {
+				if got != mtproto.BoolTrue || err != nil {
+					t.Fatalf("AccountToggleSponsoredMessages() = (%v, %v), want boolTrue", got, err)
+				}
+				return
+			}
 			if got != nil || !errors.Is(err, tc.want) {
 				t.Fatalf("AccountToggleSponsoredMessages() = (%v, %v), want (nil, %v)", got, err, tc.want)
 			}

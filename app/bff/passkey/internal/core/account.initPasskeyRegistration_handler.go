@@ -89,7 +89,7 @@ func passkeyStorageError(err error) error {
 	if errors.Is(err, dao.ErrUnavailable) || errors.Is(err, mtproto.ErrMethodNotImpl) {
 		return mtproto.ErrMethodNotImpl
 	}
-	if errors.Is(err, dao.ErrSessionNotFound) || errors.Is(err, dao.ErrSessionUsed) || errors.Is(err, dao.ErrCredentialNotFound) || errors.Is(err, dao.ErrCounterReplay) {
+	if errors.Is(err, dao.ErrSessionNotFound) || errors.Is(err, dao.ErrSessionUsed) || errors.Is(err, dao.ErrCredentialNotFound) || errors.Is(err, dao.ErrCredentialConflict) || errors.Is(err, dao.ErrCounterReplay) {
 		return mtproto.ErrAuthTokenInvalid
 	}
 	return mtproto.ErrInternalServerError

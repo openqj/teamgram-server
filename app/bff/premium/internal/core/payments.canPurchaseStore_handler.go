@@ -26,5 +26,8 @@ import (
 // payments.canPurchaseStore#4fdc5ea7 purpose:InputStorePaymentPurpose = Bool;
 func (c *PremiumCore) PaymentsCanPurchaseStore(in *mtproto.TLPaymentsCanPurchaseStore) (*mtproto.Bool, error) {
 	_ = in
+	if _, err := c.requireUserId(); err != nil {
+		return nil, err
+	}
 	return nil, mtproto.ErrMethodNotImpl
 }

@@ -49,6 +49,15 @@ import (
 // AuthResendCode
 // auth.resendCode#3ef1a9bf phone_number:string phone_code_hash:string = auth.SentCode;
 func (c *AuthorizationCore) AuthResendCode(in *mtproto.TLAuthResendCode) (*mtproto.Auth_SentCode, error) {
+	if c == nil || in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if c.MD == nil || c.MD.GetPermAuthKeyId() == 0 {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
+	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.AuthLogic == nil || c.svcCtx.Challenges == nil {
+		return nil, mtproto.ErrMethodNotImpl
+	}
 	// 2. check phone_code_hash
 	if in.PhoneCodeHash == "" {
 		err := mtproto.ErrPhoneCodeHashEmpty
@@ -151,6 +160,10 @@ func (c *AuthorizationCore) AuthResendCode(in *mtproto.TLAuthResendCode) (*mtpro
 		c.Logger.Errorf("auth.resendCode - error: %v", err2)
 		err = err2
 		return nil, err
+	}
+	if codeData == nil {
+		c.Logger.Errorf("auth.resendCode - auth logic returned no code data")
+		return nil, mtproto.ErrInternalServerError
 	}
 
 	if c.svcCtx.Plugin != nil {

@@ -98,6 +98,8 @@ func TestBotWritesNilError(t *testing.T) {
 	}{
 		{"reset commands", func() error { _, err := c.BotsResetBotCommands(nil); return err }},
 		{"set bot info", func() error { _, err := c.BotsSetBotInfo(nil); return err }},
+		{"set menu button", func() error { _, err := c.BotsSetBotMenuButton(nil); return err }},
+		{"get menu button", func() error { _, err := c.BotsGetBotMenuButton(nil); return err }},
 		{"create bot", func() error { _, err := c.BotsCreateBot(nil); return err }},
 		{"export token", func() error { _, err := c.BotsExportBotToken(nil); return err }},
 		{"edit access", func() error { _, err := c.BotsEditAccessSettings(nil); return err }},
@@ -132,11 +134,15 @@ func TestBotWritesNilError(t *testing.T) {
 			if !errors.Is(err, mtproto.ErrInputRequestInvalid) {
 				t.Fatalf("%s: got %v, want INPUT_REQUEST_INVALID", fn.name, err)
 			}
-		} else if fn.name == "broadcast rights" || fn.name == "group rights" || fn.name == "malformed group rights" || fn.name == "mismatched group rights" {
+		} else if fn.name == "set menu button" || fn.name == "get menu button" {
 			if !errors.Is(err, mtproto.ErrInputConstructorInvalid) {
 				t.Fatalf("%s: got %v, want INPUT_CONSTRUCTOR_INVALID", fn.name, err)
 			}
-		} else if fn.name == "edit access" || fn.name == "set join results" || fn.name == "custom verification" || fn.name == "help updates" || fn.name == "custom request" || fn.name == "webhook answer" {
+		} else if fn.name == "broadcast rights" || fn.name == "group rights" || fn.name == "malformed group rights" || fn.name == "mismatched group rights" || fn.name == "edit access" {
+			if !errors.Is(err, mtproto.ErrInputConstructorInvalid) {
+				t.Fatalf("%s: got %v, want INPUT_CONSTRUCTOR_INVALID", fn.name, err)
+			}
+		} else if fn.name == "set join results" || fn.name == "custom verification" || fn.name == "help updates" || fn.name == "custom request" || fn.name == "webhook answer" {
 			if !errors.Is(err, mtproto.ErrMethodNotImpl) {
 				t.Fatalf("%s: got %v, want METHOD_NOT_IMPL", fn.name, err)
 			}
@@ -147,5 +153,17 @@ func TestBotWritesNilError(t *testing.T) {
 		} else if err != nil {
 			t.Fatalf("%s: got %v", fn.name, err)
 		}
+	}
+}
+
+func TestBotsGetBotInfoRejectsLocalizedProfile(t *testing.T) {
+	c := &ApiFullCore{MD: &metadata.RpcMetadata{UserId: 1}}
+	bot := mtproto.MakeTLInputUserSelf(&mtproto.InputUser{}).To_InputUser()
+	got, err := c.BotsGetBotInfoDCD914FD(&mtproto.TLBotsGetBotInfoDCD914FD{
+		Bot:      bot,
+		LangCode: "en",
+	})
+	if got != nil || !errors.Is(err, mtproto.ErrMethodNotImpl) {
+		t.Fatalf("localized bot info: got=%v err=%v, want METHOD_NOT_IMPL", got, err)
 	}
 }

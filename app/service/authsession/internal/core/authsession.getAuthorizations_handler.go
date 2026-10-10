@@ -12,6 +12,7 @@ package core
 import (
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/service/authsession/authsession"
+	"github.com/teamgram/teamgram-server/app/service/authsession/internal/svc"
 )
 
 // AuthsessionGetAuthorizations
@@ -44,7 +45,16 @@ func (c *AuthsessionCore) AuthsessionGetAuthorizations(in *authsession.TLAuthses
 		return nil, mtproto.ErrAuthKeyUnregistered
 	}
 
-	authorizationList := c.svcCtx.Dao.GetAuthorizations(c.ctx, in.GetUserId(), keyData.PermAuthKeyId)
+	var authorizationList []*mtproto.Authorization
+	if lister, ok := c.svcCtx.Dao.(svc.AuthorizationListerWithError); ok {
+		authorizationList, err = lister.GetAuthorizationsWithError(c.ctx, in.GetUserId(), keyData.PermAuthKeyId)
+		if err != nil {
+			c.Logger.Errorf("getAuthorizations(%d) is error: %v", in.GetUserId(), err)
+			return nil, err
+		}
+	} else {
+		authorizationList = c.svcCtx.Dao.GetAuthorizations(c.ctx, in.GetUserId(), keyData.PermAuthKeyId)
+	}
 
 	return mtproto.MakeTLAccountAuthorizations(&mtproto.Account_Authorizations{
 		Authorizations: authorizationList,

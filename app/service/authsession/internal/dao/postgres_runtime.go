@@ -532,19 +532,38 @@ func (d *Postgres) GetAuthorization(ctx context.Context, keyID int64) (*mtproto.
 }
 
 func (d *Postgres) GetAuthorizations(ctx context.Context, userID, excludeKeyID int64) []*mtproto.Authorization {
-	rows, err := d.pool.Query(ctx, `SELECT auth_key_id FROM auth_users WHERE user_id=$1 AND deleted=FALSE ORDER BY id`, userID)
+	result, err := d.GetAuthorizationsWithError(ctx, userID, excludeKeyID)
 	if err != nil {
 		return nil
+	}
+	return result
+}
+
+// GetAuthorizationsWithError is the error-preserving PostgreSQL variant used
+// by the authsession RPC. The generated DAO surface predates error returns and
+// remains available above for legacy callers, but an unavailable database must
+// never be reported as an empty successful authorization list.
+func (d *Postgres) GetAuthorizationsWithError(ctx context.Context, userID, excludeKeyID int64) ([]*mtproto.Authorization, error) {
+	rows, err := d.pool.Query(ctx, `SELECT auth_key_id FROM auth_users WHERE user_id=$1 AND deleted=FALSE ORDER BY id`, userID)
+	if err != nil {
+		return nil, err
 	}
 	defer rows.Close()
 	result := make([]*mtproto.Authorization, 0)
 	for rows.Next() {
 		var keyID int64
-		if rows.Scan(&keyID) != nil {
-			continue
+		if err := rows.Scan(&keyID); err != nil {
+			return nil, err
 		}
 		data, err := d.getAuthData(ctx, keyID)
-		if err != nil || data == nil || data.user == nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			// A key may be bound before initConnection writes auth metadata.
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		if data == nil || data.user == nil {
 			continue
 		}
 		country, region := d.countryRegion(data.client.GetIp())
@@ -563,7 +582,10 @@ func (d *Postgres) GetAuthorizations(ctx context.Context, userID, excludeKeyID i
 			result = append(result, a)
 		}
 	}
-	return result
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return result, nil
 }
 
 func (d *Postgres) ResetAuthorization(ctx context.Context, userID, currentKeyID, hash int64) ([]int64, error) {

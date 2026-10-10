@@ -16,6 +16,7 @@ type getAuthorizationsDAO struct {
 	key       *mtproto.AuthKeyInfo
 	owner     int64
 	listCalls int
+	listErr   error
 }
 
 func (d *getAuthorizationsDAO) QueryAuthKeyV2(context.Context, int64) (*mtproto.AuthKeyInfo, error) {
@@ -29,6 +30,11 @@ func (d *getAuthorizationsDAO) GetAuthKeyUserId(context.Context, int64) int64 {
 func (d *getAuthorizationsDAO) GetAuthorizations(context.Context, int64, int64) []*mtproto.Authorization {
 	d.listCalls++
 	return []*mtproto.Authorization{}
+}
+
+func (d *getAuthorizationsDAO) GetAuthorizationsWithError(context.Context, int64, int64) ([]*mtproto.Authorization, error) {
+	d.listCalls++
+	return nil, d.listErr
 }
 
 func TestAuthsessionGetAuthorizationsRequiresCurrentKeyOwner(t *testing.T) {
@@ -66,5 +72,22 @@ func TestAuthsessionGetAuthorizationsAllowsCurrentKeyOwner(t *testing.T) {
 	}
 	if d.listCalls != 1 {
 		t.Fatalf("authorization list queried %d times, want 1", d.listCalls)
+	}
+}
+
+func TestAuthsessionGetAuthorizationsPropagatesPostgresError(t *testing.T) {
+	keyID := int64(1003)
+	key := mtproto.MakeTLAuthKeyInfo(&mtproto.AuthKeyInfo{
+		AuthKeyId: keyID, PermAuthKeyId: keyID,
+	}).To_AuthKeyInfo()
+	storageErr := errors.New("postgres authorization query failed")
+	d := &getAuthorizationsDAO{key: key, owner: 7, listErr: storageErr}
+	c := &AuthsessionCore{ctx: context.Background(), svcCtx: &svc.ServiceContext{Dao: d}, Logger: logx.WithContext(context.Background())}
+
+	result, err := c.AuthsessionGetAuthorizations(&authsession.TLAuthsessionGetAuthorizations{
+		UserId: 7, ExcludeAuthKeyId: keyID,
+	})
+	if result != nil || !errors.Is(err, storageErr) {
+		t.Fatalf("storage failure result=%v err=%v, want propagated error", result, err)
 	}
 }

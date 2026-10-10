@@ -19,9 +19,10 @@
 package core
 
 import (
+	"context"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/bff/apifull/persist"
@@ -34,12 +35,17 @@ func (c *SponsoredMessagesCore) requireSponsoredUser() (int64, error) {
 	return c.MD.UserId, nil
 }
 
-func sponsoredSet(userID int64, op string, v any) error {
-	raw, err := json.Marshal(v)
+func sponsoredSet(ctx context.Context, userID int64, op string, v any) error {
+	parts := strings.SplitN(op, ":", 2)
+	eventType := parts[0]
+	if len(parts) != 2 {
+		return fmt.Errorf("sponsored event random id is required")
+	}
+	randomID, err := hex.DecodeString(parts[1])
 	if err != nil {
 		return err
 	}
-	return persist.Default.Set(fmt.Sprintf("sponsored:%d:%s", userID, op), string(raw))
+	return persist.RecordSponsoredEvent(ctx, userID, eventType, randomID, v)
 }
 
 func sponsoredRandom(id []byte) (string, error) {

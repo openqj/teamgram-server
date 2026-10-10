@@ -1,17 +1,60 @@
 package core
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"testing"
 	"time"
 
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/proto/mtproto/rpc/metadata"
+	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/config"
 	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/domain"
 	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/persist"
+	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/svc"
 )
+
+func TestCheckGiftCodeUsesVerifiedProvider(t *testing.T) {
+	const uid int64 = 902010
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			Operation string `json:"operation"`
+			UserID    int64  `json:"user_id"`
+			Slug      string `json:"slug"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Errorf("decode gift-code request: %v", err)
+			return
+		}
+		if request.Operation != "check_gift_code" || request.UserID != uid || request.Slug != "gift-slug" {
+			t.Errorf("gift-code request = %+v", request)
+		}
+		writeSignedPaymentProviderResponse(t, w, struct {
+			Verified bool                              `json:"verified"`
+			UserID   int64                             `json:"user_id"`
+			Slug     string                            `json:"slug"`
+			Code     *mtproto.Payments_CheckedGiftCode `json:"code"`
+		}{true, uid, "gift-slug", &mtproto.Payments_CheckedGiftCode{Days: 30, Months: 1}})
+	}))
+	defer server.Close()
+	c := &ApiFullCore{
+		ctx:    context.Background(),
+		svcCtx: &svc.ServiceContext{Config: config.Config{PaymentProviderEndpoint: server.URL, PaymentProviderSigningKey: paymentProviderTestSigningKey}},
+		MD:     &metadata.RpcMetadata{UserId: uid},
+	}
+	got, err := c.PaymentsCheckGiftCode(&mtproto.TLPaymentsCheckGiftCode{Slug: "gift-slug"})
+	if err != nil || got == nil || got.GetDays() != 30 || got.GetMonths() != 1 {
+		t.Fatalf("checked gift code = (%#v, %v)", got, err)
+	}
+	if err = got.Encode(mtproto.NewEncodeBuf(2048), 229); err != nil {
+		t.Fatalf("checked gift code did not encode: %v", err)
+	}
+}
 
 func TestGiftHandlersUnauthed(t *testing.T) {
 	for _, c := range []*ApiFullCore{{}, {MD: &metadata.RpcMetadata{}}} {

@@ -29,6 +29,9 @@ func (c *SponsoredMessagesCore) ChannelsClickSponsoredMessage(in *mtproto.TLChan
 	if err != nil {
 		return nil, err
 	}
+	if in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
 	rid, err := sponsoredRandom(in.GetRandomId())
 	if err != nil {
 		return nil, err
@@ -37,7 +40,7 @@ func (c *SponsoredMessagesCore) ChannelsClickSponsoredMessage(in *mtproto.TLChan
 	if in.GetChannel() != nil {
 		channelID = in.GetChannel().GetChannelId()
 	}
-	if err = sponsoredSet(uid, "channel_click:"+rid, map[string]any{
+	if err = sponsoredSet(c.ctx, uid, "channel_click:"+rid, map[string]any{
 		"random_id":  rid,
 		"channel_id": channelID,
 		"media":      in.GetMedia(),

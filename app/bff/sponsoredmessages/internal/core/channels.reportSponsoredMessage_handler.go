@@ -31,6 +31,9 @@ func (c *SponsoredMessagesCore) ChannelsReportSponsoredMessage(in *mtproto.TLCha
 	if err != nil {
 		return nil, err
 	}
+	if in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
 	rid, err := sponsoredRandom(in.GetRandomId())
 	if err != nil {
 		return nil, err
@@ -39,7 +42,7 @@ func (c *SponsoredMessagesCore) ChannelsReportSponsoredMessage(in *mtproto.TLCha
 	if in.GetChannel() != nil {
 		channelID = in.GetChannel().GetChannelId()
 	}
-	if err = sponsoredSet(uid, "channel_report:"+rid, map[string]any{
+	if err = sponsoredSet(c.ctx, uid, "channel_report:"+rid, map[string]any{
 		"random_id":  rid,
 		"option":     hex.EncodeToString(in.GetOption()),
 		"channel_id": channelID,

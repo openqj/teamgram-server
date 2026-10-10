@@ -43,6 +43,23 @@ type EmojiGroupRecord struct {
 	Emoticons   []string
 }
 
+// CollectibleEmojiStatusRecord is the provider-owned representation of one
+// collectible emoji status available to a user. The status document itself is
+// stored in apifull_emoji_document; this table carries the ownership and the
+// collectible metadata that is not part of a normal custom emoji document.
+type CollectibleEmojiStatusRecord struct {
+	OwnerUserID       int64
+	CollectibleID     int64
+	DocumentID        int64
+	Title             string
+	Slug              string
+	PatternDocumentID int64
+	CenterColor       int32
+	EdgeColor         int32
+	PatternColor      int32
+	TextColor         int32
+}
+
 func ensureEmojiSchema(db *sql.DB) error {
 	for _, stmt := range []string{
 		`CREATE TABLE IF NOT EXISTS apifull_emoji_language (
@@ -68,6 +85,17 @@ func ensureEmojiSchema(db *sql.DB) error {
 		`ALTER TABLE apifull_emoji_document ADD COLUMN IF NOT EXISTS channel_status BOOLEAN NOT NULL DEFAULT FALSE`,
 		`ALTER TABLE apifull_emoji_document ADD COLUMN IF NOT EXISTS restricted_status BOOLEAN NOT NULL DEFAULT FALSE`,
 		`CREATE INDEX IF NOT EXISTS apifull_emoji_document_alt_idx ON apifull_emoji_document (alt, id)`,
+		`CREATE TABLE IF NOT EXISTS apifull_collectible_emoji_status (
+ owner_user_id BIGINT NOT NULL, collectible_id BIGINT NOT NULL CHECK (collectible_id > 0),
+ document_id BIGINT NOT NULL CHECK (document_id > 0), title TEXT NOT NULL DEFAULT '',
+ slug TEXT NOT NULL DEFAULT '', pattern_document_id BIGINT NOT NULL DEFAULT 0,
+ center_color INTEGER NOT NULL DEFAULT 0, edge_color INTEGER NOT NULL DEFAULT 0,
+ pattern_color INTEGER NOT NULL DEFAULT 0, text_color INTEGER NOT NULL DEFAULT 0,
+ updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+ PRIMARY KEY (owner_user_id, collectible_id),
+ UNIQUE (owner_user_id, document_id))`,
+		`CREATE INDEX IF NOT EXISTS apifull_collectible_emoji_status_owner_idx
+ ON apifull_collectible_emoji_status (owner_user_id, collectible_id)`,
 		`CREATE TABLE IF NOT EXISTS apifull_emoji_group (
  kind TEXT NOT NULL, title TEXT NOT NULL, icon_emoji_id BIGINT NOT NULL DEFAULT 0,
  emoticons JSONB NOT NULL DEFAULT '[]'::jsonb, position INTEGER NOT NULL DEFAULT 0,
@@ -296,6 +324,37 @@ func LoadEmojiDocumentIDs(ctx context.Context, kind string) ([]int64, error) {
 		ids = append(ids, id)
 	}
 	return ids, rows.Err()
+}
+
+// LoadCollectibleEmojiStatuses reads only the provider-owned statuses for the
+// authenticated user. An empty result is intentionally preserved so callers
+// can fail closed when no collectible provider has populated the table.
+func LoadCollectibleEmojiStatuses(ctx context.Context, ownerUserID int64) ([]CollectibleEmojiStatusRecord, error) {
+	db, err := emojiDB()
+	if err != nil {
+		return nil, err
+	}
+	if ownerUserID <= 0 {
+		return nil, errors.New("apifull: invalid collectible emoji owner")
+	}
+	rows, err := db.QueryContext(ctx, `SELECT owner_user_id, collectible_id, document_id,
+ title, slug, pattern_document_id, center_color, edge_color, pattern_color, text_color
+ FROM apifull_collectible_emoji_status WHERE owner_user_id=$1 ORDER BY collectible_id`, ownerUserID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]CollectibleEmojiStatusRecord, 0)
+	for rows.Next() {
+		var row CollectibleEmojiStatusRecord
+		if err = rows.Scan(&row.OwnerUserID, &row.CollectibleID, &row.DocumentID,
+			&row.Title, &row.Slug, &row.PatternDocumentID, &row.CenterColor,
+			&row.EdgeColor, &row.PatternColor, &row.TextColor); err != nil {
+			return nil, err
+		}
+		out = append(out, row)
+	}
+	return out, rows.Err()
 }
 
 // EmojiDocumentInCatalog reports whether a document is explicitly published

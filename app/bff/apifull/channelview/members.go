@@ -143,20 +143,21 @@ func Full(caller int64, ch domain.Channel) (*mtproto.Messages_ChatFull, error) {
 		return nil, stored(err)
 	}
 	full := &mtproto.ChatFull{
-		Id:                  ch.ID,
-		About:               ch.About,
-		ParticipantsCount:   wrapperspb.Int32(participantsCount),
-		AdminsCount:         wrapperspb.Int32(adminsCount),
-		CanViewParticipants: !ch.ParticipantsHidden || caller == ch.Creator,
-		Antispam:            ch.Antispam,
-		HiddenPrehistory:    ch.HiddenPrehistory,
-		ParticipantsHidden:  ch.ParticipantsHidden,
-		ReadInboxMaxId:      readMax,
-		ReadOutboxMaxId:     outboxMax,
-		Pts:                 pts,
-		ChatPhoto:           mtproto.MakeTLPhotoEmpty(nil).To_Photo(),
-		NotifySettings:      mtproto.MakeTLPeerNotifySettings(&mtproto.PeerNotifySettings{}).To_PeerNotifySettings(),
-		BotInfo:             []*mtproto.BotInfo{},
+		Id:                    ch.ID,
+		About:                 ch.About,
+		ParticipantsCount:     wrapperspb.Int32(participantsCount),
+		AdminsCount:           wrapperspb.Int32(adminsCount),
+		CanViewParticipants:   !ch.ParticipantsHidden || caller == ch.Creator,
+		Antispam:              ch.Antispam,
+		PaidMessagesAvailable: ch.PaidMessagesStars != nil && *ch.PaidMessagesStars > 0,
+		HiddenPrehistory:      ch.HiddenPrehistory,
+		ParticipantsHidden:    ch.ParticipantsHidden,
+		ReadInboxMaxId:        readMax,
+		ReadOutboxMaxId:       outboxMax,
+		Pts:                   pts,
+		ChatPhoto:             mtproto.MakeTLPhotoEmpty(nil).To_Photo(),
+		NotifySettings:        mtproto.MakeTLPeerNotifySettings(&mtproto.PeerNotifySettings{}).To_PeerNotifySettings(),
+		BotInfo:               []*mtproto.BotInfo{},
 	}
 	if ch.DiscussionGroupID > 0 {
 		full.LinkedChatId = wrapperspb.Int64(ch.DiscussionGroupID)
@@ -174,6 +175,9 @@ func Full(caller int64, ch domain.Channel) (*mtproto.Messages_ChatFull, error) {
 	}
 	if ch.SlowmodeSeconds > 0 {
 		full.SlowmodeSeconds = wrapperspb.Int32(ch.SlowmodeSeconds)
+	}
+	if ch.PaidMessagesStars != nil {
+		full.SendPaidMessagesStars = wrapperspb.Int64(*ch.PaidMessagesStars)
 	}
 	if caller == ch.Creator {
 		full.CanSetUsername = true

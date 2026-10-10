@@ -11,6 +11,7 @@ package dao
 
 import (
 	"errors"
+	"strings"
 
 	"github.com/teamgram/marmota/pkg/stores/sqlc"
 	dfs_client "github.com/teamgram/teamgram-server/app/service/dfs/client"
@@ -29,7 +30,7 @@ type Dao struct {
 }
 
 func New(c config.Config) *Dao {
-	if c.Postgres.DSN == "" {
+	if strings.TrimSpace(c.Postgres.DSN) == "" {
 		panic(errors.New("media: Postgres.DSN is required"))
 	}
 	pg := newPostgresDao(c)

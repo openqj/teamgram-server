@@ -10,6 +10,7 @@
 package config
 
 import (
+	"github.com/teamgram/teamgram-server/pkg/storage/postgres"
 	"github.com/zeromicro/go-zero/core/stores/cache"
 	"github.com/zeromicro/go-zero/core/stores/kv"
 	"github.com/zeromicro/go-zero/zrpc"
@@ -17,6 +18,7 @@ import (
 
 type Config struct {
 	zrpc.RpcServerConf
-	Cache cache.CacheConf
-	KV    kv.KvConf
+	Postgres postgres.Config
+	Cache    cache.CacheConf
+	KV       kv.KvConf
 }

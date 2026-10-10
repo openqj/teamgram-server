@@ -11,6 +11,7 @@ package dao
 
 import (
 	"errors"
+	"strings"
 
 	"github.com/teamgram/marmota/pkg/stores/sqlc"
 	"github.com/teamgram/teamgram-server/app/service/biz/dialog/internal/config"
@@ -25,7 +26,7 @@ type Dao struct {
 
 // New new a dao and return.
 func New(c config.Config) (dao *Dao) {
-	if c.Postgres.DSN == "" {
+	if strings.TrimSpace(c.Postgres.DSN) == "" {
 		panic(errors.New("biz/dialog: Postgres.DSN is required"))
 	}
 	dao = &Dao{}

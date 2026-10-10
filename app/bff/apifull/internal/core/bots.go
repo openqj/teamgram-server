@@ -156,6 +156,12 @@ func (c *ApiFullCore) BotsGetBotInfoDCD914FD(in *mtproto.TLBotsGetBotInfoDCD914F
 	if in == nil || in.GetBot() == nil {
 		return nil, mtproto.ErrInputConstructorInvalid
 	}
+	// The User service currently exposes only the default bot profile. Keep
+	// localized requests explicit instead of returning the default language
+	// under a different lang_code.
+	if in.GetLangCode() != "" {
+		return nil, mtproto.ErrMethodNotImpl
+	}
 	bot := in.GetBot()
 	var botID int64
 	switch bot.GetPredicateName() {
@@ -353,20 +359,6 @@ func (c *ApiFullCore) BotsExportBotToken(in *mtproto.TLBotsExportBotToken) (*mtp
 		return nil, mtproto.ErrInternalServerError
 	}
 	return mtproto.MakeTLBotsExportedBotToken(&mtproto.Bots_ExportedBotToken{Token: token.GetV()}).To_Bots_ExportedBotToken(), nil
-}
-
-func (c *ApiFullCore) BotsGetAccessSettings(in *mtproto.TLBotsGetAccessSettings) (*mtproto.Bots_AccessSettings, error) {
-	if _, err := c.requireUserId(); err != nil {
-		return nil, err
-	}
-	return nil, mtproto.ErrMethodNotImpl
-}
-
-func (c *ApiFullCore) BotsEditAccessSettings(in *mtproto.TLBotsEditAccessSettings) (*mtproto.Bool, error) {
-	if _, err := c.requireUserId(); err != nil {
-		return nil, err
-	}
-	return nil, mtproto.ErrMethodNotImpl
 }
 
 func (c *ApiFullCore) BotsSetJoinChatResults(in *mtproto.TLBotsSetJoinChatResults) (*mtproto.Bool, error) {

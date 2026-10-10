@@ -9,6 +9,9 @@ func (c *UserCore) UserExportBotToken(in *user.TLUserExportBotToken) (*mtproto.S
 	if in == nil || in.GetBotId() <= 0 {
 		return nil, mtproto.ErrInputRequestInvalid
 	}
+	if err := c.requirePostgres(); err != nil {
+		return nil, err
+	}
 	if c.MD == nil || c.MD.GetUserId() <= 0 {
 		return nil, mtproto.ErrForbiddenUserBotInvalid
 	}

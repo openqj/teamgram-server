@@ -20,12 +20,13 @@ package core
 
 import (
 	"github.com/teamgram/proto/mtproto"
+	"github.com/teamgram/teamgram-server/app/bff/apifull/persist"
 )
 
 // AccountToggleSponsoredMessages
 // account.toggleSponsoredMessages#b9d9a38d enabled:Bool = Bool;
 func (c *SponsoredMessagesCore) AccountToggleSponsoredMessages(in *mtproto.TLAccountToggleSponsoredMessages) (*mtproto.Bool, error) {
-	_, err := c.requireSponsoredUser()
+	uid, err := c.requireSponsoredUser()
 	if err != nil {
 		return nil, err
 	}
@@ -34,7 +35,10 @@ func (c *SponsoredMessagesCore) AccountToggleSponsoredMessages(in *mtproto.TLAcc
 	}
 	switch in.GetEnabled().GetPredicateName() {
 	case mtproto.Predicate_boolTrue, mtproto.Predicate_boolFalse:
-		return nil, mtproto.ErrMethodNotImpl
+		if err = persist.SetSponsoredMessagesEnabled(c.ctx, uid, mtproto.FromBool(in.GetEnabled())); err != nil {
+			return nil, err
+		}
+		return mtproto.BoolTrue, nil
 	default:
 		return nil, mtproto.ErrInputRequestInvalid
 	}

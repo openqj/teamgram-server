@@ -1,3 +1,18 @@
 Name: bff.configuration
 ListenOn: 0.0.0.0:21220
 PostgresDSN: ${TEAMGRAM_POSTGRES_DSN}
+# Optional help.* defaults. PostgreSQL key `configuration:help` overrides
+# individual fields without requiring a service restart.
+# Help:
+#   InviteText: ""
+#   SupportPhoneNumber: ""
+#   SupportUserID: 0
+#   SupportUserAccessHash: 0
+#   SupportUserFirstName: ""
+#   SupportUserLastName: ""
+#   SupportUserUsername: ""
+#   AppUpdateCanNotSkip: false
+#   AppUpdateID: 0
+#   AppUpdateVersion: ""
+#   AppUpdateText: ""
+#   AppUpdateURL: ""

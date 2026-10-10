@@ -11,21 +11,16 @@ package core
 
 import (
 	"bytes"
-	"context"
 	"fmt"
 	"image"
 	"math/rand"
 	"time"
 
 	"github.com/teamgram/marmota/pkg/bytes2"
-	"github.com/teamgram/marmota/pkg/threading2"
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/service/dfs/dfs"
 	"github.com/teamgram/teamgram-server/app/service/dfs/internal/imaging"
 	"github.com/teamgram/teamgram-server/app/service/dfs/internal/model"
-
-	"github.com/zeromicro/go-zero/core/contextx"
-	"github.com/zeromicro/go-zero/core/threading"
 )
 
 func makeMp4DocumentAttributes(attrs []*mtproto.DocumentAttribute) []*mtproto.DocumentAttribute {
@@ -94,15 +89,10 @@ func (c *DfsCore) DfsUploadMp4DocumentMedia(in *dfs.TLDfsUploadMp4DocumentMedia)
 		c.svcCtx.Dao.SetCacheFileInfo(c.ctx, documentId, fileInfo)
 		path = fmt.Sprintf("%d.dat", documentId)
 
-		threading.RunSafe(func() {
-			_, err2 := c.svcCtx.Dao.PutDocumentFile(
-				contextx.ValueOnlyFrom(c.ctx),
-				path,
-				c.svcCtx.Dao.NewSSDBReader(fileInfo))
-			if err2 != nil {
-				c.Logger.Errorf("dfs.PutDocumentFile - error: %v", err)
-			}
-		})
+		if _, err = c.svcCtx.Dao.PutDocumentFile(c.ctx, path, c.svcCtx.Dao.NewSSDBReader(fileInfo)); err != nil {
+			c.Logger.Errorf("dfs.PutDocumentFile - error: %v", err)
+			return nil, err
+		}
 		//c.Logger.Errorf("getFirstFrameByPipe - error: %v", err)
 		//return nil, err
 
@@ -185,15 +175,10 @@ func (c *DfsCore) DfsUploadMp4DocumentMedia(in *dfs.TLDfsUploadMp4DocumentMedia)
 		c.svcCtx.Dao.SetCacheFileInfo(c.ctx, documentId, fileInfo)
 		path = fmt.Sprintf("%d.dat", documentId)
 
-		threading2.GoSafeContext(c.ctx, func(ctx context.Context) {
-			_, err2 := c.svcCtx.Dao.PutDocumentFile(
-				ctx,
-				path,
-				c.svcCtx.Dao.NewSSDBReader(fileInfo))
-			if err2 != nil {
-				c.Logger.Errorf("dfs.PutDocumentFile - error: %v", err)
-			}
-		})
+		if _, err = c.svcCtx.Dao.PutDocumentFile(c.ctx, path, c.svcCtx.Dao.NewSSDBReader(fileInfo)); err != nil {
+			c.Logger.Errorf("dfs.PutDocumentFile - error: %v", err)
+			return nil, err
+		}
 
 		// build document
 		document := mtproto.MakeTLDocument(&mtproto.Document{

@@ -531,6 +531,9 @@ func (c *ApiFullCore) StatsGetStoryPublicForwards(in *mtproto.TLStatsGetStoryPub
 	default:
 		return nil, mtproto.ErrPeerIdInvalid
 	}
+	if in.GetLimit() <= 0 {
+		return nil, mtproto.ErrLimitInvalid
+	}
 	if in.GetId() <= 0 {
 		return nil, mtproto.ErrStoryIdEmpty
 	}

@@ -21,9 +21,13 @@ package core
 import (
 	"encoding/json"
 	"strconv"
+	"strings"
+	"unicode/utf8"
 
 	"github.com/teamgram/proto/mtproto"
+	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/domain"
 	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/persist"
+	userpb "github.com/teamgram/teamgram-server/app/service/biz/user/user"
 )
 
 func miscSave(uid int64, method string, in any) error {
@@ -34,16 +38,38 @@ func miscSave(uid int64, method string, in any) error {
 	return persist.Default.Set("misc:"+strconv.FormatInt(uid, 10)+":"+method, string(raw))
 }
 
-// RPCInternalBotServer: Layer 229 methods fail closed until the canonical bot
-// provider is wired. Persisting opaque request JSON and returning success would
-// make clients believe the operation was handled.
+// RPCInternalBotServer: status reporting is backed by the canonical
+// PostgreSQL bot-status row; opaque bot requests remain fail closed until
+// their respective providers are wired.
 
 func (c *ApiFullCore) HelpSetBotUpdatesStatus(in *mtproto.TLHelpSetBotUpdatesStatus) (*mtproto.Bool, error) {
-	if _, err := c.requireUserId(); err != nil {
+	uid, err := c.requireUserId()
+	if err != nil {
 		return nil, err
 	}
-	_ = in
-	return nil, mtproto.ErrMethodNotImpl
+	// Preserve the canonical refusal for an absent internal request. This also
+	// prevents a nil transport decode from becoming a synthetic status row.
+	if in == nil {
+		return nil, mtproto.ErrMethodNotImpl
+	}
+	if in.GetPendingUpdatesCount() < 0 || !utf8.ValidString(in.GetMessage()) ||
+		utf8.RuneCountInString(in.GetMessage()) > 4096 || strings.IndexByte(in.GetMessage(), 0) >= 0 {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.UserClient == nil {
+		return nil, mtproto.ErrMethodNotImpl
+	}
+	profile, err := c.svcCtx.Dao.UserGetImmutableUser(c.ctx, &userpb.TLUserGetImmutableUser{Id: uid})
+	if err != nil {
+		return nil, err
+	}
+	if profile == nil || profile.GetUser() == nil || profile.Deleted() || !profile.IsBot() {
+		return nil, mtproto.ErrBotMethodInvalid
+	}
+	if err = domain.UpsertBotUpdatesStatus(uid, in.GetPendingUpdatesCount(), in.GetMessage()); err != nil {
+		return nil, err
+	}
+	return mtproto.BoolTrue, nil
 }
 
 func (c *ApiFullCore) BotsSendCustomRequest(in *mtproto.TLBotsSendCustomRequest) (*mtproto.DataJSON, error) {

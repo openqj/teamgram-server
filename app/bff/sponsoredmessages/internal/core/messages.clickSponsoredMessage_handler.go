@@ -25,14 +25,19 @@ import (
 // MessagesClickSponsoredMessage
 // messages.clickSponsoredMessage#8235057e flags:# media:flags.0?true fullscreen:flags.1?true random_id:bytes = Bool;
 func (c *SponsoredMessagesCore) MessagesClickSponsoredMessage(in *mtproto.TLMessagesClickSponsoredMessage) (*mtproto.Bool, error) {
-	if _, err := c.requireSponsoredUser(); err != nil {
+	uid, err := c.requireSponsoredUser()
+	if err != nil {
 		return nil, err
 	}
 	if in == nil {
 		return nil, mtproto.ErrInputRequestInvalid
 	}
-	if _, err := sponsoredRandom(in.GetRandomId()); err != nil {
+	rid, err := sponsoredRandom(in.GetRandomId())
+	if err != nil {
 		return nil, err
 	}
-	return nil, mtproto.ErrMethodNotImpl
+	if err = sponsoredSet(c.ctx, uid, "message_click:"+rid, map[string]any{"random_id": rid, "media": in.GetMedia(), "fullscreen": in.GetFullscreen()}); err != nil {
+		return nil, err
+	}
+	return mtproto.BoolTrue, nil
 }

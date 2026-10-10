@@ -14,7 +14,7 @@ func paymentPostgresFixture(t *testing.T) int64 {
 	requirePaymentLedgerDB(t)
 	userID := time.Now().UnixNano()
 	t.Cleanup(func() {
-		for _, table := range []string{"apifull_payment_saved_info", "apifull_payment_entitlement_outbox", "apifull_payment_receipt", "apifull_payment_ledger", "apifull_payment_request", "apifull_star_tx", "apifull_stars"} {
+		for _, table := range []string{"apifull_stars_refund", "apifull_payment_saved_info", "apifull_payment_entitlement_outbox", "apifull_payment_receipt", "apifull_payment_ledger", "apifull_payment_request", "apifull_star_tx", "apifull_stars"} {
 			if _, err := db.Exec(`DELETE FROM `+table+` WHERE user_id=$1`, userID); err != nil {
 				t.Errorf("clean %s fixture: %v", table, err)
 			}

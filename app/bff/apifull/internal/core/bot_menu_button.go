@@ -20,6 +20,9 @@ package core
 
 import (
 	"encoding/json"
+	"net/url"
+	"strings"
+	"unicode/utf8"
 
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/domain"
@@ -34,6 +37,12 @@ func (c *ApiFullCore) BotsSetBotMenuButton(in *mtproto.TLBotsSetBotMenuButton) (
 	}
 	if in == nil || in.GetUserId() == nil {
 		return nil, mtproto.ErrInputConstructorInvalid
+	}
+	if in.GetButton() == nil {
+		return nil, mtproto.ErrInputConstructorInvalid
+	}
+	if err = validateBotMenuButton(in.GetButton()); err != nil {
+		return nil, err
 	}
 	var target int64
 	if u := in.GetUserId(); u != nil {
@@ -54,6 +63,31 @@ func (c *ApiFullCore) BotsSetBotMenuButton(in *mtproto.TLBotsSetBotMenuButton) (
 		return nil, err
 	}
 	return mtproto.BoolTrue, nil
+}
+
+func validateBotMenuButton(button *mtproto.BotMenuButton) error {
+	if button == nil {
+		return mtproto.ErrInputConstructorInvalid
+	}
+	switch button.GetPredicateName() {
+	case mtproto.Predicate_botMenuButtonDefault, mtproto.Predicate_botMenuButtonCommands:
+		if button.GetText() != "" || button.GetUrl() != "" {
+			return mtproto.ErrInputRequestInvalid
+		}
+		return nil
+	case mtproto.Predicate_botMenuButton:
+		if strings.TrimSpace(button.GetText()) == "" || !utf8.ValidString(button.GetText()) || utf8.RuneCountInString(button.GetText()) > 64 {
+			return mtproto.ErrInputRequestInvalid
+		}
+		raw := strings.TrimSpace(button.GetUrl())
+		parsed, err := url.ParseRequestURI(raw)
+		if err != nil || parsed.Scheme != "https" || parsed.Host == "" {
+			return mtproto.ErrWebdocumentUrlInvalid
+		}
+		return nil
+	default:
+		return mtproto.ErrInputConstructorInvalid
+	}
 }
 
 func (c *ApiFullCore) BotsGetBotMenuButton(in *mtproto.TLBotsGetBotMenuButton) (*mtproto.BotMenuButton, error) {

@@ -21,6 +21,7 @@ package svc
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 
 	kafka "github.com/teamgram/marmota/pkg/mq"
@@ -50,7 +51,7 @@ type ServiceContext struct {
 }
 
 func NewServiceContext(c config.Config, plugin plugin.MsgPlugin) *ServiceContext {
-	if c.Postgres.DSN == "" {
+	if strings.TrimSpace(c.Postgres.DSN) == "" {
 		panic(errors.New("messenger/msg/msg: Postgres.DSN is required"))
 	}
 	inboxProducer := kafka.MustKafkaProducer(c.InboxClient)

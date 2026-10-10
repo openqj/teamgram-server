@@ -30,5 +30,5 @@ RUN chmod +x /app/docker/entrypoint.sh
 
 ENTRYPOINT ["/app/docker/entrypoint.sh"]
 
-LABEL org.opencontainers.image.version="20261008-r29-prod" \
+LABEL org.opencontainers.image.version="20261011-r29-prod" \
       org.opencontainers.image.description="PostgreSQL 18 runtime with current APIFull and Bot registry fixes"

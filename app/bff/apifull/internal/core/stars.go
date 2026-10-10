@@ -19,10 +19,13 @@ package core
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
+	"math"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -41,6 +44,148 @@ type starsRefundProviderResponse struct {
 	Stars               int64           `json:"stars"`
 	RefundTransactionID string          `json:"refund_transaction_id"`
 	Receipt             json.RawMessage `json:"receipt"`
+}
+
+type starsRevenueStatsProviderResponse struct {
+	Verified bool                                `json:"verified"`
+	UserID   int64                               `json:"user_id"`
+	Stats    *mtproto.Payments_StarsRevenueStats `json:"stats"`
+}
+
+type starsRevenueURLProviderResponse struct {
+	Verified bool   `json:"verified"`
+	UserID   int64  `json:"user_id"`
+	URL      string `json:"url"`
+}
+
+// callStarsRevenueProvider sends a signed, read-only revenue request. Revenue
+// is provider-owned, but the caller and peer are always included in the
+// signed request so the provider can enforce channel ownership and scope.
+func (c *ApiFullCore) callStarsRevenueProvider(ctx context.Context, payload any, response any) error {
+	client, endpoint, providerKey, err := c.configuredPaymentProvider()
+	if err != nil {
+		return err
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return mtproto.ErrInternalServerError
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return mtproto.ErrPaymentProviderInvalid
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if providerKey != "" {
+		req.Header.Set("Authorization", "Bearer "+providerKey)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return mtproto.ErrPaymentUnsupported
+	}
+	defer resp.Body.Close()
+	responseBody, readErr := io.ReadAll(io.LimitReader(resp.Body, (1<<20)+1))
+	if readErr != nil || len(responseBody) > 1<<20 || resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return mtproto.ErrPaymentUnsupported
+	}
+	if !c.paymentProviderResponseAuthenticated(resp, responseBody) {
+		return mtproto.ErrPaymentProviderInvalid
+	}
+	if err = json.Unmarshal(responseBody, response); err != nil {
+		return mtproto.ErrPaymentProviderInvalid
+	}
+	return nil
+}
+
+func validRevenuePeer(uid int64, peer *mtproto.InputPeer) bool {
+	return peer != nil && validThreadInputPeer(uid, peer)
+}
+
+func validRevenueURL(raw string) bool {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	return err == nil && parsed.Host != "" && strings.EqualFold(parsed.Scheme, "https")
+}
+
+func normalizeRevenueGraph(graph *mtproto.StatsGraph) bool {
+	if graph == nil {
+		return false
+	}
+	if graph.GetPredicateName() == "" {
+		switch {
+		case graph.GetJson() != nil:
+			graph.To_StatsGraph()
+		case strings.TrimSpace(graph.GetError()) != "":
+			graph.To_StatsGraphError()
+		case strings.TrimSpace(graph.GetToken()) != "":
+			graph.To_StatsGraphAsync()
+		default:
+			return false
+		}
+	}
+	switch graph.GetPredicateName() {
+	case mtproto.Predicate_statsGraph:
+		if graph.GetJson() == nil || strings.TrimSpace(graph.GetJson().GetData()) == "" {
+			return false
+		}
+		if graph.GetJson().GetPredicateName() == "" {
+			graph.GetJson().To_DataJSON()
+		}
+		return graph.GetJson().GetPredicateName() == mtproto.Predicate_dataJSON
+	case mtproto.Predicate_statsGraphError:
+		return strings.TrimSpace(graph.GetError()) != ""
+	case mtproto.Predicate_statsGraphAsync:
+		return strings.TrimSpace(graph.GetToken()) != ""
+	default:
+		return false
+	}
+}
+
+func normalizeRevenueStats(stats *mtproto.Payments_StarsRevenueStats) bool {
+	if stats == nil || stats.GetStatus() == nil || stats.GetRevenueGraph() == nil ||
+		!normalizeRevenueGraph(stats.GetRevenueGraph()) || math.IsNaN(stats.GetUsdRate()) || math.IsInf(stats.GetUsdRate(), 0) || stats.GetUsdRate() < 0 {
+		return false
+	}
+	if stats.GetTopHoursGraph() != nil && !normalizeRevenueGraph(stats.GetTopHoursGraph()) {
+		return false
+	}
+	status := stats.GetStatus()
+	for _, amount := range []*mtproto.StarsAmount{
+		status.GetCurrentBalance_STARSAMOUNT(),
+		status.GetAvailableBalance_STARSAMOUNT(),
+		status.GetOverallRevenue_STARSAMOUNT(),
+	} {
+		if amount == nil {
+			continue
+		}
+		if amount.GetPredicateName() == "" {
+			mtproto.MakeTLStarsAmount(amount).To_StarsAmount()
+		}
+		if amount.GetPredicateName() != mtproto.Predicate_starsAmount {
+			return false
+		}
+		if amount.GetAmount() < 0 || amount.GetNanos() < 0 {
+			return false
+		}
+	}
+	if status.GetCurrentBalance_INT64() == 0 && status.GetCurrentBalance_STARSAMOUNT() != nil {
+		status.CurrentBalance_INT64 = status.GetCurrentBalance_STARSAMOUNT().GetAmount()
+	}
+	if status.GetAvailableBalance_INT64() == 0 && status.GetAvailableBalance_STARSAMOUNT() != nil {
+		status.AvailableBalance_INT64 = status.GetAvailableBalance_STARSAMOUNT().GetAmount()
+	}
+	if status.GetOverallRevenue_INT64() == 0 && status.GetOverallRevenue_STARSAMOUNT() != nil {
+		status.OverallRevenue_INT64 = status.GetOverallRevenue_STARSAMOUNT().GetAmount()
+	}
+	if status.GetCurrentBalance_INT64() < 0 || status.GetAvailableBalance_INT64() < 0 || status.GetOverallRevenue_INT64() < 0 {
+		return false
+	}
+	if status.GetPredicateName() == "" {
+		status.To_StarsRevenueStatus()
+	}
+	if status.GetPredicateName() != mtproto.Predicate_starsRevenueStatus {
+		return false
+	}
+	stats.To_PaymentsStarsRevenueStats()
+	return stats.GetPredicateName() == mtproto.Predicate_payments_starsRevenueStats
 }
 
 // RPCStarsServer: Layer 229 methods previously returned ERR_ENTERPRISE_IS_BLOCKED.
@@ -334,18 +479,98 @@ func (c *ApiFullCore) PaymentsRefundStarsCharge(in *mtproto.TLPaymentsRefundStar
 }
 
 func (c *ApiFullCore) PaymentsGetStarsRevenueStats(in *mtproto.TLPaymentsGetStarsRevenueStats) (*mtproto.Payments_StarsRevenueStats, error) {
-	_ = in
-	return nil, c.starsUnavailable()
+	uid, err := c.requireUserId()
+	if err != nil {
+		return nil, err
+	}
+	if in == nil {
+		return nil, mtproto.ErrInputConstructorInvalid
+	}
+	if in.GetTon() {
+		return nil, mtproto.ErrPaymentUnsupported
+	}
+	if !validRevenuePeer(uid, in.GetPeer()) {
+		return nil, mtproto.ErrPeerIdInvalid
+	}
+	var response starsRevenueStatsProviderResponse
+	err = c.callStarsRevenueProvider(c.secretContext(), struct {
+		Operation string             `json:"operation"`
+		UserID    int64              `json:"user_id"`
+		Peer      *mtproto.InputPeer `json:"peer"`
+		Dark      bool               `json:"dark"`
+		Ton       bool               `json:"ton"`
+	}{"get_stars_revenue_stats", uid, in.GetPeer(), in.GetDark(), in.GetTon()}, &response)
+	if err != nil {
+		return nil, err
+	}
+	if !response.Verified || response.UserID != uid || !normalizeRevenueStats(response.Stats) {
+		return nil, mtproto.ErrPaymentProviderInvalid
+	}
+	return mtproto.MakeTLPaymentsStarsRevenueStats(response.Stats).To_Payments_StarsRevenueStats(), nil
 }
 
 func (c *ApiFullCore) PaymentsGetStarsRevenueWithdrawalUrl(in *mtproto.TLPaymentsGetStarsRevenueWithdrawalUrl) (*mtproto.Payments_StarsRevenueWithdrawalUrl, error) {
-	_ = in
-	return nil, c.starsUnavailable()
+	uid, err := c.requireUserId()
+	if err != nil {
+		return nil, err
+	}
+	if in == nil {
+		return nil, mtproto.ErrInputConstructorInvalid
+	}
+	if in.GetTon() {
+		return nil, mtproto.ErrPaymentUnsupported
+	}
+	if !validRevenuePeer(uid, in.GetPeer()) {
+		return nil, mtproto.ErrPeerIdInvalid
+	}
+	if in.GetAmount() != nil && in.GetAmount().GetValue() <= 0 {
+		return nil, mtproto.ErrPaymentUnsupported
+	}
+	if in.GetPassword() == nil {
+		return nil, mtproto.ErrPasswordHashInvalid
+	}
+	var response starsRevenueURLProviderResponse
+	err = c.callStarsRevenueProvider(c.secretContext(), struct {
+		Operation string                         `json:"operation"`
+		UserID    int64                          `json:"user_id"`
+		Peer      *mtproto.InputPeer             `json:"peer"`
+		Amount    *wrapperspb.Int64Value         `json:"amount,omitempty"`
+		Password  *mtproto.InputCheckPasswordSRP `json:"password"`
+		Ton       bool                           `json:"ton"`
+	}{"get_stars_revenue_withdrawal_url", uid, in.GetPeer(), in.GetAmount(), in.GetPassword(), in.GetTon()}, &response)
+	if err != nil {
+		return nil, err
+	}
+	if !response.Verified || response.UserID != uid || !validRevenueURL(response.URL) {
+		return nil, mtproto.ErrPaymentProviderInvalid
+	}
+	return mtproto.MakeTLPaymentsStarsRevenueWithdrawalUrl(&mtproto.Payments_StarsRevenueWithdrawalUrl{Url: strings.TrimSpace(response.URL)}).To_Payments_StarsRevenueWithdrawalUrl(), nil
 }
 
 func (c *ApiFullCore) PaymentsGetStarsRevenueAdsAccountUrl(in *mtproto.TLPaymentsGetStarsRevenueAdsAccountUrl) (*mtproto.Payments_StarsRevenueAdsAccountUrl, error) {
-	_ = in
-	return nil, c.starsUnavailable()
+	uid, err := c.requireUserId()
+	if err != nil {
+		return nil, err
+	}
+	if in == nil {
+		return nil, mtproto.ErrInputConstructorInvalid
+	}
+	if !validRevenuePeer(uid, in.GetPeer()) {
+		return nil, mtproto.ErrPeerIdInvalid
+	}
+	var response starsRevenueURLProviderResponse
+	err = c.callStarsRevenueProvider(c.secretContext(), struct {
+		Operation string             `json:"operation"`
+		UserID    int64              `json:"user_id"`
+		Peer      *mtproto.InputPeer `json:"peer"`
+	}{"get_stars_revenue_ads_account_url", uid, in.GetPeer()}, &response)
+	if err != nil {
+		return nil, err
+	}
+	if !response.Verified || response.UserID != uid || !validRevenueURL(response.URL) {
+		return nil, mtproto.ErrPaymentProviderInvalid
+	}
+	return mtproto.MakeTLPaymentsStarsRevenueAdsAccountUrl(&mtproto.Payments_StarsRevenueAdsAccountUrl{Url: strings.TrimSpace(response.URL)}).To_Payments_StarsRevenueAdsAccountUrl(), nil
 }
 
 func (c *ApiFullCore) PaymentsGetStarsTransactionsByID(in *mtproto.TLPaymentsGetStarsTransactionsByID) (*mtproto.Payments_StarsStatus, error) {

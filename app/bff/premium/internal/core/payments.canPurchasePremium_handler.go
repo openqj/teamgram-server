@@ -24,5 +24,8 @@ import "github.com/teamgram/proto/mtproto"
 // payments.canPurchasePremium#9fc19eb6 purpose:InputStorePaymentPurpose = Bool;
 func (c *PremiumCore) PaymentsCanPurchasePremium(in *mtproto.TLPaymentsCanPurchasePremium) (*mtproto.Bool, error) {
 	_ = in
+	if _, err := c.requireUserId(); err != nil {
+		return nil, err
+	}
 	return nil, mtproto.ErrMethodNotImpl
 }

@@ -20,6 +20,7 @@ package dao
 
 import (
 	"context"
+	"strings"
 
 	kafka "github.com/teamgram/marmota/pkg/mq"
 	"github.com/teamgram/marmota/pkg/net/rpcx"
@@ -62,6 +63,13 @@ type MessageHistoryReader interface {
 	MessageGetHistoryMessages(context.Context, *messagepb.TLMessageGetHistoryMessages) (*messagepb.Vector_MessageBox, error)
 }
 
+// MessageListReader exposes the canonical message-service lookup used by
+// read-only Layer 229 methods. Keep this narrow so APIFull cannot accidentally
+// depend on mutation or legacy storage APIs.
+type MessageListReader interface {
+	MessageGetUserMessageList(context.Context, *messagepb.TLMessageGetUserMessageList) (*messagepb.Vector_MessageBox, error)
+}
+
 type Dao struct {
 	dialog_client.DialogClient
 	user_client.UserClient
@@ -74,6 +82,7 @@ type Dao struct {
 	PhoneCallHistoryMutator
 	PollMessageReader
 	MessageHistoryReader
+	MessageListReader
 }
 
 func New(c config.Config) *Dao {
@@ -88,7 +97,7 @@ func New(c config.Config) *Dao {
 	// other APIFull state. Do not replace persist.Default with Redis here: that
 	// would silently bypass the deployment-owned PostgreSQL schema after the
 	// startup gate has succeeded.
-	if c.PostgresDSN == "" {
+	if strings.TrimSpace(c.PostgresDSN) == "" {
 		panic("apifull: PostgresDSN is required")
 	} else if err := domain.OpenPostgresReadOnly(c.PostgresDSN); err != nil {
 		panic(err)
@@ -108,6 +117,7 @@ func New(c config.Config) *Dao {
 		PhoneCallHistoryMutator: msg_client.NewMsgClient(rpcx.GetCachedRpcClient(c.MsgClient)),
 		PollMessageReader:       messageClient,
 		MessageHistoryReader:    messageClient,
+		MessageListReader:       messageClient,
 		SyncClient:              sync_client.NewSyncMqClient(kafka.MustKafkaProducer(c.SyncClient)),
 	}
 }

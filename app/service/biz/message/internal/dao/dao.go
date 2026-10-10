@@ -12,6 +12,7 @@ package dao
 import (
 	"context"
 	"errors"
+	"strings"
 
 	"github.com/teamgram/marmota/pkg/stores/sqlc"
 	"github.com/teamgram/teamgram-server/app/service/biz/message/internal/config"
@@ -36,7 +37,7 @@ func (d *Dao) HasLegacyStore() bool {
 
 // New new a dao and return.
 func New(c config.Config, plugin plugin.MessagePlugin) *Dao {
-	if c.Postgres.DSN == "" {
+	if strings.TrimSpace(c.Postgres.DSN) == "" {
 		panic(errors.New("biz/message: Postgres.DSN is required"))
 	}
 	dao := &Dao{Plugin: plugin}

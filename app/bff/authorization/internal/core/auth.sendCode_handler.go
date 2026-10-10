@@ -117,6 +117,12 @@ import (
 // AuthSendCode
 // auth.sendCode#a677244f phone_number:string api_id:int api_hash:string settings:CodeSettings = auth.SentCode;
 func (c *AuthorizationCore) AuthSendCode(in *mtproto.TLAuthSendCode) (*mtproto.Auth_SentCode, error) {
+	if c == nil || in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if c.MD == nil || c.MD.GetPermAuthKeyId() == 0 {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
 	rValue, err := c.authSendCode(c.MD.PermAuthKeyId, c.MD.SessionId, in)
 	if err != nil {
 		c.Logger.Errorf("auth.sendCode - error: {%v}", err)
@@ -137,8 +143,17 @@ func (c *AuthorizationCore) AuthSendCode(in *mtproto.TLAuthSendCode) (*mtproto.A
 }
 
 func (c *AuthorizationCore) authSendCode(authKeyId, sessionId int64, request *mtproto.TLAuthSendCode) (reply *mtproto.Auth_SentCode, err error) {
+	if c == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if authKeyId == 0 {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
 	if request == nil || request.GetSettings() == nil {
 		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.AuthLogic == nil {
+		return nil, mtproto.ErrInternalServerError
 	}
 	settings := request.GetSettings()
 	// 1. check api_id and api_hash
@@ -385,6 +400,10 @@ func (c *AuthorizationCore) authSendCode(authKeyId, sessionId int64, request *mt
 		c.Logger.Errorf("auth.sendCode - error: %v", err2)
 		err = err2
 		return
+	}
+	if codeData == nil {
+		c.Logger.Errorf("auth.sendCode - auth logic returned no code data")
+		return nil, mtproto.ErrInternalServerError
 	}
 
 	reply = codeData.ToAuthSentCode()
