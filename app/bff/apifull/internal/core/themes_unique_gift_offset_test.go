@@ -1,0 +1,27 @@
+package core
+
+import (
+	"errors"
+	"testing"
+
+	"github.com/teamgram/proto/mtproto"
+)
+
+func TestGiftChatThemeOffsetAcceptsLayer229CompatibilityField(t *testing.T) {
+	got, err := giftChatThemeOffset(&mtproto.TLAccountGetUniqueGiftChatThemes{Offset_INT32: 7})
+	if err != nil || got != 7 {
+		t.Fatalf("integer offset = (%d, %v), want (7, nil)", got, err)
+	}
+
+	got, err = giftChatThemeOffset(&mtproto.TLAccountGetUniqueGiftChatThemes{Offset_STRING: "9", Offset_INT32: 7})
+	if err != nil || got != 9 {
+		t.Fatalf("string offset precedence = (%d, %v), want (9, nil)", got, err)
+	}
+}
+
+func TestGiftChatThemeOffsetRejectsNegativeCompatibilityField(t *testing.T) {
+	got, err := giftChatThemeOffset(&mtproto.TLAccountGetUniqueGiftChatThemes{Offset_INT32: -1})
+	if got != 0 || !errors.Is(err, mtproto.ErrOffsetInvalid) {
+		t.Fatalf("negative integer offset = (%d, %v), want (0, OFFSET_INVALID)", got, err)
+	}
+}
