@@ -24,6 +24,7 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -552,15 +553,34 @@ func (c *ApiFullCore) persistGroupCallMessage(record domain.GroupCall, uid int64
 	if message == nil || message.GetText() == "" {
 		return domain.GroupCallMessage{}, mtproto.ErrMessageEmpty
 	}
-	if allowPaid != nil && allowPaid.GetValue() > 0 {
-		return domain.GroupCallMessage{}, mtproto.ErrMethodNotImpl
-	}
 	settings, err := domain.LoadGroupCallSettings(record.ID)
 	if err != nil {
 		return domain.GroupCallMessage{}, err
 	}
 	if !settings.MessagesEnabled {
 		return domain.GroupCallMessage{}, mtproto.ErrChatWriteForbidden
+	}
+	var paidStars int64
+	if settings.SendPaidMessagesStars != nil {
+		paidStars = *settings.SendPaidMessagesStars
+		if paidStars < 0 {
+			return domain.GroupCallMessage{}, mtproto.ErrCurrencyTotalAmountInvalid
+		}
+	}
+	// The call owner is the settlement recipient and may continue to post
+	// without paying their own configured message price.
+	ownerPost := uid == record.Creator
+	if paidStars > 0 && !ownerPost {
+		if allowPaid == nil || allowPaid.GetValue() < paidStars {
+			return domain.GroupCallMessage{}, mtproto.ErrAllowPaymentRequired
+		}
+	} else if paidStars == 0 && allowPaid != nil && allowPaid.GetValue() > 0 && !ownerPost {
+		// A paid flag without a configured call price has no authoritative
+		// settlement target; fail closed instead of recording a free donation.
+		return domain.GroupCallMessage{}, mtproto.ErrMethodNotImpl
+	}
+	if ownerPost {
+		paidStars = 0
 	}
 	if err = c.validateGroupCallSendAs(uid, ids, sendAs); err != nil {
 		return domain.GroupCallMessage{}, err
@@ -581,7 +601,12 @@ func (c *ApiFullCore) persistGroupCallMessage(record domain.GroupCall, uid int64
 	} else if ok {
 		sendAsJSON = saved
 	}
-	stored, _, err := domain.CreateGroupCallMessage(record.ID, uid, randomID, string(messageJSON), sendAsJSON, nil)
+	var stored domain.GroupCallMessage
+	if paidStars > 0 {
+		stored, _, err = domain.CreatePaidGroupCallMessage(record.ID, uid, randomID, string(messageJSON), sendAsJSON, paidStars)
+	} else {
+		stored, _, err = domain.CreateGroupCallMessage(record.ID, uid, randomID, string(messageJSON), sendAsJSON, nil)
+	}
 	if err != nil {
 		return domain.GroupCallMessage{}, err
 	}
@@ -1531,6 +1556,41 @@ func (c *ApiFullCore) PhoneGetGroupCallStars(in *mtproto.TLPhoneGetGroupCallStar
 	}
 	if in == nil || in.GetCall() == nil || in.GetCall().GetId() == 0 || in.GetCall().GetAccessHash() == 0 {
 		return nil, mtproto.ErrGroupCallInvalid
+	}
+	if !c.businessProviderConfigured() {
+		// The local path is available only when the call and its PostgreSQL
+		// ledger are authoritative. A missing deployment-owned call must not be
+		// turned into a fabricated zero-star success response.
+		if !domain.Ready() {
+			return nil, mtproto.ErrMethodNotImpl
+		}
+		_, record, _, loadErr := c.loadAuthorizedGroupCall(in.GetCall())
+		if loadErr != nil {
+			if errors.Is(loadErr, mtproto.ErrGroupCallInvalid) {
+				return nil, mtproto.ErrMethodNotImpl
+			}
+			return nil, loadErr
+		}
+		total, donors, loadErr := domain.LoadGroupCallStars(record.ID)
+		if loadErr != nil {
+			return nil, loadErr
+		}
+		result := &mtproto.Phone_GroupCallStars{
+			TotalStars: total,
+			TopDonors:  make([]*mtproto.GroupCallDonor, 0, len(donors)),
+			Chats:      []*mtproto.Chat{},
+			Users:      make([]*mtproto.User, 0, len(donors)),
+		}
+		for _, donor := range donors {
+			result.TopDonors = append(result.TopDonors, mtproto.MakeTLGroupCallDonor(&mtproto.GroupCallDonor{
+				Top:    true,
+				My:     donor.UserID == uid,
+				PeerId: mtproto.MakePeerUser(donor.UserID),
+				Stars:  donor.Stars,
+			}).To_GroupCallDonor())
+			result.Users = append(result.Users, mtproto.MakeTLUser(&mtproto.User{Id: donor.UserID}).To_User())
+		}
+		return mtproto.MakeTLPhoneGroupCallStars(result).To_Phone_GroupCallStars(), nil
 	}
 	var result mtproto.Phone_GroupCallStars
 	if err = c.callBusinessProvider("phone.getGroupCallStars", map[string]any{

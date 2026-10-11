@@ -35,6 +35,11 @@ PaymentProviderKey: ""
 PaymentProviderSigningKey: ""
 PaymentProviderTimeoutSeconds: 5
 
+CdnProviderEndpoint: ""
+CdnProviderKey: ""
+CdnProviderSigningKey: ""
+CdnProviderTimeoutSeconds: 5
+
 AuthProviderEndpoint: ""
 AuthProviderKey: ""
 AuthProviderSigningKey: ""

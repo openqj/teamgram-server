@@ -20,6 +20,7 @@ package core
 
 import (
 	"errors"
+	"strings"
 
 	"github.com/teamgram/proto/mtproto"
 	verification "github.com/teamgram/teamgram-server/pkg/code"
@@ -56,12 +57,15 @@ func (c *AuthorizationCore) AuthCheckRecoveryPassword(in *mtproto.TLAuthCheckRec
 		c.Logger.Errorf("auth.checkRecoveryPassword - code: %v", err)
 		return nil, err
 	}
-	_, err = c.svcCtx.Challenges.Check(c.ctx, verification.VerifyRequest{
+	challenge, err := c.svcCtx.Challenges.Check(c.ctx, verification.VerifyRequest{
 		Channel: verification.ChannelEmail, Purpose: challengePurposePasswordRecovery,
 		Scope:       verification.ScopeID(c.MD.GetUserId()),
 		ChallengeID: verification.PurposeID(challengePurposePasswordRecovery, verification.ScopeID(c.MD.GetUserId())),
 		Code:        in.GetCode(),
 	})
+	if err == nil && (challenge == nil || !strings.EqualFold(strings.TrimSpace(challenge.Subject), strings.TrimSpace(st.recoveryEmail()))) {
+		err = verification.ErrChallengeInvalid
+	}
 	if err != nil {
 		if errors.Is(err, verification.ErrChallengeInvalid) {
 			return nil, mtproto.ErrCodeInvalid

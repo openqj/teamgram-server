@@ -26,6 +26,7 @@ import (
 	userpb "github.com/teamgram/teamgram-server/app/service/biz/user/user"
 
 	"github.com/zeromicro/go-zero/core/mr"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
@@ -302,6 +303,12 @@ func (c *UsersCore) UsersGetFullUser(in *mtproto.TLUsersGetFullUser) (*mtproto.U
 					PeerId:   peerId,
 				})
 				if err != nil {
+					// A user can be valid before a private dialog exists. Telegram
+					// still returns the full user in that case; dialog-only fields
+					// remain unset.
+					if status.Convert(err).Message() == "PEER_ID_INVALID" {
+						return nil
+					}
 					c.Logger.Errorf("users.getFullUser - error: %v", err)
 					return err
 				}

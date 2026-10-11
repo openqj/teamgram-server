@@ -382,3 +382,37 @@ func TestUserStarGiftsSaveAndConvertUseOwnedLedger(t *testing.T) {
 		t.Fatalf("cross-user save = (%#v, %v), want METHOD_NOT_IMPL", result, err)
 	}
 }
+
+func TestUniqueStarGiftValueInfoReadsOwnedPostgresGift(t *testing.T) {
+	dsn := os.Getenv("APIFULL_POSTGRES_DSN")
+	if dsn == "" {
+		t.Skip("APIFULL_POSTGRES_DSN is not configured")
+	}
+	cleanupDB, err := persist.OpenPostgresDB(dsn)
+	if err != nil {
+		t.Fatalf("open cleanup connection: %v", err)
+	}
+	defer cleanupDB.Close()
+	uid := time.Now().UnixNano()
+	slug := fmt.Sprintf("value-info-%d", uid)
+	defer func() { _, _ = cleanupDB.Exec(`DELETE FROM apifull_gift WHERE to_user=$1`, uid) }()
+	if err = domain.SaveGift(uid+1, uid, slug, 37); err != nil {
+		t.Fatalf("seed gift: %v", err)
+	}
+	owned, err := domain.ListGifts(uid, false)
+	if err != nil || len(owned) != 1 || owned[0].Slug != slug {
+		t.Fatalf("seeded gifts = (%v, %v), want %q", owned, err, slug)
+	}
+	core := &ApiFullCore{MD: &metadata.RpcMetadata{UserId: uid}}
+	got, err := core.PaymentsGetUniqueStarGiftValueInfo(&mtproto.TLPaymentsGetUniqueStarGiftValueInfo{Slug: slug})
+	if err != nil {
+		t.Fatalf("value info = (%#v, %v)", got, err)
+	}
+	if got == nil || got.GetPredicateName() != mtproto.Predicate_payments_uniqueStarGiftValueInfo || got.GetCurrency() != "XTR" || got.GetValue() != 37 || got.GetInitialSaleStars() != 37 || got.GetInitialSalePrice() != 37 {
+		t.Fatalf("value info = %#v, want owned gift's Stars value", got)
+	}
+	other := &ApiFullCore{MD: &metadata.RpcMetadata{UserId: uid + 1}}
+	if got, err = other.PaymentsGetUniqueStarGiftValueInfo(&mtproto.TLPaymentsGetUniqueStarGiftValueInfo{Slug: slug}); got != nil || !errors.Is(err, mtproto.ErrMethodNotImpl) {
+		t.Fatalf("foreign value info = (%#v, %v), want METHOD_NOT_IMPL", got, err)
+	}
+}

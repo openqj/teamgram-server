@@ -45,5 +45,20 @@ func (c *FilesCore) UploadGetCdnFileHashes(in *mtproto.TLUploadGetCdnFileHashes)
 	if result == nil || len(result.GetDatas()) > 10000 {
 		return nil, mtproto.ErrCdnMethodInvalid
 	}
+	if !validCDNFileHashVector(result) {
+		return nil, mtproto.ErrCdnMethodInvalid
+	}
 	return result, nil
+}
+
+func validCDNFileHashVector(result *mtproto.Vector_FileHash) bool {
+	if result == nil || len(result.GetDatas()) > 10000 {
+		return false
+	}
+	for _, fileHash := range result.GetDatas() {
+		if fileHash == nil || fileHash.GetPredicateName() != mtproto.Predicate_fileHash || fileHash.GetOffset_INT64() < 0 || fileHash.GetLimit() <= 0 || fileHash.GetLimit() > fileHashPartSize || len(fileHash.GetHash()) != 32 {
+			return false
+		}
+	}
+	return true
 }

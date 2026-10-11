@@ -41,6 +41,11 @@ SponsoredProviderKey: ${TEAMGRAM_SPONSORED_PROVIDER_KEY:-}
 SponsoredProviderSigningKey: ${TEAMGRAM_SPONSORED_PROVIDER_SIGNING_KEY:-}
 SponsoredProviderTimeoutSeconds: 5
 
+CdnProviderEndpoint: ${TEAMGRAM_CDN_PROVIDER_ENDPOINT:-}
+CdnProviderKey: ${TEAMGRAM_CDN_PROVIDER_KEY:-}
+CdnProviderSigningKey: ${TEAMGRAM_CDN_PROVIDER_SIGNING_KEY:-}
+CdnProviderTimeoutSeconds: 5
+
 BotConnectionProviderEndpoint: ${TEAMGRAM_BOT_CONNECTION_PROVIDER_ENDPOINT:-}
 BotConnectionProviderKey: ${TEAMGRAM_BOT_CONNECTION_PROVIDER_KEY:-}
 BotConnectionProviderSigningKey: ${TEAMGRAM_BOT_CONNECTION_PROVIDER_SIGNING_KEY:-}

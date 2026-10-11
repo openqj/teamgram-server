@@ -19,6 +19,7 @@
 package core
 
 import (
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"strconv"
@@ -70,6 +71,69 @@ type historyImportPeerProviderResult struct {
 	ConfirmText string `json:"confirm_text"`
 }
 
+// parseHistoryImportHead accepts only an explicit export kind. An arbitrary
+// filename or opaque string must continue to fail closed when no import
+// authority is configured; guessing a peer type would allow an import into
+// the wrong conversation.
+func parseHistoryImportHead(head string) (historyImportParsedProviderResult, bool) {
+	var raw struct {
+		Type         string `json:"type"`
+		Kind         string `json:"kind"`
+		Title        string `json:"title"`
+		PM           *bool  `json:"pm"`
+		Private      *bool  `json:"private"`
+		Group        *bool  `json:"group"`
+		PersonalChat *bool  `json:"personal_chat"`
+		GroupChat    *bool  `json:"group_chat"`
+	}
+	if err := json.Unmarshal([]byte(head), &raw); err != nil {
+		return historyImportParsedProviderResult{}, false
+	}
+	value := strings.ToLower(strings.TrimSpace(raw.Type))
+	if value == "" {
+		value = strings.ToLower(strings.TrimSpace(raw.Kind))
+	}
+	pm, group := false, false
+	switch value {
+	case "pm", "private", "user", "personal":
+		pm = true
+	case "group", "chat", "supergroup", "channel":
+		group = true
+	}
+	for _, flag := range []*bool{raw.PM, raw.Private, raw.PersonalChat} {
+		if flag != nil {
+			pm = pm || *flag
+		}
+	}
+	for _, flag := range []*bool{raw.Group, raw.GroupChat} {
+		if flag != nil {
+			group = group || *flag
+		}
+	}
+	if pm == group {
+		return historyImportParsedProviderResult{}, false
+	}
+	return historyImportParsedProviderResult{Pm: pm, Group: group, Title: raw.Title}, true
+}
+
+func newHistoryImportID() (int64, error) {
+	var buf [8]byte
+	if _, err := rand.Read(buf[:]); err != nil {
+		return 0, err
+	}
+	id := int64(0)
+	for _, b := range buf {
+		id = (id << 8) | int64(b)
+	}
+	if id < 0 {
+		id = -id
+	}
+	if id == 0 {
+		return 0, mtproto.ErrInternalServerError
+	}
+	return id, nil
+}
+
 func loadHistoryImportMeta(uid int64) (historyImportMeta, error) {
 	var meta historyImportMeta
 	raw, err := persist.Default.Get(historyImportMetaKey(uid))
@@ -107,8 +171,16 @@ func (c *ApiFullCore) MessagesCheckHistoryImport(in *mtproto.TLMessagesCheckHist
 		return nil, mtproto.ErrInputRequestInvalid
 	}
 	var provider historyImportParsedProviderResult
-	if err := c.callBusinessProvider("messages.checkHistoryImport", map[string]any{"import_head": in.GetImportHead()}, &provider); err != nil {
-		return nil, err
+	if c.businessProviderConfigured() {
+		if err := c.callBusinessProvider("messages.checkHistoryImport", map[string]any{"import_head": in.GetImportHead()}, &provider); err != nil {
+			return nil, err
+		}
+	} else {
+		var ok bool
+		provider, ok = parseHistoryImportHead(in.GetImportHead())
+		if !ok {
+			return nil, mtproto.ErrInputRequestInvalid
+		}
 	}
 	if !provider.Pm && !provider.Group || provider.Pm && provider.Group {
 		return nil, mtproto.ErrInternalServerError
@@ -134,10 +206,17 @@ func (c *ApiFullCore) MessagesInitHistoryImport(in *mtproto.TLMessagesInitHistor
 		return nil, mtproto.ErrPeerIdInvalid
 	}
 	var provider historyImportIDProviderResult
-	if err = c.callBusinessProvider("messages.initHistoryImport", map[string]any{
-		"peer": in.GetPeer(), "file": in.GetFile(), "media_count": in.GetMediaCount(),
-	}, &provider); err != nil {
-		return nil, err
+	if c.businessProviderConfigured() {
+		if err = c.callBusinessProvider("messages.initHistoryImport", map[string]any{
+			"peer": in.GetPeer(), "file": in.GetFile(), "media_count": in.GetMediaCount(),
+		}, &provider); err != nil {
+			return nil, err
+		}
+	} else {
+		provider.ImportID, err = newHistoryImportID()
+		if err != nil {
+			return nil, err
+		}
 	}
 	if provider.ImportID <= 0 {
 		return nil, mtproto.ErrInternalServerError
@@ -266,8 +345,12 @@ func (c *ApiFullCore) MessagesStartHistoryImport(in *mtproto.TLMessagesStartHist
 		return mtproto.BoolTrue, nil
 	}
 	var provider historyImportStartProviderResult
-	if err = c.callBusinessProvider("messages.startHistoryImport", map[string]any{"peer": in.GetPeer(), "import_id": in.GetImportId()}, &provider); err != nil {
-		return nil, err
+	if c.businessProviderConfigured() {
+		if err = c.callBusinessProvider("messages.startHistoryImport", map[string]any{"peer": in.GetPeer(), "import_id": in.GetImportId()}, &provider); err != nil {
+			return nil, err
+		}
+	} else {
+		provider.Accepted = true
 	}
 	if !provider.Accepted {
 		return nil, mtproto.ErrMethodNotImpl
@@ -300,8 +383,12 @@ func (c *ApiFullCore) MessagesCheckHistoryImportPeer(in *mtproto.TLMessagesCheck
 		return nil, mtproto.ErrPeerIdInvalid
 	}
 	var provider historyImportPeerProviderResult
-	if err := c.callBusinessProvider("messages.checkHistoryImportPeer", map[string]any{"peer": in.GetPeer()}, &provider); err != nil {
-		return nil, err
+	if c.businessProviderConfigured() {
+		if err := c.callBusinessProvider("messages.checkHistoryImportPeer", map[string]any{"peer": in.GetPeer()}, &provider); err != nil {
+			return nil, err
+		}
+	} else {
+		provider.ConfirmText = "Import into this chat?"
 	}
 	if strings.TrimSpace(provider.ConfirmText) == "" || len(provider.ConfirmText) > 4096 {
 		return nil, mtproto.ErrInternalServerError

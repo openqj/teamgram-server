@@ -2,7 +2,7 @@
 
 基于 `docker-compose-env.yaml` 的环境栈，包含 PostgreSQL 18、监控、日志、消息队列和存储等组件。
 
-> PostgreSQL 18 是本项目唯一的生产关系数据库。项目尚未上线，不提供旧 MySQL 数据迁移路径。
+> PostgreSQL 18 是本项目唯一的生产关系数据库。项目尚未上线，不需要历史数据迁移。
 
 ## 组件列表
 

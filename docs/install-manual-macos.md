@@ -1,271 +1,78 @@
-# Teamgram Server — Manual Installation (macOS)
+# Teamgram Server: macOS source installation
 
-This guide describes how to install the Teamgram server and its dependencies from scratch on macOS (Intel and Apple Silicon). [Homebrew](https://brew.sh/) is recommended for managing dependencies.
+This guide is the PostgreSQL 18-only manual path for macOS development or a
+local single-node deployment. Use Docker for the complete stack.
 
-> English (primary) | [中文](./install-manual-macos-zh.md)  
-> For Docker deployment, see [install-docker.md](./install-docker.md).
+## Requirements
 
-> **Database:** New deployments use PostgreSQL 18. Run the checked-in PostgreSQL
-> migrations before starting services. The application runtime is being cut
-> over service by service; do not claim full PostgreSQL readiness until the
-> roadmap acceptance gates pass.
+- macOS 13 or newer on Intel or Apple Silicon
+- Homebrew and Go 1.25 or newer
+- PostgreSQL 18 and the `psql` client
+- Redis 7, etcd 3.5, Kafka 3.x in KRaft mode
+- MinIO (or another S3-compatible object store) and FFmpeg
 
----
+Only PostgreSQL 18 on port `5432` is supported for persistent state.
 
-## 1. Requirements
+## Install dependencies
 
-- **macOS**: 10.15 or later (11+ recommended; Apple Silicon supported)
-- **Go**: 1.25 or later
-- **PostgreSQL**: 18
-- **Redis**: 6.x
-- **Etcd**: 3.5.x
-- **Kafka**: 2.x / 3.x (with Zookeeper; Homebrew Kafka usually includes it)
-- **MinIO**: object storage
-- **Pika** (optional): install from source or release; default port 9221
-- **FFmpeg**: media processing
-
-Install Homebrew if needed:
-
-```bash
-/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-```
-
----
-
-## 2. Install Dependencies
-
-### 2.1 Install PostgreSQL 18
-
-```bash
-brew install postgresql@18
+```sh
+brew install go postgresql@18 redis etcd kafka ffmpeg
 brew services start postgresql@18
-```
-
-**Create the application role and database:**
-
-```bash
-createuser -s teamgram
-psql -d postgres -c "ALTER ROLE teamgram PASSWORD 'teamgram';"
-createdb -O teamgram teamgram
-```
-
-### 2.2 Install Redis
-
-```bash
-brew install redis
 brew services start redis
-```
-
-Defaults to `127.0.0.1:6379`.
-
-### 2.3 Install Etcd
-
-```bash
-brew install etcd
 brew services start etcd
 ```
 
-Defaults to `127.0.0.1:2379`.
+Start Kafka and MinIO using their vendor instructions. Verify PostgreSQL 18 on
+port `5432`:
 
-### 2.4 Install Kafka
-
-Kafka depends on Java; Homebrew will install OpenJDK:
-
-```bash
-brew install kafka
+```sh
+psql --version
+pg_isready -h 127.0.0.1 -p 5432
 ```
 
-**Start Zookeeper and Kafka:**
+Create the `teamgram` database and a least-privileged application role, then
+export the DSN:
 
-```bash
-# Start Zookeeper in background
-zookeeper-server-start -daemon $(brew --prefix kafka)/libexec/config/zookeeper.properties
-sleep 2
-
-# Start Kafka
-kafka-server-start -daemon $(brew --prefix kafka)/libexec/config/server.properties
+```sh
+export DATABASE_URL='postgresql://teamgram:change-me@127.0.0.1:5432/teamgram?sslmode=disable'
 ```
 
-Or use brew services if the formula supports it:
+## Apply migrations
 
-```bash
-brew services start zookeeper
-brew services start kafka
+From the repository root:
+
+```sh
+./teamgramd/deploy/postgres/check.sh
+DATABASE_URL="$DATABASE_URL" ./teamgramd/deploy/postgres/apply.sh
 ```
 
-**Check processes:**
+The runner applies `teamgramd/deploy/sql/postgres/*.sql` in lexical order,
+stores checksums in `schema_migrations`, and rejects edited migrations. SQL
+outside that directory is historical archive material and is not an install
+input.
 
-```bash
-ps aux | grep kafka | wc -l
-# About 3 processes means it's running
-```
+## Configure and run
 
-### 2.5 Install MinIO
+Set the PostgreSQL DSN for every persistent service in `teamgramd/etc/` (or
+`teamgramd/etc2/` for Docker), plus Redis, etcd, Kafka, MinIO, and FFmpeg
+endpoints. A missing or unreachable PostgreSQL DSN must stop startup.
 
-```bash
-brew install minio
-```
-
-**Start MinIO (with a data directory):**
-
-```bash
-mkdir -p /tmp/minio-data
-minio server /tmp/minio-data &
-```
-
-Or with brew services:
-
-```bash
-brew services start minio
-```
-
-- Console: http://localhost:9001  
-- Default credentials: minioadmin / minioadmin (or miniostorage, depending on version)
-
-**Create buckets** in the MinIO console:
-
-- documents  
-- encryptedfiles  
-- photos  
-- videos  
-
-### 2.6 Install Pika (optional, port 9221)
-
-Pika may not be in Homebrew. Install a macOS build from GitHub if available, or build from source:
-
-```bash
-cd /tmp
-# If a macOS binary exists, e.g.:
-# curl -L -o pika.tar.bz2 https://github.com/OpenAtomFoundation/pika/releases/download/v3.3.6/pika-darwin-x86_64-v3.3.6.tar.bz2
-# Then extract and run:
-# /tmp/pika/bin/pika -c /tmp/pika/conf/pika.conf &
-```
-
-If no macOS build is available, you can skip Pika and use Redis for SSDB in the config (see configuration section below).
-
-### 2.7 Install FFmpeg
-
-```bash
-brew install ffmpeg
-```
-
-### 2.8 Install Go
-
-```bash
-brew install go
-go version   # must be 1.21+
-```
-
-Or install from [go.dev/dl](https://go.dev/dl/).
-
----
-
-## 3. Get Source Code and Initialize Database
-
-### 3.1 Clone repository
-
-```bash
-cd ~   # or your preferred directory
-git clone https://github.com/teamgram/teamgram-server.git
-cd teamgram-server
-```
-
-### 3.2 Initialize database
-
-From the project root, apply the PostgreSQL 18 migrations:
-
-```bash
-DATABASE_URL='postgresql://teamgram:teamgram@127.0.0.1:5432/teamgram?sslmode=disable' \
-  ./teamgramd/deploy/postgres/apply.sh
-```
-
----
-
-## 4. Build Teamgram Server
-
-From the project root:
-
-```bash
+```sh
 make
+./teamgramd/bin/runall2.sh
 ```
 
-Binaries are produced in `teamgramd/bin/`.
+`gnetway` exposes MTProto over TCP `10443`/`5222` and WebSocket `11443`.
+See [service topology](service-topology.md) for internal ports and discovery.
 
----
+## Checks
 
-## 5. Edit Configuration
-
-Configuration files are under `teamgramd/etc/`. For a local macOS setup, services are usually on `127.0.0.1`. Confirm:
-
-1. **dfs.yaml**  
-   - `Minio.Endpoint`: `localhost:9000`  
-   - `Minio.AccessKeyID` / `SecretAccessKey`: match your MinIO (e.g. minioadmin / minioadmin)  
-   - `SSDB`: `127.0.0.1:9221` if using Pika, otherwise Redis `127.0.0.1:6379`
-
-2. **gnetway.yaml**  
-   - `Gnetway.Server.Addresses`: e.g. `0.0.0.0:10443`, `0.0.0.0:5222`
-
-3. **All YAMLs**  
-   - `Etcd.Hosts`: `127.0.0.1:2379`  
-   - PostgreSQL: `127.0.0.1:5432`
-   - Redis: `127.0.0.1:6379`  
-   - Kafka: `127.0.0.1:9092`
-
-The service YAMLs are migrated one service at a time. Start a service with
-PostgreSQL only after its runtime cutover is accepted in the roadmap.
-
-Example (dfs.yaml snippet):
-
-```yaml
-Minio:
-  Endpoint: localhost:9000
-  AccessKeyID: minioadmin
-  SecretAccessKey: minioadmin
-  UseSSL: false
-SSDB:
-  - Host: 127.0.0.1:6379   # Redis when Pika is not installed
+```sh
+git diff --check
+./teamgramd/deploy/postgres/check.sh
+docker compose -f docker-compose.yaml config
+docker compose -f docker-compose-env.yaml config
 ```
 
----
-
-## 6. Start Services
-
-Ensure PostgreSQL, Redis, Etcd, Kafka (and Zookeeper), and MinIO are running, then:
-
-```bash
-cd teamgramd/bin
-./runall2.sh
-```
-
-For LAN access, ensure `gnetway.yaml` listens on `0.0.0.0` and that the firewall allows ports 10443, 5222, etc.
-
----
-
-## 7. Stop Services
-
-From `teamgramd/bin`:
-
-```bash
-./killall.sh
-```
-
-To stop dependency services (as needed):
-
-```bash
-brew services stop postgresql@18
-brew services stop redis
-brew services stop etcd
-# Kafka / Zookeeper may need to be stopped manually or via brew services
-```
-
----
-
-## 8. Troubleshooting
-
-- **Apple Silicon (M1/M2/M3)**: Homebrew builds for Go, PostgreSQL, Redis, Etcd, Kafka, and MinIO support ARM; no extra setup usually needed.
-- **Kafka path**: Use `brew --prefix kafka` to see the install path; config files are under `libexec/config/`.  
-- **MinIO data dir**: For production, use a persistent directory instead of `/tmp/minio-data`.  
-- **Pika**: If there is no macOS build, omit Pika and set SSDB to Redis in the config.  
-- **Port conflicts**: If 3306, 6379, 2379, 9092, 9000, etc. are in use, change the corresponding service and Teamgram config to match.
-
-After completing these steps, the Teamgram server runs manually on macOS.
+Use focused package compilation during iteration and reserve one final
+`go build ./...` for the integration gate. See [the Chinese guide](install-manual-macos-zh.md).

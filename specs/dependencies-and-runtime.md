@@ -6,7 +6,7 @@ This document covers core dependencies, recommended versions, and the Docker sta
 
 | Component | Purpose | Recommended version |
 |-----------|---------|---------------------|
-| **PostgreSQL** | Primary data store | 18 (migration target) |
+| **PostgreSQL** | Sole production relational data store | 18 |
 | **Redis** | Cache, session, deduplication | 6.x / 7.x |
 | **etcd** | Service discovery and config | v3.5.x |
 | **Kafka** | Message and event pipeline | 3.x (KRaft, no Zookeeper) |
@@ -15,12 +15,39 @@ This document covers core dependencies, recommended versions, and the Docker sta
 
 - Create an empty `teamgram` database on PostgreSQL 18 and apply the checked-in
   migrations with `teamgramd/deploy/postgres/apply.sh` (or the
-  `postgres-migrate` service in `docker-compose-postgres.yaml`).
-- **PostgreSQL 18 is the sole production database target**. The application
-  services are being switched in slices; a service is not considered migrated
-  until its complete method set, transactions, tests, and Layer 229 probes use
-  the PostgreSQL path.
+  `postgres-migrate` service in `docker-compose-postgres.yaml`). The runner
+  verifies the server major version and records a checksum for every applied
+  migration.
+- **PostgreSQL 18 is the sole production database.** Every production service
+  must receive a non-empty PostgreSQL DSN (`Postgres.DSN` for service configs or
+  `PostgresDSN` for BFF/session configs) and must fail startup when the pool
+  cannot be created or pinged. Legacy SQL remains outside the production
+  runtime and is never a database fallback.
+- The database cutover is still subject to the roadmap acceptance gates:
+  complete method coverage, transaction and update-recovery checks, focused
+  tests, deployment checks, and Layer 229 compatibility probes. A migrated
+  schema alone is not production-readiness evidence.
 - MinIO: create buckets `documents`, `encryptedfiles`, `photos`, `videos` (auto-created by minio-mc when using the provided Docker stack).
+
+## PostgreSQL runtime contract
+
+The checked-in application configuration uses the same PostgreSQL 18 database
+for authoritative state, update logs, and delivery intent. Configure the DSN in
+each service's YAML rather than relying on an implicit database default:
+
+```yaml
+# Service configs such as biz, msg, sync, media, and authsession
+Postgres:
+  DSN: postgresql://teamgram:teamgram@127.0.0.1:5432/teamgram?sslmode=disable
+
+# BFF and session configs
+PostgresDSN: postgresql://teamgram:teamgram@127.0.0.1:5432/teamgram?sslmode=disable
+```
+
+For Docker, set `TEAMGRAM_POSTGRES_DSN`; `teamgramd/docker/entrypoint.sh`
+rejects an empty value or a non-PostgreSQL URI before starting a service. Apply
+the migration runner before launching the application so schema checks fail
+early and consistently.
 
 ## Optional: monitoring and logging
 

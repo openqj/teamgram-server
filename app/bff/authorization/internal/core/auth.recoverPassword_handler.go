@@ -20,6 +20,7 @@ package core
 
 import (
 	"errors"
+	"strings"
 
 	"github.com/teamgram/proto/mtproto"
 	userpb "github.com/teamgram/teamgram-server/app/service/biz/user/user"
@@ -57,12 +58,30 @@ func (c *AuthorizationCore) AuthRecoverPassword(in *mtproto.TLAuthRecoverPasswor
 		c.Logger.Errorf("auth.recoverPassword - code: %v", err)
 		return nil, err
 	}
-	_, err = c.svcCtx.Challenges.Consume(c.ctx, verification.VerifyRequest{
+	// Validate the replacement password before consuming the one-time code. A
+	// malformed settings payload must remain retryable with the same code.
+	recovered := st
+	if err = applyRecoveredPassword(&recovered, in.GetNewSettings()); err != nil {
+		c.Logger.Errorf("auth.recoverPassword - settings: %v", err)
+		return nil, err
+	}
+	if c.svcCtx.Dao == nil {
+		c.Logger.Errorf("auth.recoverPassword - user DAO unavailable")
+		return nil, mtproto.ErrInternalServerError
+	}
+	challengeRequest := verification.VerifyRequest{
 		Channel: verification.ChannelEmail, Purpose: challengePurposePasswordRecovery,
 		Scope:       verification.ScopeID(c.MD.GetUserId()),
 		ChallengeID: verification.PurposeID(challengePurposePasswordRecovery, verification.ScopeID(c.MD.GetUserId())),
 		Code:        in.GetCode(),
-	})
+	}
+	challenge, err := c.svcCtx.Challenges.Check(c.ctx, challengeRequest)
+	if err == nil && (challenge == nil || !strings.EqualFold(strings.TrimSpace(challenge.Subject), strings.TrimSpace(st.recoveryEmail()))) {
+		err = verification.ErrChallengeInvalid
+	}
+	if err == nil {
+		_, err = c.svcCtx.Challenges.Consume(c.ctx, challengeRequest)
+	}
 	if err != nil {
 		if errors.Is(err, verification.ErrChallengeInvalid) {
 			return nil, mtproto.ErrCodeInvalid
@@ -72,11 +91,7 @@ func (c *AuthorizationCore) AuthRecoverPassword(in *mtproto.TLAuthRecoverPasswor
 		}
 		return nil, mtproto.ErrInternalServerError
 	}
-	if err = applyRecoveredPassword(&st, in.GetNewSettings()); err != nil {
-		c.Logger.Errorf("auth.recoverPassword - settings: %v", err)
-		return nil, err
-	}
-	if err = saveAcctPasswordState(c.MD.GetUserId(), st); err != nil {
+	if err = saveAcctPasswordState(c.MD.GetUserId(), recovered); err != nil {
 		c.Logger.Errorf("auth.recoverPassword - save: %v", err)
 		return nil, err
 	}

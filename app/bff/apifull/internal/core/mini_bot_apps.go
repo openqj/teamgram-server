@@ -55,6 +55,33 @@ func miniBotID(input *mtproto.InputUser) (int64, error) {
 	return input.GetUserId(), nil
 }
 
+// validateProviderBotInputUser checks the wire shape before a request reaches
+// an external business provider. Tests and a few older clients leave the
+// generated predicate marker empty, so the marker is only rejected when it is
+// present and names a different constructor.
+func validateProviderBotInputUser(input *mtproto.InputUser) error {
+	if input == nil || input.GetUserId() <= 0 || input.GetAccessHash() == 0 {
+		return mtproto.ErrUserIdInvalid
+	}
+	if predicate := input.GetPredicateName(); predicate != "" && predicate != mtproto.Predicate_inputUser {
+		return mtproto.ErrInputConstructorInvalid
+	}
+	return nil
+}
+
+func validateInputBotInlineMessageIDInput(input *mtproto.InputBotInlineMessageID) error {
+	if input == nil || input.GetDcId() <= 0 || input.GetAccessHash() == 0 ||
+		(input.GetId_INT64() == 0 && input.GetId_INT32() == 0) {
+		return mtproto.ErrInputRequestInvalid
+	}
+	switch predicate := input.GetPredicateName(); predicate {
+	case "", mtproto.Predicate_inputBotInlineMessageID, mtproto.Predicate_inputBotInlineMessageID64:
+		return nil
+	default:
+		return mtproto.ErrInputConstructorInvalid
+	}
+}
+
 func miniUserID(caller int64, input *mtproto.InputUser) (int64, error) {
 	if input == nil {
 		return 0, mtproto.ErrInputRequestInvalid
@@ -388,6 +415,9 @@ func (c *ApiFullCore) MessagesSendWebViewData(in *mtproto.TLMessagesSendWebViewD
 	}
 	if in == nil || in.GetBot() == nil || in.GetRandomId() == 0 || in.GetButtonText() == "" || len(in.GetData()) > 4096 {
 		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if err := validateProviderBotInputUser(in.GetBot()); err != nil {
+		return nil, err
 	}
 	result := new(mtproto.Updates)
 	if err := c.callBusinessProvider("messages.sendWebViewData", map[string]any{

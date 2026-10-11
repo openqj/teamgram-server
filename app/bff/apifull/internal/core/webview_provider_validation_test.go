@@ -6,6 +6,7 @@ import (
 
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/proto/mtproto/rpc/metadata"
+	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
 func TestWebViewProviderRejectsNonCanonicalUpdates(t *testing.T) {
@@ -20,6 +21,32 @@ func TestWebViewProviderRejectsNonCanonicalUpdates(t *testing.T) {
 	})
 	if result != nil || !errors.Is(err, mtproto.ErrInternalServerError) {
 		t.Fatalf("non-canonical updates = (%v, %v), want internal error", result, err)
+	}
+}
+
+func TestWebViewProviderRejectsMalformedBotBeforeProvider(t *testing.T) {
+	core := newBusinessProviderGapCore(t, "messages.sendWebViewData", map[string]any{
+		"predicate_name": "updates", "date": 1,
+	})
+	result, err := core.MessagesSendWebViewData(&mtproto.TLMessagesSendWebViewData{
+		Bot:        &mtproto.InputUser{UserId: 7},
+		RandomId:   1,
+		ButtonText: "Open",
+		Data:       "payload",
+	})
+	if result != nil || !errors.Is(err, mtproto.ErrUserIdInvalid) {
+		t.Fatalf("malformed bot = (%v, %v), want USER_ID_INVALID", result, err)
+	}
+}
+
+func TestInlineEditRejectsMalformedMessageIDBeforeProvider(t *testing.T) {
+	core := newBusinessProviderGapCore(t, "messages.editInlineBotMessage", map[string]any{"value": true})
+	result, err := core.MessagesEditInlineBotMessage(&mtproto.TLMessagesEditInlineBotMessage{
+		Id:      &mtproto.InputBotInlineMessageID{DcId: 2, AccessHash: 9},
+		Message: wrapperspb.String("edited"),
+	})
+	if result != nil || !errors.Is(err, mtproto.ErrInputRequestInvalid) {
+		t.Fatalf("malformed inline message id = (%v, %v), want INPUT_REQUEST_INVALID", result, err)
 	}
 }
 

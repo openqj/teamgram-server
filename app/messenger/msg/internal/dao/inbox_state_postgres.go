@@ -44,11 +44,7 @@ func (d *Dao) EditInboxMessageState(ctx context.Context, in *inbox.TLInboxEditMe
 		if err != nil || row == nil {
 			return nil, err
 		}
-		peerID := in.PeerId
-		if in.PeerType == mtproto.PEER_USER {
-			peerID = in.FromId
-		}
-		if row.SenderUserId != in.FromId || row.PeerType != in.PeerType || row.PeerId != peerID {
+		if row.SenderUserId != in.FromId || row.PeerType != in.PeerType || row.PeerId != in.PeerId {
 			return nil, mtproto.ErrPeerIdInvalid
 		}
 		message := new(mtproto.Message)

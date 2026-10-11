@@ -113,10 +113,24 @@ func (c *fullUserErrorChatClient) ChatGetUsersChatIdList(context.Context, *chatp
 
 type fullUserErrorDialogClient struct {
 	dialogclient.DialogClient
+	err error
 }
 
-func (*fullUserErrorDialogClient) DialogGetDialogById(context.Context, *dialogpb.TLDialogGetDialogById) (*dialogpb.DialogExt, error) {
-	return nil, nil
+func (c *fullUserErrorDialogClient) DialogGetDialogById(context.Context, *dialogpb.TLDialogGetDialogById) (*dialogpb.DialogExt, error) {
+	return nil, c.err
+}
+
+func TestUsersGetFullUserAllowsMissingDialog(t *testing.T) {
+	client := &fullUserProfilePrivacyClient{allowed: map[int32]bool{}}
+	core := newFullUserProfilePrivacyCore(client)
+	core.svcCtx.Dao.DialogClient = &fullUserErrorDialogClient{err: mtproto.ErrPeerIdInvalid}
+
+	got, err := core.UsersGetFullUser(&mtproto.TLUsersGetFullUser{
+		Id: mtproto.MakeTLInputUser(&mtproto.InputUser{UserId: 2, AccessHash: 200}).To_InputUser(),
+	})
+	if err != nil || got == nil || got.GetFullUser() == nil {
+		t.Fatalf("UsersGetFullUser() = (%v, %v), want full user without dialog", got, err)
+	}
 }
 
 func TestUsersGetFullUserPropagatesPeerSettingsError(t *testing.T) {

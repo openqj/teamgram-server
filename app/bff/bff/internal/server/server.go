@@ -158,6 +158,28 @@ func applyProviderEnvironment(c *config.Config) error {
 		name   string
 		target *string
 	}{
+		{name: "TEAMGRAM_CDN_PROVIDER_ENDPOINT", target: &c.CdnProviderEndpoint},
+		{name: "TEAMGRAM_CDN_PROVIDER_KEY", target: &c.CdnProviderKey},
+		{name: "TEAMGRAM_CDN_PROVIDER_SIGNING_KEY", target: &c.CdnProviderSigningKey},
+	} {
+		if value, ok := os.LookupEnv(override.name); ok {
+			if override.name == "TEAMGRAM_CDN_PROVIDER_ENDPOINT" {
+				value = strings.TrimSpace(value)
+			}
+			*override.target = value
+		}
+	}
+	if value, ok := os.LookupEnv("TEAMGRAM_CDN_PROVIDER_TIMEOUT_SECONDS"); ok {
+		timeout, err := strconv.Atoi(strings.TrimSpace(value))
+		if err != nil || timeout < 0 || timeout > 300 {
+			return errors.New("TEAMGRAM_CDN_PROVIDER_TIMEOUT_SECONDS must be an integer from 0 to 300")
+		}
+		c.CdnProviderTimeoutSeconds = timeout
+	}
+	for _, override := range []struct {
+		name   string
+		target *string
+	}{
 		{name: "TEAMGRAM_SPONSORED_PROVIDER_ENDPOINT", target: &c.SponsoredProviderEndpoint},
 		{name: "TEAMGRAM_SPONSORED_PROVIDER_KEY", target: &c.SponsoredProviderKey},
 		{name: "TEAMGRAM_SPONSORED_PROVIDER_SIGNING_KEY", target: &c.SponsoredProviderSigningKey},
@@ -517,11 +539,16 @@ func (s *Server) Initialize() error {
 		mtproto.RegisterRPCFilesServer(
 			grpcServer,
 			files_helper.New(files_helper.Config{
-				RpcServerConf: c.RpcServerConf,
-				DcId:          c.DcId,
-				DfsClient:     c.DfsClient,
-				UserClient:    c.BizServiceClient,
-				MediaClient:   c.MediaClient,
+				RpcServerConf:             c.RpcServerConf,
+				PostgresDSN:               c.PostgresDSN,
+				DcId:                      c.DcId,
+				CdnProviderEndpoint:       c.CdnProviderEndpoint,
+				CdnProviderKey:            c.CdnProviderKey,
+				CdnProviderSigningKey:     c.CdnProviderSigningKey,
+				CdnProviderTimeoutSeconds: c.CdnProviderTimeoutSeconds,
+				DfsClient:                 c.DfsClient,
+				UserClient:                c.BizServiceClient,
+				MediaClient:               c.MediaClient,
 			}, nil, nil))
 
 		// passport_helper

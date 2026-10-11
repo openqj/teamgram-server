@@ -32,7 +32,7 @@
 
 | 组件 | 用途 |
 |------|------|
-| [PostgreSQL](https://www.postgresql.org/) 18 | 主数据存储目标（迁移中） |
+| [PostgreSQL](https://www.postgresql.org/) 18 | 唯一生产关系数据库；通过 `teamgramd/deploy/postgres` 迁移 |
 | [Redis](https://redis.io/) | 缓存、会话、去重 |
 | [etcd](https://etcd.io/) | 服务发现与配置 |
 | [Kafka](https://kafka.apache.org/) | 消息与事件管道 |
@@ -41,12 +41,8 @@
 
 版本建议与可选监控栈详见 [依赖与运行环境（specs）](specs/dependencies-and-runtime.md)。
 
-**无 Docker 时的安装文档：**
-
-- [手动安装（Linux）](docs/install-manual-linux-zh.md)
-- [手动安装（macOS）](docs/install-manual-macos-zh.md)
-
-**Docker 部署：** [install-docker.md](docs/install-docker.md)（docker-compose 完整栈）。
+**Docker 部署：** 使用仓库内的 `docker-compose-env.yaml` 与
+`docker-compose.yaml`（完整命令见下方）。
 
 **一键环境（Docker）：** 使用 [docker-compose-env.yaml](docker-compose-env.yaml)，详见 [README-env-cn.md](README-env-cn.md) / [README-env-en.md](README-env-en.md)。
 
@@ -59,13 +55,15 @@
 - **[手动安装（Linux）](docs/install-manual-linux-zh.md)** — CentOS、Fedora、Ubuntu/Debian
 - **[手动安装（macOS）](docs/install-manual-macos-zh.md)** — Intel 与 Apple Silicon
 
-需要 Go 1.25+。新部署使用 PostgreSQL 18 和仓库内迁移 runner；各服务运行时按切片完成接线，当前边界见路线图。
+需要 Go 1.25+。新部署使用 PostgreSQL 18 和仓库内迁移 runner；Layer 229
+覆盖不完整的服务必须 fail-closed，当前验收边界见路线图与方法台账。
 
 ---
 
 ## Docker 安装
 
-使用 Docker 一键运行完整栈。**无需手动初始化数据**：依赖栈首次启动时会自动初始化数据库（挂载 SQL）和 MinIO 桶（通过 `minio-mc`）。
+使用 Docker 一键运行完整栈。依赖栈首次启动时会运行 PostgreSQL 迁移
+runner，并通过 `minio-mc` 初始化 MinIO 桶。
 
 ### 1. 克隆仓库
 

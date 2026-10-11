@@ -2,7 +2,7 @@
 
 A self-contained environment stack based on `docker-compose-env.yaml`. It includes PostgreSQL 18, monitoring, logging, message queue, storage, and related components.
 
-> PostgreSQL 18 is the sole production relational database. The project has not launched, so no legacy MySQL data migration path is provided.
+> PostgreSQL 18 is the sole production relational database. The project has not launched, so no historical data migration is required.
 
 ## Components
 

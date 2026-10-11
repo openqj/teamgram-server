@@ -33,7 +33,7 @@
 
 ### 依赖环境
 
-- PostgreSQL 18 是唯一生产数据库。Teamgram 的 MySQL 生成 DAO 只允许留在迁移边界和隔离历史测试中；生产配置不得填写 MySQL DSN。另需 Redis、etcd、Kafka、MinIO（及可选 FFmpeg）。可选：`docker compose -f docker-compose-env.yaml up -d`。
+- PostgreSQL 18 是唯一生产数据库。历史生成 DAO 不属于生产运行时；生产配置只接受 PostgreSQL DSN。另需 Redis、etcd、Kafka、MinIO（及可选 FFmpeg）。可选：`docker compose -f docker-compose-env.yaml up -d`。
 - **数据库**：创建库 `teamgram`，然后使用 PostgreSQL 18 迁移 runner：
   `DATABASE_URL='postgresql://teamgram:teamgram@127.0.0.1:5432/teamgram?sslmode=disable' ./teamgramd/deploy/postgres/apply.sh`。
   `teamgramd/deploy/sql/` 根目录下的 SQL 仅是历史 Teamgram schema 归档，不是部署输入。

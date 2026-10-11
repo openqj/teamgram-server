@@ -73,6 +73,28 @@ func loadChannelMessageViews(channelID int64) (msgViewStore, error) {
 	return stored, nil
 }
 
+// loadChannelMessageReactions reads the shared reaction index used by the
+// reactions RPCs. Unlike the per-user recent-reaction list, the channel key
+// is conversation-scoped, so every member sees the same durable rows. Keeping
+// this read beside the message-view aggregation makes statistics reflect the
+// same PostgreSQL-backed state that messages.getMessagesReactions exposes.
+func loadChannelMessageReactions(channelID int64) (map[int32]int64, error) {
+	counts := make(map[int32]int64)
+	if channelID <= 0 {
+		return counts, nil
+	}
+	rows, err := loadSharedReactItems(0, &mtproto.InputPeer{ChannelId: channelID})
+	if err != nil {
+		return nil, err
+	}
+	for _, row := range rows {
+		if row.MsgId > 0 {
+			counts[row.MsgId]++
+		}
+	}
+	return counts, nil
+}
+
 func storedStoryViews(userID int64, id int32) (int64, error) {
 	stories, err := loadUserStories(userID)
 	if err != nil || stories == nil {
@@ -100,6 +122,18 @@ func storedStoryViews(userID int64, id int32) (int64, error) {
 			return int64(len(stories.Viewers[id])), nil
 		}
 		return one, nil
+	}
+	return total, nil
+}
+
+func storedStoryReactions(userID int64) (int64, error) {
+	stories, err := loadUserStories(userID)
+	if err != nil || stories == nil {
+		return 0, err
+	}
+	var total int64
+	for _, reactions := range stories.Reactions {
+		total += int64(len(reactions))
 	}
 	return total, nil
 }
@@ -293,7 +327,19 @@ func (c *ApiFullCore) StatsGetBroadcastStats(in *mtproto.TLStatsGetBroadcastStat
 	if err != nil {
 		return nil, err
 	}
+	reactions, err := loadChannelMessageReactions(channelID)
+	if err != nil {
+		return nil, err
+	}
+	var totalReactions int64
+	for _, count := range reactions {
+		totalReactions += count
+	}
 	storyViews, err := storedStoryViews(uid, 0)
+	if err != nil {
+		return nil, err
+	}
+	storyReactions, err := storedStoryReactions(uid)
 	if err != nil {
 		return nil, err
 	}
@@ -310,9 +356,11 @@ func (c *ApiFullCore) StatsGetBroadcastStats(in *mtproto.TLStatsGetBroadcastStat
 	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
 	for _, id := range ids {
 		n := views.Msgs[id]
+		r := reactions[id]
 		posts = append(posts, mtproto.MakeTLPostInteractionCountersMessage(&mtproto.PostInteractionCounters{
-			MsgId: id,
-			Views: int32(n),
+			MsgId:     id,
+			Views:     int32(n),
+			Reactions: int32(r),
 		}).To_PostInteractionCounters())
 		messages = append(messages, mtproto.MakeTLMessageInteractionCounters(&mtproto.MessageInteractionCounters{
 			MsgId: id,
@@ -324,7 +372,7 @@ func (c *ApiFullCore) StatsGetBroadcastStats(in *mtproto.TLStatsGetBroadcastStat
 		Followers:                    absStat(members),
 		ViewsPerPost:                 absStat(views.Total),
 		SharesPerPost:                zeroStat(),
-		ReactionsPerPost:             zeroStat(),
+		ReactionsPerPost:             absStat(totalReactions),
 		ViewsPerStory:                absStat(storyViews),
 		SharesPerStory:               zeroStat(),
 		ReactionsPerStory:            zeroStat(),
@@ -338,9 +386,9 @@ func (c *ApiFullCore) StatsGetBroadcastStats(in *mtproto.TLStatsGetBroadcastStat
 		ViewsBySourceGraph:           countGraph(views.Total),
 		NewFollowersBySourceGraph:    countGraph(members),
 		LanguagesGraph:               countGraph(0),
-		ReactionsByEmotionGraph:      countGraph(0),
+		ReactionsByEmotionGraph:      countGraph(totalReactions),
 		StoryInteractionsGraph:       countGraph(storyViews),
-		StoryReactionsByEmotionGraph: countGraph(0),
+		StoryReactionsByEmotionGraph: countGraph(storyReactions),
 		RecentPostsInteractions:      posts,
 		RecentMessageInteractions:    messages,
 	}
@@ -481,9 +529,13 @@ func (c *ApiFullCore) StatsGetMessageStats(in *mtproto.TLStatsGetMessageStats) (
 	if !ok {
 		return nil, mtproto.ErrMessageIdInvalid
 	}
+	reactions, err := loadChannelMessageReactions(channel.ID)
+	if err != nil {
+		return nil, err
+	}
 	out := &mtproto.Stats_MessageStats{
 		ViewsGraph:              countGraph(int64(views)),
-		ReactionsByEmotionGraph: countGraph(0),
+		ReactionsByEmotionGraph: countGraph(reactions[in.GetMsgId()]),
 	}
 	return mtproto.MakeTLStatsMessageStats(out).To_Stats_MessageStats(), nil
 }

@@ -32,7 +32,7 @@ Unofficial open-source [MTProto](https://core.telegram.org/mtproto) server imple
 
 | Component | Purpose |
 |-----------|---------|
-| [PostgreSQL](https://www.postgresql.org/) 18 | Target primary data store (migration in progress) |
+| [PostgreSQL](https://www.postgresql.org/) 18 | Sole production relational database; migrations run from `teamgramd/deploy/postgres` |
 | [Redis](https://redis.io/) | Cache, session, deduplication |
 | [etcd](https://etcd.io/) | Service discovery & config |
 | [Kafka](https://kafka.apache.org/) | Message & event pipeline |
@@ -51,14 +51,15 @@ For running the server from source (Go build), follow the step-by-step guides:
 - **[Manual installation (macOS)](docs/install-manual-macos.md)** — Intel and Apple Silicon
 
 Requires Go 1.25+. New deployments use PostgreSQL 18 and the checked-in
-PostgreSQL migration runner. Service runtime wiring is being accepted in
-slices; see the roadmap for the current boundary.
+PostgreSQL migration runner. Services with incomplete Layer 229 coverage must
+fail closed; see the roadmap and method ledger for current acceptance status.
 
 ---
 
 ## Docker installation
 
-For running the full stack with Docker. **No manual data initialization:** the dependency stack initializes the database (via mounted SQL) and MinIO buckets (via `minio-mc`) on first start.
+For running the full stack with Docker. The PostgreSQL migration runner and
+MinIO bucket initializer run as dependency jobs on first start.
 
 ### 1. Clone
 

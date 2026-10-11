@@ -36,7 +36,6 @@ Client → gnetway (MTProto) → session → BFF → biz / msg / dfs / media / s
 | Component | Purpose |
 |-----------|---------|
 | **PostgreSQL 18** | Sole production business data store for the independent implementation; initialize it on every new deployment |
-| **MySQL** | Kept only behind the Teamgram migration boundary and isolated legacy tests; never a production runtime |
 | **Redis** | Cache, session, deduplication |
 | **Kafka** | Message and event pipeline (msg, sync, inbox) |
 | **MinIO** | Object storage: buckets `documents`, `encryptedfiles`, `photos`, `videos` |
@@ -53,7 +52,7 @@ Evolve the backend incrementally and replace modules where justified; a rewrite 
 
 The goal is a messaging experience close to Telegram under a defined user geography, network, and workload. Telegram's complete backend is not open source; matching its global capacity also requires network deployment, storage scaling, and sustained operations. Database choice, handler count, or service count alone cannot establish equivalent performance.
 
-The sections above describe the existing topology. The following logical responsibilities and acceptance targets define the PostgreSQL-only production path. A service whose port is not accepted must fail startup instead of silently falling back to MySQL.
+The sections above describe the existing topology. The following logical responsibilities and acceptance targets define the PostgreSQL-only production path. A service whose port is not accepted must fail startup instead of silently selecting an alternate relational backend.
 
 ## Target logical architecture and lightweight deployment
 

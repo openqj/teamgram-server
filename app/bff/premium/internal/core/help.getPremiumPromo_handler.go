@@ -19,7 +19,10 @@
 package core
 
 import (
+	"context"
+
 	"github.com/teamgram/proto/mtproto"
+	sharedpersist "github.com/teamgram/teamgram-server/app/bff/apifull/persist"
 )
 
 // HelpGetPremiumPromo
@@ -31,6 +34,22 @@ func (c *PremiumCore) HelpGetPremiumPromo(in *mtproto.TLHelpGetPremiumPromo) (*m
 	}
 	if in == nil {
 		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if !premiumPaymentProviderConfigured(c) && sharedpersist.PostgresEnabled() {
+		ctx := c.ctx
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		promo, found, loadErr := sharedpersist.LoadPremiumPromo(ctx)
+		if loadErr != nil {
+			return nil, mtproto.ErrInternalServerError
+		}
+		if found {
+			if !normalizePremiumPromo(promo) {
+				return nil, mtproto.ErrPaymentProviderInvalid
+			}
+			return promo, nil
+		}
 	}
 	var result premiumPromoProviderResult
 	if err = c.callPaymentProvider("help.getPremiumPromo", map[string]any{"user_id": uid}, &result); err != nil {

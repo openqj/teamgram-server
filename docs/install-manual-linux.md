@@ -1,341 +1,75 @@
-# Teamgram Server — Manual Installation (Linux)
+# Teamgram Server: Linux source installation
 
-This guide describes how to install the Teamgram server and its dependencies from scratch on Linux. It applies to CentOS 7/9, Fedora, Ubuntu/Debian, and similar distributions. Use the package manager commands that match your distribution.
+This guide is the PostgreSQL 18-only manual path for a development or local
+single-node deployment. Docker is recommended for the complete dependency
+stack.
 
-> English (primary) | [中文](./install-manual-linux-zh.md)  
-> For Docker deployment, see [install-docker.md](./install-docker.md).
+## Requirements
 
-> **Database:** New deployments use PostgreSQL 18. Run the checked-in PostgreSQL
-> migrations before starting services. The application runtime is being cut
-> over service by service; do not claim full PostgreSQL readiness until the
-> roadmap acceptance gates pass.
+- Linux with `systemd` and `curl`
+- Go 1.25 or newer
+- PostgreSQL 18 and the `psql` client
+- Redis 7, etcd 3.5, Kafka 3.x in KRaft mode
+- MinIO (or another S3-compatible object store) and FFmpeg
 
----
+Only PostgreSQL 18 on port `5432` is supported for persistent state.
 
-## 1. Requirements
+## Install dependencies
 
-- **Go**: 1.25 or later (for building teamgram-server)
-- **PostgreSQL**: 18
-- **Redis**: 6.x
-- **Etcd**: 3.5.x
-- **Kafka**: 2.x / 3.x (with Zookeeper)
-- **MinIO**: object storage
-- **Pika** (optional): default port 9221; can replace some Redis usage
-- **FFmpeg**: media processing
+Use your distribution package manager to install the required tools and enable
+PostgreSQL, Redis, etcd, Kafka, MinIO, and FFmpeg with `systemctl`. Verify that
+PostgreSQL reports major version 18 and listens on `5432`:
 
-Run the following steps as root or with sudo.
-
----
-
-## 2. Install Dependencies
-
-### 2.1 Install DNF (CentOS 7 only)
-
-CentOS 7 uses yum by default. You can install dnf for consistency with the rest of this guide:
-
-```bash
-yum install epel-release -y
-yum install dnf -y
-dnf --version
+```sh
+psql --version
+pg_isready -h 127.0.0.1 -p 5432
 ```
 
-### 2.2 Install PostgreSQL 18
+Create the `teamgram` database and an application role through PostgreSQL's
+normal administration workflow. Do not use a superuser for the application
+DSN:
 
-**CentOS 9 / Fedora:**
-
-```bash
-dnf install postgresql18-server postgresql18 -y
-postgresql-18-setup --initdb
-systemctl enable --now postgresql-18
+```sh
+export DATABASE_URL='postgresql://teamgram:change-me@127.0.0.1:5432/teamgram?sslmode=disable'
 ```
 
-**Ubuntu/Debian:**
+## Apply migrations
 
-```bash
-apt update
-apt install postgresql-18 postgresql-client-18 -y
-systemctl enable --now postgresql
+From the repository root:
+
+```sh
+./teamgramd/deploy/postgres/check.sh
+DATABASE_URL="$DATABASE_URL" ./teamgramd/deploy/postgres/apply.sh
 ```
 
-**Create the application role and database:**
+The runner applies `teamgramd/deploy/sql/postgres/*.sql` in lexical order,
+records checksums in `schema_migrations`, and refuses edited migrations. SQL
+outside that directory is historical archive material and is not an install
+input.
 
-```bash
-sudo -u postgres psql -c "CREATE USER teamgram WITH PASSWORD 'teamgram';"
-sudo -u postgres psql -c "CREATE DATABASE teamgram OWNER teamgram;"
-```
+## Configure and run
 
-### 2.3 Install Redis
+Set the PostgreSQL DSN for each persistent service in `teamgramd/etc/` (or the
+Docker-oriented files in `teamgramd/etc2/`). Configure Redis, etcd, Kafka,
+MinIO, and FFmpeg endpoints as well. A missing or unreachable PostgreSQL DSN
+must stop startup.
 
-**DNF (CentOS/Fedora):**
-
-```bash
-dnf install redis -y
-systemctl enable --now redis
-```
-
-**APT (Ubuntu/Debian):**
-
-```bash
-apt install redis-server -y
-systemctl enable --now redis-server
-```
-
-### 2.4 Install Etcd
-
-Install Etcd from the official release (distribution-agnostic):
-
-```bash
-ETCD_VER=v3.5.0
-GOOGLE_URL=https://storage.googleapis.com/etcd
-GITHUB_URL=https://github.com/etcd-io/etcd/releases/download
-DOWNLOAD_URL=${GOOGLE_URL}
-
-mkdir -p /tmp/etcd-download-test
-curl -L ${DOWNLOAD_URL}/${ETCD_VER}/etcd-${ETCD_VER}-linux-amd64.tar.gz -o /tmp/etcd-${ETCD_VER}-linux-amd64.tar.gz
-tar xzvf /tmp/etcd-${ETCD_VER}-linux-amd64.tar.gz -C /tmp/etcd-download-test --strip-components=1
-rm -f /tmp/etcd-${ETCD_VER}-linux-amd64.tar.gz
-
-# Verify
-/tmp/etcd-download-test/etcd --version
-/tmp/etcd-download-test/etcdctl version
-```
-
-**Start Etcd (foreground or background):**
-
-```bash
-# Run in background
-/tmp/etcd-download-test/etcd &
-```
-
-For long-term use, copy the binaries to `/usr/local/bin` and configure a systemd service.
-
-### 2.5 Install Apache Kafka
-
-Install Java first, then Kafka (Kafka bundles Zookeeper).
-
-**Install Java:**
-
-```bash
-# CentOS/Fedora
-dnf install java-21-openjdk -y
-# or
-dnf install java -y
-
-# Ubuntu/Debian
-apt install openjdk-17-jdk -y
-```
-
-**Install and start Kafka:**
-
-```bash
-cd /tmp
-# Example for 3.2.0; get the latest from https://kafka.apache.org/downloads
-wget https://dlcdn.apache.org/kafka/3.2.0/kafka_2.12-3.2.0.tgz
-tar -xzf kafka_2.12-3.2.0.tgz
-cd kafka_2.12-3.2.0
-
-# Start Zookeeper
-bin/zookeeper-server-start.sh -daemon config/zookeeper.properties
-sleep 2
-
-# Start Kafka
-export KAFKA_HEAP_OPTS="-Xmx1G -Xms1G"
-bin/kafka-server-start.sh -daemon config/server.properties
-```
-
-**Check processes:**
-
-```bash
-ps aux | grep kafka | wc -l
-# A count of 3 is normal; otherwise run again:
-# bin/kafka-server-start.sh -daemon config/server.properties
-```
-
-### 2.6 Install MinIO
-
-```bash
-cd /tmp
-wget https://dl.min.io/server/minio/release/linux-amd64/minio
-chmod +x minio
-./minio server /data &
-```
-
-- Console: `http://<IP>:9001` (or the port shown in the terminal)
-- Default credentials: RootUser: minioadmin, RootPass: minioadmin (or miniostorage, depending on version)
-
-**Create buckets (via MinIO console or mc CLI):**
-
-- documents  
-- encryptedfiles  
-- photos  
-- videos  
-
-If using a firewall, open the MinIO ports, for example:
-
-```bash
-firewall-cmd --zone=public --permanent --add-port=9000/tcp
-firewall-cmd --zone=public --permanent --add-port=9001/tcp
-firewall-cmd --reload
-```
-
-### 2.7 Install Pika (optional, default port 9221)
-
-```bash
-cd /tmp
-wget https://github.com/OpenAtomFoundation/pika/releases/download/v3.3.6/pika-linux-x86_64-v3.3.6.tar.bz2
-tar -xf pika-linux-x86_64-v3.3.6.tar.bz2
-# Extracted dir may be named output; rename to pika if needed
-mv output pika 2>/dev/null || true
-/tmp/pika/bin/pika -c /tmp/pika/conf/pika.conf &
-```
-
-### 2.8 Install FFmpeg
-
-```bash
-cd /tmp
-wget https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz
-xz -d ffmpeg-release-amd64-static.tar.xz
-tar xf ffmpeg-release-amd64-static.tar
-cd ffmpeg-*-amd64-static
-cp ff* /usr/local/bin/
-```
-
-Or use the package manager (may be an older version):
-
-```bash
-# CentOS/Fedora
-dnf install ffmpeg -y
-
-# Ubuntu/Debian
-apt install ffmpeg -y
-```
-
----
-
-## 3. Get Source Code and Initialize Database
-
-### 3.1 Clone repository
-
-```bash
-git clone https://github.com/teamgram/teamgram-server.git
-cd teamgram-server
-```
-
-### 3.2 Initialize database
-
-From the project root, apply the PostgreSQL 18 migrations:
-
-```bash
-# Create database (skip if already created)
-DATABASE_URL='postgresql://teamgram:teamgram@127.0.0.1:5432/teamgram?sslmode=disable' \
-  ./teamgramd/deploy/postgres/apply.sh
-```
-
----
-
-## 4. Build Teamgram Server
-
-### 4.1 Install Go
-
-**DNF:**
-
-```bash
-dnf install go -y
-```
-
-**APT:**
-
-```bash
-apt install golang-go -y
-```
-
-Or install Go 1.25+ from [go.dev/dl](https://go.dev/dl/).
-
-### 4.2 Build
-
-From the project root:
-
-```bash
+```sh
 make
+./teamgramd/bin/runall2.sh
 ```
 
-Binaries are produced in `teamgramd/bin/` (idgen, status, authsession, dfs, media, biz, msg, sync, bff, session, gnetway, etc.).
+`gnetway` exposes MTProto over TCP `10443`/`5222` and WebSocket `11443`.
+Internal ports and discovery keys are in [service topology](service-topology.md).
 
----
+## Checks
 
-## 5. Edit Configuration
-
-Configuration files are under `teamgramd/etc/`. Set addresses to **127.0.0.1** or your actual IP/ports so they match PostgreSQL, Redis, Etcd, Kafka, MinIO, and Pika.
-The checked-in service YAMLs are migrated one service at a time; only start a
-service with PostgreSQL after its runtime cutover is listed as accepted in the
-roadmap.
-
-**Check in particular:**
-
-1. **dfs.yaml**  
-   - `Minio`: Endpoint, AccessKeyID, SecretAccessKey (must match your MinIO setup)  
-   - `SSDB`: use `127.0.0.1:9221` if using Pika, otherwise Redis `127.0.0.1:6379`
-
-2. **gnetway.yaml**  
-   - `Gnetway.Server.Addresses`: MTProto ports, e.g. `0.0.0.0:10443`, `0.0.0.0:5222`
-
-3. **All service YAMLs**  
-   - `Etcd.Hosts`: `127.0.0.1:2379`  
-   - `Postgres.DSN`: `postgres://teamgram:teamgram@127.0.0.1:5432/teamgram?sslmode=disable`
-   - `Cache` / `Redis`: `127.0.0.1:6379`  
-   - Kafka broker address: `127.0.0.1:9092`
-
-Example (dfs.yaml snippet):
-
-```yaml
-Minio:
-  Endpoint: localhost:9000
-  AccessKeyID: minioadmin
-  SecretAccessKey: miniostorage
-  UseSSL: false
-SSDB:
-  - Host: 127.0.0.1:9221   # when using Pika
-  # - Host: 127.0.0.1:6379 # when using Redis
+```sh
+git diff --check
+./teamgramd/deploy/postgres/check.sh
+docker compose -f docker-compose.yaml config
+docker compose -f docker-compose-env.yaml config
 ```
 
----
-
-## 6. Start Services
-
-Ensure PostgreSQL, Redis, Etcd, Kafka (and Zookeeper), MinIO (and optionally Pika) are running, then:
-
-```bash
-cd teamgramd/bin
-./runall2.sh
-```
-
-To allow external access, open the gateway ports in the firewall, for example:
-
-```bash
-firewall-cmd --zone=public --permanent --add-port=10443/tcp
-firewall-cmd --zone=public --permanent --add-port=5222/tcp
-firewall-cmd --reload
-```
-
----
-
-## 7. Stop Services
-
-From `teamgramd/bin`:
-
-```bash
-./killall.sh
-```
-
----
-
-## 8. Troubleshooting
-
-- **CentOS 7 firewall**: Open required ports for MinIO etc., or temporarily run `systemctl stop firewalld` to debug.
-- **Kafka process count**: `ps aux | grep kafka | wc -l` should be 3 when Zookeeper and Kafka are running.
-- **Pika extract dir**: If the archive does not extract to a directory named `pika`, rename it or adjust the start command.
-- **SQL path**: Apply PostgreSQL 18 migrations with
-  `./teamgramd/deploy/postgres/apply.sh`; the files directly under
-  `teamgramd/deploy/sql/` are a historical archive and are not deployment inputs.
-
-After completing these steps, the Teamgram server runs manually on Linux.
+Use focused package compilation during iteration and reserve one final
+`go build ./...` for the integration gate. See [the Chinese guide](install-manual-linux-zh.md).

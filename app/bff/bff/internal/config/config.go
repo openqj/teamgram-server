@@ -76,6 +76,10 @@ type Config struct {
 	UserChannelProfilesProviderKey            string                          `json:",optional"`
 	UserChannelProfilesProviderSigningKey     string                          `json:",optional"`
 	UserChannelProfilesProviderTimeoutSeconds int                             `json:",optional"`
+	CdnProviderEndpoint                       string                          `json:",optional"`
+	CdnProviderKey                            string                          `json:",optional"`
+	CdnProviderSigningKey                     string                          `json:",optional"`
+	CdnProviderTimeoutSeconds                 int                             `json:",optional"`
 	GroupCallMediaEndpoint                    string                          `json:",optional"`
 	GroupCallMediaAPIKey                      string                          `json:",optional"`
 	GroupCallMediaSigningKey                  string                          `json:",optional"`

@@ -119,3 +119,31 @@ func TestStatsLoadAsyncGraphPostgresRoundTrip(t *testing.T) {
 		t.Fatalf("graph error: graph=%+v err=%v", got, err)
 	}
 }
+
+func TestStatsLoadsSharedChannelReactionCounts(t *testing.T) {
+	const channelID int64 = 981499
+	key := sharedReactListKey(0, &mtproto.InputPeer{ChannelId: channelID})
+	previous, err := persist.Default.Get(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = persist.Default.Set(key, previous) })
+	rows, err := json.Marshal([]reactItem{
+		{MsgId: 7, UserId: 101, Emoticon: "👍"},
+		{MsgId: 7, UserId: 102, Emoticon: "❤️"},
+		{MsgId: 8, UserId: 101, Emoticon: "👍"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = persist.Default.Set(key, string(rows)); err != nil {
+		t.Fatal(err)
+	}
+	counts, err := loadChannelMessageReactions(channelID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if counts[7] != 2 || counts[8] != 1 || counts[9] != 0 {
+		t.Fatalf("reaction counts = %#v, want message 7=2 and message 8=1", counts)
+	}
+}

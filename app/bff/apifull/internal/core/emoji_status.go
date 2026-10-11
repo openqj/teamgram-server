@@ -496,9 +496,6 @@ func (c *ApiFullCore) BotsUpdateUserEmojiStatus(in *mtproto.TLBotsUpdateUserEmoj
 	if err != nil {
 		return nil, err
 	}
-	if !c.businessProviderConfigured() {
-		return nil, mtproto.ErrMethodNotImpl
-	}
 	if in == nil || in.GetUserId() == nil || in.GetEmojiStatus() == nil {
 		return nil, mtproto.ErrInputRequestInvalid
 	}
@@ -520,30 +517,83 @@ func (c *ApiFullCore) BotsUpdateUserEmojiStatus(in *mtproto.TLBotsUpdateUserEmoj
 	default:
 		return nil, mtproto.ErrInputConstructorInvalid
 	}
-	var result struct {
-		Value *bool `json:"value"`
+	if c.businessProviderConfigured() {
+		var result struct {
+			Value *bool `json:"value"`
+		}
+		if err := c.callBusinessProvider("bots.updateUserEmojiStatus", map[string]any{
+			"caller_user_id": uid, "user_id": target, "emoji_status": status,
+		}, &result); err != nil {
+			return nil, err
+		}
+		if result.Value == nil {
+			return nil, mtproto.ErrInternalServerError
+		}
+		if *result.Value {
+			return mtproto.BoolTrue, nil
+		}
+		return mtproto.BoolFalse, nil
 	}
-	if err := c.callBusinessProvider("bots.updateUserEmojiStatus", map[string]any{
-		"caller_user_id": uid, "user_id": target, "emoji_status": status,
-	}, &result); err != nil {
+	if !persist.PostgresEnabled() {
+		return nil, mtproto.ErrMethodNotImpl
+	}
+	targetID, err := c.resolveEmojiStatusUser(target)
+	if err != nil {
 		return nil, err
 	}
-	if result.Value == nil {
+	if _, err = c.requireEmojiStatusBot(uid); err != nil {
+		return nil, err
+	}
+	if targetID != uid {
+		enabled, permissionErr := persist.UserEmojiStatusPermission(c.requestContext(), targetID, uid)
+		if permissionErr != nil {
+			return nil, permissionErr
+		}
+		if !enabled {
+			return nil, mtproto.ErrBotMethodInvalid
+		}
+	}
+	documentID, until := emojiStatusFields(status)
+	if documentID > 0 {
+		found, catalogErr := persist.EmojiDocumentInCatalog(stickerRequestContext(c), documentID, "status")
+		if catalogErr != nil {
+			return nil, customEmojiProviderError(c, catalogErr)
+		}
+		if !found {
+			return nil, mtproto.ErrDocumentInvalid
+		}
+	}
+	d := c.apifullDao()
+	if d == nil || d.UserClient == nil {
+		return nil, mtproto.ErrMethodNotImpl
+	}
+	updated, err := d.UserClient.UserUpdateEmojiStatus(c.requestContext(), &userpb.TLUserUpdateEmojiStatus{
+		UserId: targetID, EmojiStatusDocumentId: documentID, EmojiStatusUntil: until,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if updated == nil || !mtproto.FromBool(updated) {
 		return nil, mtproto.ErrInternalServerError
 	}
-	if *result.Value {
-		return mtproto.BoolTrue, nil
+	payload := "null"
+	if status.GetPredicateName() != mtproto.Predicate_emojiStatusEmpty {
+		encoded, marshalErr := json.Marshal(status)
+		if marshalErr != nil {
+			return nil, marshalErr
+		}
+		payload = string(encoded)
 	}
-	return mtproto.BoolFalse, nil
+	if err = persist.Default.Set(emojiStatusKey(targetID), payload); err != nil {
+		return nil, err
+	}
+	return mtproto.BoolTrue, nil
 }
 
 func (c *ApiFullCore) BotsToggleUserEmojiStatusPermission(in *mtproto.TLBotsToggleUserEmojiStatusPermission) (*mtproto.Bool, error) {
 	uid, err := c.requireUserId()
 	if err != nil {
 		return nil, err
-	}
-	if !c.businessProviderConfigured() {
-		return nil, mtproto.ErrMethodNotImpl
 	}
 	if in == nil || in.GetBot() == nil || in.GetEnabled() == nil {
 		return nil, mtproto.ErrInputRequestInvalid
@@ -558,19 +608,105 @@ func (c *ApiFullCore) BotsToggleUserEmojiStatusPermission(in *mtproto.TLBotsTogg
 	default:
 		return nil, mtproto.ErrInputConstructorInvalid
 	}
-	var result struct {
-		Value *bool `json:"value"`
+	if c.businessProviderConfigured() {
+		var result struct {
+			Value *bool `json:"value"`
+		}
+		if err := c.callBusinessProvider("bots.toggleUserEmojiStatusPermission", map[string]any{
+			"caller_user_id": uid, "bot": bot, "enabled": in.GetEnabled(),
+		}, &result); err != nil {
+			return nil, err
+		}
+		if result.Value == nil {
+			return nil, mtproto.ErrInternalServerError
+		}
+		if *result.Value {
+			return mtproto.BoolTrue, nil
+		}
+		return mtproto.BoolFalse, nil
 	}
-	if err := c.callBusinessProvider("bots.toggleUserEmojiStatusPermission", map[string]any{
-		"caller_user_id": uid, "bot": bot, "enabled": in.GetEnabled(),
-	}, &result); err != nil {
+	if !persist.PostgresEnabled() {
+		return nil, mtproto.ErrMethodNotImpl
+	}
+	botID, err := c.resolveEmojiStatusUser(bot)
+	if err != nil {
 		return nil, err
 	}
-	if result.Value == nil {
-		return nil, mtproto.ErrInternalServerError
+	if _, err = c.requireEmojiStatusBot(botID); err != nil {
+		return nil, err
 	}
-	if *result.Value {
-		return mtproto.BoolTrue, nil
+	if err = persist.SetUserEmojiStatusPermission(c.requestContext(), uid, botID, mtproto.FromBool(in.GetEnabled())); err != nil {
+		return nil, err
 	}
-	return mtproto.BoolFalse, nil
+	return mtproto.BoolTrue, nil
+}
+
+func (c *ApiFullCore) requestContext() context.Context {
+	if c != nil && c.ctx != nil {
+		return c.ctx
+	}
+	return context.Background()
+}
+
+func emojiStatusFields(status *mtproto.EmojiStatus) (int64, int32) {
+	if status == nil || status.GetPredicateName() == mtproto.Predicate_emojiStatusEmpty {
+		return 0, 0
+	}
+	if status.GetPredicateName() == mtproto.Predicate_emojiStatusUntil {
+		return status.GetDocumentId(), status.GetUntil_INT32()
+	}
+	until := int32(0)
+	if status.GetUntil_FLAGINT32() != nil {
+		until = status.GetUntil_FLAGINT32().GetValue()
+	}
+	return status.GetDocumentId(), until
+}
+
+func (c *ApiFullCore) resolveEmojiStatusUser(in *mtproto.InputUser) (int64, error) {
+	uid, err := c.requireUserId()
+	if err != nil {
+		return 0, err
+	}
+	if in == nil {
+		return 0, mtproto.ErrUserIdInvalid
+	}
+	if in.GetPredicateName() == mtproto.Predicate_inputUserSelf {
+		return uid, nil
+	}
+	if in.GetPredicateName() != mtproto.Predicate_inputUser || in.GetUserId() <= 0 || in.GetAccessHash() == 0 {
+		return 0, mtproto.ErrUserIdInvalid
+	}
+	profile, err := c.loadEmojiStatusUser(in.GetUserId())
+	if err != nil {
+		return 0, err
+	}
+	if profile.GetUser() == nil || profile.Deleted() || profile.GetUser().GetAccessHash() != in.GetAccessHash() {
+		return 0, mtproto.ErrUserIdInvalid
+	}
+	return in.GetUserId(), nil
+}
+
+func (c *ApiFullCore) requireEmojiStatusBot(userID int64) (*mtproto.ImmutableUser, error) {
+	profile, err := c.loadEmojiStatusUser(userID)
+	if err != nil {
+		return nil, err
+	}
+	if profile.GetUser() == nil || profile.Deleted() || profile.GetUser().GetBot() == nil {
+		return nil, mtproto.ErrBotInvalid
+	}
+	return profile, nil
+}
+
+func (c *ApiFullCore) loadEmojiStatusUser(userID int64) (*mtproto.ImmutableUser, error) {
+	if c == nil || c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.UserClient == nil {
+		return nil, mtproto.ErrMethodNotImpl
+	}
+	profile, err := c.svcCtx.Dao.UserGetImmutableUser(c.requestContext(), &userpb.TLUserGetImmutableUser{Id: userID})
+	if err != nil {
+		return nil, err
+	}
+	if profile == nil {
+		return nil, mtproto.ErrUserIdInvalid
+	}
+	return profile, nil
 }

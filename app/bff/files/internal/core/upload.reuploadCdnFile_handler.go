@@ -41,5 +41,8 @@ func (c *FilesCore) UploadReuploadCdnFile(in *mtproto.TLUploadReuploadCdnFile) (
 	if result == nil || len(result.GetDatas()) > 10000 {
 		return nil, mtproto.ErrCdnMethodInvalid
 	}
+	if !validCDNFileHashVector(result) {
+		return nil, mtproto.ErrCdnMethodInvalid
+	}
 	return result, nil
 }

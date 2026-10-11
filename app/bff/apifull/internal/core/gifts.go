@@ -541,11 +541,37 @@ func (c *ApiFullCore) PaymentsUpdateStarGiftPrice(in *mtproto.TLPaymentsUpdateSt
 }
 
 func (c *ApiFullCore) PaymentsGetUniqueStarGiftValueInfo(in *mtproto.TLPaymentsGetUniqueStarGiftValueInfo) (*mtproto.Payments_UniqueStarGiftValueInfo, error) {
-	if _, err := c.requireUserId(); err != nil {
+	uid, err := c.requireUserId()
+	if err != nil {
 		return nil, err
 	}
-	if in == nil {
+	if in == nil || strings.TrimSpace(in.GetSlug()) == "" || in.GetSlug() != strings.TrimSpace(in.GetSlug()) {
 		return nil, mtproto.ErrInputConstructorInvalid
+	}
+	// A configured provider remains authoritative for marketplace valuation.
+	// Without one, only the purchase value of a gift owned by this caller can
+	// be returned from the PostgreSQL ledger. Unknown or foreign slugs fail
+	// closed rather than becoming synthetic catalogue entries.
+	if !c.businessProviderConfigured() {
+		records, listErr := domain.ListGifts(uid, false)
+		if listErr != nil {
+			return nil, giftDomainError(listErr)
+		}
+		for _, record := range records {
+			if record.Slug != in.GetSlug() {
+				continue
+			}
+			if record.Stars <= 0 {
+				return nil, mtproto.ErrMethodNotImpl
+			}
+			return mtproto.MakeTLPaymentsUniqueStarGiftValueInfo(&mtproto.Payments_UniqueStarGiftValueInfo{
+				Currency:         "XTR",
+				Value:            record.Stars,
+				InitialSaleStars: record.Stars,
+				InitialSalePrice: record.Stars,
+			}).To_Payments_UniqueStarGiftValueInfo(), nil
+		}
+		return nil, mtproto.ErrMethodNotImpl
 	}
 	result := new(mtproto.Payments_UniqueStarGiftValueInfo)
 	if err := c.callBusinessProvider("payments.getUniqueStarGiftValueInfo", map[string]any{"request": in}, result); err != nil {

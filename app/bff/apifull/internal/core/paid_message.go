@@ -19,10 +19,13 @@ package core
 
 import (
 	"errors"
+	"fmt"
 
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/bff/apifull/channelview"
 	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/domain"
+	syncpb "github.com/teamgram/teamgram-server/app/messenger/sync/sync"
+	userpb "github.com/teamgram/teamgram-server/app/service/biz/user/user"
 )
 
 type paidMessagesRevenueProviderResponse struct {
@@ -160,6 +163,127 @@ func (c *ApiFullCore) ChannelsUpdatePaidMessagesPrice(in *mtproto.TLChannelsUpda
 }
 
 func (c *ApiFullCore) AccountAddNoPaidMessagesException(in *mtproto.TLAccountAddNoPaidMessagesException) (*mtproto.Bool, error) {
-	_ = in
-	return nil, c.paidMessagesUnavailable()
+	callerID, err := c.requireUserId()
+	if err != nil {
+		return nil, err
+	}
+	if in == nil {
+		return nil, c.paidMessagesUnavailable()
+	}
+	if in.GetUserId() == nil {
+		return nil, mtproto.ErrInputUserDeactivated
+	}
+	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.UserClient == nil {
+		return nil, mtproto.ErrMethodNotImpl
+	}
+
+	// Resolve and authenticate the target before changing the caller's privacy
+	// rules. InputUserSelf is the only valid zero-hash form; regular users must
+	// carry the current access hash from the authoritative User service.
+	target := in.GetUserId()
+	targetID := target.GetUserId()
+	switch target.GetPredicateName() {
+	case mtproto.Predicate_inputUserSelf:
+		targetID = callerID
+	case mtproto.Predicate_inputUser:
+		if targetID <= 0 || target.GetAccessHash() == 0 {
+			return nil, mtproto.ErrUserIdInvalid
+		}
+		profile, loadErr := c.svcCtx.Dao.UserGetImmutableUser(c.requestContext(), &userpb.TLUserGetImmutableUser{Id: targetID})
+		if loadErr != nil {
+			return nil, loadErr
+		}
+		if profile == nil || profile.GetUser() == nil || profile.Deleted() || profile.GetUser().GetAccessHash() != target.GetAccessHash() {
+			return nil, mtproto.ErrUserIdInvalid
+		}
+	default:
+		return nil, mtproto.ErrUserIdInvalid
+	}
+	// Refunds are an authoritative Stars/payment mutation. This local privacy
+	// path cannot settle or reverse a charge, so never report success while
+	// silently dropping the requested refund side effect. Validate the target
+	// first so malformed Layer 229 input keeps its canonical error precedence.
+	if in.GetRefundCharged() {
+		return nil, mtproto.ErrPaymentUnsupported
+	}
+
+	privacy, err := c.svcCtx.Dao.UserGetPrivacy(c.requestContext(), &userpb.TLUserGetPrivacy{
+		UserId:  callerID,
+		KeyType: mtproto.NO_PAID_MESSAGES,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if privacy == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
+	rules := append([]*mtproto.PrivacyRule(nil), privacy.GetDatas()...)
+	allowIndex := -1
+	for i, rule := range rules {
+		if rule == nil {
+			return nil, mtproto.ErrPrivacyValueInvalid
+		}
+		switch rule.GetPredicateName() {
+		case mtproto.Predicate_privacyValueAllowUsers:
+			if allowIndex < 0 {
+				allowIndex = i
+			}
+			if !containsPrivacyUser(rule.GetUsers(), targetID) {
+				rule.Users = append(rule.Users, targetID)
+			}
+		case mtproto.Predicate_privacyValueDisallowUsers:
+			// An explicit exception must override a stale deny entry.
+			rule.Users = removePrivacyUser(rule.GetUsers(), targetID)
+		}
+	}
+	if allowIndex < 0 {
+		rules = append(rules, mtproto.MakeTLPrivacyValueAllowUsers(&mtproto.PrivacyRule{Users: []int64{targetID}}).To_PrivacyRule())
+	}
+	if len(rules) == 0 {
+		return nil, mtproto.ErrPrivacyValueInvalid
+	}
+	saved, err := c.svcCtx.Dao.UserSetPrivacy(c.requestContext(), &userpb.TLUserSetPrivacy{
+		UserId:  callerID,
+		KeyType: mtproto.NO_PAID_MESSAGES,
+		Rules:   rules,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if saved == nil || saved.GetPredicateName() != mtproto.Predicate_boolTrue {
+		return nil, mtproto.ErrInternalServerError
+	}
+	if c.svcCtx.Dao.SyncClient != nil {
+		updates := mtproto.MakeUpdatesByUpdates(mtproto.MakeTLUpdatePrivacy(&mtproto.Update{
+			Key:   mtproto.ToPrivacyKey(mtproto.NO_PAID_MESSAGES),
+			Rules: rules,
+		}).To_Update())
+		if _, syncErr := c.svcCtx.Dao.SyncClient.SyncUpdatesNotMe(c.requestContext(), &syncpb.TLSyncUpdatesNotMe{
+			UserId:        callerID,
+			PermAuthKeyId: c.MD.GetPermAuthKeyId(),
+			Updates:       updates,
+		}); syncErr != nil {
+			return nil, fmt.Errorf("account.addNoPaidMessagesException: privacy rules were saved but sync update failed: %w", syncErr)
+		}
+	}
+	return mtproto.BoolTrue, nil
+}
+
+func containsPrivacyUser(users []int64, targetID int64) bool {
+	for _, id := range users {
+		if id == targetID {
+			return true
+		}
+	}
+	return false
+}
+
+func removePrivacyUser(users []int64, targetID int64) []int64 {
+	filtered := users[:0]
+	for _, id := range users {
+		if id != targetID {
+			filtered = append(filtered, id)
+		}
+	}
+	return filtered
 }

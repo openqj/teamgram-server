@@ -55,7 +55,7 @@ Web-token import uses `operation: "verify_web_token_authorization"` and sends
 {
   "request_id": "<the request nonce>",
   "verified": true,
-  "operation": "verify_bot_authorization",
+  "operation": "verify_web_token_authorization",
   "api_id": 123,
   "user_id": 456
 }

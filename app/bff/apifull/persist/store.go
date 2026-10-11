@@ -82,6 +82,18 @@ func SetSponsoredChannelRestriction(ctx context.Context, actorID, channelID, acc
 	return internal.SetSponsoredChannelRestriction(ctx, actorID, channelID, accessHash, restricted)
 }
 
+func LoadPremiumPromo(ctx context.Context) (*mtproto.Help_PremiumPromo, bool, error) {
+	return internal.LoadPremiumPromo(ctx)
+}
+
+func StorePremiumPromo(ctx context.Context, promo *mtproto.Help_PremiumPromo) error {
+	return internal.StorePremiumPromo(ctx, promo)
+}
+
+func DeletePremiumPromo(ctx context.Context) error {
+	return internal.DeletePremiumPromo(ctx)
+}
+
 type live struct{}
 
 func (live) Get(key string) (string, error) { return internal.Default.Get(key) }

@@ -431,6 +431,8 @@ func openPostgres(dsn string, createSchema bool) error {
 			`SELECT bot_user_id, pending_updates_count, message FROM apifull_bot_updates_status LIMIT 0`,
 			`SELECT user_id, peer_type, peer_id, message_id, read_max_id FROM apifull_discussion_read_state LIMIT 0`,
 			`SELECT owner_user_id, collectible_id, document_id FROM apifull_collectible_emoji_status LIMIT 0`,
+			`SELECT owner_user_id, bot_user_id, enabled FROM apifull_user_emoji_status_permission LIMIT 0`,
+			`SELECT id, promo FROM apifull_premium_promo LIMIT 0`,
 		} {
 			if _, err = db.Exec(query); err != nil {
 				_ = db.Close()
@@ -440,14 +442,14 @@ func openPostgres(dsn string, createSchema bool) error {
 		var latestApplied bool
 		if err = db.QueryRow(`SELECT EXISTS (
 			SELECT 1 FROM schema_migrations
-			WHERE version = '064_biz_user_bot_manager_index'
+			WHERE version = '066_apifull_premium_promo'
 		)`).Scan(&latestApplied); err != nil {
 			_ = db.Close()
 			return fmt.Errorf("apifull: migration journal is unavailable: %w", err)
 		}
 		if !latestApplied {
 			_ = db.Close()
-			return errors.New("apifull: PostgreSQL migrations are incomplete (064_biz_user_bot_manager_index is required)")
+			return errors.New("apifull: PostgreSQL migrations are incomplete (066_apifull_premium_promo is required)")
 		}
 	}
 	if createSchema {
@@ -513,6 +515,25 @@ func openPostgres(dsn string, createSchema bool) error {
 			_ = db.Close()
 			return err
 		}
+		if _, err = db.Exec(`CREATE TABLE IF NOT EXISTS apifull_user_emoji_status_permission (
+			owner_user_id BIGINT NOT NULL CHECK (owner_user_id > 0),
+			bot_user_id BIGINT NOT NULL CHECK (bot_user_id > 0),
+			enabled BOOLEAN NOT NULL,
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			PRIMARY KEY (owner_user_id, bot_user_id)
+		)`); err != nil {
+			_ = db.Close()
+			return err
+		}
+		if _, err = db.Exec(`CREATE TABLE IF NOT EXISTS apifull_premium_promo (
+			id SMALLINT PRIMARY KEY CHECK (id = 1),
+			promo JSONB NOT NULL,
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			CONSTRAINT apifull_premium_promo_object CHECK (jsonb_typeof(promo) = 'object')
+		)`); err != nil {
+			_ = db.Close()
+			return err
+		}
 		if _, err = db.Exec(`CREATE TABLE IF NOT EXISTS apifull_discussion_read_state (
 			user_id BIGINT NOT NULL CHECK (user_id > 0),
 			peer_type INTEGER NOT NULL CHECK (peer_type > 0),
@@ -554,6 +575,8 @@ func openPostgres(dsn string, createSchema bool) error {
 			`SELECT id, access_hash FROM apifull_emoji_document LIMIT 0`,
 			`SELECT kind, title FROM apifull_emoji_group LIMIT 0`,
 			`SELECT owner_user_id, collectible_id, document_id FROM apifull_collectible_emoji_status LIMIT 0`,
+			`SELECT owner_user_id, bot_user_id, enabled FROM apifull_user_emoji_status_permission LIMIT 0`,
+			`SELECT id, promo FROM apifull_premium_promo LIMIT 0`,
 			`SELECT user_id, message_id, received_at FROM apifull_message_delivery_report LIMIT 0`,
 			`SELECT id, actor_user_id, kind, target_type, target_id, dedupe_key, payload, state FROM apifull_report LIMIT 0`,
 			`SELECT user_id, takeout_id FROM apifull_takeout_session LIMIT 0`,

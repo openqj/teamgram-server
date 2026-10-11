@@ -50,6 +50,21 @@ func (c *FilesCore) UploadGetFile(in *mtproto.TLUploadGetFile) (*mtproto.Upload_
 	if limit <= 0 {
 		return nil, mtproto.ErrLimitInvalid
 	}
+	if in.GetCdnSupported() && c.cdnProviderConfigured() {
+		result := new(mtproto.Upload_File)
+		if err := c.callCDNProvider("upload.getFile", map[string]any{
+			"location": location,
+			"offset":   offset,
+			"limit":    limit,
+			"precise":  in.GetPrecise(),
+		}, result); err != nil {
+			return nil, err
+		}
+		if !validCDNRedirect(result) {
+			return nil, mtproto.ErrCdnMethodInvalid
+		}
+		return result, nil
+	}
 
 	switch location.GetPredicateName() {
 	case mtproto.Predicate_inputFileLocation:
@@ -147,4 +162,11 @@ func (c *FilesCore) UploadGetFile(in *mtproto.TLUploadGetFile) (*mtproto.Upload_
 	}
 
 	return uploadFile, nil
+}
+
+func validCDNRedirect(result *mtproto.Upload_File) bool {
+	if result == nil || result.GetPredicateName() != mtproto.Predicate_upload_fileCdnRedirect || result.GetDcId() <= 0 || len(result.GetFileToken()) == 0 || len(result.GetEncryptionKey()) != 32 || len(result.GetEncryptionIv()) != 16 || len(result.GetFileHashes()) == 0 {
+		return false
+	}
+	return validCDNFileHashVector(&mtproto.Vector_FileHash{Datas: result.GetFileHashes()})
 }

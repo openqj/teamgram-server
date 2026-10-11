@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/teamgram/proto/mtproto"
 	apifullDao "github.com/teamgram/teamgram-server/app/bff/apifull/internal/dao"
+	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/domain"
 	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/svc"
 	user_client "github.com/teamgram/teamgram-server/app/service/biz/user/client"
 	userpb "github.com/teamgram/teamgram-server/app/service/biz/user/user"
@@ -42,6 +44,13 @@ func TestValidateInlineQueryPeer(t *testing.T) {
 			UserClient: client,
 		}},
 	}
+	channelID := time.Now().UnixNano()
+	if domain.Ready() {
+		if err := domain.SaveChannel(domain.Channel{ID: channelID, AccessHash: 5001, Creator: callerID, Title: "inline-peer-validation", Megagroup: true}); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = domain.DeleteChannel(callerID, channelID) })
+	}
 
 	valid := []struct {
 		name string
@@ -50,7 +59,7 @@ func TestValidateInlineQueryPeer(t *testing.T) {
 		{name: "self", peer: mtproto.MakeTLInputPeerSelf(nil).To_InputPeer()},
 		{name: "user", peer: mtproto.MakeTLInputPeerUser(&mtproto.InputPeer{UserId: peerID, AccessHash: peerHash}).To_InputPeer()},
 		{name: "chat", peer: mtproto.MakeTLInputPeerChat(&mtproto.InputPeer{ChatId: 3001}).To_InputPeer()},
-		{name: "channel", peer: mtproto.MakeTLInputPeerChannel(&mtproto.InputPeer{ChannelId: 4001, AccessHash: 5001}).To_InputPeer()},
+		{name: "channel", peer: mtproto.MakeTLInputPeerChannel(&mtproto.InputPeer{ChannelId: channelID, AccessHash: 5001}).To_InputPeer()},
 	}
 	for _, tc := range valid {
 		t.Run(tc.name, func(t *testing.T) {

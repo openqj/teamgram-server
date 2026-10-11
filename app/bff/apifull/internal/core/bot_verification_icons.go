@@ -18,29 +18,109 @@
 
 package core
 
-import "github.com/teamgram/proto/mtproto"
+import (
+	"encoding/json"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/teamgram/proto/mtproto"
+	apifullpersist "github.com/teamgram/teamgram-server/app/bff/apifull/persist"
+)
 
 // RPCBotVerificationIconsServer: Layer 229 methods previously returned ERR_ENTERPRISE_IS_BLOCKED.
 
 func (c *ApiFullCore) BotsSetCustomVerification(in *mtproto.TLBotsSetCustomVerification) (*mtproto.Bool, error) {
-	if _, err := c.requireUserId(); err != nil {
+	callerID, err := c.requireUserId()
+	if err != nil {
 		return nil, err
 	}
 	if in == nil || in.GetBot() == nil || in.GetPeer() == nil {
 		return nil, mtproto.ErrInputRequestInvalid
 	}
-	var result struct {
-		Value bool `json:"value"`
-	}
-	if err := c.callBusinessProvider("bots.setCustomVerification", map[string]any{
-		"enabled": in.GetEnabled(), "bot": in.GetBot(), "peer": in.GetPeer(), "custom_description": in.GetCustomDescription(),
-	}, &result); err != nil {
+	botID, err := c.verifyMiniBot(in.GetBot())
+	if err != nil {
 		return nil, err
 	}
-	if result.Value {
-		return mtproto.BoolTrue, nil
+	if botID != callerID {
+		return nil, mtproto.ErrUserIdInvalid
 	}
-	return mtproto.BoolFalse, nil
+	if c.businessProviderConfigured() {
+		var result struct {
+			Value *bool `json:"value"`
+		}
+		if err = c.callBusinessProvider("bots.setCustomVerification", map[string]any{
+			"enabled": in.GetEnabled(), "bot": in.GetBot(), "peer": in.GetPeer(), "custom_description": in.GetCustomDescription(),
+		}, &result); err != nil {
+			return nil, err
+		}
+		if result.Value == nil {
+			return nil, mtproto.ErrInternalServerError
+		}
+		if *result.Value {
+			return mtproto.BoolTrue, nil
+		}
+		return mtproto.BoolFalse, nil
+	}
+	peerType, peerID, err := customVerificationPeer(callerID, in.GetPeer())
+	if err != nil {
+		return nil, err
+	}
+	description := ""
+	if value := in.GetCustomDescription(); value != nil {
+		description = strings.TrimSpace(value.GetValue())
+		if len(description) > 512 {
+			return nil, mtproto.ErrInputRequestInvalid
+		}
+	}
+	state := botCustomVerificationState{Enabled: in.GetEnabled(), Description: description, UpdatedAt: time.Now().Unix()}
+	encoded, err := json.Marshal(state)
+	if err != nil {
+		return nil, mtproto.ErrInternalServerError
+	}
+	if err = apifullpersist.Update(customVerificationKey(botID, peerType, peerID), func(string) (string, error) {
+		return string(encoded), nil
+	}); err != nil {
+		return nil, err
+	}
+	return mtproto.BoolTrue, nil
+}
+
+type botCustomVerificationState struct {
+	Enabled     bool   `json:"enabled"`
+	Description string `json:"description,omitempty"`
+	UpdatedAt   int64  `json:"updated_at"`
+}
+
+func customVerificationKey(botID int64, peerType int32, peerID int64) string {
+	return fmt.Sprintf("bot-custom-verification:%d:%d:%d", botID, peerType, peerID)
+}
+
+func customVerificationPeer(selfID int64, peer *mtproto.InputPeer) (int32, int64, error) {
+	if !validThreadInputPeer(selfID, peer) {
+		return 0, 0, mtproto.ErrPeerIdInvalid
+	}
+	switch peer.GetPredicateName() {
+	case mtproto.Predicate_inputPeerUser:
+		if peer.GetAccessHash() == 0 {
+			return 0, 0, mtproto.ErrUserIdInvalid
+		}
+	case mtproto.Predicate_inputPeerChannel:
+		if peer.GetAccessHash() == 0 {
+			return 0, 0, mtproto.ErrChannelInvalid
+		}
+	}
+	peerType, peerID := apifullPeerTypeID(selfID, peer)
+	if peerType == mtproto.PEER_USER && peerID == selfID {
+		peerType = mtproto.PEER_SELF
+	}
+	switch peerType {
+	case mtproto.PEER_SELF, mtproto.PEER_USER, mtproto.PEER_CHAT, mtproto.PEER_CHANNEL:
+		if peerID > 0 {
+			return peerType, peerID, nil
+		}
+	}
+	return 0, 0, mtproto.ErrPeerIdInvalid
 }
 
 func (c *ApiFullCore) BotsGetBotRecommendations(in *mtproto.TLBotsGetBotRecommendations) (*mtproto.Users_Users, error) {

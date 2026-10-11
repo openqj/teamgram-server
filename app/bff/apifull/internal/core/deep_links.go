@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/teamgram/proto/mtproto"
+	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/domain"
 	msgpb "github.com/teamgram/teamgram-server/app/messenger/msg/msg/msg"
 	chatpb "github.com/teamgram/teamgram-server/app/service/biz/chat/chat"
 	userpb "github.com/teamgram/teamgram-server/app/service/biz/user/user"
@@ -143,6 +144,37 @@ func (c *ApiFullCore) validateBotStartPeer(callerID, botID, botAccessHash int64,
 			return 0, 0, mtproto.ErrBotInvalid
 		}
 		return mtproto.PEER_CHAT, peer.GetChatId(), nil
+	case mtproto.Predicate_inputPeerChannel:
+		if peer.GetChannelId() <= 0 || peer.GetAccessHash() == 0 {
+			return 0, 0, mtproto.ErrChannelInvalid
+		}
+		// Channels are owned by the APIFull PostgreSQL domain. Do not fall
+		// back to a synthetic peer when the authoritative store is absent.
+		if !domain.Ready() {
+			return 0, 0, mtproto.ErrMethodNotImpl
+		}
+		channel, ok, loadErr := domain.LoadChannel(peer.GetChannelId())
+		if loadErr != nil {
+			return 0, 0, mtproto.ErrInternalServerError
+		}
+		if !ok || channel.AccessHash != peer.GetAccessHash() {
+			return 0, 0, mtproto.ErrChannelInvalid
+		}
+		callerMember, callerErr := domain.ChannelIsMember(peer.GetChannelId(), callerID)
+		if callerErr != nil {
+			return 0, 0, mtproto.ErrInternalServerError
+		}
+		if !callerMember {
+			return 0, 0, mtproto.ErrUserNotParticipant
+		}
+		botMember, botErr := domain.ChannelIsMember(peer.GetChannelId(), botID)
+		if botErr != nil {
+			return 0, 0, mtproto.ErrInternalServerError
+		}
+		if !botMember {
+			return 0, 0, mtproto.ErrBotInvalid
+		}
+		return mtproto.PEER_CHANNEL, peer.GetChannelId(), nil
 	default:
 		return 0, 0, mtproto.ErrMethodNotImpl
 	}
@@ -151,6 +183,9 @@ func (c *ApiFullCore) validateBotStartPeer(callerID, botID, botAccessHash int64,
 func startBotPeer(peerType int32, peerID int64) *mtproto.Peer {
 	if peerType == mtproto.PEER_CHAT {
 		return mtproto.MakePeerChat(peerID)
+	}
+	if peerType == mtproto.PEER_CHANNEL {
+		return mtproto.MakePeerChannel(peerID)
 	}
 	return mtproto.MakePeerUser(peerID)
 }

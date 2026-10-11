@@ -33,7 +33,7 @@ This document covers branching, PR rules, code style, commit messages, and local
 
 ### Dependencies
 
-- PostgreSQL 18 is the sole production database. Teamgram's generated MySQL DAOs may remain only behind the migration boundary and in isolated legacy tests; production configs must not provide a MySQL DSN. Redis, etcd, Kafka, MinIO (and FFmpeg if needed) are also required. Optional: `docker compose -f docker-compose-env.yaml up -d`.
+- PostgreSQL 18 is the sole production database. Legacy generated DAOs remain outside the production runtime; production configs accept only a PostgreSQL DSN. Redis, etcd, Kafka, MinIO (and FFmpeg if needed) are also required. Optional: `docker compose -f docker-compose-env.yaml up -d`.
 - **Database**: Create DB `teamgram`, then apply the PostgreSQL 18 migrations with
   `DATABASE_URL='postgresql://teamgram:teamgram@127.0.0.1:5432/teamgram?sslmode=disable' ./teamgramd/deploy/postgres/apply.sh`.
   The SQL files directly under `teamgramd/deploy/sql/` are a historical Teamgram

@@ -20,6 +20,8 @@ package core
 
 import "github.com/teamgram/proto/mtproto"
 
+const maxCDNFileChunk = 1 << 20
+
 // UploadGetCdnFile
 // upload.getCdnFile#395f69da file_token:bytes offset:long limit:int = upload.CdnFile;
 func (c *FilesCore) UploadGetCdnFile(in *mtproto.TLUploadGetCdnFile) (*mtproto.Upload_CdnFile, error) {
@@ -36,15 +38,31 @@ func (c *FilesCore) UploadGetCdnFile(in *mtproto.TLUploadGetCdnFile) (*mtproto.U
 	if offset < 0 {
 		return nil, mtproto.ErrOffsetInvalid
 	}
-	if in.GetLimit() <= 0 {
+	if in.GetLimit() <= 0 || in.GetLimit() > maxCDNFileChunk {
 		return nil, mtproto.ErrLimitInvalid
 	}
 	result := new(mtproto.Upload_CdnFile)
 	if err := c.callCDNProvider("upload.getCdnFile", map[string]any{"file_token": in.GetFileToken(), "offset": offset, "limit": in.GetLimit()}, result); err != nil {
 		return nil, err
 	}
-	if result.GetPredicateName() == "" || (len(result.GetBytes()) == 0 && len(result.GetRequestToken()) == 0) {
+	if !validCDNFileResult(result) {
 		return nil, mtproto.ErrCdnMethodInvalid
 	}
 	return result, nil
+}
+
+func validCDNFileResult(result *mtproto.Upload_CdnFile) bool {
+	if result == nil {
+		return false
+	}
+	bytesLen := len(result.GetBytes())
+	requestTokenLen := len(result.GetRequestToken())
+	switch result.GetPredicateName() {
+	case mtproto.Predicate_upload_cdnFile:
+		return bytesLen > 0 && bytesLen <= maxCDNFileChunk && requestTokenLen == 0
+	case mtproto.Predicate_upload_cdnFileReuploadNeeded:
+		return requestTokenLen > 0 && bytesLen == 0
+	default:
+		return false
+	}
 }

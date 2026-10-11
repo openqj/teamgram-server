@@ -141,3 +141,10 @@ func (c *FilesCore) callCDNProvider(operation string, payload any, result any) e
 	}
 	return nil
 }
+
+func (c *FilesCore) cdnProviderConfigured() bool {
+	if c == nil || c.svcCtx == nil {
+		return false
+	}
+	return strings.TrimSpace(c.svcCtx.Config.CdnProviderEndpoint) != "" && len(strings.TrimSpace(c.svcCtx.Config.CdnProviderSigningKey)) >= 32
+}

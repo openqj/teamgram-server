@@ -30,6 +30,7 @@ import (
 	"time"
 
 	"github.com/teamgram/proto/mtproto"
+	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/domain"
 	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/persist"
 	msgpb "github.com/teamgram/teamgram-server/app/messenger/msg/msg/msg"
 	userpb "github.com/teamgram/teamgram-server/app/service/biz/user/user"
@@ -150,6 +151,23 @@ func (c *ApiFullCore) validateInlineQueryPeer(callerID int64, peer *mtproto.Inpu
 	case mtproto.Predicate_inputPeerChannel:
 		if peer.GetChannelId() <= 0 || peer.GetAccessHash() == 0 {
 			return mtproto.ErrChannelInvalid
+		}
+		if !domain.Ready() {
+			return mtproto.ErrMethodNotImpl
+		}
+		channel, ok, err := domain.LoadChannel(peer.GetChannelId())
+		if err != nil {
+			return mtproto.ErrInternalServerError
+		}
+		if !ok || channel.AccessHash != peer.GetAccessHash() {
+			return mtproto.ErrChannelInvalid
+		}
+		member, err := domain.ChannelIsMember(peer.GetChannelId(), callerID)
+		if err != nil {
+			return mtproto.ErrInternalServerError
+		}
+		if !member {
+			return mtproto.ErrUserNotParticipant
 		}
 		return nil
 	case mtproto.Predicate_inputPeerUserFromMessage, mtproto.Predicate_inputPeerChannelFromMessage:
@@ -380,6 +398,9 @@ func (c *ApiFullCore) MessagesEditInlineBotMessage(in *mtproto.TLMessagesEditInl
 	}
 	if in == nil || in.GetId() == nil || (in.GetMessage() == nil && in.GetMedia() == nil && in.GetRichMessage() == nil) {
 		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if err := validateInputBotInlineMessageIDInput(in.GetId()); err != nil {
+		return nil, err
 	}
 	var result struct {
 		Value *bool `json:"value"`

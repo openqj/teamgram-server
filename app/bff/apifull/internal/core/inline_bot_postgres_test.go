@@ -10,6 +10,7 @@ import (
 	apifullDao "github.com/teamgram/teamgram-server/app/bff/apifull/internal/dao"
 	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/persist"
 	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/svc"
+	msgpb "github.com/teamgram/teamgram-server/app/messenger/msg/msg/msg"
 	user_client "github.com/teamgram/teamgram-server/app/service/biz/user/client"
 	userpb "github.com/teamgram/teamgram-server/app/service/biz/user/user"
 )
@@ -43,7 +44,8 @@ func TestInlineBotResultsPostgresRoundTrip(t *testing.T) {
 	client := &inlineBotUserClient{users: map[int64]*mtproto.ImmutableUser{
 		botID: inlineBotProfile(botID, requestHash, true),
 	}}
-	ctx := &svc.ServiceContext{Dao: &apifullDao.Dao{UserClient: client}}
+	sender := &inlineBotSender{}
+	ctx := &svc.ServiceContext{Dao: &apifullDao.Dao{UserClient: client, ScheduledMessageSender: sender}}
 	requester := &ApiFullCore{ctx: context.Background(), svcCtx: ctx, MD: &metadata.RpcMetadata{UserId: requesterID}}
 	bot := &mtproto.InputUser{PredicateName: mtproto.Predicate_inputUser, UserId: botID, AccessHash: requestHash}
 	first, err := requester.MessagesGetInlineBotResults(&mtproto.TLMessagesGetInlineBotResults{
@@ -58,7 +60,7 @@ func TestInlineBotResultsPostgresRoundTrip(t *testing.T) {
 	botCore := &ApiFullCore{ctx: context.Background(), svcCtx: ctx, MD: &metadata.RpcMetadata{UserId: botID}}
 	if _, err = botCore.MessagesSetInlineBotResults(&mtproto.TLMessagesSetInlineBotResults{
 		QueryId: first.GetQueryId(), CacheTime: 30,
-		Results: []*mtproto.InputBotInlineResult{{Id: "r1", Type: "article"}},
+		Results: []*mtproto.InputBotInlineResult{{Id: "r1", Type: "article", SendMessage: mtproto.MakeTLInputBotInlineMessageText(&mtproto.InputBotInlineMessage{Message: "inline text"}).To_InputBotInlineMessage()}},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -71,6 +73,21 @@ func TestInlineBotResultsPostgresRoundTrip(t *testing.T) {
 	if second == nil || second.GetQueryId() != first.GetQueryId() || len(second.GetResults()) != 1 || second.GetResults()[0].GetId() != "r1" {
 		t.Fatalf("published inline result = %+v", second)
 	}
+	sent, err := requester.MessagesSendInlineBotResult(&mtproto.TLMessagesSendInlineBotResult{
+		Peer: mtproto.MakeTLInputPeerSelf(nil).To_InputPeer(), QueryId: first.GetQueryId(), Id: "r1", RandomId: 991001,
+	})
+	if err != nil || sent == nil || sender.request == nil || len(sender.request.GetMessage()) != 1 || sender.request.GetMessage()[0].GetMessage().GetMessage() != "inline text" {
+		t.Fatalf("send inline result = (%#v, %v), request=%#v", sent, err, sender.request)
+	}
+}
+
+type inlineBotSender struct {
+	request *msgpb.TLMsgSendMessageV2
+}
+
+func (s *inlineBotSender) MsgSendMessageV2(_ context.Context, in *msgpb.TLMsgSendMessageV2) (*mtproto.Updates, error) {
+	s.request = in
+	return mtproto.MakeEmptyUpdates(), nil
 }
 
 type inlineBotUserClient struct {

@@ -133,6 +133,13 @@ func TestCDNProviderReturnsVerifiedResults(t *testing.T) {
 		switch req.Operation {
 		case "upload.getCdnFile":
 			result = map[string]any{"predicate_name": "upload_cdnFile", "bytes": "AQI="}
+		case "upload.getCdnFileHashes", "upload.reuploadCdnFile":
+			result = map[string]any{"datas": []any{map[string]any{
+				"predicate_name": "fileHash",
+				"offset_INT64":   0,
+				"limit":          2,
+				"hash":           "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+			}}}
 		case "help.getCdnConfig":
 			result = map[string]any{"predicate_name": "cdnConfig", "public_keys": []any{}}
 		default:
@@ -155,8 +162,71 @@ func TestCDNProviderReturnsVerifiedResults(t *testing.T) {
 	if err != nil || file == nil || string(file.GetBytes()) != string([]byte{1, 2}) {
 		t.Fatalf("cdn file = (%v, %v)", file, err)
 	}
+	hashes, err := core.UploadGetCdnFileHashes(&mtproto.TLUploadGetCdnFileHashes{FileToken: []byte{1}})
+	if err != nil || hashes == nil || len(hashes.GetDatas()) != 1 {
+		t.Fatalf("cdn hashes = (%v, %v)", hashes, err)
+	}
+	reuploaded, err := core.UploadReuploadCdnFile(&mtproto.TLUploadReuploadCdnFile{FileToken: []byte{1}, RequestToken: []byte{2}})
+	if err != nil || reuploaded == nil || len(reuploaded.GetDatas()) != 1 {
+		t.Fatalf("cdn reupload hashes = (%v, %v)", reuploaded, err)
+	}
 	cdn, err := core.HelpGetCdnConfig(&mtproto.TLHelpGetCdnConfig{})
 	if err != nil || cdn == nil || cdn.GetPredicateName() == "" {
 		t.Fatalf("cdn config = (%v, %v)", cdn, err)
+	}
+}
+
+func TestCDNResultValidationRejectsMalformedValues(t *testing.T) {
+	if validCDNFileResult(&mtproto.Upload_CdnFile{PredicateName: mtproto.Predicate_upload_cdnFile, Bytes: []byte{1}, RequestToken: []byte{2}}) {
+		t.Fatal("cdn file accepted both bytes and request token")
+	}
+	if validCDNFileResult(&mtproto.Upload_CdnFile{PredicateName: "unknown", Bytes: []byte{1}}) {
+		t.Fatal("cdn file accepted unknown constructor")
+	}
+	if validCDNFileHashVector(&mtproto.Vector_FileHash{Datas: []*mtproto.FileHash{{
+		PredicateName: mtproto.Predicate_fileHash,
+		Limit:         1,
+		Hash:          []byte{1},
+	}}}) {
+		t.Fatal("cdn file hash accepted a non-SHA-256 hash")
+	}
+}
+
+func TestUploadGetFileUsesVerifiedCDNRedirect(t *testing.T) {
+	const key = "cdn-redirect-provider-signing-key-0123456789"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			RequestID string `json:"request_id"`
+			Operation string `json:"operation"`
+			UserID    int64  `json:"user_id"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Operation != "upload.getFile" {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		resultJSON, _ := json.Marshal(map[string]any{
+			"predicate_name": mtproto.Predicate_upload_fileCdnRedirect,
+			"dc_id":          2,
+			"file_token":     "AQI=",
+			"encryption_key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+			"encryption_iv":  "AAECAwQFBgcICQoLDA0ODw==",
+			"file_hashes": []any{map[string]any{
+				"predicate_name": "fileHash",
+				"offset_INT64":   0,
+				"limit":          2,
+				"hash":           "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+			}},
+		})
+		body, _ := json.Marshal(cdnProviderEnvelope{RequestID: req.RequestID, Operation: req.Operation, Verified: true, UserID: req.UserID, Result: resultJSON})
+		w.Header().Set("X-Teamgram-CDN-Provider-Signature", cdnProviderSignature(key, body))
+		_, _ = w.Write(body)
+	}))
+	t.Cleanup(server.Close)
+	core := newGetFileCore()
+	core.svcCtx.Config = config.Config{CdnProviderEndpoint: server.URL, CdnProviderSigningKey: key, CdnProviderTimeoutSeconds: 2}
+	location := mtproto.MakeTLInputDocumentFileLocation(&mtproto.InputFileLocation{Id: 9}).To_InputFileLocation()
+	file, err := core.UploadGetFile(&mtproto.TLUploadGetFile{CdnSupported: true, Location: location, Limit: 2})
+	if err != nil || file == nil || file.GetPredicateName() != mtproto.Predicate_upload_fileCdnRedirect || string(file.GetFileToken()) != string([]byte{1, 2}) {
+		t.Fatalf("cdn redirect = (%v, %v)", file, err)
 	}
 }
