@@ -40,6 +40,13 @@ func TestGiftChatThemesProviderResultRequiresCanonicalUnion(t *testing.T) {
 			t.Fatalf("provider predicate %q was accepted", predicate)
 		}
 	}
+	invalidTheme := &mtproto.ChatTheme{PredicateName: mtproto.Predicate_chatThemeUniqueGift}
+	if validGiftChatThemesProviderResult(&mtproto.Account_ChatThemes{
+		PredicateName: mtproto.Predicate_account_chatThemes,
+		Themes:        []*mtproto.ChatTheme{invalidTheme},
+	}) {
+		t.Fatal("unique-gift theme without gift media was accepted")
+	}
 }
 
 func TestUniqueGiftChatThemesRejectsUnknownProviderConstructor(t *testing.T) {

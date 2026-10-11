@@ -552,7 +552,23 @@ func validGiftChatThemesProviderResult(result *mtproto.Account_ChatThemes) bool 
 		return false
 	}
 	switch result.GetPredicateName() {
-	case mtproto.Predicate_account_chatThemes, mtproto.Predicate_account_chatThemesNotModified:
+	case mtproto.Predicate_account_chatThemesNotModified:
+		return len(result.GetThemes()) == 0 && len(result.GetChats()) == 0 && len(result.GetUsers()) == 0
+	case mtproto.Predicate_account_chatThemes:
+		for _, theme := range result.GetThemes() {
+			if theme == nil || theme.GetPredicateName() != mtproto.Predicate_chatThemeUniqueGift {
+				return false
+			}
+			gift := theme.GetGift()
+			if gift == nil || gift.GetId() <= 0 || gift.GetSlug() == "" || gift.GetSticker() == nil {
+				return false
+			}
+			switch gift.GetPredicateName() {
+			case mtproto.Predicate_starGift, mtproto.Predicate_starGiftUnique:
+			default:
+				return false
+			}
+		}
 		return true
 	default:
 		return false
