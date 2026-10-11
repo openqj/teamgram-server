@@ -4,7 +4,7 @@
 
 - 新增 `pkg/ai/openai` 适配器，支持配置为 OpenAI-compatible `/v1` 基址，强制 HTTPS（loopback 测试除外），只从运行时读取 API key，不写日志或持久化；请求绑定 `operation`、`user_id`、payload，响应必须是 operation 约束的 JSON。
 - messages/APIFull 保留 Teamgram HMAC provider 优先路径；未配置签名 key 时才可显式使用 OpenAI-compatible 模式，并通过 `TEAMGRAM_AI_PROVIDER_MODEL` 配置模型（默认 `gpt-6.1-sol`）。适配器契约、BFF fallback 和 TL 归一化测试通过。
-- `LAYER229_METHOD_LEDGER.csv` 当前仍为 813 个唯一方法、8 列；生产状态为 `PARTIAL_ISOLATED_SESSION_E2E=309`、`PARTIAL_ISOLATED_DB_ONLY=238`、`PARTIAL_COMPONENT_ONLY=158`、`BLOCKED_BY_IMPLEMENTATION_GAP=89`、`TRANSPORT_ONLY=11`、`ISOLATED_COMPONENT_ONLY=6`、`ISOLATED_DB_ONLY=2`。AI 四项从 blocked 降为组件级证据；真实 AI endpoint、签名/密钥轮换、实时 Layer 229 session、重启和 provider 故障恢复仍未验收。
+- `LAYER229_METHOD_LEDGER.csv` 当前仍为 813 个唯一方法、8 列；生产状态为 `PARTIAL_ISOLATED_SESSION_E2E=309`、`PARTIAL_ISOLATED_DB_ONLY=238`、`PARTIAL_COMPONENT_ONLY=159`、`BLOCKED_BY_IMPLEMENTATION_GAP=88`、`TRANSPORT_ONLY=11`、`ISOLATED_COMPONENT_ONLY=6`、`ISOLATED_DB_ONLY=2`。AI 五项从 blocked 降为组件级证据；真实 AI endpoint、签名/密钥轮换、实时 Layer 229 session、重启和 provider 故障恢复仍未验收。
 - `go build ./...`、迁移相关 focused tests、所有 `app/bff/...` tests 和 `git diff --check` 通过。仓库级 `go test ./...` 仍受既有 DFS vet 诊断及缺失 JPEG/ffmpeg fixture 影响，未将这些失败误记为迁移通过。
 
 ## 2026-10-11：付费反应隐私本地持久化
