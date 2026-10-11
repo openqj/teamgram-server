@@ -25,3 +25,19 @@ func TestGiftChatThemeOffsetRejectsNegativeCompatibilityField(t *testing.T) {
 		t.Fatalf("negative integer offset = (%d, %v), want (0, OFFSET_INVALID)", got, err)
 	}
 }
+
+func TestGiftChatThemesProviderResultRequiresCanonicalUnion(t *testing.T) {
+	valid := &mtproto.Account_ChatThemes{PredicateName: mtproto.Predicate_account_chatThemes}
+	if !validGiftChatThemesProviderResult(valid) {
+		t.Fatal("canonical account.chatThemes result was rejected")
+	}
+	notModified := &mtproto.Account_ChatThemes{PredicateName: mtproto.Predicate_account_chatThemesNotModified}
+	if !validGiftChatThemesProviderResult(notModified) {
+		t.Fatal("canonical account.chatThemesNotModified result was rejected")
+	}
+	for _, predicate := range []string{"", "updates", "account_chatThemesUnknown"} {
+		if validGiftChatThemesProviderResult(&mtproto.Account_ChatThemes{PredicateName: predicate}) {
+			t.Fatalf("provider predicate %q was accepted", predicate)
+		}
+	}
+}

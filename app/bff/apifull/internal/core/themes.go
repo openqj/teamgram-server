@@ -497,7 +497,7 @@ func (c *ApiFullCore) AccountGetUniqueGiftChatThemes(in *mtproto.TLAccountGetUni
 		}, result); err != nil {
 			return nil, err
 		}
-		if result.GetPredicateName() == "" || len(result.GetThemes()) > 10000 {
+		if !validGiftChatThemesProviderResult(result) {
 			return nil, mtproto.ErrInternalServerError
 		}
 		return result, nil
@@ -545,6 +545,18 @@ func (c *ApiFullCore) AccountGetUniqueGiftChatThemes(in *mtproto.TLAccountGetUni
 		result.NextOffset_FLAGSTRING = wrapperspb.String(strconv.Itoa(end))
 	}
 	return mtproto.MakeTLAccountChatThemes(result).To_Account_ChatThemes(), nil
+}
+
+func validGiftChatThemesProviderResult(result *mtproto.Account_ChatThemes) bool {
+	if result == nil || len(result.GetThemes()) > 10000 {
+		return false
+	}
+	switch result.GetPredicateName() {
+	case mtproto.Predicate_account_chatThemes, mtproto.Predicate_account_chatThemesNotModified:
+		return true
+	default:
+		return false
+	}
 }
 
 // giftChatThemeOffset accepts the generated compatibility field used by older
