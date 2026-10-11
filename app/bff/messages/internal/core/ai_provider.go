@@ -81,6 +81,9 @@ func (c *MessagesCore) callAIProvider(operation string, payload any, result any)
 	endpoint := strings.TrimSpace(c.svcCtx.Config.AIProviderEndpoint)
 	key := strings.TrimSpace(c.svcCtx.Config.AIProviderKey)
 	signingKey := strings.TrimSpace(c.svcCtx.Config.AIProviderSigningKey)
+	if c.svcCtx.Config.AIProviderTimeoutSeconds < 0 || c.svcCtx.Config.AIProviderTimeoutSeconds > 300 {
+		return mtproto.ErrInternalServerError
+	}
 	if endpoint == "" || len(signingKey) < 32 {
 		if endpoint == "" || key == "" || signingKey != "" {
 			return mtproto.ErrMethodNotImpl
@@ -96,9 +99,6 @@ func (c *MessagesCore) callAIProvider(operation string, payload any, result any)
 	}
 	parsed, err := url.Parse(endpoint)
 	if err != nil || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || !secureAIProviderURL(parsed) {
-		return mtproto.ErrInternalServerError
-	}
-	if c.svcCtx.Config.AIProviderTimeoutSeconds < 0 || c.svcCtx.Config.AIProviderTimeoutSeconds > 300 {
 		return mtproto.ErrInternalServerError
 	}
 	timeout := 5 * time.Second
