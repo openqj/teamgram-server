@@ -37,11 +37,29 @@ func validStarRefProgram(program *mtproto.StarRefProgram) bool {
 	if duration := program.GetDurationMonths(); duration != nil && (duration.GetValue() <= 0 || duration.GetValue() > 120) {
 		return false
 	}
+	if endDate := program.GetEndDate(); endDate != nil && endDate.GetValue() < 0 {
+		return false
+	}
+	if revenue := program.GetDailyRevenuePerUser(); revenue != nil && (revenue.GetPredicateName() != mtproto.Predicate_starsAmount || revenue.GetAmount() < 0 || revenue.GetNanos() < 0) {
+		return false
+	}
+	return true
+}
+
+func validAffiliateUsers(users []*mtproto.User) bool {
+	if len(users) > 10000 {
+		return false
+	}
+	for _, user := range users {
+		if user == nil || user.GetPredicateName() == "" {
+			return false
+		}
+	}
 	return true
 }
 
 func validConnectedStarRefBots(result *mtproto.Payments_ConnectedStarRefBots) bool {
-	if result == nil || result.GetPredicateName() != mtproto.Predicate_payments_connectedStarRefBots || result.GetCount() < 0 || len(result.GetConnectedBots()) > 10000 {
+	if result == nil || result.GetPredicateName() != mtproto.Predicate_payments_connectedStarRefBots || result.GetCount() < 0 || len(result.GetConnectedBots()) > 10000 || !validAffiliateUsers(result.GetUsers()) {
 		return false
 	}
 	for _, bot := range result.GetConnectedBots() {
@@ -53,7 +71,7 @@ func validConnectedStarRefBots(result *mtproto.Payments_ConnectedStarRefBots) bo
 }
 
 func validSuggestedStarRefBots(result *mtproto.Payments_SuggestedStarRefBots) bool {
-	if result == nil || result.GetPredicateName() != mtproto.Predicate_payments_suggestedStarRefBots || result.GetCount() < 0 || len(result.GetSuggestedBots()) > 10000 {
+	if result == nil || result.GetPredicateName() != mtproto.Predicate_payments_suggestedStarRefBots || result.GetCount() < 0 || len(result.GetSuggestedBots()) > 10000 || !validAffiliateUsers(result.GetUsers()) {
 		return false
 	}
 	for _, program := range result.GetSuggestedBots() {

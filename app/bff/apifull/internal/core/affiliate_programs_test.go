@@ -59,3 +59,31 @@ func TestAffiliateProviderRejectsWrongConstructors(t *testing.T) {
 		t.Fatalf("wrong suggested constructor = (%v, %v), want INTERNAL_SERVER_ERROR", suggested, err)
 	}
 }
+
+func TestAffiliateProviderRejectsMalformedNestedData(t *testing.T) {
+	core := newBusinessProviderGapCore(t, "bots.updateStarRefProgram", map[string]any{
+		"predicate_name": "starRefProgram", "bot_id": 7, "commission_permille": 125,
+		"daily_revenue_per_user": map[string]any{"predicate_name": "starsAmount", "amount": -1},
+	})
+	program, err := core.BotsUpdateStarRefProgram(&mtproto.TLBotsUpdateStarRefProgram{
+		Bot: &mtproto.InputUser{UserId: 7, AccessHash: 9}, CommissionPermille: 125,
+	})
+	if program != nil || !paymentRPCErrorCode(err, mtproto.ErrInternalServerError) {
+		t.Fatalf("negative affiliate revenue = (%v, %v), want INTERNAL_SERVER_ERROR", program, err)
+	}
+
+	core = newBusinessProviderGapCore(t, "payments.getConnectedStarRefBot", map[string]any{
+		"predicate_name": "payments_connectedStarRefBots", "count": 1,
+		"connected_bots": []any{map[string]any{
+			"predicate_name": "connectedBotStarRef", "bot_id": 7, "commission_permille": 100,
+			"url": "https://example.test/ref", "date": 1, "participants": 0, "revenue": 0,
+		}},
+		"users": []any{nil},
+	})
+	connected, err := core.PaymentsGetConnectedStarRefBot(&mtproto.TLPaymentsGetConnectedStarRefBot{
+		Peer: &mtproto.InputPeer{UserId: 42}, Bot: &mtproto.InputUser{UserId: 7},
+	})
+	if connected != nil || !paymentRPCErrorCode(err, mtproto.ErrInternalServerError) {
+		t.Fatalf("nil affiliate user = (%v, %v), want INTERNAL_SERVER_ERROR", connected, err)
+	}
+}
