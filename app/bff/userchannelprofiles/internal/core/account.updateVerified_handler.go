@@ -28,6 +28,9 @@ func (c *UserChannelProfilesCore) AccountUpdateVerified(in *mtproto.TLAccountUpd
 	// user.updateVerified marks the user verified and does not check admin rights.
 	// This package has no admin RPC, so non-admins are refused and nobody is marked verified.
 	_ = in
+	if c == nil {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
 	c.Logger.Errorf("account.updateVerified - error: admin required")
 	return nil, mtproto.ErrChatAdminRequired
 }

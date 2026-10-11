@@ -25,9 +25,6 @@ import (
 	"strings"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/teamgram/marmota/pkg/stores/sqlc"
-	"github.com/teamgram/marmota/pkg/stores/sqlx"
-	"github.com/teamgram/marmota/pkg/threading2"
 	"github.com/teamgram/teamgram-server/app/service/biz/user/internal/dal/dataobject"
 )
 
@@ -53,34 +50,7 @@ func parseUserPresencesKey(k string) int64 {
 }
 
 func (d *Dao) GetLastSeenAt(ctx context.Context, id int64) (*dataobject.UserPresencesDO, error) {
-	if d.Postgres != nil {
-		return d.Postgres.Store.Presences.Select(ctx, id)
-	}
-	var (
-		do = &dataobject.UserPresencesDO{}
-	)
-
-	err := d.CachedConn.QueryRow(
-		ctx,
-		do,
-		genUserPresencesKey(id),
-		func(ctx context.Context, conn *sqlx.DB, v interface{}) error {
-			do2, err := d.UserPresencesDAO.Select(ctx, id)
-			if err != nil {
-				return err
-			}
-			if do2 != nil {
-				*v.(*dataobject.UserPresencesDO) = *do2
-			} else {
-				return sqlc.ErrNotFound
-			}
-			return nil
-		})
-	if err != nil {
-		return nil, err
-	}
-
-	return do, nil
+	return d.Postgres.Store.Presences.Select(ctx, id)
 }
 
 func (d *Dao) PutLastSeenAt(ctx context.Context, userId int64, lastSeenAt int64, expires int32) error {
@@ -89,16 +59,8 @@ func (d *Dao) PutLastSeenAt(ctx context.Context, userId int64, lastSeenAt int64,
 		LastSeenAt: lastSeenAt,
 		Expires:    expires,
 	}
-	if d.Postgres != nil {
-		return d.Postgres.InTx(ctx, func(tx pgx.Tx) error {
-			_, _, err := d.Postgres.Store.Presences.InsertOrUpdateTx(ctx, tx, do)
-			return err
-		})
-	}
-
-	d.CachedConn.SetCache(ctx, genUserPresencesKey(userId), do)
-	threading2.WrapperGoFunc(ctx, nil, func(ctx context.Context) {
-		d.UserPresencesDAO.InsertOrUpdate(ctx, do)
+	return d.Postgres.InTx(ctx, func(tx pgx.Tx) error {
+		_, _, err := d.Postgres.Store.Presences.InsertOrUpdateTx(ctx, tx, do)
+		return err
 	})
-	return nil
 }

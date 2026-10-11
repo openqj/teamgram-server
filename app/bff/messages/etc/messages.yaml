@@ -1,3 +1,8 @@
 Name: bff.messages
 ListenOn: 0.0.0.0:21570
 PostgresDSN: ${TEAMGRAM_POSTGRES_DSN}
+AIProviderEndpoint: ${TEAMGRAM_AI_PROVIDER_ENDPOINT}
+AIProviderKey: ${TEAMGRAM_AI_PROVIDER_KEY}
+AIProviderSigningKey: ${TEAMGRAM_AI_PROVIDER_SIGNING_KEY}
+AIProviderModel: ${TEAMGRAM_AI_PROVIDER_MODEL}
+AIProviderTimeoutSeconds: 5

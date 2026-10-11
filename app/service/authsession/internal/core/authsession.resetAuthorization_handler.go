@@ -36,6 +36,13 @@ func (c *AuthsessionCore) AuthsessionResetAuthorization(in *authsession.TLAuthse
 		} else {
 			excludeKeyId = myKeyData.PermAuthKeyId
 		}
+		// The caller key is the authorization boundary for this internal RPC.
+		// Do not let a trusted downstream caller supply another user's user_id
+		// and revoke that user's other sessions.
+		if ownerID := c.svcCtx.Dao.GetAuthKeyUserId(c.ctx, excludeKeyId); ownerID != in.UserId {
+			c.Logger.Errorf("auth key %d belongs to user %d, requested user %d", excludeKeyId, ownerID, in.UserId)
+			return nil, mtproto.ErrAuthKeyUnregistered
+		}
 	}
 
 	keyIdList, err := c.svcCtx.Dao.ResetAuthorization(c.ctx, in.UserId, excludeKeyId, in.Hash)

@@ -17,9 +17,7 @@ import (
 // pool and aggregate stores together makes it possible for an inbox delivery
 // to persist a message, its hash tags, and pts state on one pgx transaction.
 //
-// The generated handlers still use the legacy Mysql field on Dao until their
-// transaction callbacks are converted. New code must use this boundary and
-// must not add methods to the MySQL DAO.
+// Message persistence uses this boundary and its transaction callbacks.
 type Postgres struct {
 	Pool  *pgxpool.Pool
 	Store *postgres_dao.Store

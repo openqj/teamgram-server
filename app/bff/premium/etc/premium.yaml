@@ -1,3 +1,7 @@
 Name: bff.premium
 ListenOn: 0.0.0.0:21720
 PostgresDSN: ${TEAMGRAM_POSTGRES_DSN}
+PaymentProviderEndpoint: ${TEAMGRAM_PAYMENT_PROVIDER_ENDPOINT}
+PaymentProviderKey: ${TEAMGRAM_PAYMENT_PROVIDER_KEY}
+PaymentProviderSigningKey: ${TEAMGRAM_PAYMENT_PROVIDER_SIGNING_KEY}
+PaymentProviderTimeoutSeconds: ${TEAMGRAM_PAYMENT_PROVIDER_TIMEOUT_SECONDS}

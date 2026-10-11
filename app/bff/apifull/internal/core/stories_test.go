@@ -204,3 +204,31 @@ func TestStoriesMethodsFailClosedWithoutProvider(t *testing.T) {
 		t.Fatalf("unsupported story methods mutated local state: %q", raw)
 	}
 }
+
+func TestStoriesStartLiveValidRequestFailsClosedWithoutProvider(t *testing.T) {
+	const uid int64 = 229905
+	key := storyKey(uid)
+	old := persist.Default
+	if err := saveUserStories(uid, &userStoryStore{Order: []int32{}, Items: map[int32]*mtproto.StoryItem{}}); err != nil {
+		t.Fatal(err)
+	}
+	before, err := persist.Default.Get(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		persist.Use(old)
+		_ = persist.Default.Set(key, "")
+	})
+
+	c := &ApiFullCore{MD: &metadata.RpcMetadata{UserId: uid}}
+	got, err := c.StoriesStartLive(&mtproto.TLStoriesStartLive{
+		Peer: mtproto.MakeTLInputPeerSelf(nil).To_InputPeer(),
+	})
+	if got != nil || !sameRPCErrorCode(err, mtproto.ErrMethodNotImpl) {
+		t.Fatalf("valid stories.startLive = (%v, %v), want nil result and METHOD_NOT_IMPL", got, err)
+	}
+	if value, readErr := persist.Default.Get(key); readErr != nil || value != before {
+		t.Fatalf("stories.startLive changed local state: before=%q after=%q err=%v", before, value, readErr)
+	}
+}

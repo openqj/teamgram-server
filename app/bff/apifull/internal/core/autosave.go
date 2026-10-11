@@ -48,8 +48,15 @@ func autoSaveKey(userID int64) string {
 
 func loadAutoSave(userID int64) (*autoSaveState, error) {
 	raw, err := persist.Default.Get(autoSaveKey(userID))
-	if err != nil || raw == "" {
-		return &autoSaveState{}, err
+	if err != nil {
+		return nil, err
+	}
+	return decodeAutoSave(raw)
+}
+
+func decodeAutoSave(raw string) (*autoSaveState, error) {
+	if raw == "" {
+		return &autoSaveState{}, nil
 	}
 	var st autoSaveState
 	if err := json.Unmarshal([]byte(raw), &st); err != nil {
@@ -64,6 +71,29 @@ func saveAutoSave(userID int64, st *autoSaveState) error {
 		return err
 	}
 	return persist.Default.Set(autoSaveKey(userID), string(b))
+}
+
+// updateAutoSave performs one owner-scoped settings mutation under the
+// PostgreSQL transaction boundary. This keeps independent exception/settings
+// updates from overwriting one another across BFF instances.
+func updateAutoSave(userID int64, fn func(*autoSaveState) error) error {
+	if userID <= 0 || fn == nil {
+		return mtproto.ErrAuthKeyUnregistered
+	}
+	return persist.Update(autoSaveKey(userID), func(raw string) (string, error) {
+		st, err := decodeAutoSave(raw)
+		if err != nil {
+			return "", err
+		}
+		if err = fn(st); err != nil {
+			return "", err
+		}
+		b, err := json.Marshal(st)
+		if err != nil {
+			return "", err
+		}
+		return string(b), nil
+	})
 }
 
 func emptyAutoSave() *mtproto.AutoSaveSettings {
@@ -153,41 +183,34 @@ func (c *ApiFullCore) AccountSaveAutoSaveSettings(in *mtproto.TLAccountSaveAutoS
 		chats = in.GetChats()
 		broadcasts = in.GetBroadcasts()
 	}
-	st, err := loadAutoSave(userID)
-	if err != nil {
-		return nil, err
-	}
-	if peer != nil {
-		key := scheduledPeerKey(peer)
-		exc := mtproto.MakeTLAutoSaveException(&mtproto.AutoSaveException{
-			Peer:     autosaveInputPeer(peer),
-			Settings: settings,
-		}).To_AutoSaveException()
-		for i := range st.Exceptions {
-			if st.Exceptions[i].Key == key {
-				st.Exceptions[i].Exc = exc
-				if err := saveAutoSave(userID, st); err != nil {
-					return nil, err
+	err = updateAutoSave(userID, func(st *autoSaveState) error {
+		if peer != nil {
+			key := scheduledPeerKey(peer)
+			exc := mtproto.MakeTLAutoSaveException(&mtproto.AutoSaveException{
+				Peer:     autosaveInputPeer(peer),
+				Settings: settings,
+			}).To_AutoSaveException()
+			for i := range st.Exceptions {
+				if st.Exceptions[i].Key == key {
+					st.Exceptions[i].Exc = exc
+					return nil
 				}
-				return mtproto.BoolTrue, nil
 			}
+			st.Exceptions = append(st.Exceptions, autoSaveException{Key: key, Exc: exc})
+			return nil
 		}
-		st.Exceptions = append(st.Exceptions, autoSaveException{Key: key, Exc: exc})
-		if err := saveAutoSave(userID, st); err != nil {
-			return nil, err
+		if users {
+			st.Users = settings
 		}
-		return mtproto.BoolTrue, nil
-	}
-	if users {
-		st.Users = settings
-	}
-	if chats {
-		st.Chats = settings
-	}
-	if broadcasts {
-		st.Broadcasts = settings
-	}
-	if err := saveAutoSave(userID, st); err != nil {
+		if chats {
+			st.Chats = settings
+		}
+		if broadcasts {
+			st.Broadcasts = settings
+		}
+		return nil
+	})
+	if err != nil {
 		return nil, err
 	}
 	return mtproto.BoolTrue, nil
@@ -199,19 +222,11 @@ func (c *ApiFullCore) AccountDeleteAutoSaveExceptions(in *mtproto.TLAccountDelet
 	if err != nil {
 		return nil, err
 	}
-	raw, err := persist.Default.Get(autoSaveKey(userID))
+	err = updateAutoSave(userID, func(st *autoSaveState) error {
+		st.Exceptions = nil
+		return nil
+	})
 	if err != nil {
-		return nil, err
-	}
-	if raw == "" {
-		return mtproto.BoolTrue, nil
-	}
-	st, err := loadAutoSave(userID)
-	if err != nil {
-		return nil, err
-	}
-	st.Exceptions = nil
-	if err := saveAutoSave(userID, st); err != nil {
 		return nil, err
 	}
 	return mtproto.BoolTrue, nil

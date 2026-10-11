@@ -324,5 +324,30 @@ func (c *ApiFullCore) EphemeralGetCallbackAnswer(in *mtproto.TLEphemeralGetCallb
 	if _, err := c.requireUserId(); err != nil {
 		return nil, err
 	}
-	return nil, mtproto.ErrMethodNotImpl
+	// Preserve the fail-closed contract when the callback service is absent.
+	// Validation below only runs once a configured provider can actually answer.
+	if !c.businessProviderConfigured() {
+		return nil, mtproto.ErrMethodNotImpl
+	}
+	if in == nil || in.GetPeer() == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if in.GetId() <= 0 {
+		return nil, mtproto.ErrMessageIdInvalid
+	}
+	if _, _, _, err := ephemeralPeer(in.GetPeer(), c.MD.GetUserId()); err != nil {
+		return nil, err
+	}
+	var result mtproto.Messages_BotCallbackAnswer
+	if err := c.callBusinessProvider("ephemeral.getCallbackAnswer", map[string]any{
+		"peer": in.GetPeer(), "id": in.GetId(), "data": in.GetData(),
+	}, &result); err != nil {
+		return nil, err
+	}
+	if result.GetPredicateName() != mtproto.Predicate_messages_botCallbackAnswer ||
+		result.GetCacheTime() < 0 || result.GetCacheTime() > 86400 ||
+		(result.GetHasUrl() && result.GetUrl() == nil) {
+		return nil, mtproto.ErrInternalServerError
+	}
+	return mtproto.MakeTLMessagesBotCallbackAnswer(&result).To_Messages_BotCallbackAnswer(), nil
 }

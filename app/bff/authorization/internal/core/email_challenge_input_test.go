@@ -57,3 +57,28 @@ func TestEmailAndRecoveryHandlersRejectNilRequests(t *testing.T) {
 		t.Fatalf("recover password nil = (%v, %v), want INPUT_REQUEST_INVALID", result, err)
 	}
 }
+
+func TestEmailChallengeHandlersRejectMissingAuthKey(t *testing.T) {
+	c := &AuthorizationCore{}
+	purpose := mtproto.MakeTLEmailVerifyPurposePassport(nil).To_EmailVerifyPurpose()
+	verificationInput := mtproto.MakeTLEmailVerificationCode(nil).To_EmailVerification()
+
+	if result, err := c.AccountSendVerifyEmailCode(&mtproto.TLAccountSendVerifyEmailCode{
+		Purpose: purpose,
+		Email:   "user@example.com",
+	}); result != nil || !errors.Is(err, mtproto.ErrAuthKeyUnregistered) {
+		t.Fatalf("send email without auth key = (%v, %v), want AUTH_KEY_UNREGISTERED", result, err)
+	}
+	if result, err := c.AccountVerifyEmail32DA4CF(&mtproto.TLAccountVerifyEmail32DA4CF{
+		Purpose:      purpose,
+		Verification: verificationInput,
+	}); result != nil || !errors.Is(err, mtproto.ErrAuthKeyUnregistered) {
+		t.Fatalf("verify email purpose without auth key = (%v, %v), want AUTH_KEY_UNREGISTERED", result, err)
+	}
+	if result, err := c.AccountVerifyEmailECBA39DB(&mtproto.TLAccountVerifyEmailECBA39DB{
+		Email: "user@example.com",
+		Code:  "123456",
+	}); result != nil || !errors.Is(err, mtproto.ErrAuthKeyUnregistered) {
+		t.Fatalf("verify passport email without auth key = (%v, %v), want AUTH_KEY_UNREGISTERED", result, err)
+	}
+}

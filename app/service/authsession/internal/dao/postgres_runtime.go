@@ -1,15 +1,15 @@
 package dao
 
-// This file is the PostgreSQL runtime adapter for authsession.  The generated
-// MySQL DAO remains available for isolated legacy tests, but production
-// service construction selects this adapter whenever Postgres.DSN is set.
+// This file is the PostgreSQL runtime adapter for authsession.
 
 import (
 	"context"
 	"crypto/rand"
+	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"net"
 	"strings"
@@ -18,7 +18,6 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/oschwald/geoip2-golang"
-	"github.com/teamgram/marmota/pkg/stores/sqlc"
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/service/authsession/authsession"
 	"github.com/teamgram/teamgram-server/app/service/authsession/internal/config"
@@ -28,6 +27,12 @@ import (
 	"github.com/zeromicro/go-zero/core/stores/kv"
 	"github.com/zeromicro/go-zero/core/stores/redis"
 )
+
+var mmdb string
+
+func init() {
+	flag.StringVar(&mmdb, "mmdb", "./GeoLite2-City.mmdb", "mmdb")
+}
 
 // Postgres is the authoritative authsession runtime implementation.
 type Postgres struct {
@@ -462,7 +467,7 @@ func (d *Postgres) GetCacheAuthData(ctx context.Context, keyID int64) (*CacheAut
 	data, err := d.getAuthData(ctx, keyID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return &CacheAuthData{}, sqlc.ErrNotFound
+			return &CacheAuthData{}, sql.ErrNoRows
 		}
 		return nil, err
 	}
@@ -594,6 +599,19 @@ func (d *Postgres) ResetAuthorization(ctx context.Context, userID, currentKeyID,
 		ids = ids[:0]
 		keys = keys[:0]
 		return postgres.WithTx(ctx, d.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+			if currentKeyID != 0 {
+				var ownerID int64
+				if err := tx.QueryRow(ctx, `SELECT user_id FROM auth_users
+					WHERE auth_key_id = $1 AND deleted = FALSE FOR SHARE`, currentKeyID).Scan(&ownerID); err != nil {
+					if errors.Is(err, pgx.ErrNoRows) {
+						return mtproto.ErrAuthKeyUnregistered
+					}
+					return err
+				}
+				if ownerID != userID {
+					return mtproto.ErrAuthKeyUnregistered
+				}
+			}
 			rows, err := tx.Query(ctx, `SELECT id, auth_key_id, hash FROM auth_users WHERE user_id=$1 AND deleted=FALSE FOR UPDATE`, userID)
 			if err != nil {
 				return err

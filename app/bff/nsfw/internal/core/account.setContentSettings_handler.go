@@ -26,6 +26,15 @@ import (
 // AccountSetContentSettings
 // account.setContentSettings#b574b16b flags:# sensitive_enabled:flags.0?true = Bool;
 func (c *NsfwCore) AccountSetContentSettings(in *mtproto.TLAccountSetContentSettings) (*mtproto.Bool, error) {
+	if c == nil || c.MD == nil || c.MD.GetUserId() <= 0 {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
+	if in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.UserClient == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
 	rValue, err := c.svcCtx.Dao.UserClient.UserSetContentSettings(c.ctx, &userpb.TLUserSetContentSettings{
 		UserId:           c.MD.UserId,
 		SensitiveEnabled: in.SensitiveEnabled,

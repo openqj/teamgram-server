@@ -1,6 +1,6 @@
 // Package postgres_dao contains the PostgreSQL persistence boundary for the
 // user service. It intentionally uses pgx directly so the new database path
-// does not inherit MySQL placeholder or type semantics.
+// uses PostgreSQL-native placeholders and types.
 package postgres_dao
 
 import (

@@ -33,6 +33,15 @@ import (
 // MessagesEditMessage
 // messages.editMessage#48f71778 flags:# no_webpage:flags.1?true peer:InputPeer id:int message:flags.11?string media:flags.14?InputMedia reply_markup:flags.2?ReplyMarkup entities:flags.3?Vector<MessageEntity> schedule_date:flags.15?int = Updates;
 func (c *MessagesCore) MessagesEditMessage(in *mtproto.TLMessagesEditMessage) (*mtproto.Updates, error) {
+	if c == nil || c.MD == nil || c.MD.UserId <= 0 {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
+	if in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if in.GetPeer() == nil {
+		return nil, mtproto.ErrPeerIdInvalid
+	}
 	var (
 		peer         = mtproto.FromInputPeer2(c.MD.UserId, in.Peer)
 		editMessages *message.Vector_MessageBox

@@ -29,7 +29,7 @@ func (c *AccountCore) AccountSetAccountTTL(in *mtproto.TLAccountSetAccountTTL) (
 	if c == nil || c.MD == nil || c.MD.GetPermAuthKeyId() == 0 || c.MD.GetUserId() == 0 {
 		return nil, mtproto.ErrAuthKeyUnregistered
 	}
-	if in == nil {
+	if in == nil || in.GetTtl() == nil {
 		return nil, mtproto.ErrInputRequestInvalid
 	}
 	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.UserClient == nil {

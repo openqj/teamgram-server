@@ -365,7 +365,33 @@ func (c *ApiFullCore) BotsSetJoinChatResults(in *mtproto.TLBotsSetJoinChatResult
 	if _, err := c.requireUserId(); err != nil {
 		return nil, err
 	}
-	return nil, mtproto.ErrMethodNotImpl
+	if !c.businessProviderConfigured() {
+		return nil, mtproto.ErrMethodNotImpl
+	}
+	if in == nil || in.GetResult() == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if in.GetQueryId() == 0 {
+		return nil, mtproto.ErrQueryIdEmpty
+	}
+	if in.GetResult().GetPredicateName() == "" {
+		return nil, mtproto.ErrInputConstructorInvalid
+	}
+	var result struct {
+		Value *bool `json:"value"`
+	}
+	if err := c.callBusinessProvider("bots.setJoinChatResults", map[string]any{
+		"query_id": in.GetQueryId(), "result": in.GetResult(),
+	}, &result); err != nil {
+		return nil, err
+	}
+	if result.Value == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
+	if *result.Value {
+		return mtproto.BoolTrue, nil
+	}
+	return mtproto.BoolFalse, nil
 }
 
 func (c *ApiFullCore) BotsGetBotInfo75EC12E6(in *mtproto.TLBotsGetBotInfo75EC12E6) (*mtproto.Vector_String, error) {

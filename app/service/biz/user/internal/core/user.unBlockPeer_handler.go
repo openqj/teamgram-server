@@ -17,8 +17,17 @@ import (
 // UserUnBlockPeer
 // user.unBlockPeer user_id:long peer_type:int peer_id:long = Bool;
 func (c *UserCore) UserUnBlockPeer(in *user.TLUserUnBlockPeer) (*mtproto.Bool, error) {
+	if in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
 	if in.GetPeerType() != mtproto.PEER_USER || in.GetPeerId() <= 0 {
 		return nil, mtproto.ErrPeerIdInvalid
+	}
+	if in.GetUserId() <= 0 {
+		return nil, mtproto.ErrUserIdInvalid
+	}
+	if err := c.requirePostgres(); err != nil {
+		return nil, err
 	}
 	if err := c.svcCtx.Dao.UnBlockUser(c.ctx, in.GetUserId(), in.GetPeerId()); err != nil {
 		return nil, err

@@ -73,6 +73,9 @@ func (c *MessagesCore) makeMediaByInputMedia(media *mtproto.InputMedia) (message
 		//	stickers:flags.0?Vector<InputDocument>
 		//	ttl_seconds:flags.1?int = InputMedia;
 
+		if c == nil || c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.MediaClient == nil {
+			return nil, mtproto.ErrInternalServerError
+		}
 		var (
 			photo *mtproto.Photo
 		)
@@ -104,6 +107,9 @@ func (c *MessagesCore) makeMediaByInputMedia(media *mtproto.InputMedia) (message
 		inputPhoto := mediaPhoto.GetId_INPUTPHOTO()
 		if inputPhoto == nil || inputPhoto.GetId() <= 0 || inputPhoto.GetAccessHash() == 0 {
 			return nil, mtproto.ErrPhotoInvalid
+		}
+		if c == nil || c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.MediaClient == nil {
+			return nil, mtproto.ErrInternalServerError
 		}
 		photo, err := c.svcCtx.Dao.MediaClient.MediaGetPhoto(c.ctx, &mediapb.TLMediaGetPhoto{
 			PhotoId: inputPhoto.GetId(),
@@ -145,7 +151,7 @@ func (c *MessagesCore) makeMediaByInputMedia(media *mtproto.InputMedia) (message
 		}).To_MessageMedia()
 
 		phoneNumber, err := phonenumber.CheckAndGetPhoneNumber(contact.GetPhoneNumber())
-		if err == nil {
+		if err == nil && c != nil && c.svcCtx != nil && c.svcCtx.Dao != nil && c.svcCtx.Dao.UserClient != nil {
 			cId, _ := c.svcCtx.Dao.UserClient.UserGetUserIdByPhone(c.ctx, &userpb.TLUserGetUserIdByPhone{
 				Phone: phoneNumber,
 			})
@@ -163,6 +169,9 @@ func (c *MessagesCore) makeMediaByInputMedia(media *mtproto.InputMedia) (message
 		//	attributes:Vector<DocumentAttribute>
 		//	stickers:flags.0?Vector<InputDocument>
 		//	ttl_seconds:flags.1?int = InputMedia;
+		if c == nil || c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.MediaClient == nil {
+			return nil, mtproto.ErrInternalServerError
+		}
 		documentMedia, err2 := c.svcCtx.Dao.MediaClient.MediaUploadedDocumentMedia(c.ctx, &mediapb.TLMediaUploadedDocumentMedia{
 			OwnerId: c.MD.PermAuthKeyId,
 			Media:   media,
@@ -186,6 +195,9 @@ func (c *MessagesCore) makeMediaByInputMedia(media *mtproto.InputMedia) (message
 			id.GetId() <= 0 ||
 			id.GetAccessHash() == 0 {
 			return nil, mtproto.ErrDocumentInvalid
+		}
+		if c == nil || c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.MediaClient == nil {
+			return nil, mtproto.ErrInternalServerError
 		}
 
 		document3, err := c.svcCtx.Dao.MediaClient.MediaGetDocument(c.ctx, &mediapb.TLMediaGetDocument{

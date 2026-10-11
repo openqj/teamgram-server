@@ -13,7 +13,7 @@ func TestAccountReorderUsernames(t *testing.T) {
 	if got, err := c.AccountReorderUsernames(&mtproto.TLAccountReorderUsernames{Order: []string{"prod-frag"}}); got != nil || !errors.Is(err, mtproto.ErrMethodNotImpl) {
 		t.Fatalf("reorder=(%#v, %v), want METHOD_NOT_IMPL", got, err)
 	}
-	if got, err := c.FragmentGetCollectibleInfo(nil); got != nil || !errors.Is(err, mtproto.ErrMethodNotImpl) {
+	if got, err := c.FragmentGetCollectibleInfo(&mtproto.TLFragmentGetCollectibleInfo{}); got != nil || !errors.Is(err, mtproto.ErrMethodNotImpl) {
 		t.Fatalf("collectible=(%#v, %v), want METHOD_NOT_IMPL", got, err)
 	}
 }

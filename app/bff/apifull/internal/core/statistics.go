@@ -437,9 +437,25 @@ func (c *ApiFullCore) StatsGetMessagePublicForwards5F150144(in *mtproto.TLStatsG
 	if err = c.validatePublicForwardsMessage(uid, in.GetChannel(), in.GetMsgId()); err != nil {
 		return nil, err
 	}
-	// The message store does not retain a reverse public-forward index.  A
-	// validated source message therefore cannot produce a trustworthy result.
-	return nil, mtproto.ErrMethodNotImpl
+	var result mtproto.Stats_PublicForwards
+	if err = c.callBusinessProvider("stats.getMessagePublicForwards", map[string]any{
+		"channel": in.GetChannel(), "msg_id": in.GetMsgId(), "offset": in.GetOffset(), "limit": in.GetLimit(),
+	}, &result); err != nil {
+		return nil, err
+	}
+	if result.GetCount() < 0 || len(result.GetForwards()) > int(in.GetLimit()) {
+		return nil, mtproto.ErrInternalServerError
+	}
+	if result.GetForwards() == nil {
+		result.Forwards = []*mtproto.PublicForward{}
+	}
+	if result.GetUsers() == nil {
+		result.Users = []*mtproto.User{}
+	}
+	if result.GetChats() == nil {
+		result.Chats = []*mtproto.Chat{}
+	}
+	return mtproto.MakeTLStatsPublicForwards(&result).To_Stats_PublicForwards(), nil
 }
 
 func (c *ApiFullCore) StatsGetMessageStats(in *mtproto.TLStatsGetMessageStats) (*mtproto.Stats_MessageStats, error) {
@@ -544,8 +560,25 @@ func (c *ApiFullCore) StatsGetStoryPublicForwards(in *mtproto.TLStatsGetStoryPub
 	if stories.Items[in.GetId()] == nil {
 		return nil, mtproto.ErrStoryIdEmpty
 	}
-	// Stories currently have no reverse public-forward provider or index.
-	return nil, mtproto.ErrMethodNotImpl
+	var result mtproto.Stats_PublicForwards
+	if err = c.callBusinessProvider("stats.getStoryPublicForwards", map[string]any{
+		"peer": in.GetPeer(), "story_id": in.GetId(), "offset": in.GetOffset(), "limit": in.GetLimit(),
+	}, &result); err != nil {
+		return nil, err
+	}
+	if result.GetCount() < 0 || len(result.GetForwards()) > int(in.GetLimit()) {
+		return nil, mtproto.ErrInternalServerError
+	}
+	if result.GetForwards() == nil {
+		result.Forwards = []*mtproto.PublicForward{}
+	}
+	if result.GetUsers() == nil {
+		result.Users = []*mtproto.User{}
+	}
+	if result.GetChats() == nil {
+		result.Chats = []*mtproto.Chat{}
+	}
+	return mtproto.MakeTLStatsPublicForwards(&result).To_Stats_PublicForwards(), nil
 }
 
 func (c *ApiFullCore) StatsGetPollStats(in *mtproto.TLStatsGetPollStats) (*mtproto.Stats_PollStats, error) {
@@ -594,7 +627,24 @@ func (c *ApiFullCore) StatsGetMessagePublicForwards5630281B(in *mtproto.TLStatsG
 	if err = c.validatePublicForwardsMessage(uid, in.GetChannel(), in.GetMsgId()); err != nil {
 		return nil, err
 	}
-	// The message store does not retain public-forward records or their
-	// hydrated entities, so this constructor also fails closed.
-	return nil, mtproto.ErrMethodNotImpl
+	var result mtproto.Messages_Messages
+	if err = c.callBusinessProvider("stats.getMessagePublicForwardsLegacy", map[string]any{
+		"channel": in.GetChannel(), "msg_id": in.GetMsgId(), "offset_rate": in.GetOffsetRate(),
+		"offset_peer": in.GetOffsetPeer(), "offset_id": in.GetOffsetId(), "limit": in.GetLimit(),
+	}, &result); err != nil {
+		return nil, err
+	}
+	if len(result.GetMessages()) > int(in.GetLimit()) {
+		return nil, mtproto.ErrInternalServerError
+	}
+	if result.GetMessages() == nil {
+		result.Messages = []*mtproto.Message{}
+	}
+	if result.GetUsers() == nil {
+		result.Users = []*mtproto.User{}
+	}
+	if result.GetChats() == nil {
+		result.Chats = []*mtproto.Chat{}
+	}
+	return mtproto.MakeTLMessagesMessages(&result).To_Messages_Messages(), nil
 }

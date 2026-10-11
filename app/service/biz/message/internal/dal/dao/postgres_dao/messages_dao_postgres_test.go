@@ -21,6 +21,48 @@ func TestSelectByMessageDataIdUserIdListEmptyIsEmpty(t *testing.T) {
 	}
 }
 
+func TestSelectByMessageDataIdListScopesToUser(t *testing.T) {
+	dsn := os.Getenv("MESSENGER_POSTGRES_DSN")
+	if dsn == "" {
+		t.Skip("MESSENGER_POSTGRES_DSN must point to an isolated PostgreSQL 18 test database")
+	}
+
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	if err := pool.Ping(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	base := time.Now().UnixNano()
+	userIDs := []int64{base + 1, base + 2}
+	dialogMessageID := base + 3
+	defer func() {
+		_, _ = pool.Exec(ctx, `DELETE FROM messages WHERE user_id = ANY($1::bigint[]) AND dialog_message_id = $2`, userIDs, dialogMessageID)
+	}()
+
+	dao := NewMessagesDAO(pool)
+	for i, userID := range userIDs {
+		if _, _, err := dao.InsertOrReturnId(ctx, &dataobject.MessagesDO{
+			UserId: userID, UserMessageBoxId: int32(i + 1), DialogMessageId: dialogMessageID,
+			SenderUserId: userIDs[0], MessageData: `{}`,
+		}); err != nil {
+			t.Fatalf("insert user view %d: %v", i, err)
+		}
+	}
+
+	rows, err := dao.SelectByMessageDataIdList(ctx, userIDs[0], []int64{dialogMessageID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].UserId != userIDs[0] {
+		t.Fatalf("scoped dialog message rows = %#v, want one row for user %d", rows, userIDs[0])
+	}
+}
+
 func TestCountByMediaTypeIncludesPhotoVideoVariants(t *testing.T) {
 	dsn := os.Getenv("MESSENGER_POSTGRES_DSN")
 	if dsn == "" {

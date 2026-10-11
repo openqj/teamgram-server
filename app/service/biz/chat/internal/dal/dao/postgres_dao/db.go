@@ -1,6 +1,6 @@
 // Package postgres_dao contains the PostgreSQL persistence boundary for the
 // basic-group chat service. It deliberately has no dependency on Teamgram's
-// MySQL wrapper so the service can migrate one aggregate at a time.
+// shared PostgreSQL handle used by the service's aggregate DAOs.
 package postgres_dao
 
 import (

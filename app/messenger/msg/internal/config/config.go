@@ -29,8 +29,7 @@ import (
 
 type Config struct {
 	zrpc.RpcServerConf
-	// Postgres is the authoritative store for new deployments. Mysql remains
-	// here only while the generated message handlers move to pgx transactions.
+	// Postgres is the authoritative persistence store.
 	Postgres         postgres.Config
 	InboxConsumer    kafka.KafkaConsumerConf
 	Cache            cache.CacheConf

@@ -1,8 +1,8 @@
 // Package postgres owns the project's PostgreSQL connection boundary.
 //
-// New code should depend on this package instead of importing a MySQL driver
-// or the Teamgram MySQL wrapper. Queries passed to this package use PostgreSQL
-// numbered placeholders ($1, $2, ...).
+// New code should depend on this package instead of importing a legacy SQL
+// driver or Teamgram's generated wrapper. Queries passed to this package use
+// PostgreSQL numbered placeholders ($1, $2, ...).
 package postgres
 
 import (

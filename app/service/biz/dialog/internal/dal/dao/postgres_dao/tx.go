@@ -6,9 +6,8 @@ import (
 	"github.com/teamgram/teamgram-server/app/service/biz/dialog/internal/dal/dataobject"
 )
 
-// The generated MySQL layer exposes transaction-suffixed methods. These
-// wrappers retain that call shape while accepting the pgx transaction boundary
-// used by the PostgreSQL service path.
+// These wrappers keep transaction-aware call sites concise while accepting the
+// pgx transaction boundary used by the PostgreSQL service path.
 func (d *DialogsDAO) UpdateOutboxDialogTx(ctx context.Context, tx DB, topMessage int32, date2, userID int64, peerType int32, peerID int64) (int64, error) {
 	return (&DialogsDAO{db: tx}).UpdateOutboxDialog(ctx, topMessage, date2, userID, peerType, peerID)
 }

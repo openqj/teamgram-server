@@ -38,16 +38,23 @@ func (c *AuthorizationCore) AuthImportBotAuthorization(in *mtproto.TLAuthImportB
 		c.Logger.Errorf("auth.importBotAuthorization - api: %v", err)
 		return nil, err
 	}
-	verified, err := c.authProvider(c.ctx, authProviderRequest{
-		Operation:    "verify_bot_authorization",
-		APIID:        in.GetApiId(),
-		APIHash:      in.GetApiHash(),
-		BotAuthToken: in.GetBotAuthToken(),
-	})
-	if err != nil {
-		return nil, err
+	var expectedID int64
+	// The User service owns bot tokens in PostgreSQL. Use the signed external
+	// verifier when configured, but keep a complete local path for deployments
+	// that intentionally make that service the authority for bot credentials.
+	if c.authProviderConfigured() {
+		verified, err := c.authProvider(c.ctx, authProviderRequest{
+			Operation:    "verify_bot_authorization",
+			APIID:        in.GetApiId(),
+			APIHash:      in.GetApiHash(),
+			BotAuthToken: in.GetBotAuthToken(),
+		})
+		if err != nil {
+			return nil, err
+		}
+		expectedID = verified.UserID
 	}
-	user, err := c.loadBotByProviderToken(in.GetBotAuthToken(), verified.UserID)
+	user, err := c.loadBotByProviderToken(in.GetBotAuthToken(), expectedID)
 	if err != nil {
 		return nil, err
 	}

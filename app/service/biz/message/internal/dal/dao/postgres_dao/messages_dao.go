@@ -151,17 +151,17 @@ func (d *MessagesDAO) SelectByMessageIdList(ctx context.Context, userID int64, i
 	return scanMessages(rows)
 }
 
-// SelectByMessageDataIdList returns all user views for the requested
-// dialog-wide message ids. The generated MySQL DAO accepted a physical table
-// name; PostgreSQL stores all message views in one relation, so the user
-// scope is the authoritative partition key instead.
-func (d *MessagesDAO) SelectByMessageDataIdList(ctx context.Context, _ int64, ids []int64) ([]dataobject.MessagesDO, error) {
+// SelectByMessageDataIdList returns the caller's user views for the requested
+// dialog-wide message ids. The generated legacy DAO accepted a physical table
+// name; PostgreSQL stores all message views in one relation, so user_id is the
+// authoritative partition key for this per-user operation.
+func (d *MessagesDAO) SelectByMessageDataIdList(ctx context.Context, userID int64, ids []int64) ([]dataobject.MessagesDO, error) {
 	if len(ids) == 0 {
 		return []dataobject.MessagesDO{}, nil
 	}
 	rows, err := d.db.Query(ctx, `SELECT `+messageColumns+` FROM messages
-WHERE dialog_message_id = ANY($1::bigint[]) AND deleted = FALSE
-ORDER BY user_message_box_id DESC`, ids)
+WHERE user_id = $1 AND dialog_message_id = ANY($2::bigint[]) AND deleted = FALSE
+ORDER BY user_message_box_id DESC`, userID, ids)
 	if err != nil {
 		return nil, err
 	}

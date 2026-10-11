@@ -295,14 +295,23 @@ func (c *ApiFullCore) AccountGetConnectedBots(in *mtproto.TLAccountGetConnectedB
 }
 
 func (c *ApiFullCore) AccountGetBotBusinessConnection(in *mtproto.TLAccountGetBotBusinessConnection) (*mtproto.Updates, error) {
-	if _, err := c.requireUserId(); err != nil {
+	uid, err := c.requireUserId()
+	if err != nil {
 		return nil, err
 	}
 	if in == nil || in.GetConnectionId() == "" {
 		return nil, mtproto.ErrInputRequestInvalid
 	}
-	// Connected-bot settings do not store bot-facing business connection IDs.
-	return nil, mtproto.ErrMethodNotImpl
+	var result mtproto.Updates
+	if err = c.callBusinessProvider("account.getBotBusinessConnection", map[string]any{
+		"user_id": uid, "connection_id": in.GetConnectionId(),
+	}, &result); err != nil {
+		return nil, err
+	}
+	if result.GetPredicateName() == "" {
+		return nil, mtproto.ErrInternalServerError
+	}
+	return &result, nil
 }
 
 func (c *ApiFullCore) AccountToggleConnectedBotPaused(in *mtproto.TLAccountToggleConnectedBotPaused) (*mtproto.Bool, error) {

@@ -25,24 +25,6 @@ import (
 	"github.com/teamgram/proto/mtproto"
 )
 
-//func init2() {
-//	// rand.Seed(time.Now().UnixNano())
-//	mysqlConfig1 := mysql_client.MySQLConfig{
-//		Name:   "immaster",
-//		DSN:    "root:@/chatengine?charset=utf8",
-//		Active: 5,
-//		Idle:   2,
-//	}
-//	mysqlConfig2 := mysql_client.MySQLConfig{
-//		Name:   "imslave",
-//		DSN:    "root:@/chatengine?charset=utf8",
-//		Active: 5,
-//		Idle:   2,
-//	}
-//	mysql_client.InstallMysqlClientManager([]mysql_client.MySQLConfig{mysqlConfig1, mysqlConfig2})
-//	// dao.InstallMysqlDAOManager(mysql_client.GetMysqlClientManager())
-//}
-
 // go test -v -run=TestUploadPhotoFile
 func TestUploadPhotoFile(t *testing.T) {
 	var (

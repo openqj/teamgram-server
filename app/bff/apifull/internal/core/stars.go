@@ -620,7 +620,11 @@ func (c *ApiFullCore) PaymentsGetStarsGiftOptions(in *mtproto.TLPaymentsGetStars
 	// The recipient is part of the offer request, but no recipient inventory
 	// is exposed. Accept a well-formed self/user reference so gifting another
 	// account does not require reading that account's private ledger.
-	peer := mtproto.FromInputUser(uid, in.GetUserId())
+	inputUser := in.GetUserId()
+	if inputUser.GetPredicateName() == mtproto.Predicate_inputUser && inputUser.GetAccessHash() == 0 {
+		return nil, mtproto.ErrUserIdInvalid
+	}
+	peer := mtproto.FromInputUser(uid, inputUser)
 	if peer == nil || (peer.PeerType != mtproto.PEER_SELF && peer.PeerType != mtproto.PEER_USER) || peer.PeerId <= 0 {
 		return nil, mtproto.ErrUserIdInvalid
 	}

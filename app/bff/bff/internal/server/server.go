@@ -104,6 +104,40 @@ func applyTurnEnvironment(c *config.Config) error {
 }
 
 func applyProviderEnvironment(c *config.Config) error {
+	for _, override := range []struct {
+		name   string
+		target *string
+	}{
+		{name: "TEAMGRAM_AI_PROVIDER_ENDPOINT", target: &c.AIProviderEndpoint},
+		{name: "TEAMGRAM_AI_PROVIDER_KEY", target: &c.AIProviderKey},
+		{name: "TEAMGRAM_AI_PROVIDER_SIGNING_KEY", target: &c.AIProviderSigningKey},
+		{name: "TEAMGRAM_AI_PROVIDER_MODEL", target: &c.AIProviderModel},
+		{name: "TEAMGRAM_BUSINESS_PROVIDER_ENDPOINT", target: &c.BusinessProviderEndpoint},
+		{name: "TEAMGRAM_BUSINESS_PROVIDER_KEY", target: &c.BusinessProviderKey},
+		{name: "TEAMGRAM_BUSINESS_PROVIDER_SIGNING_KEY", target: &c.BusinessProviderSigningKey},
+	} {
+		if value, ok := os.LookupEnv(override.name); ok {
+			if strings.HasSuffix(override.name, "_ENDPOINT") {
+				value = strings.TrimSpace(value)
+			}
+			*override.target = value
+		}
+	}
+	for _, override := range []struct {
+		name   string
+		target *int
+	}{
+		{name: "TEAMGRAM_AI_PROVIDER_TIMEOUT_SECONDS", target: &c.AIProviderTimeoutSeconds},
+		{name: "TEAMGRAM_BUSINESS_PROVIDER_TIMEOUT_SECONDS", target: &c.BusinessProviderTimeoutSeconds},
+	} {
+		if value, ok := os.LookupEnv(override.name); ok {
+			timeout, err := strconv.Atoi(strings.TrimSpace(value))
+			if err != nil || timeout < 0 || timeout > 300 {
+				return errors.New(override.name + " must be an integer from 0 to 300")
+			}
+			*override.target = timeout
+		}
+	}
 	if value, ok := os.LookupEnv("TEAMGRAM_PAYMENT_PROVIDER_ENDPOINT"); ok {
 		c.PaymentProviderEndpoint = strings.TrimSpace(value)
 	}
@@ -119,6 +153,50 @@ func applyProviderEnvironment(c *config.Config) error {
 			return errors.New("TEAMGRAM_PAYMENT_PROVIDER_TIMEOUT_SECONDS must be an integer from 0 to 300")
 		}
 		c.PaymentProviderTimeoutSeconds = timeout
+	}
+	for _, override := range []struct {
+		name   string
+		target *string
+	}{
+		{name: "TEAMGRAM_SPONSORED_PROVIDER_ENDPOINT", target: &c.SponsoredProviderEndpoint},
+		{name: "TEAMGRAM_SPONSORED_PROVIDER_KEY", target: &c.SponsoredProviderKey},
+		{name: "TEAMGRAM_SPONSORED_PROVIDER_SIGNING_KEY", target: &c.SponsoredProviderSigningKey},
+	} {
+		if value, ok := os.LookupEnv(override.name); ok {
+			if override.name == "TEAMGRAM_SPONSORED_PROVIDER_ENDPOINT" {
+				value = strings.TrimSpace(value)
+			}
+			*override.target = value
+		}
+	}
+	if value, ok := os.LookupEnv("TEAMGRAM_SPONSORED_PROVIDER_TIMEOUT_SECONDS"); ok {
+		timeout, err := strconv.Atoi(strings.TrimSpace(value))
+		if err != nil || timeout < 0 || timeout > 300 {
+			return errors.New("TEAMGRAM_SPONSORED_PROVIDER_TIMEOUT_SECONDS must be an integer from 0 to 300")
+		}
+		c.SponsoredProviderTimeoutSeconds = timeout
+	}
+	for _, override := range []struct {
+		name   string
+		target *string
+	}{
+		{name: "TEAMGRAM_BOT_CONNECTION_PROVIDER_ENDPOINT", target: &c.BotConnectionProviderEndpoint},
+		{name: "TEAMGRAM_BOT_CONNECTION_PROVIDER_KEY", target: &c.BotConnectionProviderKey},
+		{name: "TEAMGRAM_BOT_CONNECTION_PROVIDER_SIGNING_KEY", target: &c.BotConnectionProviderSigningKey},
+	} {
+		if value, ok := os.LookupEnv(override.name); ok {
+			if override.name == "TEAMGRAM_BOT_CONNECTION_PROVIDER_ENDPOINT" {
+				value = strings.TrimSpace(value)
+			}
+			*override.target = value
+		}
+	}
+	if value, ok := os.LookupEnv("TEAMGRAM_BOT_CONNECTION_PROVIDER_TIMEOUT_SECONDS"); ok {
+		timeout, err := strconv.Atoi(strings.TrimSpace(value))
+		if err != nil || timeout < 0 || timeout > 300 {
+			return errors.New("TEAMGRAM_BOT_CONNECTION_PROVIDER_TIMEOUT_SECONDS must be an integer from 0 to 300")
+		}
+		c.BotConnectionProviderTimeoutSeconds = timeout
 	}
 	for _, override := range []struct {
 		name   string
@@ -141,6 +219,50 @@ func applyProviderEnvironment(c *config.Config) error {
 			return errors.New("TEAMGRAM_AUTH_PROVIDER_TIMEOUT_SECONDS must be an integer from 0 to 300")
 		}
 		c.AuthProviderTimeoutSeconds = timeout
+	}
+	for _, override := range []struct {
+		name   string
+		target *string
+	}{
+		{name: "TEAMGRAM_PASSPORT_PROVIDER_ENDPOINT", target: &c.PassportProviderEndpoint},
+		{name: "TEAMGRAM_PASSPORT_PROVIDER_KEY", target: &c.PassportProviderKey},
+		{name: "TEAMGRAM_PASSPORT_PROVIDER_SIGNING_KEY", target: &c.PassportProviderSigningKey},
+	} {
+		if value, ok := os.LookupEnv(override.name); ok {
+			if override.name == "TEAMGRAM_PASSPORT_PROVIDER_ENDPOINT" {
+				value = strings.TrimSpace(value)
+			}
+			*override.target = value
+		}
+	}
+	if value, ok := os.LookupEnv("TEAMGRAM_PASSPORT_PROVIDER_TIMEOUT_SECONDS"); ok {
+		timeout, err := strconv.Atoi(strings.TrimSpace(value))
+		if err != nil || timeout < 0 || timeout > 300 {
+			return errors.New("TEAMGRAM_PASSPORT_PROVIDER_TIMEOUT_SECONDS must be an integer from 0 to 300")
+		}
+		c.PassportProviderTimeoutSeconds = timeout
+	}
+	for _, override := range []struct {
+		name   string
+		target *string
+	}{
+		{name: "TEAMGRAM_USERCHANNELPROFILES_PROVIDER_ENDPOINT", target: &c.UserChannelProfilesProviderEndpoint},
+		{name: "TEAMGRAM_USERCHANNELPROFILES_PROVIDER_KEY", target: &c.UserChannelProfilesProviderKey},
+		{name: "TEAMGRAM_USERCHANNELPROFILES_PROVIDER_SIGNING_KEY", target: &c.UserChannelProfilesProviderSigningKey},
+	} {
+		if value, ok := os.LookupEnv(override.name); ok {
+			if override.name == "TEAMGRAM_USERCHANNELPROFILES_PROVIDER_ENDPOINT" {
+				value = strings.TrimSpace(value)
+			}
+			*override.target = value
+		}
+	}
+	if value, ok := os.LookupEnv("TEAMGRAM_USERCHANNELPROFILES_PROVIDER_TIMEOUT_SECONDS"); ok {
+		timeout, err := strconv.Atoi(strings.TrimSpace(value))
+		if err != nil || timeout < 0 || timeout > 300 {
+			return errors.New("TEAMGRAM_USERCHANNELPROFILES_PROVIDER_TIMEOUT_SECONDS must be an integer from 0 to 300")
+		}
+		c.UserChannelProfilesProviderTimeoutSeconds = timeout
 	}
 	for _, override := range []struct {
 		name   string
@@ -354,7 +476,12 @@ func (s *Server) Initialize() error {
 		mtproto.RegisterRPCPremiumServer(
 			grpcServer,
 			premium_helper.New(premium_helper.Config{
-				RpcServerConf: c.RpcServerConf,
+				RpcServerConf:                 c.RpcServerConf,
+				PostgresDSN:                   c.PostgresDSN,
+				PaymentProviderEndpoint:       c.PaymentProviderEndpoint,
+				PaymentProviderKey:            c.PaymentProviderKey,
+				PaymentProviderSigningKey:     c.PaymentProviderSigningKey,
+				PaymentProviderTimeoutSeconds: c.PaymentProviderTimeoutSeconds,
 			}))
 
 		// chatinvites_helper
@@ -401,10 +528,14 @@ func (s *Server) Initialize() error {
 		mtproto.RegisterRPCPassportServer(
 			grpcServer,
 			passport_helper.New(passport_helper.Config{
-				RpcServerConf:     c.RpcServerConf,
-				PostgresDSN:       c.PostgresDSN,
-				AuthsessionClient: c.AuthSessionClient,
-				UserClient:        c.BizServiceClient,
+				RpcServerConf:                  c.RpcServerConf,
+				PostgresDSN:                    c.PostgresDSN,
+				PassportProviderEndpoint:       c.PassportProviderEndpoint,
+				PassportProviderKey:            c.PassportProviderKey,
+				PassportProviderSigningKey:     c.PassportProviderSigningKey,
+				PassportProviderTimeoutSeconds: c.PassportProviderTimeoutSeconds,
+				AuthsessionClient:              c.AuthSessionClient,
+				UserClient:                     c.BizServiceClient,
 			}))
 
 		// updates_helper
@@ -523,8 +654,12 @@ func (s *Server) Initialize() error {
 		mtproto.RegisterRPCSponsoredMessagesServer(
 			grpcServer,
 			sponsoredmessages_helper.New(sponsoredmessages_helper.Config{
-				RpcServerConf: c.RpcServerConf,
-				PostgresDSN:   c.PostgresDSN,
+				RpcServerConf:                   c.RpcServerConf,
+				PostgresDSN:                     c.PostgresDSN,
+				SponsoredProviderEndpoint:       c.SponsoredProviderEndpoint,
+				SponsoredProviderKey:            c.SponsoredProviderKey,
+				SponsoredProviderSigningKey:     c.SponsoredProviderSigningKey,
+				SponsoredProviderTimeoutSeconds: c.SponsoredProviderTimeoutSeconds,
 			}))
 
 		// account_helper
@@ -532,13 +667,17 @@ func (s *Server) Initialize() error {
 			grpcServer,
 			account_helper.New(
 				account_helper.Config{
-					RpcServerConf:     c.RpcServerConf,
-					PostgresDSN:       c.PostgresDSN,
-					KV:                c.KV,
-					UserClient:        c.BizServiceClient,
-					AuthsessionClient: c.AuthSessionClient,
-					ChatClient:        c.BizServiceClient,
-					SyncClient:        c.SyncClient,
+					RpcServerConf:                       c.RpcServerConf,
+					PostgresDSN:                         c.PostgresDSN,
+					KV:                                  c.KV,
+					UserClient:                          c.BizServiceClient,
+					AuthsessionClient:                   c.AuthSessionClient,
+					ChatClient:                          c.BizServiceClient,
+					SyncClient:                          c.SyncClient,
+					BotConnectionProviderEndpoint:       c.BotConnectionProviderEndpoint,
+					BotConnectionProviderKey:            c.BotConnectionProviderKey,
+					BotConnectionProviderSigningKey:     c.BotConnectionProviderSigningKey,
+					BotConnectionProviderTimeoutSeconds: c.BotConnectionProviderTimeoutSeconds,
 				},
 				nil,
 				nil))
@@ -581,11 +720,15 @@ func (s *Server) Initialize() error {
 		mtproto.RegisterRPCUserChannelProfilesServer(
 			grpcServer,
 			userchannelprofileshelper.New(userchannelprofileshelper.Config{
-				RpcServerConf: c.RpcServerConf,
-				PostgresDSN:   c.PostgresDSN,
-				MediaClient:   c.MediaClient,
-				UserClient:    c.BizServiceClient,
-				SyncClient:    c.SyncClient,
+				RpcServerConf:                             c.RpcServerConf,
+				PostgresDSN:                               c.PostgresDSN,
+				UserChannelProfilesProviderEndpoint:       c.UserChannelProfilesProviderEndpoint,
+				UserChannelProfilesProviderKey:            c.UserChannelProfilesProviderKey,
+				UserChannelProfilesProviderSigningKey:     c.UserChannelProfilesProviderSigningKey,
+				UserChannelProfilesProviderTimeoutSeconds: c.UserChannelProfilesProviderTimeoutSeconds,
+				MediaClient:                               c.MediaClient,
+				UserClient:                                c.BizServiceClient,
+				SyncClient:                                c.SyncClient,
 			}))
 
 		passkeyService := passkeyhelper.New(passkeyhelper.Config{
@@ -607,32 +750,41 @@ func (s *Server) Initialize() error {
 			}))
 
 		apiFull := apifull_helper.New(apifull_helper.Config{
-			RpcServerConf:                 c.RpcServerConf,
-			DialogClient:                  c.BizServiceClient,
-			UserClient:                    c.BizServiceClient,
-			ChatClient:                    c.BizServiceClient,
-			MessageClient:                 c.BizServiceClient,
-			MsgClient:                     c.MsgClient,
-			DfsClient:                     c.DfsClient,
-			SyncClient:                    c.SyncClient,
-			KV:                            c.KV,
-			Code:                          c.Code,
-			PostgresDSN:                   c.PostgresDSN,
-			PaymentProviderEndpoint:       c.PaymentProviderEndpoint,
-			PaymentProviderKey:            c.PaymentProviderKey,
-			PaymentProviderSigningKey:     c.PaymentProviderSigningKey,
-			PaymentProviderTimeoutSeconds: c.PaymentProviderTimeoutSeconds,
-			GroupCallMediaEndpoint:        c.GroupCallMediaEndpoint,
-			GroupCallMediaAPIKey:          c.GroupCallMediaAPIKey,
-			GroupCallMediaSigningKey:      c.GroupCallMediaSigningKey,
-			GroupCallMediaRTMPHost:        c.GroupCallMediaRTMPHost,
-			GroupCallMediaTimeoutSeconds:  c.GroupCallMediaTimeoutSeconds,
-			TurnHost:                      c.TurnHost,
-			TurnPort:                      c.TurnPort,
-			TurnUsername:                  c.TurnUsername,
-			TurnPassword:                  c.TurnPassword,
-			TurnSharedSecret:              c.TurnSharedSecret,
-			TurnCredentialTTLSeconds:      c.TurnCredentialTTLSeconds,
+			RpcServerConf:                  c.RpcServerConf,
+			DialogClient:                   c.BizServiceClient,
+			UserClient:                     c.BizServiceClient,
+			ChatClient:                     c.BizServiceClient,
+			MessageClient:                  c.BizServiceClient,
+			MsgClient:                      c.MsgClient,
+			DfsClient:                      c.DfsClient,
+			SyncClient:                     c.SyncClient,
+			KV:                             c.KV,
+			Code:                           c.Code,
+			PostgresDSN:                    c.PostgresDSN,
+			PaymentProviderEndpoint:        c.PaymentProviderEndpoint,
+			PaymentProviderKey:             c.PaymentProviderKey,
+			PaymentProviderSigningKey:      c.PaymentProviderSigningKey,
+			PaymentProviderTimeoutSeconds:  c.PaymentProviderTimeoutSeconds,
+			AIProviderEndpoint:             c.AIProviderEndpoint,
+			AIProviderKey:                  c.AIProviderKey,
+			AIProviderSigningKey:           c.AIProviderSigningKey,
+			AIProviderModel:                c.AIProviderModel,
+			AIProviderTimeoutSeconds:       c.AIProviderTimeoutSeconds,
+			BusinessProviderEndpoint:       c.BusinessProviderEndpoint,
+			BusinessProviderKey:            c.BusinessProviderKey,
+			BusinessProviderSigningKey:     c.BusinessProviderSigningKey,
+			BusinessProviderTimeoutSeconds: c.BusinessProviderTimeoutSeconds,
+			GroupCallMediaEndpoint:         c.GroupCallMediaEndpoint,
+			GroupCallMediaAPIKey:           c.GroupCallMediaAPIKey,
+			GroupCallMediaSigningKey:       c.GroupCallMediaSigningKey,
+			GroupCallMediaRTMPHost:         c.GroupCallMediaRTMPHost,
+			GroupCallMediaTimeoutSeconds:   c.GroupCallMediaTimeoutSeconds,
+			TurnHost:                       c.TurnHost,
+			TurnPort:                       c.TurnPort,
+			TurnUsername:                   c.TurnUsername,
+			TurnPassword:                   c.TurnPassword,
+			TurnSharedSecret:               c.TurnSharedSecret,
+			TurnCredentialTTLSeconds:       c.TurnCredentialTTLSeconds,
 		})
 		s.apiFullWorkers = apiFull
 		apiFull.StartWorkers()

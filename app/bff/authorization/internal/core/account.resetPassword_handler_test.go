@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"os"
 	"sync"
 	"testing"
@@ -16,6 +17,21 @@ import (
 	"github.com/teamgram/teamgram-server/pkg/twofa"
 	"github.com/zeromicro/go-zero/core/logx"
 )
+
+func TestAccountResetPasswordRejectsMissingAuthentication(t *testing.T) {
+	var c *AuthorizationCore
+	result, err := c.AccountResetPassword(nil)
+	if result != nil || !errors.Is(err, mtproto.ErrAuthKeyUnregistered) {
+		t.Fatalf("AccountResetPassword() = (%v, %v), want auth key error", result, err)
+	}
+
+	c = New(context.Background(), nil)
+	c.MD = nil
+	result, err = c.AccountResetPassword(nil)
+	if result != nil || !errors.Is(err, mtproto.ErrAuthKeyUnregistered) {
+		t.Fatalf("AccountResetPassword() with nil metadata = (%v, %v), want auth key error", result, err)
+	}
+}
 
 type memoryPasswordResetStore struct {
 	values map[string]string

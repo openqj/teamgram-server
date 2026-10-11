@@ -28,10 +28,16 @@ import (
 // AccountSetGlobalPrivacySettings
 // account.setGlobalPrivacySettings#1edaaac2 settings:GlobalPrivacySettings = GlobalPrivacySettings;
 func (c *PrivacySettingsCore) AccountSetGlobalPrivacySettings(in *mtproto.TLAccountSetGlobalPrivacySettings) (*mtproto.GlobalPrivacySettings, error) {
+	if c == nil || c.MD == nil || c.MD.GetUserId() <= 0 {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
 	if in == nil || in.GetSettings() == nil {
 		err := fmt.Errorf("account.setGlobalPrivacySettings: settings is required")
 		c.Logger.Errorf("account.setGlobalPrivacySettings - error: %v", err)
 		return nil, err
+	}
+	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.UserClient == nil {
+		return nil, mtproto.ErrInternalServerError
 	}
 	rSettings := in.GetSettings()
 

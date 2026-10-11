@@ -26,14 +26,26 @@ import (
 // MessagesGetChats
 // messages.getChats#49e9528f id:Vector<long> = messages.Chats;
 func (c *ChatsCore) MessagesGetChats(in *mtproto.TLMessagesGetChats) (*mtproto.Messages_Chats, error) {
+	if c == nil || c.MD == nil || c.MD.UserId <= 0 {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
+	if in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.ChatClient == nil || c.svcCtx.Dao.ChatClient.Client() == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
 	chats := mtproto.MakeTLMessagesChats(&mtproto.Messages_Chats{
 		Chats: make([]*mtproto.Chat, 0, len(in.Id)),
 	}).To_Messages_Chats()
 
 	for _, id := range in.Id {
-		chat, _ := c.svcCtx.Dao.ChatClient.Client().ChatGetMutableChat(c.ctx, &chatpb.TLChatGetMutableChat{
+		chat, err := c.svcCtx.Dao.ChatClient.Client().ChatGetMutableChat(c.ctx, &chatpb.TLChatGetMutableChat{
 			ChatId: id,
 		})
+		if err != nil {
+			return nil, err
+		}
 		if chat != nil {
 			chats.Chats = append(chats.Chats, chat.ToUnsafeChat(c.MD.UserId))
 		}

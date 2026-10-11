@@ -27,6 +27,15 @@ import (
 // MessagesGetAllChats
 // messages.getAllChats#875f74be except_ids:Vector<long> = messages.Chats;
 func (c *ChatsCore) MessagesGetAllChats(in *mtproto.TLMessagesGetAllChats) (*mtproto.Messages_Chats, error) {
+	if c == nil || c.MD == nil || c.MD.UserId <= 0 {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
+	if in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.DialogClient == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
 	dList, err := c.svcCtx.Dao.DialogClient.DialogGetMyDialogsData(
 		c.ctx,
 		&dialog.TLDialogGetMyDialogsData{
@@ -55,6 +64,9 @@ func (c *ChatsCore) MessagesGetAllChats(in *mtproto.TLMessagesGetAllChats) (*mtp
 
 	if len(idList) == 0 {
 		return messagesChats, nil
+	}
+	if c.svcCtx.Dao.ChatClient == nil || c.svcCtx.Dao.ChatClient.Client() == nil {
+		return nil, mtproto.ErrInternalServerError
 	}
 
 	messagesChats.Chats = c.svcCtx.ChatClient.GetChatListByIdList(c.ctx, c.MD.UserId, idList...)

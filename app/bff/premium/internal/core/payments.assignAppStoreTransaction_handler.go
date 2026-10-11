@@ -25,13 +25,23 @@ import (
 // PaymentsAssignAppStoreTransaction
 // payments.assignAppStoreTransaction#80ed747d receipt:bytes purpose:InputStorePaymentPurpose = Updates;
 func (c *PremiumCore) PaymentsAssignAppStoreTransaction(in *mtproto.TLPaymentsAssignAppStoreTransaction) (*mtproto.Updates, error) {
-	if _, err := c.requireUserId(); err != nil {
+	uid, err := c.requireUserId()
+	if err != nil {
 		return nil, err
 	}
 	if in == nil || len(in.GetReceipt()) == 0 {
 		return nil, mtproto.ErrPaymentProviderInvalid
 	}
+	if in.GetPurpose() == nil && premiumPaymentProviderConfigured(c) {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
 
-	// Receipt is not verified and Premium is not granted.
-	return nil, mtproto.ErrPaymentUnsupported
+	var result premiumUpdatesProviderResult
+	if err = c.callPaymentProvider("payments.assignAppStoreTransaction", map[string]any{"user_id": uid, "receipt": in.GetReceipt(), "purpose": in.GetPurpose(), "restore": in.GetRestore(), "transaction_id": in.GetTransactionId()}, &result); err != nil {
+		return nil, paymentAssignmentError(err)
+	}
+	if !result.Accepted || !normalizePremiumUpdates(result.Updates) {
+		return nil, mtproto.ErrPaymentProviderInvalid
+	}
+	return result.Updates, nil
 }

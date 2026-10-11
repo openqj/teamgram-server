@@ -20,11 +20,21 @@ package core
 
 import (
 	"github.com/teamgram/proto/mtproto"
+	"github.com/teamgram/teamgram-server/app/bff/apifull/persist"
 )
 
 // ContactsToggleTopPeers
 // contacts.toggleTopPeers#8514bdda enabled:Bool = Bool;
 func (c *ContactsCore) ContactsToggleTopPeers(in *mtproto.TLContactsToggleTopPeers) (*mtproto.Bool, error) {
+	if c == nil || c.MD == nil || c.MD.UserId <= 0 {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
+	if in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if persist.Default == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
 	st, err := loadTopPeersState(c.MD.UserId)
 	if err != nil {
 		c.Logger.Errorf("contacts.toggleTopPeers - error: %v", err)

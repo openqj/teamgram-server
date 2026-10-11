@@ -30,9 +30,11 @@ the database and runs the idempotent migration job after the health check:
 docker compose -f docker-compose-postgres.yaml up -d
 ```
 
-This file is separate from `docker-compose-env.yaml` because application
-services still contain transitional Teamgram MySQL paths during the port. It
-does not switch the default runtime or create a dual-database production mode.
+This file is separate from `docker-compose-env.yaml` so the database migration
+job can be run independently of the full dependency stack. Historical
+Teamgram/MySQL SQL and conversion helpers remain isolated under the migration
+boundary; this file does not switch the default runtime or create a
+dual-database production mode.
 
 For APIFull, set the BFF `PostgresDSN` to the same PostgreSQL URL. The domain
 opens one PostgreSQL 18 store per process. A PostgreSQL DSN is required for

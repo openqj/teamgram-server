@@ -21,7 +21,7 @@ func TestMessagesSummarizeTextDoesNotReturnOriginalAsSummary(t *testing.T) {
 }
 
 func TestMessagesTranslateRichMessageDoesNotReturnOriginalAsTranslation(t *testing.T) {
-	core := &MessagesCore{}
+	core := &MessagesCore{MD: &metadata.RpcMetadata{UserId: 42}}
 	text := mtproto.MakeTLInputRichMessage(&mtproto.InputRichMessage{Html: "source text"}).To_InputRichMessage()
 	request := &mtproto.TLMessagesTranslateRichMessage{
 		Text:   []*mtproto.InputRichMessage{text},
@@ -35,7 +35,7 @@ func TestMessagesTranslateRichMessageDoesNotReturnOriginalAsTranslation(t *testi
 }
 
 func TestMessagesComposeRichMessageWithAIDoesNotReturnOriginalAsResult(t *testing.T) {
-	core := &MessagesCore{}
+	core := &MessagesCore{MD: &metadata.RpcMetadata{UserId: 42}}
 	text := mtproto.MakeTLInputRichMessage(&mtproto.InputRichMessage{Html: "source text"}).To_InputRichMessage()
 	request := &mtproto.TLMessagesComposeRichMessageWithAI{Text: text, Proofread: true}
 

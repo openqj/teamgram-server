@@ -378,35 +378,99 @@ func (c *ApiFullCore) MessagesEditInlineBotMessage(in *mtproto.TLMessagesEditInl
 	if _, err := c.requireUserId(); err != nil {
 		return nil, err
 	}
-	return nil, mtproto.ErrMethodNotImpl
+	if in == nil || in.GetId() == nil || (in.GetMessage() == nil && in.GetMedia() == nil && in.GetRichMessage() == nil) {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	var result struct {
+		Value bool `json:"value"`
+	}
+	if err := c.callBusinessProvider("messages.editInlineBotMessage", map[string]any{
+		"no_webpage": in.GetNoWebpage(), "invert_media": in.GetInvertMedia(), "id": in.GetId(), "message": in.GetMessage(), "media": in.GetMedia(), "reply_markup": in.GetReplyMarkup(), "entities": in.GetEntities(), "rich_message": in.GetRichMessage(),
+	}, &result); err != nil {
+		return nil, err
+	}
+	if result.Value {
+		return mtproto.BoolTrue, nil
+	}
+	return mtproto.BoolFalse, nil
 }
 
 func (c *ApiFullCore) MessagesGetBotCallbackAnswer(in *mtproto.TLMessagesGetBotCallbackAnswer) (*mtproto.Messages_BotCallbackAnswer, error) {
 	if _, err := c.requireUserId(); err != nil {
 		return nil, err
 	}
-	return nil, mtproto.ErrMethodNotImpl
+	if in == nil || in.GetPeer() == nil || in.GetMsgId() <= 0 || len(in.GetData()) == 0 {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	result := new(mtproto.Messages_BotCallbackAnswer)
+	if err := c.callBusinessProvider("messages.getBotCallbackAnswer", map[string]any{
+		"game": in.GetGame(), "peer": in.GetPeer(), "msg_id": in.GetMsgId(), "data": in.GetData(), "password": in.GetPassword(),
+	}, result); err != nil {
+		return nil, err
+	}
+	if result.GetPredicateName() == "" || result.GetCacheTime() < 0 {
+		return nil, mtproto.ErrInternalServerError
+	}
+	return result, nil
 }
 
 func (c *ApiFullCore) MessagesSetBotCallbackAnswer(in *mtproto.TLMessagesSetBotCallbackAnswer) (*mtproto.Bool, error) {
 	if _, err := c.requireUserId(); err != nil {
 		return nil, err
 	}
-	return nil, mtproto.ErrMethodNotImpl
+	if in == nil || in.GetQueryId() <= 0 || in.GetCacheTime() < 0 {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	var result struct {
+		Value bool `json:"value"`
+	}
+	if err := c.callBusinessProvider("messages.setBotCallbackAnswer", map[string]any{
+		"alert": in.GetAlert(), "query_id": in.GetQueryId(), "message": in.GetMessage(), "url": in.GetUrl(), "cache_time": in.GetCacheTime(),
+	}, &result); err != nil {
+		return nil, err
+	}
+	if result.Value {
+		return mtproto.BoolTrue, nil
+	}
+	return mtproto.BoolFalse, nil
 }
 
 func (c *ApiFullCore) MessagesSendBotRequestedPeer(in *mtproto.TLMessagesSendBotRequestedPeer) (*mtproto.Updates, error) {
 	if _, err := c.requireUserId(); err != nil {
 		return nil, err
 	}
-	return nil, mtproto.ErrMethodNotImpl
+	if in == nil || in.GetPeer() == nil || (len(in.GetRequestedPeers()) == 0 && in.GetRequestedPeer() == nil) {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	result := new(mtproto.Updates)
+	if err := c.callBusinessProvider("messages.sendBotRequestedPeer", map[string]any{
+		"peer": in.GetPeer(), "msg_id_flag": in.GetMsgId_FLAGINT32(), "webapp_req_id": in.GetWebappReqId(), "button_id": in.GetButtonId(), "requested_peers": in.GetRequestedPeers(), "msg_id": in.GetMsgId_INT32(), "requested_peer": in.GetRequestedPeer(),
+	}, result); err != nil {
+		return nil, err
+	}
+	if result.GetPredicateName() == "" {
+		return nil, mtproto.ErrInternalServerError
+	}
+	return result, nil
 }
 
 func (c *ApiFullCore) MessagesSetBotGuestChatResult(in *mtproto.TLMessagesSetBotGuestChatResult) (*mtproto.InputBotInlineMessageID, error) {
 	if _, err := c.requireUserId(); err != nil {
 		return nil, err
 	}
-	return nil, mtproto.ErrMethodNotImpl
+	if in == nil || in.GetQueryId() <= 0 || in.GetResult() == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	result := new(mtproto.InputBotInlineMessageID)
+	if err := c.callBusinessProvider("messages.setBotGuestChatResult", map[string]any{
+		"query_id": in.GetQueryId(), "result": in.GetResult(),
+	}, result); err != nil {
+		return nil, err
+	}
+	if result.GetPredicateName() == "" {
+		return nil, mtproto.ErrInternalServerError
+	}
+	return result, nil
 }
 
 func newInlineQueryID() (int64, error) {

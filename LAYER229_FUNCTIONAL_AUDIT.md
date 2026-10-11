@@ -1,5 +1,47 @@
 # Layer 229 API 功能验收
 
+## 2026-10-11：付费反应隐私本地持久化
+
+- `messages.togglePaidReactionPrivacy` and `messages.getPaidReactionPrivacy` now have a local caller-scoped path backed by the PostgreSQL APIFull store. Toggle writes privacy/enabled state through the store's atomic update boundary; get returns canonical `updatePaidReactionPrivacy` inside `updates`. A configured signed BusinessProvider path remains available for deployments that centralize this state.
+- `paid_reaction_privacy_local_test.go` covers local write/readback, canonical TL predicates, invalid-input refusal and no write on rejected input. The paid-reaction send/charge operation still requires the signed business/payment provider.
+- Both ledger rows remain production-blocked because payment authorization, cross-user delivery/update fan-out, live session, restart and production provider evidence are absent.
+
+## 2026-10-11：auth.importBotAuthorization 本地权威 token 路径
+
+- `auth.importBotAuthorization` now uses the PostgreSQL-backed User service as an authoritative bot-token verifier when no external AuthProvider is configured. A configured signed AuthProvider remains the stronger identity check; both paths require an active Bot record and bind only the current permanent auth key through authsession.
+- `TestAuthImportBotAuthorizationUsesPostgresUserTokenAuthorityWhenProviderUnset` covers successful local token resolution and auth-key binding; `TestAuthImportBotAuthorizationRejectsNonBotFromPostgresUserTokenAuthority` covers refusal of a normal user token. Existing signed-provider identity-mismatch and fail-closed tests remain green.
+- The production row remains `BLOCKED_BY_IMPLEMENTATION_GAP`: the application credential registry, real Layer 229 session, authsession restart and staging/production evidence are not present. The local path closes the business implementation gap without claiming production acceptance.
+
+## 2026-10-11：93 项总指挥线程最终验证
+
+- 当前线程复核了 93 个 `BLOCKED_BY_IMPLEMENTATION_GAP` 方法的实现边界：认证、支付、广告、Bot/Inline、AI、CDN、Live/Stats、媒体和礼物路径均先完成输入/权限校验、签名 provider 边界、canonical Layer 229 构造器验证及 PostgreSQL 事务/幂等路径；provider 缺失时返回明确错误，不生成空成功、伪造 receipt 或合成 `Updates`。
+- `go build ./...` 通过。受影响的 APIFull、authorization、account、Passport、Passkey、files、premium、sponsoredmessages、userchannelprofiles，以及 authsession、biz/user、biz/message、biz/chat、biz/dialog、messenger/msg、messenger/sync、media 测试包均通过。
+- 随后执行 `go test ./app/bff/... -count=1`，所有 BFF 子服务测试包通过；该结果只证明仓库内边界和组件行为，不替代真实 provider 或生产 session 验收。
+- `teamgram-postgres-migration-verify` 的 PostgreSQL 18.6 (`server_version_num=180006`) 重新执行 `postgres/apply.sh` 后，`schema_migrations=62`、版本唯一数为 62、最新版本 `064_biz_user_bot_manager_index`；所有已应用 migration 均按 checksum 跳过。`check.sh`、带必需变量的生产 Compose 配置和 `git diff --check` 通过。
+- 台账仍为 813 个唯一方法、8 列，生产状态计数保持 `PARTIAL_ISOLATED_SESSION_E2E=309`、`PARTIAL_ISOLATED_DB_ONLY=238`、`PARTIAL_COMPONENT_ONLY=154`、`BLOCKED_BY_IMPLEMENTATION_GAP=93`、`TRANSPORT_ONLY=11`、`ISOLATED_COMPONENT_ONLY=6`、`ISOLATED_DB_ONLY=2`。93 项仍需要真实外部 provider 或完整 Layer 229 session/重启/故障恢复证据，本线程不将组件或隔离数据库结果冒充生产验收。
+
+## 2026-10-11：PostgreSQL 18 重启与 checksum 故障门禁
+
+- 在隔离 PostgreSQL 18.6 实例 `teamgram-postgres-migration-verify` 上完成真实重启验证：重启前后 `server_version_num=180006`、`schema_migrations=62`、最新版本 `064_biz_user_bot_manager_index` 均一致；重启后再次执行 `postgres/apply.sh`，62 个版本全部按 checksum 跳过。
+- 另一隔离卷 `teamgram-postgres-full` 的旧记录在 `060/061/063` 存在 checksum 漂移，migration runner 明确以 `migration checksum mismatch` 拒绝继续。未绕过保护或修改该卷；生产部署必须使用全新 PostgreSQL 18 初始化，或先完成受审计的迁移历史修复。
+- 当前运行中的旧 `backend-backend-1` 属于外部旧部署项目，仍带 `MYSQL_URI` 且没有 `TEAMGRAM_POSTGRES_DSN`，不作为 PostgreSQL 生产验收证据。仓库内新的生产 Compose 已要求非空 `TEAMGRAM_POSTGRES_DSN`、PostgreSQL 18 migration 成功后才启动 backend。
+
+## 2026-10-11：93 项业务 provider 缺口收口（当前线程）
+
+- `LAYER229_METHOD_LEDGER.csv` 当前为 813 个唯一方法、8 列；生产验收状态为 `PARTIAL_ISOLATED_SESSION_E2E=309`、`PARTIAL_ISOLATED_DB_ONLY=238`、`PARTIAL_COMPONENT_ONLY=154`、`BLOCKED_BY_IMPLEMENTATION_GAP=93`、`TRANSPORT_ONLY=11`、`ISOLATED_COMPONENT_ONLY=6`、`ISOLATED_DB_ONLY=2`。
+- 当前审计状态为 `PARTIAL_COMPONENT_VERIFIED=412`、`PARTIAL_SESSION_VERIFIED=266`、`PARTIAL_ISOLATED_DB_VERIFIED=95`、`KNOWN_INCOMPLETE_STATIC=1`、`PARTIAL_ISOLATED_DB_ONLY=17`、`SESSION_TRANSPORT_WRAPPER_NOT_BUSINESS_METHOD=11`、`ISOLATED_COMPONENT_VERIFIED=6`、`ISOLATED_DB_VERIFIED=2`、`PARTIAL_COMPONENT_ONLY=2`、`IMPLEMENTED_POSTGRES_PROVIDER=1`。
+- Paid reactions、Sponsored messages/peers、bot payment results、bot emoji permissions/status、popular app bots、Premium promo/store capability、App Store/Play transaction assignment now have signed provider boundaries, Layer 229 result validation and focused component coverage. Their production column remains `BLOCKED_BY_IMPLEMENTATION_GAP` until the real payment/ad/bot providers, session flow, restart and failure-recovery evidence are available.
+- BFF root configuration now carries `AIProvider*` and `BusinessProvider*` fields, validates `TEAMGRAM_*` environment overrides, and forwards them into APIFull. This closes the deployment configuration path for the signed business provider without claiming that an endpoint or credentials exist.
+- The remaining static gap is `phone.getCallConfig`, which still requires real non-loopback TURN credentials. `account.getPaidMessagesRevenue` now has signed payment-provider component coverage but remains production-blocked until the deployed ledger/provider is exercised. No synthetic success or local note is treated as production business state. Full production acceptance remains `0/813`.
+
+## 2026-10-11：批量 PostgreSQL 18 迁移收口（当前线程）
+
+- 继续按 namespace 批量收口 Layer 229 持久化边界：APIFull autosave、business chat links、themes、recent emoji status、ringtone 和 Stars catalog mutations now use the shared PostgreSQL transaction boundary; message handlers reject unauthenticated or missing-peer inputs before touching providers; messenger/message DAO fallbacks fail closed instead of returning empty success; User bot registry and bot profile reads use the PostgreSQL path with media-provider errors propagated.
+- `OpenPostgresReadOnly` now requires the latest checked-in migration `064_biz_user_bot_manager_index`, so a service cannot start against a schema that predates the manager-hierarchy index. PostgreSQL 18.6 replay against `teamgram_batch_replay_20261011` reports `server_version_num=180006`, `62` applied and distinct migrations, latest `064_biz_user_bot_manager_index`, and a second checksum-protected pass skipped every migration.
+- Focused package compilation and tests passed for APIFull core/domain/persist, messages boundary validation, Passport, authsession, User bot/profile/registry, message DAO user scoping, messenger DAO fail-closed behavior, autosave/ringtone/themes/emoji, mini-bot provider boundaries, and PostgreSQL catalog/registry readbacks. The final `go build ./...` now also passes.
+- User DAO adapters now guard promoted legacy DAO pointers and return an explicit PostgreSQL-store-unavailable error when neither the PostgreSQL aggregate nor an isolated legacy fixture is configured; `TestPostgresMethodsFailClosedWhenStoreIsMissing` covers representative reads and writes. The three previously untested provider blockers (`account.getBotBusinessConnection`, `account.confirmBotConnection`, and `messages.getSponsoredMessages`) now have explicit nil-result/METHOD_NOT_IMPL fail-closed tests.
+- Ledger remains authoritative at `813` unique methods with production statuses `PARTIAL_ISOLATED_SESSION_E2E=309`, `PARTIAL_ISOLATED_DB_ONLY=238`, `PARTIAL_COMPONENT_ONLY=154`, `BLOCKED_BY_IMPLEMENTATION_GAP=93`, `TRANSPORT_ONLY=11`, `ISOLATED_COMPONENT_ONLY=6`, and `ISOLATED_DB_ONLY=2`. Audit statuses now include `PARTIAL_COMPONENT_VERIFIED=364` and `KNOWN_INCOMPLETE_STATIC=49` after signed provider boundaries were added for bot custom requests, webhook answers, affiliate programs, bot verification, recommendations, Mini App/WebView operations, CDN methods, inline bot operations and unique-gift themes. Full production acceptance is still `0/813`; the 93 blocked methods require external providers or business capabilities that are not present and remain explicit fail-closed paths.
+
 ## 2026-10-11：help.setBotUpdatesStatus PostgreSQL 18 provider
 
 - `help.setBotUpdatesStatus` now requires an authenticated bot, rejects negative pending counts and oversized or invalid status messages, and replaces one owner-scoped `apifull_bot_updates_status` row inside a PostgreSQL transaction. Retries are idempotent and database errors are propagated; nil requests remain fail-closed.
@@ -2348,7 +2390,7 @@
 ## 2026-10-09：messages.getDocumentByHash PostgreSQL 18 component path
 
 - `messages.getDocumentByHash` now forwards the Layer 229 SHA-256, 64-bit size, and MIME tuple through a typed internal media RPC. Media upload persistence computes SHA-256 from the stored DFS bytes; PostgreSQL resolves the tuple through the indexed `documents` catalog and excludes deleted rows. A miss returns `documentEmpty`; provider and database errors are not converted into successful empty results.
-- `TestHashDocumentContent`, `TestDocumentHashLookupGRPC`, `TestMessagesGetDocumentByHashUsesMediaProvider`, and the PostgreSQL 18 `TestDocumentsSelectByHashPostgres18` pass, including deterministic active-row selection, mismatch checks, and an `EXPLAIN` assertion that the partial hash index is usable in an isolated schema.
+- `TestHashDocumentContentStreamsExactDocumentBytes`, `TestHashDocumentContentRejectsIncompleteOrInvalidContent`, `TestHashDocumentContentUsesEmptyFileHash`, `TestDocumentHashLookupGRPC`, `TestMessagesGetDocumentByHashUsesMediaProvider`, and the PostgreSQL 18 `TestDocumentsSelectByHashPostgres18` pass, including deterministic active-row selection, mismatch checks, and an `EXPLAIN` assertion that the partial hash index is usable in an isolated schema.
 - This is component and isolated-database evidence only. No live Layer 229 session path, restart probe, or production acceptance was performed.
 
 ## 2026-10-09：Forum, media and PostgreSQL 18 migration closeout
@@ -2482,3 +2524,23 @@
 - `account.getCollectibleEmojiStatuses` 新增 owner-scoped PostgreSQL 18 `apifull_collectible_emoji_status` 表和 `062_apifull_collectible_emoji_status.sql` 迁移。APIFull 只读取已认证用户的 provider-owned rows，映射 collectible ID、文档、pattern 文档、slug/title 和四种颜色到 Layer 229 `emojiStatusCollectible`，并保留 hash/not-modified 语义。
 - `TestCollectibleEmojiStatusCatalogPostgresRoundTrip` 在 PostgreSQL 18.6 隔离库通过，覆盖持久化、完整 metadata 映射和相同 hash 的 `account.emojiStatusesNotModified`；无 provider 或空 inventory 仍返回 `METHOD_NOT_IMPL`，不会合成空目录。
 - 当前证据为 `PARTIAL_ISOLATED_DB_ONLY`：provider seeding、跨服务 ownership reconciliation、真实 Layer 229 session、重启回读和生产流量验收尚未完成。
+
+## 2026-10-11：PostgreSQL 18 全量重放与构建收口
+
+- PostgreSQL migration 目录现有 62 个编号 SQL 文件，版本范围为 `000`–`064`（`024`、`026`、`060` 保留空档）。在临时 PostgreSQL 18.6 数据库上首轮 `postgres/apply.sh` 从空库提交 62 条记录；第二轮按 checksum 全部跳过。校验结果为 `server_version_num=180006`、`schema_migrations=62`、唯一版本 62，最新版本 `064_biz_user_bot_manager_index`，`bots_manager_idx` 已创建；临时数据库已删除。
+- `check.sh`、全部 shell 语法、默认与 web-isolated Compose 配置、`git diff --check` 和 813 行唯一方法台账校验均通过。`go build ./...` 成功；APIFull、消息、认证、Passport、Passkey、用户、Messenger、Media 和 Idgen 定向测试包全部通过。
+- 当前台账为 813 个唯一方法：`PARTIAL_ISOLATED_SESSION_E2E=309`、`PARTIAL_ISOLATED_DB_ONLY=238`、`PARTIAL_COMPONENT_ONLY=154`、`BLOCKED_BY_IMPLEMENTATION_GAP=93`、`TRANSPORT_ONLY=11`、`ISOLATED_COMPONENT_ONLY=6`、`ISOLATED_DB_ONLY=2`。93 个阻塞项仍依赖仓库外部的认证、支付、CDN、Bot/Inline、Live/Stats、媒体或其他业务 provider；本轮完成迁移与构建门禁，不宣称 813/813 生产验收或流量切换。
+
+## 2026-10-11：最终 focused 验证与边界收口
+
+- 认证 BFF 的邮箱验证 challenge 现在要求非零永久 auth key scope；缺少 auth key 时发送和消费均返回 `AUTH_KEY_UNREGISTERED`。Passport `account.getAuthorizations` 对当前用户身份、authsession/User provider 和空响应做 fail-closed 检查。
+- Media PostgreSQL 文档读取过滤已排除 `deleted` 行；视频缩略图查询、JSON 解码和文档聚合会传播存储/解码错误，不再把不完整媒体元数据当作成功。User DAO 在 PostgreSQL store 缺失时返回明确错误，不再返回空成功结果；对应边界和回归测试已加入。
+- 本轮 focused tests 覆盖 APIFull、messages、authorization、Passport、Passkey、authsession、biz、messenger、Media、Idgen 和 PostgreSQL storage 分组，全部通过；最终 `go build ./...` 通过。迁移 replay、portability、shell/Compose 门禁和 ledger 唯一性校验均通过。
+- 对 93 个 `BLOCKED_BY_IMPLEMENTATION_GAP` 方法做了逐项静态交叉检查：每个方法名都出现在 focused 测试调用中，并对缺失 provider、非法输入或未认证路径断言明确错误；其中 CDN 使用 `CDN_METHOD_INVALID`，支付使用支付 provider 错误，其他 provider 缺口使用 `METHOD_NOT_IMPL`，不以空成功响应替代实现。
+- 生产验收状态保持不变：813 个方法中仍有 93 个依赖外部 provider 或仓库外业务能力，已明确 fail-closed；本轮不把本地测试替代真实 provider、Layer 229 session、重启恢复或生产流量切换证据。
+
+## 2026-10-11：AI provider 业务边界接入
+
+- `messages.summarizeText`、`messages.translateRichMessage`、`messages.composeRichMessageWithAI`、`messages.composeMessageWithAI` 和 `aicompose.getToneExample` 已接入统一的 HTTP AI provider 边界。请求带随机 request ID、调用者 user ID 和 operation，使用 HMAC 请求签名；响应必须通过 HMAC 验签、request/user 绑定和 TL 结果构造校验，超时、未配置或非法响应均失败关闭。
+- 消息 BFF 与 APIFull 各自补充 provider endpoint/key/signing-key/timeout 配置；所有成功路径只接受 provider 返回的文本或 rich-message，不回显输入、不合成空结果。focused provider success、未配置和未签名拒绝测试均通过。
+- 这 5 项的 `audit_status` 提升为 `PARTIAL_COMPONENT_VERIFIED`，生产列仍为 `BLOCKED_BY_IMPLEMENTATION_GAP`：当前没有真实 AI endpoint/凭据、生产 session、重启/故障恢复或生产流量证据，因此不宣称这些方法已完成生产验收。

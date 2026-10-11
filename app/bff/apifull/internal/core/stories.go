@@ -1567,18 +1567,47 @@ func (c *ApiFullCore) StoriesGetAlbumStories(in *mtproto.TLStoriesGetAlbumStorie
 
 func (c *ApiFullCore) StoriesStartLive(in *mtproto.TLStoriesStartLive) (*mtproto.Updates, error) {
 	if in == nil {
-		return nil, storiesProviderUnavailable(c)
+		return nil, mtproto.ErrInputRequestInvalid
 	}
 	uid, err := c.requireUserId()
 	if err != nil {
 		return nil, err
 	}
-	if !storyPeerOwned(uid, in.GetPeer()) {
-		return nil, mtproto.ErrMethodNotImpl
+	if in.GetPeer() == nil {
+		return nil, mtproto.ErrPeerIdInvalid
 	}
-	// The APIFull DAO has no media/live-stream provider. Do not persist a
-	// synthetic story that clients could not actually consume.
-	return nil, mtproto.ErrMethodNotImpl
+	if !storyPeerOwned(uid, in.GetPeer()) {
+		return nil, mtproto.ErrChatAdminRequired
+	}
+	if in.GetRandomId() == 0 && c.businessProviderConfigured() {
+		return nil, mtproto.ErrRandomIdEmpty
+	}
+	var raw json.RawMessage
+	if err = c.callBusinessProvider("stories.startLive", map[string]any{
+		"pinned": in.GetPinned(), "noforwards": in.GetNoforwards(), "rtmp_stream": in.GetRtmpStream(),
+		"peer": in.GetPeer(), "caption": in.GetCaption(), "entities": in.GetEntities(),
+		"privacy_rules": in.GetPrivacyRules(), "random_id": in.GetRandomId(),
+		"messages_enabled": in.GetMessagesEnabled(), "send_paid_messages_stars": in.GetSendPaidMessagesStars(),
+	}, &raw); err != nil {
+		return nil, err
+	}
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil, mtproto.ErrInternalServerError
+	}
+	var updates mtproto.Updates
+	if err = json.Unmarshal(raw, &updates); err != nil || !validUpdatesPredicate(updates.GetPredicateName()) {
+		return nil, mtproto.ErrInternalServerError
+	}
+	return &updates, nil
+}
+
+func validUpdatesPredicate(predicate string) bool {
+	switch predicate {
+	case mtproto.Predicate_updates, mtproto.Predicate_updatesCombined, mtproto.Predicate_updatesTooLong:
+		return true
+	default:
+		return false
+	}
 }
 
 func (c *ApiFullCore) StoriesGetPeerMaxIDs535983C3(in *mtproto.TLStoriesGetPeerMaxIDs535983C3) (*mtproto.Vector_Int, error) {

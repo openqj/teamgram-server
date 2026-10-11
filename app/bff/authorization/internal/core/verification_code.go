@@ -23,6 +23,16 @@ func (c *AuthorizationCore) challengeScope() string {
 	return verification.ScopeID(c.MD.PermAuthKeyId)
 }
 
+// requireChallengeAuthKey prevents email and other account-scoped challenges
+// from being issued or consumed under the empty scope. A missing permanent
+// auth key would otherwise make the challenge globally addressable.
+func (c *AuthorizationCore) requireChallengeAuthKey() error {
+	if c == nil || c.MD == nil || c.MD.GetPermAuthKeyId() == 0 {
+		return mtproto.ErrAuthKeyUnregistered
+	}
+	return nil
+}
+
 func (c *AuthorizationCore) issuePhoneChallenge(data *model.PhoneCodeTransaction, channel verification.Channel, purpose, requestedCode string) (string, error) {
 	if c == nil || c.svcCtx == nil || c.svcCtx.Challenges == nil || c.MD == nil || data == nil {
 		return "", mtproto.ErrSmsCodeCreateFailed

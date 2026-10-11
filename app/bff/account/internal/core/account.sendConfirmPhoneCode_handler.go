@@ -84,6 +84,9 @@ func (c *AccountCore) AccountSendConfirmPhoneCode(in *mtproto.TLAccountSendConfi
 		c.Logger.Errorf("account.sendConfirmPhoneCode - error: %v", err)
 		return nil, err
 	}
+	if codeData == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
 
 	// confirmPhone carries only the challenge hash, so index the metadata by hash.
 	if codeData.PhoneCodeHash != "" && codeData.PhoneCodeHash != phoneNumber {

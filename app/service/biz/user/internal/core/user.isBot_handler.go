@@ -10,9 +10,8 @@
 package core
 
 import (
+	"database/sql"
 	"errors"
-
-	"github.com/teamgram/marmota/pkg/stores/sqlc"
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/service/biz/user/user"
 )
@@ -20,8 +19,17 @@ import (
 // UserIsBot
 // user.isBot id:long = Bool;
 func (c *UserCore) UserIsBot(in *user.TLUserIsBot) (*mtproto.Bool, error) {
+	if in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if in.GetId() <= 0 {
+		return nil, mtproto.ErrUserIdInvalid
+	}
+	if err := c.requirePostgres(); err != nil {
+		return nil, err
+	}
 	userData, err := c.svcCtx.Dao.GetCacheUserDataWithError(c.ctx, in.GetId())
-	if errors.Is(err, sqlc.ErrNotFound) {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, mtproto.ErrUserIdInvalid
 	}
 	if err != nil {

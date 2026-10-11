@@ -25,7 +25,14 @@ import (
 // UsersSuggestBirthday
 // users.suggestBirthday#fc533372 id:InputUser birthday:Birthday = Updates;
 func (c *UserChannelProfilesCore) UsersSuggestBirthday(in *mtproto.TLUsersSuggestBirthday) (*mtproto.Updates, error) {
-	if _, err := otherUserPeer(c.MD.UserId, in.GetId()); err != nil {
+	if c == nil || c.MD == nil || c.MD.UserId <= 0 {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
+	if in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	targetID, err := otherUserPeer(c.MD.UserId, in.GetId())
+	if err != nil {
 		c.Logger.Errorf("users.suggestBirthday - error: %v", err)
 		return nil, err
 	}
@@ -33,5 +40,7 @@ func (c *UserChannelProfilesCore) UsersSuggestBirthday(in *mtproto.TLUsersSugges
 		c.Logger.Errorf("users.suggestBirthday - error: empty birthday")
 		return nil, mtproto.ErrInputRequestInvalid
 	}
-	return nil, mtproto.ErrMethodNotImpl
+	return c.callBirthdaySuggestionProvider(c.ctx, birthdaySuggestionProviderRequest{
+		CallerID: c.MD.UserId, TargetID: targetID, Recipient: in.GetId(), Birthday: in.GetBirthday(),
+	})
 }

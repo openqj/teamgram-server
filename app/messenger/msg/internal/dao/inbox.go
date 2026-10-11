@@ -20,17 +20,16 @@ package dao
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/teamgram/marmota/pkg/container2"
-	"github.com/teamgram/marmota/pkg/stores/sqlx"
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/messenger/msg/inbox/inbox"
 	"github.com/teamgram/teamgram-server/app/messenger/msg/internal/dal/dataobject"
 	chatpb "github.com/teamgram/teamgram-server/app/service/biz/chat/chat"
-	"github.com/teamgram/teamgram-server/app/service/biz/dialog/dialog"
 	"github.com/teamgram/teamgram-server/app/service/idgen/counter"
 
 	"github.com/zeromicro/go-zero/core/jsonx"
@@ -74,38 +73,36 @@ func replyPeerMatchesCurrentDialog(peer *mtproto.PeerUtil, replyPeer *mtproto.Pe
 }
 
 func (d *Dao) sendMessageToInbox(ctx context.Context, fromId int64, peer *mtproto.PeerUtil, toUserId int64, dialogMessageId, clientRandomId int64, message2 *mtproto.Message) (*mtproto.MessageBox, error) {
-	if d.Postgres != nil {
-		var existing *dataobject.MessagesDO
-		var err error
-		if clientRandomId != 0 {
-			existing, err = d.Postgres.Store.Messages.SelectByRandomIdOn(ctx, d.Postgres.Pool, toUserId, fromId, clientRandomId)
-		} else if dialogMessageId != 0 {
-			existing, err = d.Postgres.Store.Messages.SelectByDeliveryIDOn(ctx, d.Postgres.Pool, toUserId, fromId, dialogMessageId)
-		}
-		if err != nil {
+	if d == nil || d.Postgres == nil || d.Postgres.Pool == nil || d.Postgres.Store == nil {
+		return nil, errors.New("messenger/msg: postgres store is not configured")
+	}
+	if peer == nil || message2 == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	var existing *dataobject.MessagesDO
+	var err error
+	if clientRandomId != 0 {
+		existing, err = d.Postgres.Store.Messages.SelectByRandomIdOn(ctx, d.Postgres.Pool, toUserId, fromId, clientRandomId)
+	} else if dialogMessageId != 0 {
+		existing, err = d.Postgres.Store.Messages.SelectByDeliveryIDOn(ctx, d.Postgres.Pool, toUserId, fromId, dialogMessageId)
+	}
+	if err != nil {
+		return nil, err
+	}
+	if existing != nil {
+		box := makeMessageBoxByDO(existing)
+		if err := d.RestoreMessagePts(ctx, box); err != nil {
 			return nil, err
 		}
-		if existing != nil {
-			box := makeMessageBoxByDO(existing)
-			if err := d.RestoreMessagePts(ctx, box); err != nil {
-				return nil, err
-			}
-			box.PtsCount = 0
-			return box, nil
-		}
+		box.PtsCount = 0
+		return box, nil
 	}
 	var (
 		inBoxMsgId int32
 		dialogId   = mtproto.MakeDialogId(fromId, peer.PeerType, peer.PeerId)
 		date       = time.Now().Unix()
 		message    = proto.Clone(message2).(*mtproto.Message)
-
-		dialogDO *dataobject.DialogsDO
 	)
-	if d.Postgres == nil {
-		inBoxMsgId = d.IDGenClient2.NextMessageBoxId(ctx, toUserId)
-	}
-
 	if peer.PeerType == mtproto.PEER_USER {
 		if dialogMessageId == 0 {
 			dialogMessageId = d.IDGenClient2.NextId(ctx)
@@ -195,123 +192,8 @@ func (d *Dao) sendMessageToInbox(ctx context.Context, fromId int64, peer *mtprot
 		Mentioned:         message.Mentioned,
 		MediaUnread:       message.MediaUnread,
 	}
-	if d.Postgres != nil && d.Postgres.Store != nil {
-		return d.persistInboxPostgres(ctx, fromId, peer, toUserId, inBox, message, mData, date)
-	}
+	return d.persistInboxPostgres(ctx, fromId, peer, toUserId, inBox, message, mData, date)
 
-	tR := sqlx.TxWrapper(ctx, d.DB, func(tx *sqlx.Tx, result *sqlx.StoreResult) {
-		// TODO(@benqi): do ignore
-
-		// Pts:              pts,
-		// PtsCount:         ptsCount,
-		inBoxDO := &dataobject.MessagesDO{
-			UserId:            inBox.UserId,
-			UserMessageBoxId:  inBox.MessageId,
-			DialogId1:         inBox.DialogId1,
-			DialogId2:         inBox.DialogId2,
-			SenderUserId:      fromId,
-			PeerType:          peer.PeerType,
-			PeerId:            inBox.PeerId,
-			RandomId:          inBox.RandomId,
-			DialogMessageId:   inBox.DialogMessageId,
-			MessageData:       string(mData),
-			MessageFilterType: inBox.MessageFilterType, // TODO(@benqi): message_type
-			Message:           message.Message,
-			Mentioned:         inBox.Mentioned,
-			MediaUnread:       inBox.MediaUnread,
-			Date2:             date,
-			Deleted:           false,
-		}
-
-		_, _, result.Err = d.MessagesDAO.InsertOrReturnIdTx(tx, inBoxDO)
-		if result.Err != nil {
-			return
-		}
-
-		switch peer.PeerType {
-		case mtproto.PEER_USER:
-			//var (
-			//	lastInsertId int64
-			//	rowsAffected int64
-			//)
-
-			dialogDO = &dataobject.DialogsDO{
-				UserId:           inBox.UserId,
-				PeerType:         peer.PeerType,
-				PeerId:           fromId,
-				PeerDialogId:     mtproto.MakePeerDialogId(mtproto.PEER_USER, fromId),
-				TopMessage:       inBoxMsgId,
-				UnreadCount:      1,
-				DraftMessageData: "null",
-				Date2:            date,
-			}
-
-		case mtproto.PEER_CHAT:
-			dialogDO = &dataobject.DialogsDO{
-				UserId:               inBox.UserId,
-				PeerType:             peer.PeerType,
-				PeerId:               peer.PeerId,
-				PeerDialogId:         mtproto.MakePeerDialogId(peer.PeerType, peer.PeerId),
-				Pinned:               0,
-				TopMessage:           inBoxMsgId,
-				PinnedMsgId:          0,
-				ReadInboxMaxId:       0,
-				ReadOutboxMaxId:      0,
-				UnreadCount:          1,
-				UnreadMentionsCount:  0,
-				UnreadReactionsCount: 0,
-				UnreadMark:           false,
-				DraftType:            0,
-				DraftMessageData:     "null",
-				FolderId:             0,
-				FolderPinned:         0,
-				HasScheduled:         false,
-				TtlPeriod:            0,
-				ThemeEmoticon:        "",
-				Date2:                date,
-			}
-			if inBox.Mentioned {
-				dialogDO.UnreadMentionsCount = 1
-			}
-
-		default:
-			result.Err = fmt.Errorf("fatal error - invalid peer_type: %v", peer)
-		}
-
-		for _, entity := range message.GetEntities() {
-			if entity.GetPredicateName() == mtproto.Predicate_messageEntityHashtag {
-				if entity.GetUrl() != "" {
-					_, _, _ = d.HashTagsDAO.InsertOrUpdateTx(tx, &dataobject.HashTagsDO{
-						UserId:           inBox.UserId,
-						PeerType:         peer.PeerType,
-						PeerId:           peer.PeerId,
-						HashTag:          entity.GetUrl(),
-						HashTagMessageId: inBox.MessageId,
-					})
-				}
-			}
-		}
-	})
-
-	// TODO(@benqi): process duplicate
-
-	if tR.Err != nil {
-		return nil, tR.Err
-	}
-
-	_, _, _ = d.CachedConn.Exec(
-		ctx,
-		func(ctx context.Context, conn *sqlx.DB) (int64, int64, error) {
-			lastInsertId, rowsAffected, err := d.InsertOrUpdateDialog(ctx, dialogDO)
-			logx.WithContext(ctx).Infof("lastInsertId:%d, rowsAffected: %d, result: %v, do: %v", lastInsertId, rowsAffected, err, dialogDO)
-			return 0, 0, err
-		},
-		dialog.GetDialogCacheKey(dialogDO.UserId, dialogDO.PeerDialogId))
-
-	inBox.Pts = d.IDGenClient2.NextPtsId(ctx, toUserId)
-	inBox.PtsCount = 1
-
-	return inBox, nil
 }
 
 func (d *Dao) persistInboxPostgres(ctx context.Context, fromID int64, peer *mtproto.PeerUtil, toUserID int64, inBox *mtproto.MessageBox, message *mtproto.Message, messageData []byte, date int64) (*mtproto.MessageBox, error) {
@@ -478,6 +360,12 @@ func (d *Dao) SendChatMultiMessageToInbox(ctx context.Context, fromId, chatId, t
 }
 
 func (d *Dao) DeleteInboxMessages(ctx context.Context, deleteUserId int64, peer *mtproto.PeerUtil, deleteMsgDataIds []int64, cb func(ctx context.Context, userId int64, idList []int32)) error {
+	if d == nil || d.Postgres == nil || d.Postgres.Pool == nil || d.Postgres.Store == nil {
+		return errors.New("messenger/msg: postgres store is not configured")
+	}
+	if peer == nil {
+		return mtproto.ErrPeerIdInvalid
+	}
 	var (
 		deletedDialogsMap = map[int64][]*dataobject.MessagesDO{}
 	)
@@ -499,8 +387,6 @@ func (d *Dao) DeleteInboxMessages(ctx context.Context, deleteUserId int64, peer 
 		var err error
 		if d.Postgres != nil && d.Postgres.Store != nil {
 			_, err = d.SelectMessageByDataIDList(ctx, peer.PeerId, deleteMsgDataIds, func(sz, i int, v *dataobject.MessagesDO) { doDeleteMessageF(v) })
-		} else {
-			_, err = d.MessagesDAO.SelectByMessageDataIdListWithCB(ctx, d.MessagesDAO.CalcTableName(peer.PeerId), deleteMsgDataIds, func(sz, i int, v *dataobject.MessagesDO) { doDeleteMessageF(v) })
 		}
 		if err != nil {
 			return err
@@ -515,8 +401,6 @@ func (d *Dao) DeleteInboxMessages(ctx context.Context, deleteUserId int64, peer 
 		for _, uId := range pUserIdList.GetDatas() {
 			if d.Postgres != nil && d.Postgres.Store != nil {
 				_, _ = d.SelectMessageByDataIDList(ctx, uId, deleteMsgDataIds, func(sz, i int, v *dataobject.MessagesDO) { doDeleteMessageF(v) })
-			} else {
-				d.MessagesDAO.SelectByMessageDataIdListWithCB(ctx, d.MessagesDAO.CalcTableName(uId), deleteMsgDataIds, func(sz, i int, v *dataobject.MessagesDO) { doDeleteMessageF(v) })
 			}
 		}
 	}
@@ -578,30 +462,12 @@ func (d *Dao) DeleteInboxMessages(ctx context.Context, deleteUserId int64, peer 
 			}
 		}
 
-		// tR := sqlx.TxWrapper(ctx, d.DB, func(tx *sqlx.Tx, result *sqlx.StoreResult) {
 		_, err2 := d.DeleteMessageByIDList(ctx, userId, msgIds)
 		if err2 != nil {
 			// return
 		}
-		if dlgDO != nil && d.Postgres != nil && d.Postgres.Store != nil {
+		if dlgDO != nil {
 			_, err2 = d.Postgres.Store.Dialogs.UpdateCustomMap(ctx, map[string]any{"top_message": dlgDO.TopMessage, "unread_count": dlgDO.UnreadCount}, userId, dlgDO.PeerType, dlgDO.PeerId)
-		} else if dlgDO != nil {
-			d.CachedConn.Exec(
-				ctx,
-				func(ctx context.Context, conn *sqlx.DB) (int64, int64, error) {
-					_, err2 = d.UpdateDialogCustomMap(
-						ctx,
-						map[string]interface{}{
-							"top_message":  dlgDO.TopMessage,
-							"unread_count": dlgDO.UnreadCount,
-						},
-						userId,
-						dlgDO.PeerType,
-						dlgDO.PeerId)
-
-					return 0, 0, err2
-				},
-				dialog.GetDialogCacheKeyByPeer(userId, dlgDO.PeerType, dlgDO.PeerId))
 		}
 		//})
 		if err2 != nil {

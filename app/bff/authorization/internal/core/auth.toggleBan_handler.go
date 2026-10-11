@@ -27,9 +27,16 @@ import (
 // AuthToggleBan
 // auth.toggleBan flags:# phone:string predefined:flags.0?true expires:flags.1?int reason:flags.1?string = PredefinedUser;
 func (c *AuthorizationCore) AuthToggleBan(in *mtproto.TLAuthToggleBan) (*mtproto.PredefinedUser, error) {
+	if c == nil || c.MD == nil {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
 	if !c.MD.IsAdmin {
 		c.Logger.Errorf("auth.toggleBan - RIGHT_FORBIDDEN")
 		return nil, mtproto.ErrRightForbidden
+	}
+	if in == nil {
+		c.Logger.Errorf("auth.toggleBan - request is nil")
+		return nil, mtproto.ErrInputRequestInvalid
 	}
 	if strings.TrimSpace(in.GetPhone()) == "" {
 		c.Logger.Errorf("auth.toggleBan - phone empty")

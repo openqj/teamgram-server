@@ -26,6 +26,12 @@ import (
 // AccountGetContentSettings
 // account.getContentSettings#8b9b4dae = account.ContentSettings;
 func (c *NsfwCore) AccountGetContentSettings(in *mtproto.TLAccountGetContentSettings) (*mtproto.Account_ContentSettings, error) {
+	if c == nil || c.MD == nil || c.MD.GetUserId() <= 0 {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
+	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.UserClient == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
 	rValue, err := c.svcCtx.Dao.UserClient.UserGetContentSettings(c.ctx, &userpb.TLUserGetContentSettings{
 		UserId: c.MD.UserId,
 	})

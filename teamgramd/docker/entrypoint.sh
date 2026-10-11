@@ -35,27 +35,28 @@
 #   done
 # }
 
-# Production images must be configured with the PostgreSQL 18 DSN.  The
-# web-isolated fixture is an explicit MySQL-only migration-boundary test and
-# supplies ISOLATED_MYSQL_DATABASE instead.
-if [ -z "${ISOLATED_MYSQL_DATABASE:-}" ]; then
-  if [ -n "${MYSQL_URI:-}" ]; then
-    echo "refusing to start: MYSQL_URI is forbidden in PostgreSQL production runtime" >&2
-    exit 1
-  fi
-  : "${TEAMGRAM_POSTGRES_DSN:?TEAMGRAM_POSTGRES_DSN is required}"
-  case "$TEAMGRAM_POSTGRES_DSN" in
-    postgres://*|postgresql://*) ;;
-    *)
-      echo "refusing to start: TEAMGRAM_POSTGRES_DSN must use the PostgreSQL URI scheme" >&2
-      exit 1
-      ;;
-  esac
+# Production images must be configured with the PostgreSQL 18 DSN.
+if [ "$#" -ne 0 ]; then
+  echo "refusing to start: unsupported entrypoint argument" >&2
+  exit 2
+fi
 
-  if grep -R -nE '^[[:space:]]*Mysql:' /app/etc2 >/dev/null 2>&1; then
-    echo "refusing to start: /app/etc2 contains a MySQL service configuration" >&2
+if env | cut -d= -f1 | grep -qEi '(^|_)MYSQL([_A-Z0-9]|$)'; then
+  echo "refusing to start: MySQL runtime variables are forbidden in PostgreSQL production runtime" >&2
+  exit 1
+fi
+: "${TEAMGRAM_POSTGRES_DSN:?TEAMGRAM_POSTGRES_DSN is required}"
+case "$TEAMGRAM_POSTGRES_DSN" in
+  postgres://*|postgresql://*) ;;
+  *)
+    echo "refusing to start: TEAMGRAM_POSTGRES_DSN must use the PostgreSQL URI scheme" >&2
     exit 1
-  fi
+    ;;
+esac
+
+if grep -R -nEi '^[[:space:]]*mysql|mysql://' /app/etc2 >/dev/null 2>&1; then
+  echo "refusing to start: /app/etc2 contains a MySQL runtime configuration" >&2
+  exit 1
 fi
 
 for config in authsession biz idgen media msg sync bff session; do

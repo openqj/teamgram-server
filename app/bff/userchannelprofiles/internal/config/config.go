@@ -25,8 +25,12 @@ import (
 
 type Config struct {
 	zrpc.RpcServerConf
-	PostgresDSN string `json:",optional"`
-	MediaClient zrpc.RpcClientConf
-	UserClient  zrpc.RpcClientConf
-	SyncClient  *kafka.KafkaProducerConf
+	PostgresDSN                               string `json:",optional"`
+	UserChannelProfilesProviderEndpoint       string `json:",optional"`
+	UserChannelProfilesProviderKey            string `json:",optional"`
+	UserChannelProfilesProviderSigningKey     string `json:",optional"`
+	UserChannelProfilesProviderTimeoutSeconds int    `json:",optional"`
+	MediaClient                               zrpc.RpcClientConf
+	UserClient                                zrpc.RpcClientConf
+	SyncClient                                *kafka.KafkaProducerConf
 }

@@ -67,3 +67,24 @@ func TestMessagesGetDefaultHistoryTTLRejectsNilProviderResponse(t *testing.T) {
 		t.Fatalf("nil provider response = (%v, %v), want INTERNAL_SERVER_ERROR", result, err)
 	}
 }
+
+func TestMessagesDefaultHistoryTTLRejectsInvalidRuntime(t *testing.T) {
+	tests := []struct {
+		name string
+		core *PrivacySettingsCore
+		in   *mtproto.TLMessagesSetDefaultHistoryTTL
+		want error
+	}{
+		{name: "missing authentication", core: &PrivacySettingsCore{}, in: &mtproto.TLMessagesSetDefaultHistoryTTL{}, want: mtproto.ErrAuthKeyUnregistered},
+		{name: "nil request", core: &PrivacySettingsCore{MD: &metadata.RpcMetadata{UserId: 1}}, want: mtproto.ErrInputRequestInvalid},
+		{name: "missing provider", core: &PrivacySettingsCore{MD: &metadata.RpcMetadata{UserId: 1}}, in: &mtproto.TLMessagesSetDefaultHistoryTTL{}, want: mtproto.ErrInternalServerError},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := test.core.MessagesSetDefaultHistoryTTL(test.in)
+			if got != nil || err != test.want {
+				t.Fatalf("MessagesSetDefaultHistoryTTL() = (%v, %v), want (nil, %v)", got, err, test.want)
+			}
+		})
+	}
+}

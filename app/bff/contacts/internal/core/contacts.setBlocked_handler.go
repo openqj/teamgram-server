@@ -26,6 +26,15 @@ import (
 // ContactsSetBlocked
 // contacts.setBlocked#94c65c76 flags:# my_stories_from:flags.0?true id:Vector<InputPeer> limit:int = Bool;
 func (c *ContactsCore) ContactsSetBlocked(in *mtproto.TLContactsSetBlocked) (*mtproto.Bool, error) {
+	if c == nil || c.MD == nil || c.MD.UserId <= 0 {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
+	if in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.UserClient == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
 	// user.blockPeer / unblockPeer have no my_stories_from or stories field, so the
 	// existing contacts.block and contacts.unblock paths are the storage.
 	want := make(map[int64]*mtproto.InputPeer, len(in.GetId()))

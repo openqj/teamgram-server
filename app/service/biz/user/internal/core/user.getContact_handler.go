@@ -17,6 +17,15 @@ import (
 // UserGetContact
 // user.getContact user_id:long id:long = ContactData;
 func (c *UserCore) UserGetContact(in *user.TLUserGetContact) (*mtproto.ContactData, error) {
+	if in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if in.GetUserId() <= 0 || in.GetId() <= 0 {
+		return nil, mtproto.ErrUserIdInvalid
+	}
+	if err := c.requirePostgres(); err != nil {
+		return nil, err
+	}
 	contact, err := c.svcCtx.Dao.GetUserContact(c.ctx, in.GetUserId(), in.GetId())
 	if err != nil {
 		return nil, err

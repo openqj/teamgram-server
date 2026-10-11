@@ -25,5 +25,26 @@ import (
 // MessagesComposeRichMessageWithAI
 // messages.composeRichMessageWithAI#8d7ae6af flags:# proofread:flags.0?true emojify:flags.3?true text:flags.4?InputRichMessage translate_to_lang:flags.1?string tone:flags.2?InputAiComposeTone = messages.ComposedRichMessageWithAI;
 func (c *MessagesCore) MessagesComposeRichMessageWithAI(in *mtproto.TLMessagesComposeRichMessageWithAI) (*mtproto.Messages_ComposedRichMessageWithAI, error) {
-	return nil, mtproto.ErrMethodNotImpl
+	if c == nil || c.MD == nil || c.MD.GetUserId() <= 0 {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
+	if in == nil || in.GetText() == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	var result mtproto.RichMessage
+	err := c.callAIProvider("compose_rich_message", struct {
+		Proofread     bool                        `json:"proofread"`
+		Emojify       bool                        `json:"emojify"`
+		Text          *mtproto.InputRichMessage   `json:"text"`
+		TranslateLang string                      `json:"translate_to_lang,omitempty"`
+		Tone          *mtproto.InputAiComposeTone `json:"tone,omitempty"`
+	}{in.GetProofread(), in.GetEmojify(), in.GetText(), wrapperStringValue(in.GetTranslateToLang()), in.GetTone()}, &result)
+	if err != nil {
+		return nil, err
+	}
+	resultValue, err := normalizeAIRich(&result)
+	if err != nil {
+		return nil, err
+	}
+	return mtproto.MakeTLMessagesComposedRichMessageWithAI(&mtproto.Messages_ComposedRichMessageWithAI{Result: resultValue}).To_Messages_ComposedRichMessageWithAI(), nil
 }

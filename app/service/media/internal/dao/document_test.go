@@ -23,26 +23,6 @@ import (
 )
 
 func TestGetDocumentList(t *testing.T) {
-	// rand.Seed(time.Now().UnixNano())
-	//mysqlConfig1 := mysql_client.MySQLConfig{
-	//	Name:   "immaster",
-	//	DSN:    "root:@/enterprise?charset=utf8",
-	//	Active: 5,
-	//	Idle:   2,
-	//}
-	//mysqlConfig2 := mysql_client.MySQLConfig{
-	//	Name:   "imslave",
-	//	DSN:    "root:@/enterprise?charset=utf8",
-	//	Active: 5,
-	//	Idle:   2,
-	//}
-	//mysql_client.InstallMysqlClientManager([]mysql_client.MySQLConfig{mysqlConfig1, mysqlConfig2})
-	//
-	//mdidia, _ := InstallMediaCore(&conf.ServiceConfig{MysqlNames: []string{"immaster"}})
-	//// photoModel := photo.NewPhotoModel(1, "immaster", "")
-	//// documentModel := NewDocumentModel(1, "immaster", "", photoModel)
-	//documents := mdidia.GetDocumentList([]int64{1108902269895577600})
-	//fmt.Printf("%s\n", log.DebugString(documents))
 }
 
 func TestDocumentAttributes(t *testing.T) {

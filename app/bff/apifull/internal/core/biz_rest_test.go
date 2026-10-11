@@ -21,11 +21,11 @@ func TestBizRestAwayMessage(t *testing.T) {
 	}
 }
 
-func TestBusinessGreetingMySQL(t *testing.T) {
+func TestBusinessGreetingPostgres(t *testing.T) {
 	c := &ApiFullCore{MD: &metadata.RpcMetadata{UserId: 15}}
 	ok, err := c.AccountUpdateBusinessGreetingMessage(&mtproto.TLAccountUpdateBusinessGreetingMessage{
 		Message: &mtproto.InputBusinessGreetingMessage{
-			PredicateName:  "hello-mysql",
+			PredicateName:  "hello-postgres",
 			ShortcutId:     15,
 			NoActivityDays: 1,
 		},
@@ -37,7 +37,7 @@ func TestBusinessGreetingMySQL(t *testing.T) {
 		t.Fatal("expected boolTrue")
 	}
 	got := businessGreetingMessage(15)
-	if got == nil || got.GetPredicateName() != "hello-mysql" {
+	if got == nil || got.GetPredicateName() != "hello-postgres" {
 		t.Fatalf("greeting: %+v", got)
 	}
 }

@@ -39,6 +39,10 @@ func (c *AuthorizationCore) AuthResetAuthorizations(in *mtproto.TLAuthResetAutho
 		c.Logger.Errorf("auth.resetAuthorizations - perm auth key empty")
 		return nil, mtproto.ErrAuthKeyInvalid
 	}
+	if c.svcCtx.Dao.AuthsessionClient == nil || c.svcCtx.Dao.SyncClient == nil {
+		c.Logger.Errorf("auth.resetAuthorizations - authorization providers unavailable")
+		return nil, mtproto.ErrInternalServerError
+	}
 
 	// hash 0 revokes every session except AuthKeyId (the current one).
 	tKeyIdList, err := c.svcCtx.Dao.AuthsessionClient.AuthsessionResetAuthorization(c.ctx, &authsession.TLAuthsessionResetAuthorization{

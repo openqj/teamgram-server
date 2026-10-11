@@ -109,6 +109,30 @@ func (d *BotsDAO) SelectBotIdsByCreatorUserId(ctx context.Context, creatorUserID
 	return ids, rows.Err()
 }
 
+// SelectBotIdsByManagerBotId returns bots created under the authenticated
+// manager bot. This is the authoritative relation used by bots.getAdminedBots;
+// creator_user_id is the human owner and must not be used for this method.
+func (d *BotsDAO) SelectBotIdsByManagerBotId(ctx context.Context, managerBotID int64) ([]int64, error) {
+	rows, err := d.db.Query(ctx, `SELECT b.bot_id FROM bots b
+JOIN users u ON u.id = b.bot_id
+WHERE b.manager_bot_id = $1 AND u.user_type = 3 AND u.deleted = FALSE
+ORDER BY b.bot_id`, managerBotID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	ids := make([]int64, 0)
+	for rows.Next() {
+		var botID int64
+		if err := rows.Scan(&botID); err != nil {
+			return nil, err
+		}
+		ids = append(ids, botID)
+	}
+	return ids, rows.Err()
+}
+
 func (d *BotsDAO) SelectByIdList(ctx context.Context, ids []int32) ([]dataobject.BotsDO, error) {
 	if len(ids) == 0 {
 		return []dataobject.BotsDO{}, nil

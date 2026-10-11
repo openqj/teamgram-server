@@ -43,6 +43,9 @@ func (c *UserChannelProfilesCore) AccountUpdatePersonalChannel(in *mtproto.TLAcc
 		c.Logger.Errorf("account.updatePersonalChannel - error: %v", err)
 		return nil, err
 	}
+	if rV == nil || (rV.GetPredicateName() != mtproto.Predicate_boolTrue && rV.GetPredicateName() != mtproto.Predicate_boolFalse) {
+		return nil, mtproto.ErrInternalServerError
+	}
 
 	return rV, nil
 }

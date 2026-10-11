@@ -30,11 +30,15 @@ type Config struct {
 	zrpc.RpcServerConf
 	// PostgresDSN points at the deployment-owned PostgreSQL 18 APIFull
 	// store used by account authorization settings.
-	PostgresDSN       string `json:",optional"`
-	KV                kv.KvConf
-	Code              *conf.SmsVerifyCodeConfig
-	UserClient        zrpc.RpcClientConf
-	AuthsessionClient zrpc.RpcClientConf
-	ChatClient        zrpc.RpcClientConf
-	SyncClient        *kafka.KafkaProducerConf
+	PostgresDSN                         string `json:",optional"`
+	KV                                  kv.KvConf
+	Code                                *conf.SmsVerifyCodeConfig
+	UserClient                          zrpc.RpcClientConf
+	AuthsessionClient                   zrpc.RpcClientConf
+	ChatClient                          zrpc.RpcClientConf
+	SyncClient                          *kafka.KafkaProducerConf
+	BotConnectionProviderEndpoint       string `json:",optional"`
+	BotConnectionProviderKey            string `json:",optional"`
+	BotConnectionProviderSigningKey     string `json:",optional"`
+	BotConnectionProviderTimeoutSeconds int    `json:",optional"`
 }

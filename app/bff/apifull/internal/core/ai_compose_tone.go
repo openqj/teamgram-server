@@ -129,11 +129,40 @@ func aiToneMatches(tone storedAiTone, in *mtproto.InputAiComposeTone) bool {
 	return false
 }
 
-func (c *ApiFullCore) MessagesComposeMessageWithAI(_ *mtproto.TLMessagesComposeMessageWithAI) (*mtproto.Messages_ComposedMessageWithAI, error) {
+func (c *ApiFullCore) MessagesComposeMessageWithAI(in *mtproto.TLMessagesComposeMessageWithAI) (*mtproto.Messages_ComposedMessageWithAI, error) {
 	if _, err := c.requireUserId(); err != nil {
 		return nil, err
 	}
-	return nil, mtproto.ErrMethodNotImpl
+	if in == nil || in.GetText() == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	var result struct {
+		ResultText *mtproto.TextWithEntities `json:"result_text"`
+		DiffText   *mtproto.TextWithEntities `json:"diff_text"`
+	}
+	err := c.callAPIFullAIProvider("compose_message", struct {
+		Proofread     bool                        `json:"proofread"`
+		Emojify       bool                        `json:"emojify"`
+		Text          *mtproto.TextWithEntities   `json:"text"`
+		TranslateLang string                      `json:"translate_to_lang,omitempty"`
+		Tone          *mtproto.InputAiComposeTone `json:"tone,omitempty"`
+		ChangeTone    string                      `json:"change_tone,omitempty"`
+	}{in.GetProofread(), in.GetEmojify(), in.GetText(), apifullAIString(in.GetTranslateToLang()), in.GetTone(), apifullAIString(in.GetChangeTone())}, &result)
+	if err != nil {
+		return nil, err
+	}
+	resultText, err := normalizeAPIFullAIText(result.ResultText)
+	if err != nil {
+		return nil, err
+	}
+	var diffText *mtproto.TextWithEntities
+	if result.DiffText != nil {
+		diffText, err = normalizeAPIFullAIText(result.DiffText)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return mtproto.MakeTLMessagesComposedMessageWithAI(&mtproto.Messages_ComposedMessageWithAI{ResultText: resultText, DiffText: diffText}).To_Messages_ComposedMessageWithAI(), nil
 }
 
 func (c *ApiFullCore) AicomposeCreateTone(in *mtproto.TLAicomposeCreateTone) (*mtproto.AiComposeTone, error) {
@@ -314,9 +343,33 @@ func (c *ApiFullCore) AicomposeGetTones(in *mtproto.TLAicomposeGetTones) (*mtpro
 	return aiTonesResult(tones), nil
 }
 
-func (c *ApiFullCore) AicomposeGetToneExample(_ *mtproto.TLAicomposeGetToneExample) (*mtproto.AiComposeToneExample, error) {
+func (c *ApiFullCore) AicomposeGetToneExample(in *mtproto.TLAicomposeGetToneExample) (*mtproto.AiComposeToneExample, error) {
 	if _, err := c.requireUserId(); err != nil {
 		return nil, err
 	}
-	return nil, mtproto.ErrMethodNotImpl
+	if in == nil || in.GetTone() == nil || in.GetNum() <= 0 || in.GetNum() > 20 {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	var result struct {
+		From *mtproto.TextWithEntities `json:"from"`
+		To   *mtproto.TextWithEntities `json:"to"`
+	}
+	err := c.callAPIFullAIProvider("tone_example", struct {
+		ToneID int64  `json:"tone_id,omitempty"`
+		Slug   string `json:"slug,omitempty"`
+		Tone   string `json:"tone,omitempty"`
+		Num    int32  `json:"num"`
+	}{in.GetTone().GetId(), in.GetTone().GetSlug(), in.GetTone().GetTone(), in.GetNum()}, &result)
+	if err != nil {
+		return nil, err
+	}
+	from, err := normalizeAPIFullAIText(result.From)
+	if err != nil {
+		return nil, err
+	}
+	to, err := normalizeAPIFullAIText(result.To)
+	if err != nil {
+		return nil, err
+	}
+	return mtproto.MakeTLAiComposeToneExample(&mtproto.AiComposeToneExample{From: from, To: to}).To_AiComposeToneExample(), nil
 }

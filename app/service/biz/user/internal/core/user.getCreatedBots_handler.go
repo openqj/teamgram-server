@@ -52,7 +52,7 @@ func (c *UserCore) UserGetAdminedBots(in *user.BotRegistryGetAdminedBotsRequest)
 		return nil, mtproto.ErrAuthKeyUnregistered
 	}
 
-	botIds, err := c.svcCtx.Dao.SelectBotIdsByCreatorUserID(c.ctx, c.MD.GetUserId())
+	botIds, err := c.svcCtx.Dao.SelectBotIdsByManagerBotID(c.ctx, c.MD.GetUserId())
 	if err != nil {
 		return nil, err
 	}

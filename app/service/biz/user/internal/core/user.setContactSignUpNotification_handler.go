@@ -19,6 +19,18 @@ import (
 // UserSetContactSignUpNotification
 // user.setContactSignUpNotification user_id:long silent:Bool = Bool;
 func (c *UserCore) UserSetContactSignUpNotification(in *user.TLUserSetContactSignUpNotification) (*mtproto.Bool, error) {
+	if in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if in.GetUserId() <= 0 {
+		return nil, mtproto.ErrUserIdInvalid
+	}
+	if err := c.requirePostgres(); err != nil {
+		return nil, err
+	}
+	if c.svcCtx.Dao.Postgres.Store.Settings == nil {
+		return nil, mtproto.ErrMethodNotImpl
+	}
 	var (
 		k, v string
 	)

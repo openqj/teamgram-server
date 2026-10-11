@@ -114,6 +114,52 @@ func TestMakeMediaByInputMediaValidatesDocumentReference(t *testing.T) {
 	}
 }
 
+func TestMakeMediaByInputMediaFailsClosedWithoutMediaProvider(t *testing.T) {
+	file := mtproto.MakeTLInputFile(&mtproto.InputFile{
+		Id_INT64: 1,
+		Parts:    1,
+		Name:     "upload.bin",
+	}).To_InputFile()
+	cases := []struct {
+		name  string
+		media *mtproto.InputMedia
+	}{
+		{
+			name:  "uploaded photo",
+			media: mtproto.MakeTLInputMediaUploadedPhoto(&mtproto.InputMedia{File: file}).To_InputMedia(),
+		},
+		{
+			name: "uploaded document",
+			media: mtproto.MakeTLInputMediaUploadedDocument(&mtproto.InputMedia{
+				File:     file,
+				MimeType: "application/octet-stream",
+			}).To_InputMedia(),
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := newDocumentReferenceTestCore(nil).makeMediaByInputMedia(tc.media)
+			if !errors.Is(err, mtproto.ErrInternalServerError) {
+				t.Fatalf("makeMediaByInputMedia() error = %v, want INTERNAL_SERVER_ERROR", err)
+			}
+		})
+	}
+}
+
+func TestMakeMediaByInputMediaContactAllowsMissingUserProvider(t *testing.T) {
+	media := mtproto.MakeTLInputMediaContact(&mtproto.InputMedia{
+		PhoneNumber: "+12025550123",
+		FirstName:   "Test",
+	}).To_InputMedia()
+	got, err := newDocumentReferenceTestCore(nil).makeMediaByInputMedia(media)
+	if err != nil {
+		t.Fatalf("makeMediaByInputMedia(contact) error = %v", err)
+	}
+	if got == nil || got.GetPredicateName() != mtproto.Predicate_messageMediaContact || got.GetUserId() != 0 {
+		t.Fatalf("contact media = %v, want contact without resolved user", got)
+	}
+}
+
 func inputMediaPoll(question string, options ...[]byte) *mtproto.InputMedia {
 	answers := make([]*mtproto.PollAnswer, 0, len(options))
 	for _, option := range options {

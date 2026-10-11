@@ -28,10 +28,12 @@ func (c *FilesCore) HelpGetCdnConfig(in *mtproto.TLHelpGetCdnConfig) (*mtproto.C
 	if in == nil {
 		return nil, mtproto.ErrInputRequestInvalid
 	}
-	// No CDN key/token provider is configured. Returning an empty CdnConfig
-	// would advertise a usable CDN while upload.getCdnFile remains unavailable.
-	if c != nil && c.Logger != nil {
-		c.Logger.Errorf("help.getCdnConfig - error: %v", mtproto.ErrCdnMethodInvalid)
+	result := new(mtproto.CdnConfig)
+	if err := c.callCDNProvider("help.getCdnConfig", map[string]any{}, result); err != nil {
+		return nil, err
 	}
-	return nil, mtproto.ErrCdnMethodInvalid
+	if result.GetPredicateName() == "" || len(result.GetPublicKeys()) > 1000 {
+		return nil, mtproto.ErrCdnMethodInvalid
+	}
+	return result, nil
 }

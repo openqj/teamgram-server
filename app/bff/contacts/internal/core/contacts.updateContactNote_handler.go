@@ -29,6 +29,15 @@ import (
 // ContactsUpdateContactNote
 // contacts.updateContactNote#139f63fb id:InputUser note:TextWithEntities = Bool;
 func (c *ContactsCore) ContactsUpdateContactNote(in *mtproto.TLContactsUpdateContactNote) (*mtproto.Bool, error) {
+	if c == nil || c.MD == nil || c.MD.UserId <= 0 {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
+	if in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if persist.Default == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
 	id := mtproto.FromInputUser(c.MD.UserId, in.GetId())
 	if !id.IsUser() || id.IsSelf() || id.PeerId == c.MD.UserId {
 		err := mtproto.ErrPeerIdInvalid

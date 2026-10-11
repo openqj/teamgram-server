@@ -1525,12 +1525,33 @@ func (c *ApiFullCore) PhoneDeleteGroupCallParticipantMessages(in *mtproto.TLPhon
 }
 
 func (c *ApiFullCore) PhoneGetGroupCallStars(in *mtproto.TLPhoneGetGroupCallStars) (*mtproto.Phone_GroupCallStars, error) {
-	if _, err := c.requireUserId(); err != nil {
+	uid, err := c.requireUserId()
+	if err != nil {
 		return nil, err
 	}
-	_ = in
-	// Group membership is not a donation ledger and cannot identify donors.
-	return nil, mtproto.ErrMethodNotImpl
+	if in == nil || in.GetCall() == nil || in.GetCall().GetId() == 0 || in.GetCall().GetAccessHash() == 0 {
+		return nil, mtproto.ErrGroupCallInvalid
+	}
+	var result mtproto.Phone_GroupCallStars
+	if err = c.callBusinessProvider("phone.getGroupCallStars", map[string]any{
+		"call": in.GetCall(),
+	}, &result); err != nil {
+		return nil, err
+	}
+	if result.GetTotalStars() < 0 {
+		return nil, mtproto.ErrInternalServerError
+	}
+	if result.GetTopDonors() == nil {
+		result.TopDonors = []*mtproto.GroupCallDonor{}
+	}
+	if result.GetChats() == nil {
+		result.Chats = []*mtproto.Chat{}
+	}
+	if result.GetUsers() == nil {
+		result.Users = []*mtproto.User{}
+	}
+	_ = uid
+	return mtproto.MakeTLPhoneGroupCallStars(&result).To_Phone_GroupCallStars(), nil
 }
 
 func (c *ApiFullCore) PhoneSaveDefaultSendAs(in *mtproto.TLPhoneSaveDefaultSendAs) (*mtproto.Bool, error) {

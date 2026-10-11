@@ -52,14 +52,14 @@ ORDER BY id LIMIT 1`, sha256, size, mimeType))
 }
 
 func (d *DocumentsDAO) SelectByDocumentId(ctx context.Context, id int64) (*dataobject.DocumentsDO, error) {
-	return scanDocument(d.db.QueryRow(ctx, `SELECT `+documentColumns+` FROM documents WHERE document_id = $1`, id))
+	return scanDocument(d.db.QueryRow(ctx, `SELECT `+documentColumns+` FROM documents WHERE document_id = $1 AND deleted = FALSE`, id))
 }
 
 func (d *DocumentsDAO) SelectByDocumentIdList(ctx context.Context, ids []int64) ([]dataobject.DocumentsDO, error) {
 	if len(ids) == 0 {
 		return []dataobject.DocumentsDO{}, nil
 	}
-	rows, err := d.db.Query(ctx, `SELECT `+documentColumns+` FROM documents WHERE document_id = ANY($1::bigint[]) ORDER BY id`, ids)
+	rows, err := d.db.Query(ctx, `SELECT `+documentColumns+` FROM documents WHERE document_id = ANY($1::bigint[]) AND deleted = FALSE ORDER BY id`, ids)
 	if err != nil {
 		return nil, err
 	}
@@ -83,7 +83,7 @@ func (d *DocumentsDAO) SelectByIdList(ctx context.Context, ids []int64) ([]datao
 	if len(ids) == 0 {
 		return []dataobject.DocumentsDO{}, nil
 	}
-	rows, err := d.db.Query(ctx, `SELECT `+documentColumns+` FROM documents WHERE id = ANY($1::bigint[]) ORDER BY id`, ids)
+	rows, err := d.db.Query(ctx, `SELECT `+documentColumns+` FROM documents WHERE id = ANY($1::bigint[]) AND deleted = FALSE ORDER BY id`, ids)
 	if err != nil {
 		return nil, err
 	}

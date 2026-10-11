@@ -20,23 +20,13 @@ package dao
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/teamgram/marmota/pkg/stores/sqlx"
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/service/biz/user/internal/dal/dataobject"
 
 	"google.golang.org/protobuf/types/known/wrapperspb"
 )
-
-const (
-	userPeerSettingsKeyPrefix = "user_peer_settings"
-)
-
-func genUserPeerSettingsCacheKey(id int64, peerType int32, peerId int64) string {
-	return fmt.Sprintf("%s_%d_%d_%d", userPeerSettingsKeyPrefix, id, peerType, peerId)
-}
 
 func (d *Dao) GetUserPeerSettings(ctx context.Context, id int64, peerType int32, peerId int64) (*mtproto.PeerSettings, error) {
 	settings := mtproto.MakeTLPeerSettings(&mtproto.PeerSettings{
@@ -62,119 +52,35 @@ func (d *Dao) GetUserPeerSettings(ctx context.Context, id int64, peerType int32,
 		NameChangeDate:         nil,
 		PhotoChangeDate:        nil,
 	}).To_PeerSettings()
-	if d.Postgres != nil {
-		settingsDO, err := d.Postgres.Store.PeerSettings.Select(ctx, id, peerType, peerId)
-		if err != nil {
-			return nil, err
-		}
-		if settingsDO != nil {
-			settings.ReportSpam = settingsDO.ReportSpam
-			settings.AddContact = settingsDO.AddContact
-			settings.BlockContact = settingsDO.BlockContact
-			settings.ShareContact = settingsDO.ShareContact
-			settings.NeedContactsException = settingsDO.NeedContactsException
-			settings.ReportGeo = settingsDO.ReportGeo
-			settings.Autoarchived = settingsDO.Autoarchived
-			if settingsDO.GeoDistance != 0 {
-				settings.GeoDistance = &wrapperspb.Int32Value{Value: settingsDO.GeoDistance}
-			}
-		}
-		return settings, nil
-	}
-
-	err := d.CachedConn.QueryRow(
-		ctx,
-		settings,
-		genUserPeerSettingsCacheKey(id, peerType, peerId),
-		func(ctx context.Context, conn *sqlx.DB, v interface{}) error {
-			settingsDO, err := d.UserPeerSettingsDAO.Select(ctx, id, peerType, peerId)
-			if err != nil {
-				return err
-			}
-
-			var (
-				peerSettings = v.(*mtproto.PeerSettings)
-			)
-
-			if settingsDO != nil {
-				peerSettings.ReportSpam = settingsDO.ReportSpam
-				peerSettings.AddContact = settingsDO.AddContact
-				peerSettings.BlockContact = settingsDO.BlockContact
-				peerSettings.ShareContact = settingsDO.ShareContact
-				peerSettings.NeedContactsException = settingsDO.NeedContactsException
-				peerSettings.ReportGeo = settingsDO.ReportGeo
-				peerSettings.Autoarchived = settingsDO.Autoarchived
-				peerSettings.GeoDistance = nil
-
-				if settingsDO.GeoDistance != 0 {
-					peerSettings.GeoDistance = &wrapperspb.Int32Value{Value: settingsDO.GeoDistance}
-				}
-			} else {
-				peerSettings.ReportSpam = false
-				peerSettings.AddContact = false
-				peerSettings.BlockContact = false
-				peerSettings.ShareContact = false
-				peerSettings.NeedContactsException = false
-				peerSettings.ReportGeo = false
-				peerSettings.Autoarchived = false
-				peerSettings.GeoDistance = nil
-			}
-
-			return nil
-		})
+	settingsDO, err := d.Postgres.Store.PeerSettings.Select(ctx, id, peerType, peerId)
 	if err != nil {
 		return nil, err
 	}
-
+	if settingsDO != nil {
+		settings.ReportSpam = settingsDO.ReportSpam
+		settings.AddContact = settingsDO.AddContact
+		settings.BlockContact = settingsDO.BlockContact
+		settings.ShareContact = settingsDO.ShareContact
+		settings.NeedContactsException = settingsDO.NeedContactsException
+		settings.ReportGeo = settingsDO.ReportGeo
+		settings.Autoarchived = settingsDO.Autoarchived
+		if settingsDO.GeoDistance != 0 {
+			settings.GeoDistance = &wrapperspb.Int32Value{Value: settingsDO.GeoDistance}
+		}
+	}
 	return settings, nil
 }
 
 func (d *Dao) SetUserPeerSettings(ctx context.Context, id int64, peerType int32, peerId int64, settings *mtproto.PeerSettings) error {
-	if d.Postgres != nil {
-		return d.Postgres.InTx(ctx, func(tx pgx.Tx) error {
-			_, _, err := d.Postgres.Store.PeerSettings.InsertOrUpdateTx(ctx, tx, &dataobject.UserPeerSettingsDO{UserId: id, PeerType: peerType, PeerId: peerId, ReportSpam: settings.ReportSpam, AddContact: settings.AddContact, BlockContact: settings.BlockContact, ShareContact: settings.ShareContact, NeedContactsException: settings.NeedContactsException, ReportGeo: settings.ReportGeo, Autoarchived: settings.Autoarchived, GeoDistance: settings.GetGeoDistance().GetValue()})
-			return err
-		})
-	}
-	_, _, err := d.CachedConn.Exec(
-		ctx,
-		func(ctx context.Context, conn *sqlx.DB) (int64, int64, error) {
-			return d.UserPeerSettingsDAO.InsertOrUpdate(
-				ctx,
-				&dataobject.UserPeerSettingsDO{
-					UserId:                id,
-					PeerType:              peerType,
-					PeerId:                peerId,
-					Hide:                  false,
-					ReportSpam:            settings.ReportSpam,
-					AddContact:            settings.AddContact,
-					BlockContact:          settings.BlockContact,
-					ShareContact:          settings.ShareContact,
-					NeedContactsException: settings.NeedContactsException,
-					ReportGeo:             settings.ReportGeo,
-					Autoarchived:          settings.Autoarchived,
-					GeoDistance:           settings.GetGeoDistance().GetValue(),
-				})
-		},
-		genUserPeerSettingsCacheKey(id, peerType, peerId))
-
-	return err
+	return d.Postgres.InTx(ctx, func(tx pgx.Tx) error {
+		_, _, err := d.Postgres.Store.PeerSettings.InsertOrUpdateTx(ctx, tx, &dataobject.UserPeerSettingsDO{UserId: id, PeerType: peerType, PeerId: peerId, ReportSpam: settings.ReportSpam, AddContact: settings.AddContact, BlockContact: settings.BlockContact, ShareContact: settings.ShareContact, NeedContactsException: settings.NeedContactsException, ReportGeo: settings.ReportGeo, Autoarchived: settings.Autoarchived, GeoDistance: settings.GetGeoDistance().GetValue()})
+		return err
+	})
 }
 
 func (d *Dao) DeleteUserPeerSettings(ctx context.Context, id int64, peerType int32, peerId int64) error {
-	if d.Postgres != nil {
-		return d.Postgres.InTx(ctx, func(tx pgx.Tx) error {
-			_, err := d.Postgres.Store.PeerSettings.DeleteTx(ctx, tx, id, peerType, peerId)
-			return err
-		})
-	}
-	_, _, err := d.CachedConn.Exec(
-		ctx,
-		func(ctx context.Context, conn *sqlx.DB) (int64, int64, error) {
-			affected, err := d.UserPeerSettingsDAO.Delete(ctx, id, peerType, peerId)
-			return 0, affected, err
-		},
-		genUserPeerSettingsCacheKey(id, peerType, peerId))
-
-	return err
+	return d.Postgres.InTx(ctx, func(tx pgx.Tx) error {
+		_, err := d.Postgres.Store.PeerSettings.DeleteTx(ctx, tx, id, peerType, peerId)
+		return err
+	})
 }

@@ -330,6 +330,7 @@ firewall-cmd --reload
 - **CentOS 7 防火墙**：MinIO 等需放行端口，或临时 `systemctl stop firewalld` 排查。
 - **Kafka 进程数**：`ps aux | grep kafka | wc -l` 为 3 表示 Zookeeper + Kafka 正常。
 - **Pika 解压目录**：若解压后不是 `pika` 目录，需手动重命名或修改启动路径。
-- **SQL 路径**：所有初始化 SQL 均在 `teamgramd/deploy/sql/`，不要使用错误的 `teamgramd/sql/`。
+- **SQL 路径**：使用 `./teamgramd/deploy/postgres/apply.sh` 应用 PostgreSQL 18
+  迁移；`teamgramd/deploy/sql/` 根目录下的文件仅是历史归档，不是部署输入。
 
 完成以上步骤后，Teamgram 服务端即可在 Linux 上以手动方式运行。

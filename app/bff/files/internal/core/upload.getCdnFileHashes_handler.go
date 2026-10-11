@@ -38,8 +38,12 @@ func (c *FilesCore) UploadGetCdnFileHashes(in *mtproto.TLUploadGetCdnFileHashes)
 	if offset < 0 {
 		return nil, mtproto.ErrOffsetInvalid
 	}
-	if c != nil && c.Logger != nil {
-		c.Logger.Errorf("upload.getCdnFileHashes - error: %v", mtproto.ErrCdnMethodInvalid)
+	result := new(mtproto.Vector_FileHash)
+	if err := c.callCDNProvider("upload.getCdnFileHashes", map[string]any{"file_token": in.GetFileToken(), "offset": offset}, result); err != nil {
+		return nil, err
 	}
-	return nil, mtproto.ErrCdnMethodInvalid
+	if result == nil || len(result.GetDatas()) > 10000 {
+		return nil, mtproto.ErrCdnMethodInvalid
+	}
+	return result, nil
 }

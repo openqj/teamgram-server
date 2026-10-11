@@ -17,6 +17,15 @@ import (
 // UserGetContactList
 // user.getContactList user_id:long = Vector<ContactData>;
 func (c *UserCore) UserGetContactList(in *user.TLUserGetContactList) (*user.Vector_ContactData, error) {
+	if in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if in.GetUserId() <= 0 {
+		return nil, mtproto.ErrUserIdInvalid
+	}
+	if err := c.requirePostgres(); err != nil {
+		return nil, err
+	}
 	rValList := &user.Vector_ContactData{}
 
 	var err error

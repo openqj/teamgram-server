@@ -76,9 +76,26 @@ func (c *UserCore) UserGetBotInfo(in *user.TLUserGetBotInfo) (*mtproto.BotInfo, 
 
 	// DescriptionPhoto
 	if botsDO.DescriptionPhotoId != 0 {
-		botInfo.DescriptionPhoto, _ = c.svcCtx.Dao.MediaClient.MediaGetPhoto(c.ctx, &media.TLMediaGetPhoto{
+		if c.svcCtx.Dao.MediaClient == nil {
+			return nil, mtproto.ErrMethodNotImpl
+		}
+		botInfo.DescriptionPhoto, err = c.svcCtx.Dao.MediaClient.MediaGetPhoto(c.ctx, &media.TLMediaGetPhoto{
 			PhotoId: botsDO.DescriptionPhotoId,
 		})
+		if err != nil {
+			return nil, err
+		}
+	}
+	if botsDO.DescriptionDocumentId != 0 {
+		if c.svcCtx.Dao.MediaClient == nil {
+			return nil, mtproto.ErrMethodNotImpl
+		}
+		botInfo.DescriptionDocument, err = c.svcCtx.Dao.MediaClient.MediaGetDocument(c.ctx, &media.TLMediaGetDocument{
+			Id: botsDO.DescriptionDocumentId,
+		})
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	// AppSettings

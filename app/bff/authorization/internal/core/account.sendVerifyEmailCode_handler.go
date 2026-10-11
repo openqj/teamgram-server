@@ -31,6 +31,9 @@ func (c *AuthorizationCore) AccountSendVerifyEmailCode(in *mtproto.TLAccountSend
 	if c == nil || in == nil {
 		return nil, mtproto.ErrInputRequestInvalid
 	}
+	if err := c.requireChallengeAuthKey(); err != nil {
+		return nil, err
+	}
 	if c.svcCtx == nil || c.svcCtx.Challenges == nil {
 		return nil, mtproto.ErrSendCodeUnavailable
 	}

@@ -20,6 +20,7 @@ package core
 
 import (
 	"context"
+	"strings"
 
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/proto/mtproto/rpc/metadata"
@@ -237,5 +238,22 @@ func (c *ApiFullCore) FragmentGetCollectibleInfo(in *mtproto.TLFragmentGetCollec
 	if _, err := c.requireUserId(); err != nil {
 		return nil, err
 	}
-	return nil, mtproto.ErrMethodNotImpl
+	if in == nil || in.GetCollectible() == nil {
+		return nil, mtproto.ErrMethodNotImpl
+	}
+	collectible := in.GetCollectible()
+	if (strings.TrimSpace(collectible.GetUsername()) == "") == (strings.TrimSpace(collectible.GetPhone()) == "") {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	var result mtproto.Fragment_CollectibleInfo
+	if err := c.callBusinessProvider("fragment.getCollectibleInfo", map[string]any{"collectible": collectible}, &result); err != nil {
+		return nil, err
+	}
+	if result.GetPurchaseDate() <= 0 || strings.TrimSpace(result.GetUrl()) == "" || result.GetAmount() < 0 || result.GetCryptoAmount() < 0 {
+		return nil, mtproto.ErrInternalServerError
+	}
+	if result.GetCurrency() == "" && result.GetCryptoCurrency() == "" {
+		return nil, mtproto.ErrInternalServerError
+	}
+	return mtproto.MakeTLFragmentCollectibleInfo(&result).To_Fragment_CollectibleInfo(), nil
 }

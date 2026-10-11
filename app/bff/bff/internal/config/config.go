@@ -30,44 +30,69 @@ import (
 
 type Config struct {
 	zrpc.RpcServerConf
-	DcId                          int32   `json:",optional"`
-	KnownDcIds                    []int32 `json:",optional"`
-	KV                            kv.KvConf
-	Code                          *conf.SmsVerifyCodeConfig
-	BizServiceClient              zrpc.RpcClientConf
-	AuthSessionClient             zrpc.RpcClientConf
-	MediaClient                   zrpc.RpcClientConf
-	IdgenClient                   zrpc.RpcClientConf
-	MsgClient                     zrpc.RpcClientConf
-	SyncClient                    *kafka.KafkaProducerConf
-	DfsClient                     zrpc.RpcClientConf
-	StatusClient                  zrpc.RpcClientConf
-	PostgresDSN                   string                          `json:",optional"`
-	PaymentProviderEndpoint       string                          `json:",optional"`
-	PaymentProviderKey            string                          `json:",optional"`
-	PaymentProviderSigningKey     string                          `json:",optional"`
-	PaymentProviderTimeoutSeconds int                             `json:",optional"`
-	AuthProviderEndpoint          string                          `json:",optional"`
-	AuthProviderKey               string                          `json:",optional"`
-	AuthProviderSigningKey        string                          `json:",optional"`
-	AuthProviderTimeoutSeconds    int                             `json:",optional"`
-	GroupCallMediaEndpoint        string                          `json:",optional"`
-	GroupCallMediaAPIKey          string                          `json:",optional"`
-	GroupCallMediaSigningKey      string                          `json:",optional"`
-	GroupCallMediaRTMPHost        string                          `json:",optional"`
-	GroupCallMediaTimeoutSeconds  int                             `json:",optional"`
-	TurnHost                      string                          `json:",optional"`
-	TurnPort                      int32                           `json:",optional"`
-	TurnUsername                  string                          `json:",optional"`
-	TurnPassword                  string                          `json:",optional"`
-	TurnSharedSecret              string                          `json:",optional"`
-	TurnCredentialTTLSeconds      int                             `json:",optional"`
-	Passkey                       passkeyhelper.ProviderConfig    `json:",optional"`
-	QrCode                        qrcodehelper.ProviderConfig     `json:",optional"`
-	SearchPostsFlood              SearchPostsFloodConfig          `json:",optional"`
-	SignInServiceNotification     []conf.MessageEntityConfig      `json:",optional"`
-	SignInMessage                 []conf.MessageEntityConfig      `json:",optional"`
-	Help                          configuration_helper.HelpConfig `json:",optional"`
+	DcId                                      int32   `json:",optional"`
+	KnownDcIds                                []int32 `json:",optional"`
+	KV                                        kv.KvConf
+	Code                                      *conf.SmsVerifyCodeConfig
+	BizServiceClient                          zrpc.RpcClientConf
+	AuthSessionClient                         zrpc.RpcClientConf
+	MediaClient                               zrpc.RpcClientConf
+	IdgenClient                               zrpc.RpcClientConf
+	MsgClient                                 zrpc.RpcClientConf
+	SyncClient                                *kafka.KafkaProducerConf
+	DfsClient                                 zrpc.RpcClientConf
+	StatusClient                              zrpc.RpcClientConf
+	PostgresDSN                               string                          `json:",optional"`
+	PaymentProviderEndpoint                   string                          `json:",optional"`
+	PaymentProviderKey                        string                          `json:",optional"`
+	PaymentProviderSigningKey                 string                          `json:",optional"`
+	PaymentProviderTimeoutSeconds             int                             `json:",optional"`
+	AIProviderEndpoint                        string                          `json:",optional"`
+	AIProviderKey                             string                          `json:",optional"`
+	AIProviderSigningKey                      string                          `json:",optional"`
+	AIProviderModel                           string                          `json:",optional"`
+	AIProviderTimeoutSeconds                  int                             `json:",optional"`
+	BusinessProviderEndpoint                  string                          `json:",optional"`
+	BusinessProviderKey                       string                          `json:",optional"`
+	BusinessProviderSigningKey                string                          `json:",optional"`
+	BusinessProviderTimeoutSeconds            int                             `json:",optional"`
+	SponsoredProviderEndpoint                 string                          `json:",optional"`
+	SponsoredProviderKey                      string                          `json:",optional"`
+	SponsoredProviderSigningKey               string                          `json:",optional"`
+	SponsoredProviderTimeoutSeconds           int                             `json:",optional"`
+	BotConnectionProviderEndpoint             string                          `json:",optional"`
+	BotConnectionProviderKey                  string                          `json:",optional"`
+	BotConnectionProviderSigningKey           string                          `json:",optional"`
+	BotConnectionProviderTimeoutSeconds       int                             `json:",optional"`
+	AuthProviderEndpoint                      string                          `json:",optional"`
+	AuthProviderKey                           string                          `json:",optional"`
+	AuthProviderSigningKey                    string                          `json:",optional"`
+	AuthProviderTimeoutSeconds                int                             `json:",optional"`
+	PassportProviderEndpoint                  string                          `json:",optional"`
+	PassportProviderKey                       string                          `json:",optional"`
+	PassportProviderSigningKey                string                          `json:",optional"`
+	PassportProviderTimeoutSeconds            int                             `json:",optional"`
+	UserChannelProfilesProviderEndpoint       string                          `json:",optional"`
+	UserChannelProfilesProviderKey            string                          `json:",optional"`
+	UserChannelProfilesProviderSigningKey     string                          `json:",optional"`
+	UserChannelProfilesProviderTimeoutSeconds int                             `json:",optional"`
+	GroupCallMediaEndpoint                    string                          `json:",optional"`
+	GroupCallMediaAPIKey                      string                          `json:",optional"`
+	GroupCallMediaSigningKey                  string                          `json:",optional"`
+	GroupCallMediaRTMPHost                    string                          `json:",optional"`
+	GroupCallMediaTimeoutSeconds              int                             `json:",optional"`
+	TurnHost                                  string                          `json:",optional"`
+	TurnPort                                  int32                           `json:",optional"`
+	TurnUsername                              string                          `json:",optional"`
+	TurnPassword                              string                          `json:",optional"`
+	TurnSharedSecret                          string                          `json:",optional"`
+	TurnCredentialTTLSeconds                  int                             `json:",optional"`
+	Passkey                                   passkeyhelper.ProviderConfig    `json:",optional"`
+	QrCode                                    qrcodehelper.ProviderConfig     `json:",optional"`
+	SearchPostsFlood                          SearchPostsFloodConfig          `json:",optional"`
+	SignInServiceNotification                 []conf.MessageEntityConfig      `json:",optional"`
+	SignInMessage                             []conf.MessageEntityConfig      `json:",optional"`
+	Help                                      configuration_helper.HelpConfig `json:",optional"`
 }
 
 type SearchPostsFloodConfig struct {

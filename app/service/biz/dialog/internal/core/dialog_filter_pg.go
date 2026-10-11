@@ -9,7 +9,7 @@ import (
 )
 
 // pgStore returns the authoritative dialog persistence boundary. Production
-// dialog handlers must not fall back to the generated MySQL DAO.
+// Dialog handlers use this authoritative PostgreSQL persistence boundary.
 func (c *DialogCore) pgStore() (*postgres_dao.Store, error) {
 	if c == nil || c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.Postgres == nil ||
 		c.svcCtx.Dao.Postgres.Store == nil {

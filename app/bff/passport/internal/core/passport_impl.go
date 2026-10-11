@@ -149,6 +149,10 @@ func passportLoad(uid int64) (*passportDoc, error) {
 	if err != nil {
 		return nil, err
 	}
+	return passportDecode(raw)
+}
+
+func passportDecode(raw string) (*passportDoc, error) {
 	doc := &passportDoc{
 		Values: map[string]*mtproto.SecureValue{},
 		Phones: map[string]passportPhone{},
@@ -156,7 +160,7 @@ func passportLoad(uid int64) (*passportDoc, error) {
 	if raw == "" {
 		return doc, nil
 	}
-	if err = json.Unmarshal([]byte(raw), doc); err != nil {
+	if err := json.Unmarshal([]byte(raw), doc); err != nil {
 		return nil, err
 	}
 	if doc.Values == nil {
@@ -186,6 +190,30 @@ func passportSave(uid int64, doc *passportDoc) error {
 		return err
 	}
 	return persist.Default.Set(passportKey(uid), string(raw))
+}
+
+// passportUpdate applies one authoritative Passport mutation under the shared
+// store transaction boundary. PostgreSQL takes a row/advisory lock for the
+// key, preventing concurrent requests from dropping each other's secure
+// values, phone verification state, or error updates.
+func passportUpdate(uid int64, fn func(*passportDoc) error) error {
+	if uid <= 0 || fn == nil {
+		return mtproto.ErrInputRequestInvalid
+	}
+	return persist.Update(passportKey(uid), func(raw string) (string, error) {
+		doc, err := passportDecode(raw)
+		if err != nil {
+			return "", err
+		}
+		if err = fn(doc); err != nil {
+			return "", err
+		}
+		encoded, err := json.Marshal(doc)
+		if err != nil {
+			return "", err
+		}
+		return string(encoded), nil
+	})
 }
 
 func (d *passportDoc) allValues() []*mtproto.SecureValue {
@@ -718,15 +746,13 @@ func (c *PassportCore) AccountSaveSecureValue(in *mtproto.TLAccountSaveSecureVal
 	if err != nil {
 		return nil, err
 	}
-	doc, err := passportLoad(uid)
-	if err != nil {
-		return nil, err
-	}
-	doc.Values[stored.GetType().GetPredicateName()] = stored
-	if secretID != 0 {
-		doc.SecureSecretID = secretID
-	}
-	if err = passportSave(uid, doc); err != nil {
+	if err = passportUpdate(uid, func(doc *passportDoc) error {
+		doc.Values[stored.GetType().GetPredicateName()] = stored
+		if secretID != 0 {
+			doc.SecureSecretID = secretID
+		}
+		return nil
+	}); err != nil {
 		return nil, err
 	}
 	return stored, nil
@@ -739,20 +765,18 @@ func (c *PassportCore) AccountDeleteSecureValue(in *mtproto.TLAccountDeleteSecur
 	if err != nil {
 		return nil, err
 	}
-	doc, err := passportLoad(uid)
-	if err != nil {
-		return nil, err
-	}
-	if in != nil {
-		for _, t := range in.GetTypes() {
-			nt := normalizeType(t)
-			if nt == nil {
-				continue
+	if err = passportUpdate(uid, func(doc *passportDoc) error {
+		if in != nil {
+			for _, t := range in.GetTypes() {
+				nt := normalizeType(t)
+				if nt == nil {
+					continue
+				}
+				delete(doc.Values, nt.GetPredicateName())
 			}
-			delete(doc.Values, nt.GetPredicateName())
 		}
-	}
-	if err = passportSave(uid, doc); err != nil {
+		return nil
+	}); err != nil {
 		return nil, err
 	}
 	return mtproto.BoolTrue, nil
@@ -801,11 +825,44 @@ func (c *PassportCore) AccountGetAuthorizationForm(in *mtproto.TLAccountGetAutho
 // AccountAcceptAuthorization
 // account.acceptAuthorization#f3ed4c73 bot_id:long scope:string public_key:string value_hashes:Vector<SecureValueHash> credentials:SecureCredentialsEncrypted = Bool;
 func (c *PassportCore) AccountAcceptAuthorization(in *mtproto.TLAccountAcceptAuthorization) (*mtproto.Bool, error) {
-	if _, err := c.passportUser(); err != nil {
+	uid, err := c.passportUser()
+	if err != nil {
 		return nil, err
 	}
-	_ = in
-	return nil, mtproto.ErrMethodNotImpl
+	if in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if in.GetBotId() <= 0 {
+		return nil, mtproto.ErrBotInvalid
+	}
+	if _, err = c.passportBot(in.GetBotId()); err != nil {
+		return nil, err
+	}
+	scope := strings.TrimSpace(in.GetScope())
+	publicKey := strings.TrimSpace(in.GetPublicKey())
+	if scope == "" {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if publicKey == "" {
+		return nil, mtproto.ErrPublicKeyRequired
+	}
+	if in.GetCredentials() == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if _, _, _, err = authorizationNonce(scope, publicKey); err != nil {
+		return nil, err
+	}
+	provider, err := c.callPassportAuthorizationProvider(c.ctx, passportAuthorizationProviderRequest{
+		UserID: uid, BotID: in.GetBotId(), Scope: scope, PublicKey: publicKey,
+		ValueHashes: in.GetValueHashes(), Credentials: in.GetCredentials(),
+	})
+	if err != nil {
+		return nil, err
+	}
+	if *provider.Result {
+		return mtproto.BoolTrue, nil
+	}
+	return mtproto.BoolFalse, nil
 }
 
 // AccountSendVerifyPhoneCode
@@ -905,12 +962,10 @@ func (c *PassportCore) AccountVerifyPhone(in *mtproto.TLAccountVerifyPhone) (*mt
 	if _, err = c.svcCtx.Challenges.Consume(c.ctx, request); err != nil {
 		return nil, mapPassportPhoneChallengeError(err)
 	}
-	doc, err := passportLoad(uid)
-	if err != nil {
-		return nil, err
-	}
-	doc.Phones[phone] = passportPhone{Hash: hash}
-	if err = passportSave(uid, doc); err != nil {
+	if err = passportUpdate(uid, func(doc *passportDoc) error {
+		doc.Phones[phone] = passportPhone{Hash: hash}
+		return nil
+	}); err != nil {
 		return nil, err
 	}
 	return mtproto.BoolTrue, nil
@@ -956,18 +1011,16 @@ func (c *PassportCore) UsersSetSecureValueErrors(in *mtproto.TLUsersSetSecureVal
 			return nil, mtproto.ErrUserIdInvalid
 		}
 	}
-	doc, err := passportLoad(target)
-	if err != nil {
-		return nil, err
-	}
 	errs := make([]*mtproto.SecureValueError, 0, len(errsIn))
 	for _, e := range errsIn {
 		if e != nil {
 			errs = append(errs, e)
 		}
 	}
-	doc.Errors = errs
-	if err = passportSave(target, doc); err != nil {
+	if err = passportUpdate(target, func(doc *passportDoc) error {
+		doc.Errors = errs
+		return nil
+	}); err != nil {
 		return nil, err
 	}
 	return mtproto.BoolTrue, nil

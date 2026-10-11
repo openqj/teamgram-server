@@ -24,9 +24,13 @@ import (
 
 type Config struct {
 	zrpc.RpcServerConf
-	PostgresDSN string `json:",optional"`
-	DcId        int32  `json:",optional"`
-	DfsClient   zrpc.RpcClientConf
-	UserClient  zrpc.RpcClientConf
-	MediaClient zrpc.RpcClientConf
+	PostgresDSN               string `json:",optional"`
+	DcId                      int32  `json:",optional"`
+	CdnProviderEndpoint       string `json:",optional"`
+	CdnProviderKey            string `json:",optional"`
+	CdnProviderSigningKey     string `json:",optional"`
+	CdnProviderTimeoutSeconds int    `json:",optional"`
+	DfsClient                 zrpc.RpcClientConf
+	UserClient                zrpc.RpcClientConf
+	MediaClient               zrpc.RpcClientConf
 }

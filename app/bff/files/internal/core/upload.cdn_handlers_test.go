@@ -2,10 +2,16 @@ package core
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/teamgram/proto/mtproto"
+	"github.com/teamgram/proto/mtproto/rpc/metadata"
+	"github.com/teamgram/teamgram-server/app/bff/files/internal/config"
+	"github.com/teamgram/teamgram-server/app/bff/files/internal/svc"
 	"github.com/zeromicro/go-zero/core/logx"
 )
 
@@ -108,5 +114,49 @@ func TestHelpGetCdnConfigFailsClosedWithoutProvider(t *testing.T) {
 	core := newCDNCore()
 	if got, err := core.HelpGetCdnConfig(&mtproto.TLHelpGetCdnConfig{}); got != nil || !errors.Is(err, mtproto.ErrCdnMethodInvalid) {
 		t.Fatalf("HelpGetCdnConfig() = (%v, %v), want CDN_METHOD_INVALID", got, err)
+	}
+}
+
+func TestCDNProviderReturnsVerifiedResults(t *testing.T) {
+	const key = "cdn-provider-test-signing-key-0123456789"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			RequestID string `json:"request_id"`
+			Operation string `json:"operation"`
+			UserID    int64  `json:"user_id"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.RequestID == "" || req.UserID != 0 {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		var result any
+		switch req.Operation {
+		case "upload.getCdnFile":
+			result = map[string]any{"predicate_name": "upload_cdnFile", "bytes": "AQI="}
+		case "help.getCdnConfig":
+			result = map[string]any{"predicate_name": "cdnConfig", "public_keys": []any{}}
+		default:
+			http.Error(w, "unknown operation", http.StatusBadRequest)
+			return
+		}
+		resultJSON, _ := json.Marshal(result)
+		body, _ := json.Marshal(cdnProviderEnvelope{RequestID: req.RequestID, Operation: req.Operation, Verified: true, UserID: req.UserID, Result: resultJSON})
+		w.Header().Set("X-Teamgram-CDN-Provider-Signature", cdnProviderSignature(key, body))
+		_, _ = w.Write(body)
+	}))
+	t.Cleanup(server.Close)
+	core := &FilesCore{
+		ctx:    context.Background(),
+		MD:     &metadata.RpcMetadata{},
+		Logger: logx.WithContext(context.Background()),
+		svcCtx: &svc.ServiceContext{Config: config.Config{CdnProviderEndpoint: server.URL, CdnProviderSigningKey: key, CdnProviderTimeoutSeconds: 2}},
+	}
+	file, err := core.UploadGetCdnFile(&mtproto.TLUploadGetCdnFile{FileToken: []byte{1}, Limit: 2})
+	if err != nil || file == nil || string(file.GetBytes()) != string([]byte{1, 2}) {
+		t.Fatalf("cdn file = (%v, %v)", file, err)
+	}
+	cdn, err := core.HelpGetCdnConfig(&mtproto.TLHelpGetCdnConfig{})
+	if err != nil || cdn == nil || cdn.GetPredicateName() == "" {
+		t.Fatalf("cdn config = (%v, %v)", cdn, err)
 	}
 }

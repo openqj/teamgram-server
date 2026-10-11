@@ -28,22 +28,35 @@ import (
 // account.getAuthorizations#e320c158 = account.Authorizations;
 func (c *PassportCore) AccountGetAuthorizations(in *mtproto.TLAccountGetAuthorizations) (*mtproto.Account_Authorizations, error) {
 	_ = in
+	userID, err := c.passportUser()
+	if err != nil {
+		return nil, err
+	}
+	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.AuthsessionClient == nil || c.svcCtx.Dao.UserClient == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
 
 	authorizations, err := c.svcCtx.Dao.AuthsessionClient.AuthsessionGetAuthorizations(c.ctx, &authsession.TLAuthsessionGetAuthorizations{
-		UserId:           c.MD.UserId,
+		UserId:           userID,
 		ExcludeAuthKeyId: c.MD.PermAuthKeyId,
 	})
 	if err != nil {
 		c.Logger.Errorf("account.getAuthorizations - error: %v", err)
 		return nil, err
 	}
+	if authorizations == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
 
 	ttl, err := c.svcCtx.Dao.UserClient.UserGetAuthorizationTTL(c.ctx, &userpb.TLUserGetAuthorizationTTL{
-		UserId: c.MD.UserId,
+		UserId: userID,
 	})
 	if err != nil {
 		c.Logger.Errorf("account.getAuthorizations - error: %v", err)
 		return nil, err
+	}
+	if ttl == nil {
+		return nil, mtproto.ErrInternalServerError
 	}
 
 	authorizations.AuthorizationTtlDays = ttl.Days

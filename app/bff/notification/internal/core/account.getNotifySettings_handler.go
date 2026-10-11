@@ -27,10 +27,16 @@ import (
 // AccountGetNotifySettings
 // account.getNotifySettings#12b3ad31 peer:InputNotifyPeer = PeerNotifySettings;
 func (c *NotificationCore) AccountGetNotifySettings(in *mtproto.TLAccountGetNotifySettings) (*mtproto.PeerNotifySettings, error) {
+	if c == nil || c.MD == nil || c.MD.GetUserId() <= 0 {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
 	if in == nil || in.GetPeer() == nil {
 		err := mtproto.ErrPeerIdInvalid
 		c.Logger.Errorf("account.getNotifySettings - error: %v", err)
 		return nil, err
+	}
+	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.UserClient == nil {
+		return nil, mtproto.ErrInternalServerError
 	}
 
 	peer := mtproto.FromInputNotifyPeer(c.MD.UserId, in.GetPeer())
@@ -48,6 +54,9 @@ func (c *NotificationCore) AccountGetNotifySettings(in *mtproto.TLAccountGetNoti
 			c.Logger.Errorf("account.getNotifySettings - load user error: %v", err)
 			return nil, err
 		}
+		if users == nil {
+			return nil, mtproto.ErrInternalServerError
+		}
 		user, ok := users.GetImmutableUser(peer.PeerId)
 		if !ok || user == nil {
 			err = mtproto.ErrPeerIdInvalid
@@ -60,6 +69,9 @@ func (c *NotificationCore) AccountGetNotifySettings(in *mtproto.TLAccountGetNoti
 			return nil, err
 		}
 	case mtproto.PEER_CHAT:
+		if c.svcCtx.Dao.ChatClient == nil {
+			return nil, mtproto.ErrInternalServerError
+		}
 		if peer.PeerId <= 0 {
 			err := mtproto.ErrPeerIdInvalid
 			c.Logger.Errorf("account.getNotifySettings - error: %v", err)
@@ -126,6 +138,9 @@ func (c *NotificationCore) AccountGetNotifySettings(in *mtproto.TLAccountGetNoti
 	if err != nil {
 		c.Logger.Errorf("account.getNotifySettings - error: %v", err)
 		return nil, err
+	}
+	if settings == nil {
+		return nil, mtproto.ErrInternalServerError
 	}
 
 	return settings, nil

@@ -1,6 +1,5 @@
 // Package postgres_dao contains the PostgreSQL persistence boundary for the
-// dialog aggregate. It intentionally uses pgx directly so the new database
-// path does not inherit MySQL placeholder or transaction semantics.
+// dialog aggregate and uses pgx directly.
 package postgres_dao
 
 import (

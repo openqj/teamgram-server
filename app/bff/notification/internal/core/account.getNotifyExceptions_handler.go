@@ -54,6 +54,12 @@ func validateNotifyExceptionIDs(kind string, requestedIDs, hydratedIDs []int64) 
 // AccountGetNotifyExceptions
 // account.getNotifyExceptions#53577479 flags:# compare_sound:flags.1?true peer:flags.0?InputNotifyPeer = Updates;
 func (c *NotificationCore) AccountGetNotifyExceptions(in *mtproto.TLAccountGetNotifyExceptions) (*mtproto.Updates, error) {
+	if c == nil || c.MD == nil || c.MD.GetUserId() <= 0 {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
+	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.UserClient == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
 	// compare_sound
 
 	settings, err := c.svcCtx.Dao.UserClient.UserGetAllNotifySettings(c.ctx, &userpb.TLUserGetAllNotifySettings{
@@ -125,6 +131,9 @@ func (c *NotificationCore) AccountGetNotifyExceptions(in *mtproto.TLAccountGetNo
 
 	var chats []*mtproto.Chat
 	if len(idHelper.ChatIdList) > 0 {
+		if c.svcCtx.Dao.ChatClient == nil {
+			return nil, mtproto.ErrInternalServerError
+		}
 		mutableChats, err := c.svcCtx.Dao.ChatClient.ChatGetChatListByIdList(c.ctx,
 			&chatpb.TLChatGetChatListByIdList{
 				IdList: idHelper.ChatIdList,

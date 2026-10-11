@@ -33,6 +33,9 @@ func (c *UsersCore) ContactsResolvePhone(in *mtproto.TLContactsResolvePhone) (*m
 	if in == nil {
 		return nil, mtproto.ErrInputRequestInvalid
 	}
+	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.UserClient == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
 	_, phone, err := phonenumber.CheckPhoneNumberInvalid(in.GetPhone())
 	if err != nil {
 		return nil, err

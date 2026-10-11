@@ -268,30 +268,30 @@ func TestForumProdTopicTitle(t *testing.T) {
 func TestForumChannelTitlePersistsPostgres(t *testing.T) {
 	_ = domain.DeleteChannel(12, 12)
 	t.Cleanup(func() { _ = domain.DeleteChannel(12, 12) })
-	if err := domain.SaveChannel(domain.Channel{ID: 12, AccessHash: 12012, Creator: 12, Title: "forum-mysql", Megagroup: true}); err != nil {
+	if err := domain.SaveChannel(domain.Channel{ID: 12, AccessHash: 12012, Creator: 12, Title: "forum-postgres", Megagroup: true}); err != nil {
 		t.Fatal(err)
 	}
 	anon := &ApiFullCore{}
 	ch := mtproto.MakeTLInputChannel(&mtproto.InputChannel{ChannelId: 12, AccessHash: 12012}).To_InputChannel()
 	if _, err := anon.ChannelsCreateForumTopic(&mtproto.TLChannelsCreateForumTopic{
-		Title:   "mysql-topic",
+		Title:   "postgres-topic",
 		Channel: ch,
 	}); err != mtproto.ErrAuthKeyUnregistered {
 		t.Fatalf("auth: %v", err)
 	}
 	c := &ApiFullCore{MD: &metadata.RpcMetadata{UserId: 12}}
 	if _, err := c.ChannelsCreateForumTopic(&mtproto.TLChannelsCreateForumTopic{
-		Title:   "mysql-topic",
+		Title:   "postgres-topic",
 		Channel: ch,
 	}); err != nil {
 		t.Fatal(err)
 	}
 	title, err := domain.ForumUserTitle(12)
-	if err != nil || title != "mysql-topic" {
+	if err != nil || title != "postgres-topic" {
 		t.Fatalf("user title: %q %v", title, err)
 	}
 	got, err := c.ChannelsGetForumTopics(&mtproto.TLChannelsGetForumTopics{Channel: ch})
-	if err != nil || got == nil || len(got.Topics) == 0 || got.Topics[0].GetTitle() != "mysql-topic" {
+	if err != nil || got == nil || len(got.Topics) == 0 || got.Topics[0].GetTitle() != "postgres-topic" {
 		t.Fatalf("title: %+v %v", got, err)
 	}
 }

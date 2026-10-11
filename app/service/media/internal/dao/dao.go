@@ -13,7 +13,6 @@ import (
 	"errors"
 	"strings"
 
-	"github.com/teamgram/marmota/pkg/stores/sqlc"
 	dfs_client "github.com/teamgram/teamgram-server/app/service/dfs/client"
 	"github.com/teamgram/teamgram-server/app/service/media/internal/config"
 
@@ -21,11 +20,7 @@ import (
 )
 
 type Dao struct {
-	// Mysql is kept as a named field for legacy test fixtures. New service
-	// instances always populate Postgres instead.
-	*Mysql
 	*Postgres
-	sqlc.CachedConn
 	dfs_client.DfsClient
 }
 

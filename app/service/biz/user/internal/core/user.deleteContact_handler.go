@@ -21,6 +21,9 @@ func (c *UserCore) UserDeleteContact(in *user.TLUserDeleteContact) (*mtproto.Boo
 	if in == nil || in.GetUserId() <= 0 || in.GetId() < 0 {
 		return nil, mtproto.ErrInputRequestInvalid
 	}
+	if err := c.requirePostgres(); err != nil {
+		return nil, err
+	}
 	if in.GetId() == 0 {
 		if err := c.svcCtx.Dao.ResetUserContacts(c.ctx, in.GetUserId()); err != nil {
 			c.Logger.Errorf("user.deleteContact - reset contacts error: %v", err)

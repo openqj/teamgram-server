@@ -139,6 +139,9 @@ func mustEncode(t *testing.T, enc interface {
 
 func TestPassportRequiresUser(t *testing.T) {
 	c := &PassportCore{}
+	if _, err := c.AccountGetAuthorizations(nil); err != mtproto.ErrAuthKeyUnregistered {
+		t.Fatalf("getAuthorizations: %v", err)
+	}
 	if _, err := c.AccountGetAllSecureValues(nil); err != mtproto.ErrAuthKeyUnregistered {
 		t.Fatalf("getAll: %v", err)
 	}

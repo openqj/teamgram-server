@@ -171,7 +171,7 @@ cd teamgram-server
 
 ### 3.2 初始化数据库
 
-在项目根目录执行（SQL 位于 `teamgramd/deploy/sql/`）：
+在项目根目录执行 PostgreSQL 18 迁移（历史 SQL 归档位于 `teamgramd/deploy/sql/`，不可用于部署）：
 
 ```bash
 DATABASE_URL='postgresql://teamgram:teamgram@127.0.0.1:5432/teamgram?sslmode=disable' \

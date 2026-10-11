@@ -28,6 +28,15 @@ import (
 // ContactsSearch
 // contacts.search#11f812d8 q:string limit:int = contacts.Found;
 func (c *ContactsCore) ContactsSearch(in *mtproto.TLContactsSearch) (*mtproto.Contacts_Found, error) {
+	if c == nil || c.MD == nil || c.MD.UserId <= 0 {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
+	if in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.UserClient == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
 	limit := in.GetLimit()
 	if limit > 50 || limit == 0 {
 		limit = 50

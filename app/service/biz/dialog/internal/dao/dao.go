@@ -13,15 +13,12 @@ import (
 	"errors"
 	"strings"
 
-	"github.com/teamgram/marmota/pkg/stores/sqlc"
 	"github.com/teamgram/teamgram-server/app/service/biz/dialog/internal/config"
 )
 
 // Dao dao.
 type Dao struct {
-	*Mysql
 	*Postgres
-	sqlc.CachedConn
 }
 
 // New new a dao and return.

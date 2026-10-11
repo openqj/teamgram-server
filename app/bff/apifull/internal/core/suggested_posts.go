@@ -18,7 +18,11 @@
 
 package core
 
-import "github.com/teamgram/proto/mtproto"
+import (
+	"encoding/json"
+
+	"github.com/teamgram/proto/mtproto"
+)
 
 // RPCSuggestedPostsServer: Layer 229 methods previously returned ERR_ENTERPRISE_IS_BLOCKED.
 
@@ -40,7 +44,19 @@ func (c *ApiFullCore) MessagesToggleSuggestedPostApproval(in *mtproto.TLMessages
 	if in.GetMsgId() <= 0 {
 		return nil, mtproto.ErrMsgIdInvalid
 	}
-	// No authoritative suggested-post state or message update consumer is wired.
-	// Returning METHOD_NOT_IMPL avoids reporting a synthetic approval to clients.
-	return nil, mtproto.ErrMethodNotImpl
+	var raw json.RawMessage
+	if err := c.callBusinessProvider("messages.toggleSuggestedPostApproval", map[string]any{
+		"peer": in.GetPeer(), "msg_id": in.GetMsgId(), "reject": in.GetReject(),
+		"schedule_date": in.GetScheduleDate(), "reject_comment": in.GetRejectComment(),
+	}, &raw); err != nil {
+		return nil, err
+	}
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil, mtproto.ErrInternalServerError
+	}
+	var updates mtproto.Updates
+	if err := json.Unmarshal(raw, &updates); err != nil || updates.GetPredicateName() == "" {
+		return nil, mtproto.ErrInternalServerError
+	}
+	return &updates, nil
 }

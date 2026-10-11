@@ -12,7 +12,6 @@ package message_helper
 
 import (
 	"github.com/teamgram/teamgram-server/app/service/biz/message/internal/config"
-	"github.com/teamgram/teamgram-server/app/service/biz/message/internal/dal/dao/mysql_dao"
 	"github.com/teamgram/teamgram-server/app/service/biz/message/internal/dal/dao/postgres_dao"
 	"github.com/teamgram/teamgram-server/app/service/biz/message/internal/dal/dataobject"
 	"github.com/teamgram/teamgram-server/app/service/biz/message/internal/plugin"
@@ -29,10 +28,8 @@ func New(c Config, plugin plugin.MessagePlugin) *service.Service {
 }
 
 type (
-	MessagesDAO = mysql_dao.MessagesDAO
 	MessagesDO  = dataobject.MessagesDO
 
-	MessageReadOutboxDAO         = mysql_dao.MessageReadOutboxDAO
 	MessageReadOutboxDO          = dataobject.MessageReadOutboxDO
 	PostgresDB                   = postgres_dao.DB
 	PostgresMessagesDAO          = postgres_dao.MessagesDAO
@@ -41,8 +38,6 @@ type (
 
 var (
 	VerifyPostgresSchema            = postgres_dao.VerifySchema
-	NewMessagesDAO                  = mysql_dao.NewMessagesDAO
-	NewMessageReadOutboxDAO         = mysql_dao.NewMessageReadOutboxDAO
 	NewPostgresMessagesDAO          = postgres_dao.NewMessagesDAO
 	NewPostgresMessageReadOutboxDAO = postgres_dao.NewMessageReadOutboxDAO
 )

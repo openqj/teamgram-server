@@ -10,6 +10,8 @@ import (
 	"github.com/teamgram/teamgram-server/app/bff/usernames/internal/dao"
 	"github.com/teamgram/teamgram-server/app/bff/usernames/internal/svc"
 	"github.com/teamgram/teamgram-server/app/bff/usernames/plugin"
+	chatpb "github.com/teamgram/teamgram-server/app/service/biz/chat/chat"
+	chat_client "github.com/teamgram/teamgram-server/app/service/biz/chat/client"
 	user_client "github.com/teamgram/teamgram-server/app/service/biz/user/client"
 	userpb "github.com/teamgram/teamgram-server/app/service/biz/user/user"
 )
@@ -42,13 +44,61 @@ func (f *resolveUsernamePlugin) GetChannelListByIdList(context.Context, int64, .
 	return f.chats
 }
 
-func newResolveUsernameTestCore(client *resolveUsernameUserClient, p plugin.UsernamesPlugin) *UsernamesCore {
+type resolveUsernameChatClient struct {
+	chat_client.ChatClient
+	chat *mtproto.MutableChat
+	err  error
+}
+
+func (f *resolveUsernameChatClient) ChatGetChatBySelfId(context.Context, *chatpb.TLChatGetChatBySelfId) (*mtproto.MutableChat, error) {
+	return f.chat, f.err
+}
+
+func newResolveUsernameTestCore(client *resolveUsernameUserClient, p plugin.UsernamesPlugin, chatClients ...chat_client.ChatClient) *UsernamesCore {
+	var chatClient chat_client.ChatClient
+	if len(chatClients) != 0 {
+		chatClient = chatClients[0]
+	}
 	c := New(context.Background(), &svc.ServiceContext{
 		Dao:    &dao.Dao{UserClient: client},
 		Plugin: p,
 	})
+	c.svcCtx.Dao.ChatClient = chatClient
 	c.MD = &metadata.RpcMetadata{UserId: 42}
 	return c
+}
+
+func TestContactsResolveUsernameRejectsInvalidRuntime(t *testing.T) {
+	tests := []struct {
+		name string
+		core *UsernamesCore
+		in   *mtproto.TLContactsResolveUsername
+		want error
+	}{
+		{name: "missing authentication", core: &UsernamesCore{}, in: &mtproto.TLContactsResolveUsername{}, want: mtproto.ErrAuthKeyUnregistered},
+		{name: "nil request", core: &UsernamesCore{MD: &metadata.RpcMetadata{UserId: 42}}, want: mtproto.ErrInputRequestInvalid},
+		{name: "missing user provider", core: &UsernamesCore{MD: &metadata.RpcMetadata{UserId: 42}}, in: &mtproto.TLContactsResolveUsername{Username: "resolveduser"}, want: mtproto.ErrInternalServerError},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := test.core.ContactsResolveUsername(test.in)
+			if got != nil || err != test.want {
+				t.Fatalf("ContactsResolveUsername() = (%v, %v), want (nil, %v)", got, err, test.want)
+			}
+		})
+	}
+}
+
+func TestContactsResolveUsernamePropagatesChatHydrationError(t *testing.T) {
+	hydrationErr := errors.New("chat service unavailable")
+	client := &resolveUsernameUserClient{peer: mtproto.MakePeerChat(77)}
+	chatClient := &resolveUsernameChatClient{err: hydrationErr}
+	c := newResolveUsernameTestCore(client, nil, chatClient)
+
+	resolved, err := c.ContactsResolveUsername(&mtproto.TLContactsResolveUsername{Username: "resolvedchat"})
+	if resolved != nil || !errors.Is(err, hydrationErr) {
+		t.Fatalf("resolved = %#v, error = %v; want nil result and propagated %v", resolved, err, hydrationErr)
+	}
 }
 
 func resolveUsernameTestUser(id int64, firstName string) *mtproto.ImmutableUser {

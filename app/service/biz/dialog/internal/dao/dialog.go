@@ -10,8 +10,6 @@ import (
 	"context"
 	"errors"
 
-	"github.com/teamgram/marmota/pkg/stores/sqlc"
-	"github.com/teamgram/marmota/pkg/stores/sqlx"
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/service/biz/dialog/dialog"
 	"github.com/teamgram/teamgram-server/app/service/biz/dialog/internal/dal/dataobject"
@@ -97,46 +95,17 @@ func (d *Dao) GetDialog(ctx context.Context, userId int64, peerType int32, peerI
 }
 
 func (d *Dao) GetDialogByPeerDialogId(ctx context.Context, userId, peerDialogId int64) (*dialog.DialogExt, error) {
-	if d != nil && d.Postgres != nil && d.Postgres.Store != nil && d.Postgres.Store.Dialogs != nil {
-		dialogDO, err := d.Postgres.Store.Dialogs.SelectByPeerDialogId(ctx, userId, peerDialogId)
-		if err != nil {
-			logx.WithContext(ctx).Errorf("dialog.getDialogById - error: %v", err)
-			return nil, err
-		}
-		if dialogDO == nil {
-			return nil, mtproto.ErrPeerIdInvalid
-		}
-		return d.MakeDialog(dialogDO), nil
+	if d == nil || d.Postgres == nil || d.Postgres.Store == nil || d.Postgres.Store.Dialogs == nil {
+		return nil, errors.New("biz/dialog: postgres dialog store is not configured")
 	}
-
-	var (
-		dlgExt *dialog.DialogExt
-	)
-
-	err := d.CachedConn.QueryRow(
-		ctx,
-		&dlgExt,
-		dialog.GetDialogCacheKey(userId, peerDialogId),
-		func(ctx context.Context, conn *sqlx.DB, v interface{}) error {
-			dialogDO, err := d.DialogsDAO.SelectByPeerDialogId(ctx, userId, peerDialogId)
-			if err != nil {
-				return err
-			} else if dialogDO == nil {
-				err = sqlc.ErrNotFound
-				return err
-			}
-
-			*v.(**dialog.DialogExt) = d.MakeDialog(dialogDO)
-			return nil
-		})
+	dialogDO, err := d.Postgres.Store.Dialogs.SelectByPeerDialogId(ctx, userId, peerDialogId)
 
 	if err != nil {
 		logx.WithContext(ctx).Errorf("dialog.getDialogById - error: %v", err)
-		if errors.Is(err, sqlc.ErrNotFound) {
-			err = mtproto.ErrPeerIdInvalid
-		}
 		return nil, err
 	}
-
-	return dlgExt, nil
+	if dialogDO == nil {
+		return nil, mtproto.ErrPeerIdInvalid
+	}
+	return d.MakeDialog(dialogDO), nil
 }

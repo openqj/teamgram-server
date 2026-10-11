@@ -25,13 +25,19 @@ import (
 // HelpGetPremiumPromo
 // help.getPremiumPromo#b81b93d4 = help.PremiumPromo;
 func (c *PremiumCore) HelpGetPremiumPromo(in *mtproto.TLHelpGetPremiumPromo) (*mtproto.Help_PremiumPromo, error) {
-	if _, err := c.requireUserId(); err != nil {
+	uid, err := c.requireUserId()
+	if err != nil {
 		return nil, err
 	}
 	if in == nil {
 		return nil, mtproto.ErrInputRequestInvalid
 	}
-	// No Premium offer catalogue or purchase provider is configured. An empty
-	// promo with a zero price would be indistinguishable from a real offer.
-	return nil, mtproto.ErrMethodNotImpl
+	var result premiumPromoProviderResult
+	if err = c.callPaymentProvider("help.getPremiumPromo", map[string]any{"user_id": uid}, &result); err != nil {
+		return nil, err
+	}
+	if !normalizePremiumPromo(result.Promo) {
+		return nil, mtproto.ErrPaymentProviderInvalid
+	}
+	return result.Promo, nil
 }

@@ -17,6 +17,24 @@ import (
 // UserGetBlockedList
 // user.getBlockedList user_id:long offset:int limit:int = Vector<PeerBlocked>;
 func (c *UserCore) UserGetBlockedList(in *user.TLUserGetBlockedList) (*user.Vector_PeerBlocked, error) {
+	if in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if in.GetUserId() <= 0 {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if in.GetOffset() < 0 {
+		return nil, mtproto.ErrOffsetInvalid
+	}
+	if in.GetLimit() < 0 {
+		return nil, mtproto.ErrLimitInvalid
+	}
+	if err := c.requirePostgres(); err != nil {
+		return nil, err
+	}
+	if c.svcCtx.Dao.Postgres.Store.PeerBlocks == nil {
+		return nil, mtproto.ErrMethodNotImpl
+	}
 	totalCount, err := c.svcCtx.Dao.Postgres.Store.PeerBlocks.SelectCount(c.ctx, in.UserId)
 	if err != nil {
 		c.Logger.Errorf("user.getBlockedList - count error: %v", err)

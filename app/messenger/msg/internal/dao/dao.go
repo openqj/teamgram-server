@@ -13,7 +13,6 @@ import (
 	"context"
 	"fmt"
 	"github.com/teamgram/marmota/pkg/idempotent"
-	"github.com/teamgram/marmota/pkg/stores/sqlc"
 	inbox_client "github.com/teamgram/teamgram-server/app/messenger/msg/inbox/client"
 	sync_client "github.com/teamgram/teamgram-server/app/messenger/sync/client"
 	chat_client "github.com/teamgram/teamgram-server/app/service/biz/chat/client"
@@ -26,13 +25,7 @@ import (
 )
 
 type Dao struct {
-	*Mysql
-	// Postgres is the authoritative persistence boundary for new deployments.
-	// The generated handler surface is still being converted transaction by
-	// transaction; keeping this explicit prevents new code from reaching for
-	// the legacy MySQL wrapper.
 	*Postgres
-	sqlc.CachedConn
 	idgen_client.IDGenClient2
 	user_client.UserClient
 	chat_client.ChatClient

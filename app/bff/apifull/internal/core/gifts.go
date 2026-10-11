@@ -120,13 +120,37 @@ func localGiftSlug(stargift *mtproto.InputSavedStarGift) (string, error) {
 }
 
 func (c *ApiFullCore) PaymentsGetStarGiftUpgradePreview(in *mtproto.TLPaymentsGetStarGiftUpgradePreview) (*mtproto.Payments_StarGiftUpgradePreview, error) {
-	_ = in
-	return nil, c.giftsUnavailable()
+	if _, err := c.requireUserId(); err != nil {
+		return nil, err
+	}
+	if in == nil || in.GetGiftId() <= 0 {
+		return nil, mtproto.ErrInputConstructorInvalid
+	}
+	result := new(mtproto.Payments_StarGiftUpgradePreview)
+	if err := c.callBusinessProvider("payments.getStarGiftUpgradePreview", map[string]any{"gift_id": in.GetGiftId()}, result); err != nil {
+		return nil, err
+	}
+	if result.GetPredicateName() == "" {
+		return nil, mtproto.ErrInternalServerError
+	}
+	return result, nil
 }
 
 func (c *ApiFullCore) PaymentsUpgradeStarGift(in *mtproto.TLPaymentsUpgradeStarGift) (*mtproto.Updates, error) {
-	_ = in
-	return nil, c.giftsUnavailable()
+	if _, err := c.requireUserId(); err != nil {
+		return nil, err
+	}
+	if in == nil || in.GetStargift() == nil {
+		return nil, mtproto.ErrInputConstructorInvalid
+	}
+	result := new(mtproto.Updates)
+	if err := c.callBusinessProvider("payments.upgradeStarGift", map[string]any{"keep_original_details": in.GetKeepOriginalDetails(), "stargift": in.GetStargift(), "msg_id": in.GetMsgId()}, result); err != nil {
+		return nil, err
+	}
+	if result.GetPredicateName() == "" {
+		return nil, mtproto.ErrInternalServerError
+	}
+	return result, nil
 }
 
 func (c *ApiFullCore) PaymentsTransferStarGift(in *mtproto.TLPaymentsTransferStarGift) (*mtproto.Updates, error) {
@@ -359,8 +383,20 @@ func (c *ApiFullCore) PaymentsGetSavedStarGift(in *mtproto.TLPaymentsGetSavedSta
 }
 
 func (c *ApiFullCore) PaymentsGetStarGiftWithdrawalUrl(in *mtproto.TLPaymentsGetStarGiftWithdrawalUrl) (*mtproto.Payments_StarGiftWithdrawalUrl, error) {
-	_ = in
-	return nil, c.giftsUnavailable()
+	if _, err := c.requireUserId(); err != nil {
+		return nil, err
+	}
+	if in == nil {
+		return nil, mtproto.ErrInputConstructorInvalid
+	}
+	result := new(mtproto.Payments_StarGiftWithdrawalUrl)
+	if err := c.callBusinessProvider("payments.getStarGiftWithdrawalUrl", map[string]any{"request": in}, result); err != nil {
+		return nil, err
+	}
+	if result.GetPredicateName() == "" {
+		return nil, mtproto.ErrInternalServerError
+	}
+	return result, nil
 }
 
 func (c *ApiFullCore) PaymentsToggleChatStarGiftNotifications(in *mtproto.TLPaymentsToggleChatStarGiftNotifications) (*mtproto.Bool, error) {
@@ -435,63 +471,207 @@ func giftPreferencePeer(selfID int64, peer *mtproto.InputPeer) (int32, int64, er
 }
 
 func (c *ApiFullCore) PaymentsGetResaleStarGifts(in *mtproto.TLPaymentsGetResaleStarGifts) (*mtproto.Payments_ResaleStarGifts, error) {
-	_ = in
-	return nil, c.giftsUnavailable()
+	if _, err := c.requireUserId(); err != nil {
+		return nil, err
+	}
+	if in == nil {
+		return nil, mtproto.ErrInputConstructorInvalid
+	}
+	result := new(mtproto.Payments_ResaleStarGifts)
+	if err := c.callBusinessProvider("payments.getResaleStarGifts", map[string]any{"request": in}, result); err != nil {
+		return nil, err
+	}
+	if result.GetPredicateName() == "" {
+		return nil, mtproto.ErrInternalServerError
+	}
+	return result, nil
 }
 
 func (c *ApiFullCore) PaymentsUpdateStarGiftPrice(in *mtproto.TLPaymentsUpdateStarGiftPrice) (*mtproto.Updates, error) {
-	_ = in
-	return nil, c.giftsUnavailable()
+	if _, err := c.requireUserId(); err != nil {
+		return nil, err
+	}
+	if in == nil {
+		return nil, mtproto.ErrInputConstructorInvalid
+	}
+	result := new(mtproto.Updates)
+	if err := c.callBusinessProvider("payments.updateStarGiftPrice", map[string]any{"request": in}, result); err != nil {
+		return nil, err
+	}
+	if result.GetPredicateName() == "" {
+		return nil, mtproto.ErrInternalServerError
+	}
+	return result, nil
 }
 
 func (c *ApiFullCore) PaymentsGetUniqueStarGiftValueInfo(in *mtproto.TLPaymentsGetUniqueStarGiftValueInfo) (*mtproto.Payments_UniqueStarGiftValueInfo, error) {
-	_ = in
-	return nil, c.giftsUnavailable()
+	if _, err := c.requireUserId(); err != nil {
+		return nil, err
+	}
+	if in == nil {
+		return nil, mtproto.ErrInputConstructorInvalid
+	}
+	result := new(mtproto.Payments_UniqueStarGiftValueInfo)
+	if err := c.callBusinessProvider("payments.getUniqueStarGiftValueInfo", map[string]any{"request": in}, result); err != nil {
+		return nil, err
+	}
+	if result.GetPredicateName() == "" {
+		return nil, mtproto.ErrInternalServerError
+	}
+	return result, nil
 }
 
 func (c *ApiFullCore) PaymentsCheckCanSendGift(in *mtproto.TLPaymentsCheckCanSendGift) (*mtproto.Payments_CheckCanSendGiftResult, error) {
-	_ = in
-	return nil, c.giftsUnavailable()
+	if _, err := c.requireUserId(); err != nil {
+		return nil, err
+	}
+	if in == nil {
+		return nil, mtproto.ErrInputConstructorInvalid
+	}
+	result := new(mtproto.Payments_CheckCanSendGiftResult)
+	if err := c.callBusinessProvider("payments.checkCanSendGift", map[string]any{"request": in}, result); err != nil {
+		return nil, err
+	}
+	if result.GetPredicateName() == "" {
+		return nil, mtproto.ErrInternalServerError
+	}
+	return result, nil
 }
 
 func (c *ApiFullCore) PaymentsGetStarGiftAuctionState(in *mtproto.TLPaymentsGetStarGiftAuctionState) (*mtproto.Payments_StarGiftAuctionState, error) {
-	_ = in
-	return nil, c.giftsUnavailable()
+	if _, err := c.requireUserId(); err != nil {
+		return nil, err
+	}
+	if in == nil {
+		return nil, mtproto.ErrInputConstructorInvalid
+	}
+	result := new(mtproto.Payments_StarGiftAuctionState)
+	if err := c.callBusinessProvider("payments.getStarGiftAuctionState", map[string]any{"request": in}, result); err != nil {
+		return nil, err
+	}
+	if result.GetPredicateName() == "" {
+		return nil, mtproto.ErrInternalServerError
+	}
+	return result, nil
 }
 
 func (c *ApiFullCore) PaymentsGetStarGiftAuctionAcquiredGifts(in *mtproto.TLPaymentsGetStarGiftAuctionAcquiredGifts) (*mtproto.Payments_StarGiftAuctionAcquiredGifts, error) {
-	_ = in
-	return nil, c.giftsUnavailable()
+	if _, err := c.requireUserId(); err != nil {
+		return nil, err
+	}
+	if in == nil {
+		return nil, mtproto.ErrInputConstructorInvalid
+	}
+	result := new(mtproto.Payments_StarGiftAuctionAcquiredGifts)
+	if err := c.callBusinessProvider("payments.getStarGiftAuctionAcquiredGifts", map[string]any{"request": in}, result); err != nil {
+		return nil, err
+	}
+	if result.GetPredicateName() == "" {
+		return nil, mtproto.ErrInternalServerError
+	}
+	return result, nil
 }
 
 func (c *ApiFullCore) PaymentsGetStarGiftActiveAuctions(in *mtproto.TLPaymentsGetStarGiftActiveAuctions) (*mtproto.Payments_StarGiftActiveAuctions, error) {
-	_ = in
-	return nil, c.giftsUnavailable()
+	if _, err := c.requireUserId(); err != nil {
+		return nil, err
+	}
+	if in == nil {
+		return nil, mtproto.ErrInputConstructorInvalid
+	}
+	result := new(mtproto.Payments_StarGiftActiveAuctions)
+	if err := c.callBusinessProvider("payments.getStarGiftActiveAuctions", map[string]any{"request": in}, result); err != nil {
+		return nil, err
+	}
+	if result.GetPredicateName() == "" {
+		return nil, mtproto.ErrInternalServerError
+	}
+	return result, nil
 }
 
 func (c *ApiFullCore) PaymentsResolveStarGiftOffer(in *mtproto.TLPaymentsResolveStarGiftOffer) (*mtproto.Updates, error) {
-	_ = in
-	return nil, c.giftsUnavailable()
+	if _, err := c.requireUserId(); err != nil {
+		return nil, err
+	}
+	if in == nil {
+		return nil, mtproto.ErrInputConstructorInvalid
+	}
+	result := new(mtproto.Updates)
+	if err := c.callBusinessProvider("payments.resolveStarGiftOffer", map[string]any{"request": in}, result); err != nil {
+		return nil, err
+	}
+	if result.GetPredicateName() == "" {
+		return nil, mtproto.ErrInternalServerError
+	}
+	return result, nil
 }
 
 func (c *ApiFullCore) PaymentsSendStarGiftOffer(in *mtproto.TLPaymentsSendStarGiftOffer) (*mtproto.Updates, error) {
-	_ = in
-	return nil, c.giftsUnavailable()
+	if _, err := c.requireUserId(); err != nil {
+		return nil, err
+	}
+	if in == nil {
+		return nil, mtproto.ErrInputConstructorInvalid
+	}
+	result := new(mtproto.Updates)
+	if err := c.callBusinessProvider("payments.sendStarGiftOffer", map[string]any{"request": in}, result); err != nil {
+		return nil, err
+	}
+	if result.GetPredicateName() == "" {
+		return nil, mtproto.ErrInternalServerError
+	}
+	return result, nil
 }
 
 func (c *ApiFullCore) PaymentsGetStarGiftUpgradeAttributes(in *mtproto.TLPaymentsGetStarGiftUpgradeAttributes) (*mtproto.Payments_StarGiftUpgradeAttributes, error) {
-	_ = in
-	return nil, c.giftsUnavailable()
+	if _, err := c.requireUserId(); err != nil {
+		return nil, err
+	}
+	if in == nil {
+		return nil, mtproto.ErrInputConstructorInvalid
+	}
+	result := new(mtproto.Payments_StarGiftUpgradeAttributes)
+	if err := c.callBusinessProvider("payments.getStarGiftUpgradeAttributes", map[string]any{"request": in}, result); err != nil {
+		return nil, err
+	}
+	if result.GetPredicateName() == "" {
+		return nil, mtproto.ErrInternalServerError
+	}
+	return result, nil
 }
 
 func (c *ApiFullCore) PaymentsGetCraftStarGifts(in *mtproto.TLPaymentsGetCraftStarGifts) (*mtproto.Payments_SavedStarGifts, error) {
-	_ = in
-	return nil, c.giftsUnavailable()
+	if _, err := c.requireUserId(); err != nil {
+		return nil, err
+	}
+	if in == nil {
+		return nil, mtproto.ErrInputConstructorInvalid
+	}
+	result := new(mtproto.Payments_SavedStarGifts)
+	if err := c.callBusinessProvider("payments.getCraftStarGifts", map[string]any{"request": in}, result); err != nil {
+		return nil, err
+	}
+	if result.GetPredicateName() == "" {
+		return nil, mtproto.ErrInternalServerError
+	}
+	return result, nil
 }
 
 func (c *ApiFullCore) PaymentsCraftStarGift(in *mtproto.TLPaymentsCraftStarGift) (*mtproto.Updates, error) {
-	_ = in
-	return nil, c.giftsUnavailable()
+	if _, err := c.requireUserId(); err != nil {
+		return nil, err
+	}
+	if in == nil {
+		return nil, mtproto.ErrInputConstructorInvalid
+	}
+	result := new(mtproto.Updates)
+	if err := c.callBusinessProvider("payments.craftStarGift", map[string]any{"request": in}, result); err != nil {
+		return nil, err
+	}
+	if result.GetPredicateName() == "" {
+		return nil, mtproto.ErrInternalServerError
+	}
+	return result, nil
 }
 
 func (c *ApiFullCore) PaymentsGetUserStarGifts(in *mtproto.TLPaymentsGetUserStarGifts) (*mtproto.Payments_UserStarGifts, error) {

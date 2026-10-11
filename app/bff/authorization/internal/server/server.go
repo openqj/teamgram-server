@@ -23,6 +23,7 @@ import (
 	"flag"
 	"strings"
 
+	sharedpersist "github.com/teamgram/teamgram-server/app/bff/apifull/persist"
 	"github.com/teamgram/teamgram-server/app/bff/authorization/internal/config"
 	"github.com/teamgram/teamgram-server/app/bff/authorization/internal/server/grpc"
 	"github.com/teamgram/teamgram-server/app/bff/authorization/internal/svc"
@@ -63,5 +64,10 @@ func (s *Server) RunLoop() {
 }
 
 func (s *Server) Destroy() {
-	s.grpcSrv.Stop()
+	if s.grpcSrv != nil {
+		s.grpcSrv.Stop()
+	}
+	if err := sharedpersist.ClosePostgres(); err != nil {
+		logx.Errorf("close authorization PostgreSQL: %v", err)
+	}
 }

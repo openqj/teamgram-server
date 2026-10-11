@@ -26,6 +26,15 @@ import (
 // AccountGetContactSignUpNotification
 // account.getContactSignUpNotification#9f07c728 = Bool;
 func (c *ContactsCore) AccountGetContactSignUpNotification(in *mtproto.TLAccountGetContactSignUpNotification) (*mtproto.Bool, error) {
+	if c == nil || c.MD == nil || c.MD.GetUserId() <= 0 {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
+	if in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.UserClient == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
 	rValue, err := c.svcCtx.Dao.UserClient.UserGetContactSignUpNotification(c.ctx, &userpb.TLUserGetContactSignUpNotification{
 		UserId: c.MD.UserId,
 	})

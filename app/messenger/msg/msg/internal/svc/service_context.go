@@ -76,7 +76,7 @@ func NewServiceContext(c config.Config, plugin plugin.MsgPlugin) *ServiceContext
 		daoStore.Redis = redis.MustNewRedis(redisConf)
 	}
 	// NewPool pings before returning, so an unavailable authoritative store
-	// stops startup instead of allowing a request path to reach MySQL.
+	// stops startup before serving requests.
 	pg, err := dao.NewPostgres(c.Postgres)
 	if err != nil {
 		_ = inboxProducer.Close()

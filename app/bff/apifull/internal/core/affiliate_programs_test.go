@@ -22,7 +22,11 @@ func TestAffiliateAndGiveawayMethodsFailClosedWithoutProvider(t *testing.T) {
 			return result != nil, err
 		}},
 		{"launch giveaway", func() (bool, error) {
-			result, err := c.PaymentsLaunchPrepaidGiveaway(&mtproto.TLPaymentsLaunchPrepaidGiveaway{GiveawayId: 77})
+			result, err := c.PaymentsLaunchPrepaidGiveaway(&mtproto.TLPaymentsLaunchPrepaidGiveaway{
+				Peer:       mtproto.MakeTLInputPeerUser(&mtproto.InputPeer{UserId: 42}).To_InputPeer(),
+				GiveawayId: 77,
+				Purpose:    mtproto.MakeTLInputStorePaymentPremiumGiveaway(nil).To_InputStorePaymentPurpose(),
+			})
 			return result != nil, err
 		}},
 	}

@@ -41,8 +41,15 @@ func themeUploadKey(userID, documentID int64) string {
 
 func loadThemes(userID int64) ([]*mtproto.Theme, error) {
 	raw, err := persist.Default.Get(themeKey(userID))
-	if err != nil || raw == "" {
+	if err != nil {
 		return nil, err
+	}
+	return decodeThemes(raw)
+}
+
+func decodeThemes(raw string) ([]*mtproto.Theme, error) {
+	if raw == "" {
+		return nil, nil
 	}
 	var list []*mtproto.Theme
 	if err := json.Unmarshal([]byte(raw), &list); err != nil {
@@ -60,6 +67,33 @@ func storeThemes(userID int64, list []*mtproto.Theme) error {
 		return err
 	}
 	return persist.Default.Set(themeKey(userID), string(b))
+}
+
+// updateThemes applies an owner-scoped theme mutation under the shared store
+// transaction boundary. PostgreSQL serializes the read/modify/write operation
+// so concurrent create/update/unsave calls cannot lose another theme.
+func updateThemes(userID int64, fn func([]*mtproto.Theme) ([]*mtproto.Theme, error)) error {
+	if userID <= 0 || fn == nil {
+		return mtproto.ErrAuthKeyUnregistered
+	}
+	return persist.Update(themeKey(userID), func(raw string) (string, error) {
+		list, err := decodeThemes(raw)
+		if err != nil {
+			return "", err
+		}
+		next, err := fn(list)
+		if err != nil {
+			return "", err
+		}
+		if next == nil {
+			next = []*mtproto.Theme{}
+		}
+		b, err := json.Marshal(next)
+		if err != nil {
+			return "", err
+		}
+		return string(b), nil
+	})
 }
 
 func themeMatches(t *mtproto.Theme, in *mtproto.InputTheme) bool {
@@ -255,23 +289,25 @@ func (c *ApiFullCore) AccountCreateTheme(in *mtproto.TLAccountCreateTheme) (*mtp
 	if err != nil {
 		return nil, err
 	}
-	list, err := loadThemes(userID)
+	var result *mtproto.Theme
+	err = updateThemes(userID, func(list []*mtproto.Theme) ([]*mtproto.Theme, error) {
+		for _, existing := range list {
+			if existing == nil || (!themeMatches(existing, mtproto.MakeTLInputTheme(&mtproto.InputTheme{Id: theme.GetId()}).To_InputTheme()) && existing.GetSlug() != theme.GetSlug()) {
+				continue
+			}
+			if existing.GetAccessHash() != theme.GetAccessHash() || existing.GetSlug() != theme.GetSlug() || existing.GetTitle() != theme.GetTitle() {
+				return nil, mtproto.ErrThemeInvalid
+			}
+			result = existing
+			return list, nil
+		}
+		result = theme
+		return append(list, theme), nil
+	})
 	if err != nil {
 		return nil, err
 	}
-	for _, existing := range list {
-		if existing == nil || (!themeMatches(existing, mtproto.MakeTLInputTheme(&mtproto.InputTheme{Id: theme.GetId()}).To_InputTheme()) && existing.GetSlug() != theme.GetSlug()) {
-			continue
-		}
-		if existing.GetAccessHash() != theme.GetAccessHash() || existing.GetSlug() != theme.GetSlug() || existing.GetTitle() != theme.GetTitle() {
-			return nil, mtproto.ErrThemeInvalid
-		}
-		return existing, nil
-	}
-	if err = storeThemes(userID, append(list, theme)); err != nil {
-		return nil, err
-	}
-	return theme, nil
+	return result, nil
 }
 
 func (c *ApiFullCore) AccountUpdateTheme(in *mtproto.TLAccountUpdateTheme) (*mtproto.Theme, error) {
@@ -282,54 +318,55 @@ func (c *ApiFullCore) AccountUpdateTheme(in *mtproto.TLAccountUpdateTheme) (*mtp
 	if in == nil || in.GetTheme() == nil {
 		return nil, mtproto.ErrThemeInvalid
 	}
-	list, err := loadThemes(userID)
+	var result *mtproto.Theme
+	err = updateThemes(userID, func(list []*mtproto.Theme) ([]*mtproto.Theme, error) {
+		var index = -1
+		for i, existing := range list {
+			if ownedThemeMatches(existing, in.GetTheme()) {
+				if in.GetTheme().GetAccessHash() != 0 && in.GetTheme().GetAccessHash() != existing.GetAccessHash() {
+					return nil, mtproto.ErrThemeInvalid
+				}
+				index = i
+				break
+			}
+		}
+		if index < 0 {
+			return nil, mtproto.ErrThemeInvalid
+		}
+		updated := proto.Clone(list[index]).(*mtproto.Theme)
+		if in.GetSlug() != nil {
+			updated.Slug = in.GetSlug().GetValue()
+		}
+		if in.GetTitle() != nil {
+			updated.Title = in.GetTitle().GetValue()
+		}
+		if in.GetDocument() != nil {
+			document, loadErr := loadUploadedThemeDocument(userID, in.GetDocument())
+			if loadErr != nil {
+				return nil, loadErr
+			}
+			updated.Id = document.GetId()
+			updated.AccessHash = document.GetAccessHash()
+			updated.Document = document
+		}
+		if in.GetSettings() != nil {
+			settings, settingsErr := themeSettingsFromInput(userID, in.GetSettings())
+			if settingsErr != nil {
+				return nil, settingsErr
+			}
+			updated.Settings = settings
+		}
+		if updated.GetSlug() == "" || updated.GetTitle() == "" {
+			return nil, mtproto.ErrThemeInvalid
+		}
+		list[index] = updated
+		result = updated
+		return list, nil
+	})
 	if err != nil {
 		return nil, err
 	}
-	var index = -1
-	for i, existing := range list {
-		if ownedThemeMatches(existing, in.GetTheme()) {
-			if in.GetTheme().GetAccessHash() != 0 && in.GetTheme().GetAccessHash() != existing.GetAccessHash() {
-				return nil, mtproto.ErrThemeInvalid
-			}
-			index = i
-			break
-		}
-	}
-	if index < 0 {
-		return nil, mtproto.ErrThemeInvalid
-	}
-	updated := proto.Clone(list[index]).(*mtproto.Theme)
-	if in.GetSlug() != nil {
-		updated.Slug = in.GetSlug().GetValue()
-	}
-	if in.GetTitle() != nil {
-		updated.Title = in.GetTitle().GetValue()
-	}
-	if in.GetDocument() != nil {
-		document, loadErr := loadUploadedThemeDocument(userID, in.GetDocument())
-		if loadErr != nil {
-			return nil, loadErr
-		}
-		updated.Id = document.GetId()
-		updated.AccessHash = document.GetAccessHash()
-		updated.Document = document
-	}
-	if in.GetSettings() != nil {
-		settings, settingsErr := themeSettingsFromInput(userID, in.GetSettings())
-		if settingsErr != nil {
-			return nil, settingsErr
-		}
-		updated.Settings = settings
-	}
-	if updated.GetSlug() == "" || updated.GetTitle() == "" {
-		return nil, mtproto.ErrThemeInvalid
-	}
-	list[index] = updated
-	if err = storeThemes(userID, list); err != nil {
-		return nil, err
-	}
-	return updated, nil
+	return result, nil
 }
 
 func (c *ApiFullCore) AccountSaveTheme(in *mtproto.TLAccountSaveTheme) (*mtproto.Bool, error) {
@@ -341,24 +378,29 @@ func (c *ApiFullCore) AccountSaveTheme(in *mtproto.TLAccountSaveTheme) (*mtproto
 		return nil, mtproto.ErrThemeInvalid
 	}
 	src := in.GetTheme()
-	if _, err = findOwnedTheme(userID, src); err != nil {
-		return nil, err
-	}
 	if mtproto.FromBool(in.GetUnsave()) {
-		list, err := loadThemes(userID)
+		err = updateThemes(userID, func(list []*mtproto.Theme) ([]*mtproto.Theme, error) {
+			found := false
+			kept := make([]*mtproto.Theme, 0, len(list))
+			for _, t := range list {
+				if ownedThemeMatches(t, src) {
+					found = true
+					continue
+				}
+				kept = append(kept, t)
+			}
+			if !found {
+				return nil, mtproto.ErrThemeInvalid
+			}
+			return kept, nil
+		})
 		if err != nil {
 			return nil, err
 		}
-		kept := make([]*mtproto.Theme, 0, len(list))
-		for _, t := range list {
-			if !themeMatches(t, src) {
-				kept = append(kept, t)
-			}
-		}
-		if err := storeThemes(userID, kept); err != nil {
-			return nil, err
-		}
 		return mtproto.BoolTrue, nil
+	}
+	if _, err = findOwnedTheme(userID, src); err != nil {
+		return nil, err
 	}
 	return mtproto.BoolTrue, nil
 }
@@ -442,8 +484,19 @@ func (c *ApiFullCore) AccountGetUniqueGiftChatThemes(in *mtproto.TLAccountGetUni
 	if _, err := c.requireUserId(); err != nil {
 		return nil, err
 	}
-	_ = in
-	return nil, mtproto.ErrMethodNotImpl
+	if in == nil || in.GetLimit() < 0 || in.GetLimit() > 100 {
+		return nil, mtproto.ErrLimitInvalid
+	}
+	result := new(mtproto.Account_ChatThemes)
+	if err := c.callBusinessProvider("account.getUniqueGiftChatThemes", map[string]any{
+		"offset": in.GetOffset_STRING(), "offset_int": in.GetOffset_INT32(), "limit": in.GetLimit(), "hash": in.GetHash(),
+	}, result); err != nil {
+		return nil, err
+	}
+	if result.GetPredicateName() == "" || len(result.GetThemes()) > 10000 {
+		return nil, mtproto.ErrInternalServerError
+	}
+	return result, nil
 }
 
 func (c *ApiFullCore) MessagesSetChatTheme(in *mtproto.TLMessagesSetChatTheme) (*mtproto.Updates, error) {

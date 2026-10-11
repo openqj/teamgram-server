@@ -41,10 +41,20 @@ func (c *AuthorizationCore) AuthCheckPaidAuth(in *mtproto.TLAuthCheckPaidAuth) (
 		return nil, mtproto.ErrPhoneCodeHashEmpty
 	}
 
-	_ = phoneNumber
-	_ = in.GetFormId()
-	// No payment form/provider exists in this service. Do not manufacture a
-	// payment-required SentCode that a client could treat as an accepted flow.
-	c.Logger.Errorf("auth.checkPaidAuth - payment provider unavailable")
-	return nil, mtproto.ErrMethodNotImpl
+	provider, err := c.authPaidProvider(c.ctx, phoneNumber, in.GetPhoneCodeHash(), in.GetFormId())
+	if err != nil {
+		c.Logger.Errorf("auth.checkPaidAuth - payment provider: %v", err)
+		return nil, err
+	}
+	// The provider owns the payment form and hash. Preserve the canonical
+	// Layer 229 payment-required constructor without manufacturing any state.
+	return mtproto.MakeTLAuthSentCodePaymentRequired(&mtproto.Auth_SentCode{
+		StoreProduct:        provider.StoreProduct,
+		PhoneCodeHash:       provider.PhoneCodeHash,
+		SupportEmailAddress: provider.SupportEmailAddress,
+		SupportEmailSubject: provider.SupportEmailSubject,
+		PremiumDays:         provider.PremiumDays,
+		Currency:            provider.Currency,
+		Amount:              provider.Amount,
+	}).To_Auth_SentCode(), nil
 }

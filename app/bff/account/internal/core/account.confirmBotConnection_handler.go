@@ -32,11 +32,26 @@ func (c *AccountCore) AccountConfirmBotConnection(in *mtproto.TLAccountConfirmBo
 	if botID <= 0 || in.GetBotId().GetPredicateName() == mtproto.Predicate_inputUserEmpty {
 		return nil, mtproto.ErrUserIdInvalid
 	}
-	// Telegram confirmation requires an authoritative bot-connection verifier
-	// and a durable confirmation record. No such provider is configured here;
-	// fail closed instead of minting a local token that clients could mistake
-	// for a confirmed connection.
-	return nil, mtproto.ErrMethodNotImpl
+	var result botConnectionProviderResult
+	if err := c.callBotConnectionProvider("account.confirmBotConnection", struct {
+		BotID int64              `json:"bot_id"`
+		Bot   *mtproto.InputUser `json:"bot"`
+	}{BotID: botID, Bot: in.GetBotId()}, &result); err != nil {
+		return nil, err
+	}
+	if result.Bool != nil {
+		if result.Bool.GetPredicateName() == mtproto.Predicate_boolTrue || result.Bool.GetConstructor() == mtproto.CRC32_boolTrue {
+			return mtproto.BoolTrue, nil
+		}
+		if result.Bool.GetPredicateName() == mtproto.Predicate_boolFalse || result.Bool.GetConstructor() == mtproto.CRC32_boolFalse {
+			return mtproto.BoolFalse, nil
+		}
+		return nil, mtproto.ErrInternalServerError
+	}
+	if result.Confirmed {
+		return mtproto.BoolTrue, nil
+	}
+	return nil, mtproto.ErrInternalServerError
 }
 
 func confirmBotUserId(bot *mtproto.InputUser, selfUserId int64) int64 {

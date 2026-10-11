@@ -131,7 +131,7 @@ func (c *AuthorizationCore) importAuthorizationWithSupport(in *mtproto.TLAuthImp
 		c.Logger.Errorf("auth.importAuthorization - user lookup: %v", err)
 		return nil, err
 	}
-	if user == nil {
+	if user == nil || user.GetUser() == nil {
 		return nil, mtproto.ErrAuthBytesInvalid
 	}
 

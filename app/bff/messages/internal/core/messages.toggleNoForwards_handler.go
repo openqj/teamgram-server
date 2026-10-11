@@ -26,6 +26,15 @@ import (
 // MessagesToggleNoForwards
 // messages.toggleNoForwards#b11eafa2 peer:InputPeer enabled:Bool = Updates;
 func (c *MessagesCore) MessagesToggleNoForwards(in *mtproto.TLMessagesToggleNoForwards) (*mtproto.Updates, error) {
+	if c == nil || c.MD == nil || c.MD.UserId <= 0 {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
+	if in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if in.GetPeer() == nil {
+		return nil, mtproto.ErrPeerIdInvalid
+	}
 	var (
 		peer     = mtproto.FromInputPeer2(c.MD.UserId, in.Peer)
 		rUpdates *mtproto.Updates

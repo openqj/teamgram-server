@@ -1157,7 +1157,8 @@ func ChannelMessageAuthor(userID, channelID, accessHash int64, messageID int32) 
 		}
 		// message_data is JSON in the legacy schema. Read the document and
 		// decode it in Go so the query remains valid on PostgreSQL (the old
-		// JSON_UNQUOTE/JSON_EXTRACT functions are MySQL-only).
+		// JSON scalar extraction is handled in Go so the PostgreSQL query remains
+		// type-stable for both text and jsonb storage.
 		var rawMessage []byte
 		err = db.QueryRow(`SELECT message_data
 			FROM channel_messages WHERE channel_id=? AND message_id=? AND deleted=0`, channelID, messageID).
@@ -1242,7 +1243,7 @@ func SearchChannelMessages(userID, channelID int64, q string, sender int64, befo
 		AND h.message_id=apifull_channel_message.message_id)`}
 	args := []any{channelID, userID}
 	if q != "" {
-		where = append(where, `message LIKE ? ESCAPE '\\'`)
+		where = append(where, `message LIKE ? ESCAPE E'\\'`)
 		args = append(args, likeContains(q))
 	}
 	if sender != 0 {

@@ -54,6 +54,35 @@ type authProviderResponse struct {
 	UserID    int64  `json:"user_id"`
 }
 
+type paidAuthProviderRequest struct {
+	RequestID     string `json:"request_id"`
+	Operation     string `json:"operation"`
+	PhoneNumber   string `json:"phone_number"`
+	PhoneCodeHash string `json:"phone_code_hash"`
+	FormID        int64  `json:"form_id"`
+}
+
+type paidAuthProviderResponse struct {
+	RequestID           string `json:"request_id"`
+	Operation           string `json:"operation"`
+	Verified            bool   `json:"verified"`
+	PhoneNumber         string `json:"phone_number"`
+	PhoneCodeHash       string `json:"phone_code_hash"`
+	StoreProduct        string `json:"store_product"`
+	SupportEmailAddress string `json:"support_email_address"`
+	SupportEmailSubject string `json:"support_email_subject"`
+	PremiumDays         int32  `json:"premium_days"`
+	Currency            string `json:"currency"`
+	Amount              int64  `json:"amount"`
+}
+
+func (c *AuthorizationCore) authProviderConfigured() bool {
+	return c != nil && c.svcCtx != nil &&
+		strings.TrimSpace(c.svcCtx.Config.AuthProviderEndpoint) != "" &&
+		strings.TrimSpace(c.svcCtx.Config.AuthProviderKey) != "" &&
+		len(strings.TrimSpace(c.svcCtx.Config.AuthProviderSigningKey)) >= 32
+}
+
 func (c *AuthorizationCore) authProvider(ctx context.Context, request authProviderRequest) (authProviderResponse, error) {
 	var result authProviderResponse
 	if ctx == nil {
@@ -116,6 +145,82 @@ func (c *AuthorizationCore) authProvider(ctx context.Context, request authProvid
 	}
 	if err = json.Unmarshal(responseBody, &result); err != nil || result.RequestID != request.RequestID || !result.Verified || result.Operation != request.Operation || result.APIID != request.APIID || result.UserID <= 0 {
 		return authProviderResponse{}, mtproto.ErrAccessTokenInvalid
+	}
+	return result, nil
+}
+
+// authPaidProvider obtains the provider-owned payment form state used by
+// auth.checkPaidAuth. The provider must sign the complete response and echo
+// the request identity; this service never creates a payment-required code or
+// a phone-code hash locally.
+func (c *AuthorizationCore) authPaidProvider(ctx context.Context, phoneNumber, phoneCodeHash string, formID int64) (paidAuthProviderResponse, error) {
+	var result paidAuthProviderResponse
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if c == nil || c.svcCtx == nil {
+		return result, mtproto.ErrMethodNotImpl
+	}
+	endpoint := strings.TrimSpace(c.svcCtx.Config.AuthProviderEndpoint)
+	if endpoint == "" {
+		return result, mtproto.ErrMethodNotImpl
+	}
+	key := strings.TrimSpace(c.svcCtx.Config.AuthProviderKey)
+	signingKey := strings.TrimSpace(c.svcCtx.Config.AuthProviderSigningKey)
+	if key == "" || len(signingKey) < 32 {
+		return result, mtproto.ErrMethodNotImpl
+	}
+	parsed, err := url.Parse(endpoint)
+	if err != nil || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || !secureAuthProviderURL(parsed) {
+		return result, mtproto.ErrInternalServerError
+	}
+	timeout := 5 * time.Second
+	if c.svcCtx.Config.AuthProviderTimeoutSeconds < 0 || c.svcCtx.Config.AuthProviderTimeoutSeconds > 300 {
+		return result, mtproto.ErrInternalServerError
+	}
+	if c.svcCtx.Config.AuthProviderTimeoutSeconds > 0 {
+		timeout = time.Duration(c.svcCtx.Config.AuthProviderTimeoutSeconds) * time.Second
+	}
+	var nonce [32]byte
+	if _, err = rand.Read(nonce[:]); err != nil {
+		return result, mtproto.ErrInternalServerError
+	}
+	request := paidAuthProviderRequest{
+		RequestID:     hex.EncodeToString(nonce[:]),
+		Operation:     "auth.checkPaidAuth",
+		PhoneNumber:   phoneNumber,
+		PhoneCodeHash: phoneCodeHash,
+		FormID:        formID,
+	}
+	body, err := json.Marshal(request)
+	if err != nil {
+		return result, mtproto.ErrInternalServerError
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return result, mtproto.ErrInternalServerError
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+key)
+	req.Header.Set("X-Teamgram-Auth-Provider-Request-Signature", authProviderSignature(signingKey, body))
+	client := &http.Client{Timeout: timeout, CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}
+	resp, err := client.Do(req)
+	if err != nil {
+		return result, mtproto.ErrInternalServerError
+	}
+	defer resp.Body.Close()
+	responseBody, err := io.ReadAll(io.LimitReader(resp.Body, authProviderBodyLimit+1))
+	if err != nil || len(responseBody) > authProviderBodyLimit || resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return result, mtproto.ErrInternalServerError
+	}
+	if !verifyAuthProviderSignature(signingKey, resp.Header.Get("X-Teamgram-Auth-Provider-Signature"), responseBody) {
+		return result, mtproto.ErrInternalServerError
+	}
+	if err = json.Unmarshal(responseBody, &result); err != nil || !result.Verified || result.RequestID != request.RequestID || result.Operation != request.Operation || result.PhoneNumber != request.PhoneNumber || result.PhoneCodeHash == "" || result.PhoneCodeHash != request.PhoneCodeHash {
+		return paidAuthProviderResponse{}, mtproto.ErrPaymentProviderInvalid
+	}
+	if strings.TrimSpace(result.StoreProduct) == "" || strings.TrimSpace(result.Currency) == "" || result.PremiumDays < 0 || result.Amount < 0 {
+		return paidAuthProviderResponse{}, mtproto.ErrPaymentProviderInvalid
 	}
 	return result, nil
 }

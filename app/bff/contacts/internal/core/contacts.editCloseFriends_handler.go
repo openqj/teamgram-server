@@ -26,6 +26,15 @@ import (
 // ContactsEditCloseFriends
 // contacts.editCloseFriends#ba6705f0 id:Vector<long> = Bool;
 func (c *ContactsCore) ContactsEditCloseFriends(in *mtproto.TLContactsEditCloseFriends) (*mtproto.Bool, error) {
+	if c == nil || c.MD == nil || c.MD.UserId <= 0 {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
+	if in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.UserClient == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
 	rV, err := c.svcCtx.Dao.UserEditCloseFriends(c.ctx, &user.TLUserEditCloseFriends{
 		UserId: c.MD.UserId,
 		Id:     in.Id,

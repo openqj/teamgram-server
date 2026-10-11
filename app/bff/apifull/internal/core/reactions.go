@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/teamgram/proto/mtproto"
@@ -1056,27 +1057,178 @@ func (c *ApiFullCore) MessagesClearRecentReactions(in *mtproto.TLMessagesClearRe
 }
 
 func (c *ApiFullCore) MessagesSendPaidReaction(in *mtproto.TLMessagesSendPaidReaction) (*mtproto.Updates, error) {
-	_ = in
-	if _, err := c.requireUserId(); err != nil {
+	uid, err := c.requireUserId()
+	if err != nil {
 		return nil, err
 	}
-	return nil, mtproto.ErrMethodNotImpl
+	// Keep installations without the authoritative paid-reaction service
+	// fail-closed. Once configured, validate the complete Layer 229 request
+	// before forwarding it to the provider.
+	if !c.businessProviderConfigured() {
+		return nil, mtproto.ErrMethodNotImpl
+	}
+	if in == nil || in.GetPeer() == nil || in.GetMsgId() <= 0 || in.GetCount() <= 0 {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if in.GetRandomId() == 0 {
+		return nil, mtproto.ErrRandomIdEmpty
+	}
+	if err = c.authorizeReactionPeer(uid, in.GetPeer()); err != nil {
+		return nil, err
+	}
+	result := new(mtproto.Updates)
+	if err = c.callBusinessProvider("messages.sendPaidReaction", map[string]any{
+		"peer": in.GetPeer(), "msg_id": in.GetMsgId(), "count": in.GetCount(), "random_id": in.GetRandomId(),
+		"private": in.GetPrivate_FLAGPAIDREACTIONPRIVACY(), "private_bool": in.GetPrivate_FLAGBOOL(), "private_boolean": in.GetPrivate_FLAGBOOLEAN(),
+	}, result); err != nil {
+		return nil, err
+	}
+	if result.GetPredicateName() == "" {
+		return nil, mtproto.ErrInternalServerError
+	}
+	return result, nil
 }
 
 func (c *ApiFullCore) MessagesTogglePaidReactionPrivacy(in *mtproto.TLMessagesTogglePaidReactionPrivacy) (*mtproto.Bool, error) {
-	_ = in
-	if _, err := c.requireUserId(); err != nil {
+	uid, err := c.requireUserId()
+	if err != nil {
 		return nil, err
 	}
-	return nil, mtproto.ErrMethodNotImpl
+	if in == nil || in.GetPeer() == nil || in.GetMsgId() <= 0 {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if err := c.authorizeReactionPeer(uid, in.GetPeer()); err != nil {
+		return nil, err
+	}
+	if !c.businessProviderConfigured() {
+		privacy, err := normalizePaidReactionPrivacy(in.GetPrivate_PAIDREACTIONPRIVACY())
+		if err != nil {
+			return nil, err
+		}
+		if privacy.GetPredicateName() == mtproto.Predicate_paidReactionPrivacyPeer {
+			if err := c.authorizeReactionPeer(uid, privacy.GetPeer()); err != nil {
+				return nil, err
+			}
+		}
+		enabled := true
+		if in.GetPrivate_BOOL() != nil {
+			enabled = mtproto.FromBool(in.GetPrivate_BOOL())
+		}
+		if err := savePaidReactionPrivacy(uid, privacy, enabled); err != nil {
+			return nil, err
+		}
+		return mtproto.BoolTrue, nil
+	}
+	var result struct {
+		Value *bool `json:"value"`
+	}
+	if err := c.callBusinessProvider("messages.togglePaidReactionPrivacy", map[string]any{
+		"peer": in.GetPeer(), "msg_id": in.GetMsgId(), "privacy": in.GetPrivate_PAIDREACTIONPRIVACY(), "enabled": in.GetPrivate_BOOL(),
+	}, &result); err != nil {
+		return nil, err
+	}
+	if result.Value == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
+	if *result.Value {
+		return mtproto.BoolTrue, nil
+	}
+	return mtproto.BoolFalse, nil
 }
 
 func (c *ApiFullCore) MessagesGetPaidReactionPrivacy(in *mtproto.TLMessagesGetPaidReactionPrivacy) (*mtproto.Updates, error) {
-	_ = in
-	if _, err := c.requireUserId(); err != nil {
+	uid, err := c.requireUserId()
+	if err != nil {
 		return nil, err
 	}
-	return nil, mtproto.ErrMethodNotImpl
+	if in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if !c.businessProviderConfigured() {
+		state, err := loadPaidReactionPrivacy(uid)
+		if err != nil {
+			return nil, err
+		}
+		return paidReactionPrivacyUpdates(state), nil
+	}
+	result := new(mtproto.Updates)
+	if err := c.callBusinessProvider("messages.getPaidReactionPrivacy", map[string]any{}, result); err != nil {
+		return nil, err
+	}
+	if result.GetPredicateName() == "" {
+		return nil, mtproto.ErrInternalServerError
+	}
+	return result, nil
+}
+
+type paidReactionPrivacyState struct {
+	Privacy *mtproto.PaidReactionPrivacy `json:"privacy"`
+	Enabled bool                         `json:"enabled"`
+}
+
+func paidReactionPrivacyKey(userID int64) string {
+	return fmt.Sprintf("paid-reaction-privacy:%d", userID)
+}
+
+func normalizePaidReactionPrivacy(in *mtproto.PaidReactionPrivacy) (*mtproto.PaidReactionPrivacy, error) {
+	if in == nil || strings.TrimSpace(in.GetPredicateName()) == "" || in.GetPredicateName() == mtproto.Predicate_paidReactionPrivacyDefault {
+		return mtproto.MakeTLPaidReactionPrivacyDefault(&mtproto.PaidReactionPrivacy{}).To_PaidReactionPrivacy(), nil
+	}
+	switch in.GetPredicateName() {
+	case mtproto.Predicate_paidReactionPrivacyAnonymous:
+		return mtproto.MakeTLPaidReactionPrivacyAnonymous(&mtproto.PaidReactionPrivacy{}).To_PaidReactionPrivacy(), nil
+	case mtproto.Predicate_paidReactionPrivacyPeer:
+		if in.GetPeer() == nil {
+			return nil, mtproto.ErrInputRequestInvalid
+		}
+		return mtproto.MakeTLPaidReactionPrivacyPeer(&mtproto.PaidReactionPrivacy{Peer: in.GetPeer()}).To_PaidReactionPrivacy(), nil
+	default:
+		return nil, mtproto.ErrInputConstructorInvalid
+	}
+}
+
+func savePaidReactionPrivacy(userID int64, privacy *mtproto.PaidReactionPrivacy, enabled bool) error {
+	state := paidReactionPrivacyState{Privacy: privacy, Enabled: enabled}
+	raw, err := json.Marshal(state)
+	if err != nil {
+		return err
+	}
+	return persist.Update(paidReactionPrivacyKey(userID), func(string) (string, error) {
+		return string(raw), nil
+	})
+}
+
+func loadPaidReactionPrivacy(userID int64) (paidReactionPrivacyState, error) {
+	state := paidReactionPrivacyState{
+		Privacy: mtproto.MakeTLPaidReactionPrivacyDefault(&mtproto.PaidReactionPrivacy{}).To_PaidReactionPrivacy(),
+		Enabled: false,
+	}
+	raw, err := persist.Default.Get(paidReactionPrivacyKey(userID))
+	if err != nil || strings.TrimSpace(raw) == "" {
+		return state, err
+	}
+	if err = json.Unmarshal([]byte(raw), &state); err != nil || state.Privacy == nil {
+		return paidReactionPrivacyState{}, mtproto.ErrInternalServerError
+	}
+	privacy, err := normalizePaidReactionPrivacy(state.Privacy)
+	if err != nil {
+		return paidReactionPrivacyState{}, mtproto.ErrInternalServerError
+	}
+	state.Privacy = privacy
+	return state, nil
+}
+
+func paidReactionPrivacyUpdates(state paidReactionPrivacyState) *mtproto.Updates {
+	update := mtproto.MakeTLUpdatePaidReactionPrivacy(&mtproto.Update{
+		Private_PAIDREACTIONPRIVACY: state.Privacy,
+		Private_BOOL:                mtproto.ToBool(state.Enabled),
+	}).To_Update()
+	return mtproto.MakeTLUpdates(&mtproto.Updates{
+		Updates: []*mtproto.Update{update},
+		Users:   []*mtproto.User{},
+		Chats:   []*mtproto.Chat{},
+		Date:    int32(time.Now().Unix()),
+	}).To_Updates()
 }
 
 func participantID(p *mtproto.InputPeer) int64 {

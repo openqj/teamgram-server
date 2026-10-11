@@ -26,6 +26,15 @@ import (
 // MessagesSetDefaultHistoryTTL
 // messages.setDefaultHistoryTTL#9eb51445 period:int = Bool;
 func (c *PrivacySettingsCore) MessagesSetDefaultHistoryTTL(in *mtproto.TLMessagesSetDefaultHistoryTTL) (*mtproto.Bool, error) {
+	if c == nil || c.MD == nil || c.MD.UserId <= 0 {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
+	if in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.UserClient == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
 	period := in.GetPeriod()
 
 	if period < 0 || period > 366*86400 {

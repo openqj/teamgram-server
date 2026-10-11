@@ -32,14 +32,19 @@ type Config struct {
 	zrpc.RpcServerConf
 	PostgresDSN string `json:",optional"`
 
-	UserClient       zrpc.RpcClientConf
-	ChatClient       zrpc.RpcClientConf
-	MsgClient        zrpc.RpcClientConf
-	DialogClient     zrpc.RpcClientConf
-	IdgenClient      zrpc.RpcClientConf
-	MessageClient    zrpc.RpcClientConf
-	MediaClient      zrpc.RpcClientConf
-	SyncClient       *kafka.KafkaProducerConf
-	KV               kv.KvConf
-	SearchPostsFlood SearchPostsFloodConfig `json:",optional"`
+	UserClient               zrpc.RpcClientConf
+	ChatClient               zrpc.RpcClientConf
+	MsgClient                zrpc.RpcClientConf
+	DialogClient             zrpc.RpcClientConf
+	IdgenClient              zrpc.RpcClientConf
+	MessageClient            zrpc.RpcClientConf
+	MediaClient              zrpc.RpcClientConf
+	SyncClient               *kafka.KafkaProducerConf
+	KV                       kv.KvConf
+	SearchPostsFlood         SearchPostsFloodConfig `json:",optional"`
+	AIProviderEndpoint       string                 `json:",optional"`
+	AIProviderKey            string                 `json:",optional"`
+	AIProviderSigningKey     string                 `json:",optional"`
+	AIProviderModel          string                 `json:",optional"`
+	AIProviderTimeoutSeconds int                    `json:",optional"`
 }

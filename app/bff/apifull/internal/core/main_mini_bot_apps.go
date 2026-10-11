@@ -61,7 +61,28 @@ func (c *ApiFullCore) BotsGetPopularAppBots(in *mtproto.TLBotsGetPopularAppBots)
 	if _, err := c.requireUserId(); err != nil {
 		return nil, err
 	}
-	return nil, mtproto.ErrMethodNotImpl
+	if !c.businessProviderConfigured() {
+		return nil, mtproto.ErrMethodNotImpl
+	}
+	if in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if len(in.GetOffset()) > 256 {
+		return nil, mtproto.ErrOffsetInvalid
+	}
+	if in.GetLimit() < 0 || in.GetLimit() > 100 {
+		return nil, mtproto.ErrLimitInvalid
+	}
+	result := new(mtproto.Bots_PopularAppBots)
+	if err := c.callBusinessProvider("bots.getPopularAppBots", map[string]any{
+		"offset": in.GetOffset(), "limit": in.GetLimit(),
+	}, result); err != nil {
+		return nil, err
+	}
+	if result.GetPredicateName() == "" || len(result.GetUsers()) > 10000 || (result.GetNextOffset() != nil && len(result.GetNextOffset().GetValue()) > 256) {
+		return nil, mtproto.ErrInternalServerError
+	}
+	return result, nil
 }
 
 func (c *ApiFullCore) BotsAddPreviewMedia(in *mtproto.TLBotsAddPreviewMedia) (*mtproto.BotPreviewMedia, error) {

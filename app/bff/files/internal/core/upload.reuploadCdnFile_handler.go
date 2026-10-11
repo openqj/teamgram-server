@@ -34,8 +34,12 @@ func (c *FilesCore) UploadReuploadCdnFile(in *mtproto.TLUploadReuploadCdnFile) (
 	if len(in.GetRequestToken()) == 0 {
 		return nil, mtproto.ErrTokenInvalid
 	}
-	if c != nil && c.Logger != nil {
-		c.Logger.Errorf("upload.reuploadCdnFile - error: %v", mtproto.ErrCdnMethodInvalid)
+	result := new(mtproto.Vector_FileHash)
+	if err := c.callCDNProvider("upload.reuploadCdnFile", map[string]any{"file_token": in.GetFileToken(), "request_token": in.GetRequestToken()}, result); err != nil {
+		return nil, err
 	}
-	return nil, mtproto.ErrCdnMethodInvalid
+	if result == nil || len(result.GetDatas()) > 10000 {
+		return nil, mtproto.ErrCdnMethodInvalid
+	}
+	return result, nil
 }

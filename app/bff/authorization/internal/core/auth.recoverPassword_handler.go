@@ -88,7 +88,7 @@ func (c *AuthorizationCore) AuthRecoverPassword(in *mtproto.TLAuthRecoverPasswor
 		c.Logger.Errorf("auth.recoverPassword - user: %v", err)
 		return nil, err
 	}
-	if user == nil {
+	if user == nil || user.GetUser() == nil {
 		c.Logger.Errorf("auth.recoverPassword - user is nil")
 		return nil, mtproto.ErrInternalServerError
 	}

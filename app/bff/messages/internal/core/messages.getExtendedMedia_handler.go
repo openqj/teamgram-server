@@ -30,6 +30,12 @@ import (
 // MessagesGetExtendedMedia
 // messages.getExtendedMedia#84f80814 peer:InputPeer id:Vector<int> = Updates;
 func (c *MessagesCore) MessagesGetExtendedMedia(in *mtproto.TLMessagesGetExtendedMedia) (*mtproto.Updates, error) {
+	if c == nil || c.MD == nil || c.MD.UserId <= 0 {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
+	if in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
 	empty := mtproto.MakeTLUpdates(&mtproto.Updates{
 		Updates: []*mtproto.Update{},
 		Users:   []*mtproto.User{},
@@ -38,7 +44,6 @@ func (c *MessagesCore) MessagesGetExtendedMedia(in *mtproto.TLMessagesGetExtende
 	}).To_Updates()
 
 	if in.GetPeer() == nil {
-		c.Logger.Errorf("messages.getExtendedMedia - error: %v", mtproto.ErrPeerIdInvalid)
 		return nil, mtproto.ErrPeerIdInvalid
 	}
 	peer := mtproto.FromInputPeer2(c.MD.UserId, in.Peer)

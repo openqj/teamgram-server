@@ -152,6 +152,61 @@ func TestAuthImportBotAuthorizationVerifiesAndBindsResolvedBot(t *testing.T) {
 	}
 }
 
+func TestAuthImportBotAuthorizationUsesPostgresUserTokenAuthorityWhenProviderUnset(t *testing.T) {
+	apiID, apiHash := validAuthAPI()
+	users := &authProviderTestUserClient{byTokenUser: authProviderTestUser(811, true)}
+	sessions := &authProviderTestAuthsessionClient{}
+	ctx := context.Background()
+	core := &AuthorizationCore{
+		ctx: ctx,
+		svcCtx: &svc.ServiceContext{
+			Config: config.Config{},
+			Dao:    &dao.Dao{UserClient: users, AuthsessionClient: sessions},
+		},
+		MD:     &metadata.RpcMetadata{PermAuthKeyId: 9201},
+		Logger: logx.WithContext(ctx),
+	}
+
+	result, err := core.AuthImportBotAuthorization(&mtproto.TLAuthImportBotAuthorization{
+		ApiId: apiID, ApiHash: apiHash, BotAuthToken: "postgres-bot-token",
+	})
+	if err != nil || result == nil {
+		t.Fatalf("bot import = (%v, %v), want local User token authority success", result, err)
+	}
+	if users.tokenReq == nil || users.tokenReq.GetToken() != "postgres-bot-token" {
+		t.Fatalf("token lookup = %v, want supplied token", users.tokenReq)
+	}
+	if sessions.bindReq == nil || sessions.bindReq.GetAuthKeyId() != 9201 || sessions.bindReq.GetUserId() != 811 {
+		t.Fatalf("auth key bind = %v, want auth key 9201 and user 811", sessions.bindReq)
+	}
+}
+
+func TestAuthImportBotAuthorizationRejectsNonBotFromPostgresUserTokenAuthority(t *testing.T) {
+	apiID, apiHash := validAuthAPI()
+	users := &authProviderTestUserClient{byTokenUser: authProviderTestUser(812, false)}
+	sessions := &authProviderTestAuthsessionClient{}
+	ctx := context.Background()
+	core := &AuthorizationCore{
+		ctx: ctx,
+		svcCtx: &svc.ServiceContext{
+			Config: config.Config{},
+			Dao:    &dao.Dao{UserClient: users, AuthsessionClient: sessions},
+		},
+		MD:     &metadata.RpcMetadata{PermAuthKeyId: 9202},
+		Logger: logx.WithContext(ctx),
+	}
+
+	result, err := core.AuthImportBotAuthorization(&mtproto.TLAuthImportBotAuthorization{
+		ApiId: apiID, ApiHash: apiHash, BotAuthToken: "user-token",
+	})
+	if result != nil || !errors.Is(err, mtproto.ErrAccessTokenInvalid) {
+		t.Fatalf("bot import = (%v, %v), want ACCESS_TOKEN_INVALID", result, err)
+	}
+	if sessions.bindReq != nil {
+		t.Fatalf("non-bot token was bound: %v", sessions.bindReq)
+	}
+}
+
 func TestAuthImportBotAuthorizationRejectsProviderDatabaseIdentityMismatch(t *testing.T) {
 	apiID, apiHash := validAuthAPI()
 	server := newAuthProviderTestServer(t, authProviderTestSigningKey, func(request authProviderRequest) authProviderResponse {

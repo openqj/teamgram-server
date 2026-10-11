@@ -23,16 +23,13 @@ import (
 	"strings"
 
 	"github.com/teamgram/marmota/pkg/net/rpcx"
-	"github.com/teamgram/marmota/pkg/stores/sqlc"
 	"github.com/teamgram/teamgram-server/app/service/biz/user/internal/config"
 	media_client "github.com/teamgram/teamgram-server/app/service/media/client"
 )
 
 // Dao dao.
 type Dao struct {
-	*Mysql
 	*Postgres
-	sqlc.CachedConn
 	media_client.MediaClient
 }
 

@@ -41,3 +41,30 @@ Exported invoice, withdrawal, and ads URLs must be HTTPS. Gift-code and
 giveaway options are provider-owned catalog data and are not treated as an
 entitlement until a separate mutation workflow commits the corresponding
 transaction.
+
+The Premium BFF uses the same endpoint with a signed request envelope for
+store operations. Requests contain `request_id`, `operation`, `user_id`, and a
+JSON `payload`; `X-Teamgram-Payment-Provider-Request-Signature` authenticates
+the exact body and `Idempotency-Key` is the deterministic `request_id`. The
+provider signs the exact response body in
+`X-Teamgram-Payment-Provider-Signature` and returns:
+
+```json
+{
+  "request_id": "...",
+  "operation": "payments.assignAppStoreTransaction",
+  "verified": true,
+  "user_id": 123,
+  "result": { "accepted": true, "updates": { "predicate_name": "updates" } }
+}
+```
+
+`payments.assignAppStoreTransaction` and
+`payments.assignPlayMarketTransaction` require an accepted result containing
+canonical Layer 229 `Updates`; `payments.canPurchaseStore` and
+`payments.canPurchasePremium` return `{ "allowed": true|false }`; and
+`help.getPremiumPromo` returns `{ "promo": ... }` with a canonical
+`help.premiumPromo`. Missing or invalid provider configuration, mismatched
+users, failed verification, malformed TL values, and provider errors fail
+closed. Assignment retries use the same idempotency key and must not grant an
+entitlement twice.

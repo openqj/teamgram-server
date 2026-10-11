@@ -342,7 +342,11 @@ func (m *Dao) GetPhotoV2(ctx context.Context, photoId int64) (*mtproto.Photo, er
 		}
 		videoSizes = make([]*mtproto.VideoSize, 0, len(videoSizeDOList))
 		for i := range videoSizeDOList {
-			if size := getVideoSize(&videoSizeDOList[i]); size != nil {
+			size, decodeErr := getVideoSizeE(&videoSizeDOList[i])
+			if decodeErr != nil {
+				return nil, decodeErr
+			}
+			if size != nil {
 				videoSizes = append(videoSizes, size)
 			}
 		}
@@ -383,12 +387,22 @@ func (m *Dao) GetCachePhotoData(ctx context.Context, photoId int64) (*CachePhoto
 		return nil, err
 	}
 	if photoDO != nil && photoDO.HasVideo {
+		var decodeErr error
 		_, err = m.videoSizesStore().SelectListByVideoSizeIdWithCB(ctx, photoId,
 			func(sz, i int, v *dataobject.VideoSizesDO) {
+				if decodeErr != nil {
+					return
+				}
+				if _, decodeErr = getVideoSizeE(v); decodeErr != nil {
+					return
+				}
 				cacheData.VideoSizeList = append(cacheData.VideoSizeList, v)
 			})
 		if err != nil {
 			return nil, err
+		}
+		if decodeErr != nil {
+			return nil, decodeErr
 		}
 	}
 

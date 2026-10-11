@@ -13,7 +13,7 @@ import (
 func (c *MsgCore) openStored() error {
 	dsn := c.svcCtx.Config.Postgres.DSN
 	// Scheduled messages share the PostgreSQL authoritative store. Do not
-	// silently fall back to the transitional MySQL config in production.
+	// silently continue without an authoritative database in production.
 	if err := channelview.Open(dsn); err != nil {
 		c.Logger.Errorf("msg stored database is not open")
 		return mtproto.ErrInternalServerError

@@ -22,10 +22,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
+	"strings"
 
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/persist"
 	"github.com/teamgram/teamgram-server/app/service/dfs/dfs"
+	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
 // RPCImportedChatsServer: Layer 229 methods previously returned ERR_ENTERPRISE_IS_BLOCKED.
@@ -43,6 +45,29 @@ type historyImportMeta struct {
 	Confirm string `json:"confirm,omitempty"`
 	Pm      bool   `json:"pm,omitempty"`
 	Group   bool   `json:"group,omitempty"`
+	FileID  int64  `json:"file_id,omitempty"`
+	Parts   int32  `json:"parts,omitempty"`
+	Name    string `json:"name,omitempty"`
+	Media   int32  `json:"media_count,omitempty"`
+	Started bool   `json:"started,omitempty"`
+}
+
+type historyImportParsedProviderResult struct {
+	Pm    bool   `json:"pm"`
+	Group bool   `json:"group"`
+	Title string `json:"title,omitempty"`
+}
+
+type historyImportIDProviderResult struct {
+	ImportID int64 `json:"import_id"`
+}
+
+type historyImportStartProviderResult struct {
+	Accepted bool `json:"accepted"`
+}
+
+type historyImportPeerProviderResult struct {
+	ConfirmText string `json:"confirm_text"`
 }
 
 func loadHistoryImportMeta(uid int64) (historyImportMeta, error) {
@@ -78,12 +103,28 @@ func (c *ApiFullCore) MessagesCheckHistoryImport(in *mtproto.TLMessagesCheckHist
 	if in == nil {
 		return nil, mtproto.ErrInputRequestInvalid
 	}
-	// No importer/parser provider is wired to inspect the archive header.
-	return nil, mtproto.ErrMethodNotImpl
+	if strings.TrimSpace(in.GetImportHead()) == "" || len(in.GetImportHead()) > 1<<20 {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	var provider historyImportParsedProviderResult
+	if err := c.callBusinessProvider("messages.checkHistoryImport", map[string]any{"import_head": in.GetImportHead()}, &provider); err != nil {
+		return nil, err
+	}
+	if !provider.Pm && !provider.Group || provider.Pm && provider.Group {
+		return nil, mtproto.ErrInternalServerError
+	}
+	parsed := mtproto.MakeTLMessagesHistoryImportParsed(&mtproto.Messages_HistoryImportParsed{
+		Pm: provider.Pm, Group: provider.Group,
+	})
+	if strings.TrimSpace(provider.Title) != "" {
+		parsed.Data2.Title = wrapperspb.String(provider.Title)
+	}
+	return parsed.To_Messages_HistoryImportParsed(), nil
 }
 
 func (c *ApiFullCore) MessagesInitHistoryImport(in *mtproto.TLMessagesInitHistoryImport) (*mtproto.Messages_HistoryImport, error) {
-	if _, err := c.requireUserId(); err != nil {
+	uid, err := c.requireUserId()
+	if err != nil {
 		return nil, err
 	}
 	if in == nil || in.GetPeer() == nil || in.GetFile() == nil || in.GetMediaCount() < 0 {
@@ -92,8 +133,26 @@ func (c *ApiFullCore) MessagesInitHistoryImport(in *mtproto.TLMessagesInitHistor
 	if confirm, _, _ := historyImportPeerFlags(in.GetPeer()); confirm == "" {
 		return nil, mtproto.ErrPeerIdInvalid
 	}
-	// No message-service import job provider is wired to own this session.
-	return nil, mtproto.ErrMethodNotImpl
+	var provider historyImportIDProviderResult
+	if err = c.callBusinessProvider("messages.initHistoryImport", map[string]any{
+		"peer": in.GetPeer(), "file": in.GetFile(), "media_count": in.GetMediaCount(),
+	}, &provider); err != nil {
+		return nil, err
+	}
+	if provider.ImportID <= 0 {
+		return nil, mtproto.ErrInternalServerError
+	}
+	meta := historyImportMeta{ID: provider.ImportID, Confirm: func() string { v, _, _ := historyImportPeerFlags(in.GetPeer()); return v }(),
+		Pm: in.GetPeer().GetUserId() != 0, Group: in.GetPeer().GetUserId() == 0,
+		FileID: in.GetFile().GetId_INT64(), Parts: in.GetFile().GetParts(), Name: in.GetFile().GetName(), Media: in.GetMediaCount()}
+	b, err := json.Marshal(meta)
+	if err != nil {
+		return nil, mtproto.ErrInternalServerError
+	}
+	if err = persist.Default.Set(historyImportMetaKey(uid), string(b)); err != nil {
+		return nil, err
+	}
+	return mtproto.MakeTLMessagesHistoryImport(&mtproto.Messages_HistoryImport{Id: provider.ImportID}).To_Messages_HistoryImport(), nil
 }
 
 func (c *ApiFullCore) MessagesUploadImportedMedia(in *mtproto.TLMessagesUploadImportedMedia) (*mtproto.MessageMedia, error) {
@@ -185,7 +244,8 @@ func (c *ApiFullCore) MessagesUploadImportedMedia(in *mtproto.TLMessagesUploadIm
 }
 
 func (c *ApiFullCore) MessagesStartHistoryImport(in *mtproto.TLMessagesStartHistoryImport) (*mtproto.Bool, error) {
-	if _, err := c.requireUserId(); err != nil {
+	uid, err := c.requireUserId()
+	if err != nil {
 		return nil, err
 	}
 	if in == nil || in.GetPeer() == nil || in.GetImportId() <= 0 {
@@ -194,8 +254,39 @@ func (c *ApiFullCore) MessagesStartHistoryImport(in *mtproto.TLMessagesStartHist
 	if confirm, _, _ := historyImportPeerFlags(in.GetPeer()); confirm == "" {
 		return nil, mtproto.ErrPeerIdInvalid
 	}
-	// No importer worker is wired to consume this request.
-	return nil, mtproto.ErrMethodNotImpl
+	meta, err := loadHistoryImportMeta(uid)
+	if err != nil {
+		return nil, err
+	}
+	confirm, _, _ := historyImportPeerFlags(in.GetPeer())
+	if meta.ID == 0 || meta.ID != in.GetImportId() || meta.Confirm != confirm {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if meta.Started {
+		return mtproto.BoolTrue, nil
+	}
+	var provider historyImportStartProviderResult
+	if err = c.callBusinessProvider("messages.startHistoryImport", map[string]any{"peer": in.GetPeer(), "import_id": in.GetImportId()}, &provider); err != nil {
+		return nil, err
+	}
+	if !provider.Accepted {
+		return nil, mtproto.ErrMethodNotImpl
+	}
+	if err = persist.Update(historyImportMetaKey(uid), func(raw string) (string, error) {
+		var current historyImportMeta
+		if raw != "" && json.Unmarshal([]byte(raw), &current) != nil {
+			return "", mtproto.ErrInternalServerError
+		}
+		if current.ID != in.GetImportId() || current.Confirm != confirm {
+			return "", mtproto.ErrInputRequestInvalid
+		}
+		current.Started = true
+		b, marshalErr := json.Marshal(current)
+		return string(b), marshalErr
+	}); err != nil {
+		return nil, err
+	}
+	return mtproto.BoolTrue, nil
 }
 
 func (c *ApiFullCore) MessagesCheckHistoryImportPeer(in *mtproto.TLMessagesCheckHistoryImportPeer) (*mtproto.Messages_CheckedHistoryImportPeer, error) {
@@ -208,6 +299,12 @@ func (c *ApiFullCore) MessagesCheckHistoryImportPeer(in *mtproto.TLMessagesCheck
 	if confirm, _, _ := historyImportPeerFlags(in.GetPeer()); confirm == "" {
 		return nil, mtproto.ErrPeerIdInvalid
 	}
-	// No message-service import state provider is wired to check this peer.
-	return nil, mtproto.ErrMethodNotImpl
+	var provider historyImportPeerProviderResult
+	if err := c.callBusinessProvider("messages.checkHistoryImportPeer", map[string]any{"peer": in.GetPeer()}, &provider); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(provider.ConfirmText) == "" || len(provider.ConfirmText) > 4096 {
+		return nil, mtproto.ErrInternalServerError
+	}
+	return mtproto.MakeTLMessagesCheckedHistoryImportPeer(&mtproto.Messages_CheckedHistoryImportPeer{ConfirmText: provider.ConfirmText}).To_Messages_CheckedHistoryImportPeer(), nil
 }

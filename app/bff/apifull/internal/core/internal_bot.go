@@ -76,14 +76,38 @@ func (c *ApiFullCore) BotsSendCustomRequest(in *mtproto.TLBotsSendCustomRequest)
 	if _, err := c.requireUserId(); err != nil {
 		return nil, err
 	}
-	_ = in
-	return nil, mtproto.ErrMethodNotImpl
+	if in == nil || in.GetCustomMethod() == "" || len(in.GetCustomMethod()) > 128 || in.GetParams() == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	result := new(mtproto.DataJSON)
+	if err := c.callBusinessProvider("bots.sendCustomRequest", map[string]any{
+		"custom_method": in.GetCustomMethod(), "params": in.GetParams(),
+	}, result); err != nil {
+		return nil, err
+	}
+	if result.GetData() == "" {
+		return nil, mtproto.ErrInternalServerError
+	}
+	return result, nil
 }
 
 func (c *ApiFullCore) BotsAnswerWebhookJSONQuery(in *mtproto.TLBotsAnswerWebhookJSONQuery) (*mtproto.Bool, error) {
 	if _, err := c.requireUserId(); err != nil {
 		return nil, err
 	}
-	_ = in
-	return nil, mtproto.ErrMethodNotImpl
+	if in == nil || in.GetQueryId() == 0 || in.GetData() == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	var result struct {
+		Value bool `json:"value"`
+	}
+	if err := c.callBusinessProvider("bots.answerWebhookJSONQuery", map[string]any{
+		"query_id": in.GetQueryId(), "data": in.GetData(),
+	}, &result); err != nil {
+		return nil, err
+	}
+	if result.Value {
+		return mtproto.BoolTrue, nil
+	}
+	return mtproto.BoolFalse, nil
 }

@@ -82,19 +82,18 @@ func (c *ApiFullCore) AccountUpdateEmojiStatus(in *mtproto.TLAccountUpdateEmojiS
 		return nil, mtproto.ErrDocumentInvalid
 	}
 	payload := "null"
-	var recent []*mtproto.EmojiStatus
 	updateRecent := false
+	var recentFallback []*mtproto.EmojiStatus
 	if status.GetPredicateName() != mtproto.Predicate_emojiStatusEmpty {
 		b, mErr := json.Marshal(status)
 		if mErr != nil {
 			return nil, mErr
 		}
 		payload = string(b)
-		recent, err = loadStoredRecentEmojiStatuses(uid)
+		recentFallback, err = loadStoredRecentEmojiStatuses(uid)
 		if err != nil {
 			return nil, err
 		}
-		recent = prependRecentEmojiStatus(status, recent)
 		updateRecent = true
 	}
 	updated, err := d.UserClient.UserUpdateEmojiStatus(ctx, &userpb.TLUserUpdateEmojiStatus{
@@ -112,7 +111,7 @@ func (c *ApiFullCore) AccountUpdateEmojiStatus(in *mtproto.TLAccountUpdateEmojiS
 		return nil, err
 	}
 	if updateRecent {
-		if err = saveRecentEmojiStatuses(uid, recent); err != nil {
+		if err = updateRecentEmojiStatuses(uid, status, recentFallback); err != nil {
 			return nil, err
 		}
 	}
@@ -155,11 +154,6 @@ func loadStoredRecentEmojiStatuses(userID int64) ([]*mtproto.EmojiStatus, error)
 		statuses, err := loadStoredEmojiStatus(userID)
 		if err != nil {
 			return nil, err
-		}
-		if len(statuses) > 0 {
-			if err = saveRecentEmojiStatuses(userID, statuses); err != nil {
-				return nil, err
-			}
 		}
 		return statuses, nil
 	}
@@ -204,6 +198,32 @@ func saveRecentEmojiStatuses(userID int64, statuses []*mtproto.EmojiStatus) erro
 		return err
 	}
 	return persist.Default.Set(recentEmojiStatusKey(userID), string(b))
+}
+
+// updateRecentEmojiStatuses performs the recent-status read/modify/write in a
+// single shared-store transaction. PostgreSQL locks the owner key so concurrent
+// status updates cannot overwrite one another's history.
+func updateRecentEmojiStatuses(userID int64, status *mtproto.EmojiStatus, fallback []*mtproto.EmojiStatus) error {
+	if userID <= 0 || status == nil {
+		return mtproto.ErrAuthKeyUnregistered
+	}
+	return persist.Update(recentEmojiStatusKey(userID), func(raw string) (string, error) {
+		var statuses []*mtproto.EmojiStatus
+		if raw == "" {
+			// Preserve the one-time migration from the current status key. The
+			// fallback is read before entering this transaction so the callback
+			// never opens a second connection while PostgreSQL holds its lock.
+			statuses = fallback
+		} else if err := json.Unmarshal([]byte(raw), &statuses); err != nil {
+			return "", err
+		}
+		statuses = prependRecentEmojiStatus(status, statuses)
+		b, err := json.Marshal(statuses)
+		if err != nil {
+			return "", err
+		}
+		return string(b), nil
+	})
 }
 
 func recentEmojiStatusHash(statuses []*mtproto.EmojiStatus) int64 {
@@ -472,17 +492,85 @@ func (c *ApiFullCore) ChannelsUpdateEmojiStatus(in *mtproto.TLChannelsUpdateEmoj
 }
 
 func (c *ApiFullCore) BotsUpdateUserEmojiStatus(in *mtproto.TLBotsUpdateUserEmojiStatus) (*mtproto.Bool, error) {
-	_ = in
-	if _, err := c.requireUserId(); err != nil {
+	uid, err := c.requireUserId()
+	if err != nil {
 		return nil, err
 	}
-	return nil, mtproto.ErrMethodNotImpl
+	if !c.businessProviderConfigured() {
+		return nil, mtproto.ErrMethodNotImpl
+	}
+	if in == nil || in.GetUserId() == nil || in.GetEmojiStatus() == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	target := in.GetUserId()
+	switch target.GetPredicateName() {
+	case mtproto.Predicate_inputUserSelf:
+	case mtproto.Predicate_inputUser:
+		if target.GetUserId() <= 0 || target.GetAccessHash() == 0 {
+			return nil, mtproto.ErrUserIdInvalid
+		}
+	default:
+		return nil, mtproto.ErrInputConstructorInvalid
+	}
+	status := in.GetEmojiStatus()
+	switch status.GetPredicateName() {
+	case mtproto.Predicate_emojiStatusEmpty,
+		mtproto.Predicate_emojiStatus,
+		mtproto.Predicate_emojiStatusUntil:
+	default:
+		return nil, mtproto.ErrInputConstructorInvalid
+	}
+	var result struct {
+		Value *bool `json:"value"`
+	}
+	if err := c.callBusinessProvider("bots.updateUserEmojiStatus", map[string]any{
+		"caller_user_id": uid, "user_id": target, "emoji_status": status,
+	}, &result); err != nil {
+		return nil, err
+	}
+	if result.Value == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
+	if *result.Value {
+		return mtproto.BoolTrue, nil
+	}
+	return mtproto.BoolFalse, nil
 }
 
 func (c *ApiFullCore) BotsToggleUserEmojiStatusPermission(in *mtproto.TLBotsToggleUserEmojiStatusPermission) (*mtproto.Bool, error) {
-	_ = in
-	if _, err := c.requireUserId(); err != nil {
+	uid, err := c.requireUserId()
+	if err != nil {
 		return nil, err
 	}
-	return nil, mtproto.ErrMethodNotImpl
+	if !c.businessProviderConfigured() {
+		return nil, mtproto.ErrMethodNotImpl
+	}
+	if in == nil || in.GetBot() == nil || in.GetEnabled() == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	bot := in.GetBot()
+	switch bot.GetPredicateName() {
+	case mtproto.Predicate_inputUserSelf:
+	case mtproto.Predicate_inputUser:
+		if bot.GetUserId() <= 0 || bot.GetAccessHash() == 0 {
+			return nil, mtproto.ErrUserIdInvalid
+		}
+	default:
+		return nil, mtproto.ErrInputConstructorInvalid
+	}
+	var result struct {
+		Value *bool `json:"value"`
+	}
+	if err := c.callBusinessProvider("bots.toggleUserEmojiStatusPermission", map[string]any{
+		"caller_user_id": uid, "bot": bot, "enabled": in.GetEnabled(),
+	}, &result); err != nil {
+		return nil, err
+	}
+	if result.Value == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
+	if *result.Value {
+		return mtproto.BoolTrue, nil
+	}
+	return mtproto.BoolFalse, nil
 }

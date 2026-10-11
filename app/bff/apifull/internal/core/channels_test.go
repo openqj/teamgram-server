@@ -334,9 +334,9 @@ func TestChannelsEditTitleRoundTrip(t *testing.T) {
 	}
 }
 
-func TestChannelMySQL(t *testing.T) {
+func TestChannelPostgres(t *testing.T) {
 	c := &ApiFullCore{MD: &metadata.RpcMetadata{UserId: 1}}
-	up, err := c.ChannelsCreateChannel(&mtproto.TLChannelsCreateChannel{Title: "mysql-chan"})
+	up, err := c.ChannelsCreateChannel(&mtproto.TLChannelsCreateChannel{Title: "postgres-chan"})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -345,7 +345,7 @@ func TestChannelMySQL(t *testing.T) {
 	}
 	id := up.Chats[0].GetId()
 	got, ok, err := domain.LoadChannel(id)
-	if err != nil || !ok || got.Title != "mysql-chan" {
+	if err != nil || !ok || got.Title != "postgres-chan" {
 		t.Fatalf("channel %+v ok %v err %v", got, ok, err)
 	}
 }

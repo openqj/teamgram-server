@@ -22,11 +22,21 @@ import (
 	"fmt"
 
 	"github.com/teamgram/proto/mtproto"
+	"github.com/teamgram/teamgram-server/app/bff/apifull/persist"
 )
 
 // ContactsResetTopPeerRating
 // contacts.resetTopPeerRating#1ae373ac category:TopPeerCategory peer:InputPeer = Bool;
 func (c *ContactsCore) ContactsResetTopPeerRating(in *mtproto.TLContactsResetTopPeerRating) (*mtproto.Bool, error) {
+	if c == nil || c.MD == nil || c.MD.UserId <= 0 {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
+	if in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if persist.Default == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
 	if in.GetCategory() == nil || in.GetPeer() == nil {
 		c.Logger.Errorf("contacts.resetTopPeerRating - error: %v", mtproto.ErrInputRequestInvalid)
 		return nil, mtproto.ErrInputRequestInvalid

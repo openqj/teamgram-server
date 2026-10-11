@@ -334,6 +334,8 @@ From `teamgramd/bin`:
 - **CentOS 7 firewall**: Open required ports for MinIO etc., or temporarily run `systemctl stop firewalld` to debug.
 - **Kafka process count**: `ps aux | grep kafka | wc -l` should be 3 when Zookeeper and Kafka are running.
 - **Pika extract dir**: If the archive does not extract to a directory named `pika`, rename it or adjust the start command.
-- **SQL path**: All init SQL files live under `teamgramd/deploy/sql/`; do not use `teamgramd/sql/`.
+- **SQL path**: Apply PostgreSQL 18 migrations with
+  `./teamgramd/deploy/postgres/apply.sh`; the files directly under
+  `teamgramd/deploy/sql/` are a historical archive and are not deployment inputs.
 
 After completing these steps, the Teamgram server runs manually on Linux.

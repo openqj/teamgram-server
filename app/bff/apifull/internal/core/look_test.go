@@ -17,7 +17,7 @@ func TestLookAccountUpdateColor(t *testing.T) {
 	}
 }
 
-func TestThemeMySQL(t *testing.T) {
+func TestThemePostgres(t *testing.T) {
 	userID := time.Now().UnixNano()
 	document := mtproto.MakeTLDocument(&mtproto.Document{Id: userID + 1, AccessHash: userID + 2, MimeType: "application/x-tgtheme"}).To_Document()
 	raw, err := json.Marshal(document)
@@ -28,14 +28,14 @@ func TestThemeMySQL(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err = (&ApiFullCore{MD: &metadata.RpcMetadata{UserId: userID}}).AccountCreateTheme(&mtproto.TLAccountCreateTheme{
-		Slug: "mysql-theme", Title: "mysql-theme",
+		Slug: "postgres-theme", Title: "postgres-theme",
 		Document: mtproto.MakeTLInputDocument(&mtproto.InputDocument{Id: document.GetId(), AccessHash: document.GetAccessHash()}).To_InputDocument(),
 	}); err != nil {
 		t.Fatal(err)
 	}
 	c := &ApiFullCore{MD: &metadata.RpcMetadata{UserId: userID}}
 	inTheme := mtproto.MakeTLInputThemeSlug(&mtproto.InputTheme{
-		Slug: "mysql-theme",
+		Slug: "postgres-theme",
 	}).To_InputTheme()
 	ok, err := c.AccountSaveTheme(&mtproto.TLAccountSaveTheme{
 		Theme:  inTheme,
@@ -54,7 +54,7 @@ func TestThemeMySQL(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.GetSlug() != "mysql-theme" || got.GetTitle() != "mysql-theme" {
+	if got.GetSlug() != "postgres-theme" || got.GetTitle() != "postgres-theme" {
 		t.Fatalf("theme: %+v", got)
 	}
 }

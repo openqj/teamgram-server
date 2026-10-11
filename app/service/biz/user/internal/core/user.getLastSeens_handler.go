@@ -10,6 +10,7 @@
 package core
 
 import (
+	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/service/biz/user/internal/dal/dataobject"
 	"github.com/teamgram/teamgram-server/app/service/biz/user/user"
 	"github.com/zeromicro/go-zero/core/mr"
@@ -18,6 +19,20 @@ import (
 // UserGetLastSeens
 // user.getLastSeens id:Vector<long> = Vector<LastSeenData>;
 func (c *UserCore) UserGetLastSeens(in *user.TLUserGetLastSeens) (*user.Vector_LastSeenData, error) {
+	if in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	for _, id := range in.GetId() {
+		if id <= 0 {
+			return nil, mtproto.ErrUserIdInvalid
+		}
+	}
+	if err := c.requirePostgres(); err != nil {
+		return nil, err
+	}
+	if c.svcCtx.Dao.Postgres.Store.Presences == nil {
+		return nil, mtproto.ErrMethodNotImpl
+	}
 	type idxId struct {
 		idx int
 		id  int64

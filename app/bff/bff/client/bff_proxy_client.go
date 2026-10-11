@@ -184,25 +184,6 @@ func (c *BFFProxyClient) InvokeContext(ctx context.Context, rpcMetaData *metadat
 	if err != nil {
 		logger.Errorf("RPC Invoke error: {method: %s, metadata: %s, error: %s}", t.Method, rpcMetaData, err)
 		return nil, mtproto.NewRpcError(err)
-
-		//case *mysql.MySQLError:
-		//if rpcErr, ok := err.(*mtproto.TLRpcError); ok {
-		//	return nil, rpcErr
-		//} else {
-		//	return nil, mtproto.NewRpcError(int32(mtproto.TLRpcErrorCodes_INTERNAL), "INTERNAL_SERVER_ERROR")
-		//}
-		//
-		//// TODO(@benqi): 哪些情况需要断开客户端连接
-		//if s, ok := status.FromError(err); ok {
-		//	//switch s.Code() {
-		//	//// TODO(@benqi): Rpc error, trailer has rpc_error metadata
-		//	//case codes.Unknown:
-		//	//	return nil, grpc_util.RpcErrorFromMD(trailer)
-		//	//}
-		//	return nil, mtproto.FromGRPCStatus(s)
-		//} else {
-		//	return nil, mtproto.NewRpcError(int32(mtproto.TLRpcErrorCodes_INTERNAL), "INTERNAL_SERVER_ERROR")
-		//}
 	} else {
 		if reply, ok := r.(mtproto.TLObject); !ok {
 			logger.Errorf("invalid reply type, maybe server side bug, %v", reply)

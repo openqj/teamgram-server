@@ -38,11 +38,42 @@ PaymentProviderEndpoint: ""
 PaymentProviderKey: ""
 PaymentProviderSigningKey: ""
 PaymentProviderTimeoutSeconds: 5
+SponsoredProviderEndpoint: ""
+SponsoredProviderKey: ""
+SponsoredProviderSigningKey: ""
+SponsoredProviderTimeoutSeconds: 5
+
+AIProviderEndpoint: ""
+AIProviderKey: ""
+AIProviderSigningKey: ""
+AIProviderTimeoutSeconds: 5
+
+BusinessProviderEndpoint: ""
+BusinessProviderKey: ""
+BusinessProviderSigningKey: ""
+BusinessProviderTimeoutSeconds: 5
+
+TurnHost: ""
+TurnPort: 0
+TurnUsername: ""
+TurnPassword: ""
+TurnSharedSecret: ""
+TurnCredentialTTLSeconds: 3600
 
 AuthProviderEndpoint: ""
 AuthProviderKey: ""
 AuthProviderSigningKey: ""
 AuthProviderTimeoutSeconds: 5
+
+PassportProviderEndpoint: ""
+PassportProviderKey: ""
+PassportProviderSigningKey: ""
+PassportProviderTimeoutSeconds: 5
+
+UserChannelProfilesProviderEndpoint: ""
+UserChannelProfilesProviderKey: ""
+UserChannelProfilesProviderSigningKey: ""
+UserChannelProfilesProviderTimeoutSeconds: 5
 
 GroupCallMediaEndpoint: ""
 GroupCallMediaAPIKey: ""

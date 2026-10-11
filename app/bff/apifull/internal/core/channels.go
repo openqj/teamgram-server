@@ -1057,7 +1057,7 @@ func (c *ApiFullCore) ChannelsDeleteChannel(in *mtproto.TLChannelsDeleteChannel)
 	}
 	// Channels created by this APIFull shard also have a legacy KV record. Keep
 	// that record from making a successfully deleted channel visible again while
-	// retaining the existing Store interface used by Redis and MySQL backends.
+	// retaining the existing Store interface used by Redis-backed callers.
 	if err = persist.Default.Set(chanDataKey(channel.Creator, channel.ID), ""); err != nil {
 		return nil, err
 	}

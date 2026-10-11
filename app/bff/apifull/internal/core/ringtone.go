@@ -44,13 +44,28 @@ func ringKey(userID int64) string {
 
 func loadRings(userID int64) ([]*mtproto.Document, error) {
 	raw, err := persist.Default.Get(ringKey(userID))
-	if err != nil || raw == "" {
+	if err != nil {
 		return nil, err
+	}
+	stored, err := decodeRings(raw)
+	if err != nil {
+		return nil, err
+	}
+	return ringDocuments(stored), nil
+}
+
+func decodeRings(raw string) ([]ringItem, error) {
+	if raw == "" {
+		return nil, nil
 	}
 	var stored []ringItem
 	if err := json.Unmarshal([]byte(raw), &stored); err != nil {
 		return nil, err
 	}
+	return stored, nil
+}
+
+func ringDocuments(stored []ringItem) []*mtproto.Document {
 	out := make([]*mtproto.Document, 0, len(stored))
 	for _, s := range stored {
 		out = append(out, mtproto.MakeTLDocument(&mtproto.Document{
@@ -63,7 +78,7 @@ func loadRings(userID int64) ([]*mtproto.Document, error) {
 			Attributes:    []*mtproto.DocumentAttribute{},
 		}).To_Document())
 	}
-	return out, nil
+	return out
 }
 
 func storeRings(userID int64, docs []*mtproto.Document) error {
@@ -83,6 +98,30 @@ func storeRings(userID int64, docs []*mtproto.Document) error {
 		return err
 	}
 	return persist.Default.Set(ringKey(userID), string(raw))
+}
+
+// updateRings performs one owner-scoped ringtone mutation under the shared
+// store transaction boundary. The PostgreSQL path locks the KV row/advisory
+// key so concurrent saves from separate BFF instances cannot lose entries.
+func updateRings(userID int64, fn func([]ringItem) ([]ringItem, error)) error {
+	if userID <= 0 || fn == nil {
+		return mtproto.ErrAuthKeyUnregistered
+	}
+	return persist.Update(ringKey(userID), func(raw string) (string, error) {
+		stored, err := decodeRings(raw)
+		if err != nil {
+			return "", err
+		}
+		next, err := fn(stored)
+		if err != nil {
+			return "", err
+		}
+		b, err := json.Marshal(next)
+		if err != nil {
+			return "", err
+		}
+		return string(b), nil
+	})
 }
 
 func ringHash(docs []*mtproto.Document) int64 {
@@ -133,39 +172,29 @@ func (c *ApiFullCore) AccountSaveRingtone(in *mtproto.TLAccountSaveRingtone) (*m
 
 	ringMu.Lock()
 	defer ringMu.Unlock()
-	prev, err := loadRings(userID)
-	if err != nil {
-		return nil, err
-	}
-	list := make([]*mtproto.Document, 0, len(prev)+1)
-	if unsave {
-		for _, d := range prev {
-			if d.GetId() != id.GetId() {
-				list = append(list, d)
+	err = updateRings(userID, func(prev []ringItem) ([]ringItem, error) {
+		list := make([]ringItem, 0, len(prev)+1)
+		if unsave {
+			for _, item := range prev {
+				if item.ID != id.GetId() {
+					list = append(list, item)
+				}
 			}
+			return list, nil
 		}
-	} else {
-		var ref []byte
+		item := ringItem{ID: id.GetId(), AccessHash: id.GetAccessHash()}
 		if fr := id.GetFileReference(); len(fr) > 0 {
-			ref = append([]byte(nil), fr...)
+			item.Ref = append([]byte(nil), fr...)
 		}
-		doc := mtproto.MakeTLDocument(&mtproto.Document{
-			Id:            id.GetId(),
-			AccessHash:    id.GetAccessHash(),
-			FileReference: ref,
-			MimeType:      "audio/mpeg",
-			Thumbs:        []*mtproto.PhotoSize{},
-			VideoThumbs:   []*mtproto.VideoSize{},
-			Attributes:    []*mtproto.DocumentAttribute{},
-		}).To_Document()
-		list = append(list, doc)
-		for _, d := range prev {
-			if d.GetId() != id.GetId() {
-				list = append(list, d)
+		list = append(list, item)
+		for _, existing := range prev {
+			if existing.ID != id.GetId() {
+				list = append(list, existing)
 			}
 		}
-	}
-	if err := storeRings(userID, list); err != nil {
+		return list, nil
+	})
+	if err != nil {
 		return nil, err
 	}
 	return mtproto.MakeTLAccountSavedRingtone(&mtproto.Account_SavedRingtone{}).To_Account_SavedRingtone(), nil

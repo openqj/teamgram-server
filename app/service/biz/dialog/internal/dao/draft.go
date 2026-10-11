@@ -9,80 +9,23 @@ package dao
 import (
 	"context"
 
-	"github.com/teamgram/marmota/pkg/stores/sqlx"
 	"github.com/teamgram/proto/mtproto"
-	"github.com/teamgram/teamgram-server/app/service/biz/dialog/dialog"
-	"github.com/teamgram/teamgram-server/app/service/biz/dialog/internal/dal/dataobject"
 )
 
 func (d *Dao) GetNoCacheAllDraftIdList(ctx context.Context, userId int64) ([]int64, error) {
-	if d != nil && d.Postgres != nil && d.Postgres.Store != nil && d.Postgres.Store.Dialogs != nil {
-		rows, err := d.Postgres.Store.Dialogs.SelectAllDrafts(ctx, userId)
-		if err != nil {
-			return nil, err
-		}
-		ids := make([]int64, 0, len(rows))
-		for i := range rows {
-			ids = append(ids, rows[i].Id)
-		}
-		return ids, nil
-	}
-
-	var (
-		draftIdList []int64
-	)
-
-	_, err := d.DialogsDAO.SelectAllDraftsWithCB(
-		ctx,
-		userId,
-		func(sz, i int, v *dataobject.DialogsDO) {
-			if i == 0 {
-				draftIdList = make([]int64, 0, sz)
-			}
-			draftIdList = append(draftIdList, v.Id)
-		})
+	rows, err := d.Postgres.Store.Dialogs.SelectAllDrafts(ctx, userId)
 	if err != nil {
 		return nil, err
 	}
-
-	if draftIdList == nil {
-		draftIdList = make([]int64, 0)
+	ids := make([]int64, 0, len(rows))
+	for i := range rows {
+		ids = append(ids, rows[i].Id)
 	}
-
-	return draftIdList, nil
+	return ids, nil
 }
 
 func (d *Dao) GetAllDraftIdList(ctx context.Context, userId int64) ([]int64, error) {
-	if d != nil && d.Postgres != nil {
-		return d.GetNoCacheAllDraftIdList(ctx, userId)
-	}
-
-	var (
-		draftIdList []int64
-	)
-
-	err := d.CachedConn.QueryRow(
-		ctx,
-		&draftIdList,
-		dialog.GetAllDraftIdListCacheKey(userId),
-		func(ctx context.Context, conn *sqlx.DB, v interface{}) error {
-			idList, err := d.GetNoCacheAllDraftIdList(ctx, userId)
-			if err != nil {
-				return err
-			}
-			*(v.(*[]int64)) = idList
-
-			return nil
-		})
-	if err != nil {
-		return nil, err
-	}
-
-	if draftIdList == nil {
-		draftIdList = make([]int64, 0)
-	}
-
-	return draftIdList, nil
+	return d.GetNoCacheAllDraftIdList(ctx, userId)
 }
 
 // GetDraftMessage returns draft message by id.

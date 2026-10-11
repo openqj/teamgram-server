@@ -30,6 +30,9 @@ func (c *NotificationCore) AccountUnregisterDevice(in *mtproto.TLAccountUnregist
 	if err != nil {
 		return nil, err
 	}
+	if in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
 	if err = validateDeviceOwnerIDs(userID, in.GetOtherUids()); err != nil {
 		return nil, err
 	}

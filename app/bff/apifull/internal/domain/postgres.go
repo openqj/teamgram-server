@@ -17,10 +17,11 @@ const postgresMaxOpenConns = 8
 // writes. Reserve half the pool so concurrent workers cannot exhaust it.
 var postgresAdvisoryLockSlots = make(chan struct{}, postgresMaxOpenConns/2)
 
-// OpenPostgres opens the APIFull domain against PostgreSQL and provisions the
-// complete current schema when application-owned migrations are enabled.
+// OpenPostgres opens the APIFull domain against the deployment-owned
+// PostgreSQL schema. Schema changes are applied by teamgramd/deploy/postgres;
+// the process never runs a second DDL dialect or creates a fallback schema.
 func OpenPostgres(dsn string) error {
-	return openPostgresDomain(dsn, false)
+	return openPostgresDomain(dsn, true)
 }
 
 // OpenPostgresReadOnly connects to a schema provisioned by deployment without
@@ -59,15 +60,6 @@ func openPostgresDomain(dsn string, readOnly bool) error {
 			_ = persist.ClosePostgres()
 		}
 		return err
-	}
-	if !readOnly {
-		if err = migratePostgres(conn); err != nil {
-			_ = conn.Close()
-			if storeOpened {
-				_ = persist.ClosePostgres()
-			}
-			return err
-		}
 	}
 	if db != nil {
 		_ = db.Close()

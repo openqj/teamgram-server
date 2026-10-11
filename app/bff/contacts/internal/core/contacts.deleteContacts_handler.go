@@ -27,6 +27,15 @@ import (
 // ContactsDeleteContacts
 // contacts.deleteContacts#96a0e00 id:Vector<InputUser> = Updates;
 func (c *ContactsCore) ContactsDeleteContacts(in *mtproto.TLContactsDeleteContacts) (*mtproto.Updates, error) {
+	if c == nil || c.MD == nil || c.MD.UserId <= 0 {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
+	if in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.UserClient == nil || c.svcCtx.Dao.SyncClient == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
 	var (
 		rUpdates = mtproto.MakeEmptyUpdates()
 		idHelper = mtproto.NewIDListHelper(c.MD.UserId)

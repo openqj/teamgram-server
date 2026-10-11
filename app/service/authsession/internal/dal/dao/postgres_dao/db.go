@@ -1,8 +1,4 @@
 // Package postgres_dao contains the PostgreSQL persistence for authsession.
-//
-// It intentionally does not depend on the Teamgram MySQL wrapper. The public
-// service layer can migrate to these DAOs while the old generated package is
-// removed after PostgreSQL acceptance.
 package postgres_dao
 
 import (

@@ -2,15 +2,11 @@ package core
 
 import (
 	"context"
-	"database/sql"
 	"net"
-	"os"
 	"testing"
-	"time"
 
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/proto/mtproto/rpc/metadata"
-	"github.com/teamgram/teamgram-server/app/bff/apifull/channelview"
 	"github.com/teamgram/teamgram-server/app/bff/messages/internal/dao"
 	"github.com/teamgram/teamgram-server/app/bff/messages/internal/svc"
 	chatpb "github.com/teamgram/teamgram-server/app/service/biz/chat/chat"
@@ -286,165 +282,6 @@ func TestMessagesGetMessagesViewsDoesNotFabricateIncrementedCounts(t *testing.T)
 	}
 	if messages.calls != 1 || stored.GetMessage().GetViews().GetValue() != 7 {
 		t.Fatalf("increment changed persisted fixture or skipped validation: calls=%d views=%v", messages.calls, stored.GetMessage().GetViews())
-	}
-}
-
-func TestMessagesGetMessagesViewsReturnsPersistedChannelCounts(t *testing.T) {
-	dsn := os.Getenv("APIFULL_MYSQL_DSN")
-	if dsn == "" {
-		t.Skip("APIFULL_MYSQL_DSN is not configured")
-	}
-	if err := channelview.Open(dsn); err != nil {
-		t.Fatal(err)
-	}
-	db, err := sql.Open("mysql", dsn)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-
-	channelID := time.Now().UnixNano()
-	if _, err = db.Exec(`INSERT INTO apifull_channel
-		(id, access_hash, creator_user_id, title, broadcast, megagroup, created_at)
-		VALUES (?,?,?,?,?,?,?)`, channelID, channelID, messagesViewsCallerID, "message-views-test", 1, 0, time.Now().Unix()); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		for _, query := range []string{
-			`DELETE FROM apifull_channel_message_hidden WHERE channel_id=?`,
-			`DELETE FROM apifull_channel_message WHERE channel_id=?`,
-			`DELETE FROM apifull_channel_message_seq WHERE channel_id=?`,
-			`DELETE FROM apifull_channel_read_state WHERE channel_id=?`,
-			`DELETE FROM apifull_channel_member WHERE channel_id=?`,
-			`DELETE FROM apifull_channel WHERE id=?`,
-		} {
-			if _, err := db.Exec(query, channelID); err != nil {
-				t.Errorf("cleanup channel fixture: %v", err)
-			}
-		}
-	})
-
-	core := newMessagesViewsTestCore(nil, nil, nil)
-	input := mtproto.MakeTLInputPeerChannel(&mtproto.InputPeer{
-		ChannelId:  channelID,
-		AccessHash: channelID,
-	}).To_InputPeer()
-	for _, messageID := range []int32{1, 2, 3} {
-		if _, err = db.Exec(`INSERT INTO apifull_channel_message
-			(channel_id, message_id, sender_user_id, date, message)
-			VALUES (?,?,?,?,?)`, channelID, messageID, messagesViewsCallerID, time.Now().Unix(), "channel views fixture"); err != nil {
-			t.Fatal(err)
-		}
-	}
-	for _, state := range []struct {
-		userID    int64
-		readMaxID int32
-	}{
-		{userID: 41, readMaxID: 2},
-		{userID: 42, readMaxID: 1},
-		{userID: 43, readMaxID: 2},
-	} {
-		if _, err = db.Exec(`INSERT INTO apifull_channel_read_state (user_id, channel_id, read_max_id) VALUES (?,?,?)`,
-			state.userID, channelID, state.readMaxID); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	got, err := core.MessagesGetMessagesViews(&mtproto.TLMessagesGetMessagesViews{
-		Peer: input,
-		Id:   []int32{2, 3, 1, 2},
-	})
-	if err != nil {
-		t.Fatalf("valid channel error = %v", err)
-	}
-	if len(got.GetViews()) != 4 || got.GetViews()[0].GetViews().GetValue() != 2 ||
-		got.GetViews()[1].GetViews() == nil || got.GetViews()[1].GetViews().GetValue() != 0 ||
-		got.GetViews()[2].GetViews().GetValue() != 3 || got.GetViews()[3].GetViews().GetValue() != 2 {
-		t.Fatalf("channel views = %v, want [2 0 3 2]", got.GetViews())
-	}
-	history, err := channelview.HistoryForInputPeer(messagesViewsCallerID, input, 0, 20)
-	if err != nil {
-		t.Fatalf("channel history error = %v", err)
-	}
-	historyViews := make(map[int32]*wrapperspb.Int32Value, len(history.GetMessages()))
-	for _, message := range history.GetMessages() {
-		historyViews[message.GetId()] = message.GetViews()
-	}
-	if historyViews[1] == nil || historyViews[1].GetValue() != 3 ||
-		historyViews[2] == nil || historyViews[2].GetValue() != 2 ||
-		historyViews[3] == nil || historyViews[3].GetValue() != 0 {
-		t.Fatalf("serialized history views = %v, want message counts [3 2 0]", historyViews)
-	}
-
-	if _, err = db.Exec(`UPDATE apifull_channel_read_state SET read_max_id=2 WHERE user_id=? AND channel_id=?`, 42, channelID); err != nil {
-		t.Fatal(err)
-	}
-	got, err = core.MessagesGetMessagesViews(&mtproto.TLMessagesGetMessagesViews{Peer: input, Id: []int32{2}})
-	if err != nil || len(got.GetViews()) != 1 || got.GetViews()[0].GetViews().GetValue() != 3 {
-		t.Fatalf("updated persisted count = (%v, %v), want one view count of 3", got, err)
-	}
-
-	badHash := mtproto.MakeTLInputPeerChannel(&mtproto.InputPeer{
-		ChannelId:  channelID,
-		AccessHash: channelID + 1,
-	}).To_InputPeer()
-	got, err = core.MessagesGetMessagesViews(&mtproto.TLMessagesGetMessagesViews{Peer: badHash, Id: []int32{1}})
-	if got != nil || err != mtproto.ErrChannelInvalid {
-		t.Fatalf("bad channel access hash = (%v, %v), want (nil, CHANNEL_INVALID)", got, err)
-	}
-
-	var readMaxBeforeInvalid int32
-	if err = db.QueryRow(`SELECT read_max_id FROM apifull_channel_read_state WHERE user_id=? AND channel_id=?`,
-		messagesViewsCallerID, channelID).Scan(&readMaxBeforeInvalid); err != nil {
-		t.Fatal(err)
-	}
-	got, err = core.MessagesGetMessagesViews(&mtproto.TLMessagesGetMessagesViews{
-		Peer:      input,
-		Id:        []int32{4},
-		Increment: mtproto.BoolTrue,
-	})
-	if got != nil || err != mtproto.ErrMessageIdInvalid {
-		t.Fatalf("missing channel message = (%v, %v), want (nil, MESSAGE_ID_INVALID)", got, err)
-	}
-	var readMaxAfterInvalid int32
-	if err = db.QueryRow(`SELECT read_max_id FROM apifull_channel_read_state WHERE user_id=? AND channel_id=?`,
-		messagesViewsCallerID, channelID).Scan(&readMaxAfterInvalid); err != nil {
-		t.Fatal(err)
-	}
-	if readMaxAfterInvalid != readMaxBeforeInvalid {
-		t.Fatalf("invalid increment changed channel read state from %d to %d", readMaxBeforeInvalid, readMaxAfterInvalid)
-	}
-	got, err = core.MessagesGetMessagesViews(&mtproto.TLMessagesGetMessagesViews{
-		Peer:      input,
-		Id:        []int32{3},
-		Increment: mtproto.BoolTrue,
-	})
-	if err != nil || len(got.GetViews()) != 1 || got.GetViews()[0].GetViews() == nil || got.GetViews()[0].GetViews().GetValue() != 1 {
-		t.Fatalf("incremented channel request = (%v, %v), want one view count of 1", got, err)
-	}
-	var readMaxAfterIncrement int32
-	if err = db.QueryRow(`SELECT read_max_id FROM apifull_channel_read_state WHERE user_id=? AND channel_id=?`,
-		messagesViewsCallerID, channelID).Scan(&readMaxAfterIncrement); err != nil {
-		t.Fatal(err)
-	}
-	if readMaxAfterIncrement != 3 {
-		t.Fatalf("incremented channel read state = %d, want 3", readMaxAfterIncrement)
-	}
-	got, err = core.MessagesGetMessagesViews(&mtproto.TLMessagesGetMessagesViews{
-		Peer:      input,
-		Id:        []int32{3},
-		Increment: mtproto.BoolTrue,
-	})
-	if err != nil || len(got.GetViews()) != 1 || got.GetViews()[0].GetViews() == nil || got.GetViews()[0].GetViews().GetValue() != 1 {
-		t.Fatalf("repeated channel increment = (%v, %v), want one view count of 1", got, err)
-	}
-	var readMaxAfterRepeat int32
-	if err = db.QueryRow(`SELECT read_max_id FROM apifull_channel_read_state WHERE user_id=? AND channel_id=?`,
-		messagesViewsCallerID, channelID).Scan(&readMaxAfterRepeat); err != nil {
-		t.Fatal(err)
-	}
-	if readMaxAfterRepeat != readMaxAfterIncrement {
-		t.Fatalf("repeated increment changed channel read state from %d to %d", readMaxAfterIncrement, readMaxAfterRepeat)
 	}
 }
 

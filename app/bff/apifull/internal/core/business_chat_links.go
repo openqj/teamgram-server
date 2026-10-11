@@ -51,8 +51,15 @@ func chatLinksKey(userId int64) string {
 
 func loadChatLinks(userId int64) ([]chatLinkJSON, error) {
 	raw, err := persist.Default.Get(chatLinksKey(userId))
-	if err != nil || raw == "" {
+	if err != nil {
 		return nil, err
+	}
+	return decodeChatLinks(raw)
+}
+
+func decodeChatLinks(raw string) ([]chatLinkJSON, error) {
+	if raw == "" {
+		return nil, nil
 	}
 	var list []chatLinkJSON
 	if err := json.Unmarshal([]byte(raw), &list); err != nil {
@@ -70,6 +77,34 @@ func saveChatLinks(userId int64, list []chatLinkJSON) error {
 		return err
 	}
 	return persist.Default.Set(chatLinksKey(userId), string(b))
+}
+
+// updateChatLinks applies one owner-scoped link mutation under the shared
+// PostgreSQL transaction boundary. Slug indexing remains a separate key for
+// compatibility, while the authoritative owner list cannot lose concurrent
+// edits.
+func updateChatLinks(userId int64, fn func([]chatLinkJSON) ([]chatLinkJSON, error)) error {
+	if userId <= 0 || fn == nil {
+		return mtproto.ErrAuthKeyUnregistered
+	}
+	return persist.Update(chatLinksKey(userId), func(raw string) (string, error) {
+		list, err := decodeChatLinks(raw)
+		if err != nil {
+			return "", err
+		}
+		next, err := fn(list)
+		if err != nil {
+			return "", err
+		}
+		if next == nil {
+			next = []chatLinkJSON{}
+		}
+		b, err := json.Marshal(next)
+		if err != nil {
+			return "", err
+		}
+		return string(b), nil
+	})
 }
 
 func chatLinkFromInput(slug string, in *mtproto.InputBusinessChatLink) chatLinkJSON {
@@ -142,10 +177,6 @@ func (c *ApiFullCore) AccountCreateBusinessChatLink(in *mtproto.TLAccountCreateB
 	if in == nil || in.GetLink() == nil {
 		return nil, mtproto.ErrInputRequestInvalid
 	}
-	list, err := loadChatLinks(c.MD.UserId)
-	if err != nil {
-		return nil, err
-	}
 	slug, err := newBusinessChatLinkSlug()
 	if err != nil {
 		return nil, err
@@ -156,8 +187,10 @@ func (c *ApiFullCore) AccountCreateBusinessChatLink(in *mtproto.TLAccountCreateB
 		return nil, mtproto.ErrInternalServerError
 	}
 	row := chatLinkFromInput(slug, in.GetLink())
-	list = append(list, row)
-	if err := saveChatLinks(c.MD.UserId, list); err != nil {
+	err = updateChatLinks(c.MD.UserId, func(list []chatLinkJSON) ([]chatLinkJSON, error) {
+		return append(list, row), nil
+	})
+	if err != nil {
 		return nil, err
 	}
 	if err := indexChatLink(c.MD.UserId, row); err != nil {
@@ -170,10 +203,7 @@ func (c *ApiFullCore) AccountEditBusinessChatLink(in *mtproto.TLAccountEditBusin
 	if c.MD == nil || c.MD.UserId == 0 {
 		return nil, mtproto.ErrAuthKeyUnregistered
 	}
-	list, err := loadChatLinks(c.MD.UserId)
-	if err != nil {
-		return nil, err
-	}
+	var err error
 	slug := ""
 	var link *mtproto.InputBusinessChatLink
 	if in != nil {
@@ -184,18 +214,21 @@ func (c *ApiFullCore) AccountEditBusinessChatLink(in *mtproto.TLAccountEditBusin
 		return nil, mtproto.ErrInputRequestInvalid
 	}
 	row := chatLinkFromInput(slug, link)
-	found := false
-	for i := range list {
-		if list[i].Slug == slug {
-			list[i] = row
-			found = true
-			break
+	err = updateChatLinks(c.MD.UserId, func(list []chatLinkJSON) ([]chatLinkJSON, error) {
+		found := false
+		for i := range list {
+			if list[i].Slug == slug {
+				list[i] = row
+				found = true
+				break
+			}
 		}
-	}
-	if !found {
-		return nil, mtproto.ErrInputRequestInvalid
-	}
-	if err := saveChatLinks(c.MD.UserId, list); err != nil {
+		if !found {
+			return nil, mtproto.ErrInputRequestInvalid
+		}
+		return list, nil
+	})
+	if err != nil {
 		return nil, err
 	}
 	if err := indexChatLink(c.MD.UserId, row); err != nil {
@@ -208,10 +241,7 @@ func (c *ApiFullCore) AccountDeleteBusinessChatLink(in *mtproto.TLAccountDeleteB
 	if c.MD == nil || c.MD.UserId == 0 {
 		return nil, mtproto.ErrAuthKeyUnregistered
 	}
-	list, err := loadChatLinks(c.MD.UserId)
-	if err != nil {
-		return nil, err
-	}
+	var err error
 	slug := ""
 	if in != nil {
 		slug = in.GetSlug()
@@ -219,22 +249,25 @@ func (c *ApiFullCore) AccountDeleteBusinessChatLink(in *mtproto.TLAccountDeleteB
 	if slug == "" {
 		return nil, mtproto.ErrInputRequestInvalid
 	}
-	next := list[:0]
 	removed := false
-	for _, row := range list {
-		if row.Slug == slug {
-			removed = true
-			continue
+	err = updateChatLinks(c.MD.UserId, func(list []chatLinkJSON) ([]chatLinkJSON, error) {
+		next := make([]chatLinkJSON, 0, len(list))
+		for _, row := range list {
+			if row.Slug == slug {
+				removed = true
+				continue
+			}
+			next = append(next, row)
 		}
-		next = append(next, row)
+		return next, nil
+	})
+	if err != nil {
+		return nil, err
 	}
 	if removed {
-		if err := clearChatLinkSlug(slug); err != nil {
+		if err = clearChatLinkSlug(slug); err != nil {
 			return nil, err
 		}
-	}
-	if err := saveChatLinks(c.MD.UserId, next); err != nil {
-		return nil, err
 	}
 	return mtproto.BoolTrue, nil
 }

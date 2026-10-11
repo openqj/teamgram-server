@@ -29,6 +29,23 @@ import (
 // UserEditCloseFriends
 // user.editCloseFriends user_id:long id:Vector<long> = Bool;
 func (c *UserCore) UserEditCloseFriends(in *user.TLUserEditCloseFriends) (*mtproto.Bool, error) {
+	if in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if in.GetUserId() <= 0 {
+		return nil, mtproto.ErrUserIdInvalid
+	}
+	for _, id := range in.GetId() {
+		if id <= 0 {
+			return nil, mtproto.ErrUserIdInvalid
+		}
+	}
+	if err := c.requirePostgres(); err != nil {
+		return nil, err
+	}
+	if c.svcCtx.Dao.Postgres.Store.Contacts == nil {
+		return nil, mtproto.ErrMethodNotImpl
+	}
 	err := c.svcCtx.Dao.Postgres.InTx(c.ctx, func(tx pgx.Tx) error {
 		var userID int64
 		if err := tx.QueryRow(c.ctx, `SELECT id FROM users WHERE id=$1 FOR UPDATE`, in.UserId).Scan(&userID); err != nil {

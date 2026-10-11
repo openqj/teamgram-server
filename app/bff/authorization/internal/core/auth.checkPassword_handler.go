@@ -51,6 +51,9 @@ func (c *AuthorizationCore) AuthCheckPassword(in *mtproto.TLAuthCheckPassword) (
 		c.Logger.Errorf("auth.checkPassword - error: %v", err)
 		return nil, err
 	}
+	if user == nil || user.GetUser() == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
 
 	return mtproto.MakeTLAuthAuthorization(&mtproto.Auth_Authorization{
 		SetupPasswordRequired: false,

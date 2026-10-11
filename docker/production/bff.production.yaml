@@ -31,8 +31,56 @@ KV:
   - Host: redis:6379
 PostgresDSN: postgres://teamgram:teamgram@postgres:5432/teamgram?sslmode=disable
 
+PaymentProviderEndpoint: ${TEAMGRAM_PAYMENT_PROVIDER_ENDPOINT:-}
+PaymentProviderKey: ${TEAMGRAM_PAYMENT_PROVIDER_KEY:-}
+PaymentProviderSigningKey: ${TEAMGRAM_PAYMENT_PROVIDER_SIGNING_KEY:-}
+PaymentProviderTimeoutSeconds: 5
+
+SponsoredProviderEndpoint: ${TEAMGRAM_SPONSORED_PROVIDER_ENDPOINT:-}
+SponsoredProviderKey: ${TEAMGRAM_SPONSORED_PROVIDER_KEY:-}
+SponsoredProviderSigningKey: ${TEAMGRAM_SPONSORED_PROVIDER_SIGNING_KEY:-}
+SponsoredProviderTimeoutSeconds: 5
+
+BotConnectionProviderEndpoint: ${TEAMGRAM_BOT_CONNECTION_PROVIDER_ENDPOINT:-}
+BotConnectionProviderKey: ${TEAMGRAM_BOT_CONNECTION_PROVIDER_KEY:-}
+BotConnectionProviderSigningKey: ${TEAMGRAM_BOT_CONNECTION_PROVIDER_SIGNING_KEY:-}
+BotConnectionProviderTimeoutSeconds: 5
+
+AuthProviderEndpoint: ${TEAMGRAM_AUTH_PROVIDER_ENDPOINT:-}
+AuthProviderKey: ${TEAMGRAM_AUTH_PROVIDER_KEY:-}
+AuthProviderSigningKey: ${TEAMGRAM_AUTH_PROVIDER_SIGNING_KEY:-}
+AuthProviderTimeoutSeconds: 5
+
 SearchPostsFlood:
   TotalDaily: 10
+
+AIProviderEndpoint: ${TEAMGRAM_AI_PROVIDER_ENDPOINT:-}
+AIProviderKey: ${TEAMGRAM_AI_PROVIDER_KEY:-}
+AIProviderSigningKey: ${TEAMGRAM_AI_PROVIDER_SIGNING_KEY:-}
+AIProviderModel: ${TEAMGRAM_AI_PROVIDER_MODEL:-gpt-6.1-sol}
+AIProviderTimeoutSeconds: 5
+
+BusinessProviderEndpoint: ${TEAMGRAM_BUSINESS_PROVIDER_ENDPOINT:-}
+BusinessProviderKey: ${TEAMGRAM_BUSINESS_PROVIDER_KEY:-}
+BusinessProviderSigningKey: ${TEAMGRAM_BUSINESS_PROVIDER_SIGNING_KEY:-}
+BusinessProviderTimeoutSeconds: 5
+
+PassportProviderEndpoint: ${TEAMGRAM_PASSPORT_PROVIDER_ENDPOINT:-}
+PassportProviderKey: ${TEAMGRAM_PASSPORT_PROVIDER_KEY:-}
+PassportProviderSigningKey: ${TEAMGRAM_PASSPORT_PROVIDER_SIGNING_KEY:-}
+PassportProviderTimeoutSeconds: 5
+
+UserChannelProfilesProviderEndpoint: ${TEAMGRAM_USERCHANNELPROFILES_PROVIDER_ENDPOINT:-}
+UserChannelProfilesProviderKey: ${TEAMGRAM_USERCHANNELPROFILES_PROVIDER_KEY:-}
+UserChannelProfilesProviderSigningKey: ${TEAMGRAM_USERCHANNELPROFILES_PROVIDER_SIGNING_KEY:-}
+UserChannelProfilesProviderTimeoutSeconds: 5
+
+TurnHost: ${TEAMGRAM_TURN_HOST:-}
+TurnPort: ${TEAMGRAM_TURN_PORT:-0}
+TurnUsername: ${TEAMGRAM_TURN_USERNAME:-}
+TurnPassword: ${TEAMGRAM_TURN_PASSWORD:-}
+TurnSharedSecret: ${TEAMGRAM_TURN_SHARED_SECRET:-}
+TurnCredentialTTLSeconds: ${TEAMGRAM_TURN_CREDENTIAL_TTL_SECONDS:-3600}
 
 Code:
   Name: "none"

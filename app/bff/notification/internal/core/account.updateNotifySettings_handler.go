@@ -46,6 +46,15 @@ import (
 // AccountUpdateNotifySettings
 // account.updateNotifySettings#84be5b93 peer:InputNotifyPeer settings:InputPeerNotifySettings = Bool;
 func (c *NotificationCore) AccountUpdateNotifySettings(in *mtproto.TLAccountUpdateNotifySettings) (*mtproto.Bool, error) {
+	if c == nil || c.MD == nil || c.MD.GetUserId() <= 0 {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
+	if in == nil || in.GetPeer() == nil || in.GetSettings() == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.UserClient == nil || c.svcCtx.Dao.SyncClient == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
 	// account.updateNotifySettings
 	var (
 		err         error
@@ -95,6 +104,9 @@ func (c *NotificationCore) AccountUpdateNotifySettings(in *mtproto.TLAccountUpda
 			return nil, mtproto.ErrPeerIdInvalid
 		}
 	case mtproto.PEER_CHAT:
+		if c.svcCtx.Dao.ChatClient == nil {
+			return nil, mtproto.ErrInternalServerError
+		}
 		peerChat2, err2 := c.svcCtx.Dao.ChatClient.ChatGetMutableChat(c.ctx, &chat.TLChatGetMutableChat{
 			ChatId: peer.PeerId,
 		})

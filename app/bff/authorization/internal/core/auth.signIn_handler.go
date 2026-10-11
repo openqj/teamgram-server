@@ -65,7 +65,7 @@ func (c *AuthorizationCore) AuthSignIn(in *mtproto.TLAuthSignIn) (*mtproto.Auth_
 		return nil, mtproto.ErrAuthKeyUnregistered
 	}
 	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.AuthLogic == nil ||
-		c.svcCtx.Dao.UserClient == nil || c.svcCtx.Dao.AuthsessionClient == nil {
+		c.svcCtx.Dao.UserClient == nil || c.svcCtx.Dao.AuthsessionClient == nil || c.svcCtx.Dao.SyncClient == nil {
 		return nil, mtproto.ErrInternalServerError
 	}
 	var (
@@ -171,7 +171,7 @@ func (c *AuthorizationCore) AuthSignIn(in *mtproto.TLAuthSignIn) (*mtproto.Auth_
 	if err != nil {
 		c.Logger.Errorf("user(%s) is err - %v", phoneNumber, err)
 		return nil, err
-	} else if user == nil {
+	} else if user == nil || user.GetUser() == nil {
 		c.Logger.Errorf("user(%s) is nil", phoneNumber)
 		err = mtproto.ErrInternalServerError
 		return nil, err

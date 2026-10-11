@@ -26,6 +26,15 @@ import (
 // ContactsAcceptContact
 // contacts.acceptContact#f831a20f id:InputUser = Updates;
 func (c *ContactsCore) ContactsAcceptContact(in *mtproto.TLContactsAcceptContact) (*mtproto.Updates, error) {
+	if c == nil || c.MD == nil || c.MD.UserId <= 0 {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
+	if in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.UserClient == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
 	if in.GetId() == nil {
 		err := mtproto.ErrContactIdInvalid
 		c.Logger.Errorf("contacts.acceptContact - error: %v", err)

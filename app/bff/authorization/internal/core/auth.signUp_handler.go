@@ -169,6 +169,10 @@ func (c *AuthorizationCore) AuthSignUp(in *mtproto.TLAuthSignUp) (*mtproto.Auth_
 		c.Logger.Errorf("createNewUser error: %v", err)
 		return nil, err
 	}
+	if user == nil || user.GetUser() == nil || user.Id() <= 0 {
+		c.Logger.Errorf("createNewUser returned an empty user")
+		return nil, mtproto.ErrInternalServerError
+	}
 
 	// TODO(@benqi): remove to createNewUser
 	// user.Self = true
@@ -253,6 +257,9 @@ func normalizeSignupName(name string, required bool) (string, bool) {
 }
 
 func (c *AuthorizationCore) onContactSignUp(ctx context.Context, authKeyId, userId int64, phone string) {
+	if c == nil || c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.UserClient == nil {
+		return
+	}
 	importers, _ := c.svcCtx.Dao.UserClient.UserGetImportersByPhone(ctx, &userpb.TLUserGetImportersByPhone{
 		Phone: phone,
 	})
@@ -265,6 +272,9 @@ func (c *AuthorizationCore) onContactSignUp(ctx context.Context, authKeyId, user
 
 		_ = authKeyId
 		if mtproto.FromBool(v) {
+			if c.svcCtx.Dao.MsgClient == nil {
+				continue
+			}
 			c.svcCtx.Dao.MsgClient.MsgPushUserMessage(
 				context.Background(),
 				&msgpb.TLMsgPushUserMessage{

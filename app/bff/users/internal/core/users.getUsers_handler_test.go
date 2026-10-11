@@ -78,3 +78,11 @@ func TestUsersGetUsersRejectsMalformedInput(t *testing.T) {
 		})
 	}
 }
+
+func TestUsersGetUsersRejectsMissingProvider(t *testing.T) {
+	core := &UsersCore{MD: &metadata.RpcMetadata{UserId: 42}}
+	result, err := core.UsersGetUsers(&mtproto.TLUsersGetUsers{})
+	if result != nil || err != mtproto.ErrInternalServerError {
+		t.Fatalf("missing provider = (%v, %v), want nil and INTERNAL_SERVER_ERROR", result, err)
+	}
+}

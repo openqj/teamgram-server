@@ -25,5 +25,36 @@ import (
 // MessagesTranslateRichMessage
 // messages.translateRichMessage#1a542004 flags:# peer:flags.0?InputPeer id:flags.0?Vector<int> text:flags.1?Vector<InputRichMessage> to_lang:string tone:flags.2?string = messages.TranslatedRichMessage;
 func (c *MessagesCore) MessagesTranslateRichMessage(in *mtproto.TLMessagesTranslateRichMessage) (*mtproto.Messages_TranslatedRichMessage, error) {
-	return nil, mtproto.ErrMethodNotImpl
+	if c == nil || c.MD == nil || c.MD.GetUserId() <= 0 {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
+	if in == nil || in.GetToLang() == "" || len(in.GetText()) == 0 {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	for _, value := range in.GetText() {
+		if value == nil {
+			return nil, mtproto.ErrInputRequestInvalid
+		}
+	}
+	var result []*mtproto.RichMessage
+	err := c.callAIProvider("translate_rich_message", struct {
+		Peer   *mtproto.InputPeer          `json:"peer,omitempty"`
+		IDs    []int32                     `json:"ids,omitempty"`
+		Text   []*mtproto.InputRichMessage `json:"text"`
+		ToLang string                      `json:"to_lang"`
+		Tone   string                      `json:"tone,omitempty"`
+	}{in.GetPeer(), in.GetId(), in.GetText(), in.GetToLang(), wrapperStringValue(in.GetTone())}, &result)
+	if err != nil {
+		return nil, err
+	}
+	if len(result) != len(in.GetText()) {
+		return nil, mtproto.ErrInternalServerError
+	}
+	for i, value := range result {
+		result[i], err = normalizeAIRich(value)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return mtproto.MakeTLMessagesTranslatedRichMessage(&mtproto.Messages_TranslatedRichMessage{Result: result}).To_Messages_TranslatedRichMessage(), nil
 }

@@ -87,3 +87,10 @@ func TestContactsResolvePhonePreservesPrivacyDenialAndDatabaseErrors(t *testing.
 		})
 	}
 }
+
+func TestContactsResolvePhoneRejectsMissingProvider(t *testing.T) {
+	c := &UsersCore{MD: &metadata.RpcMetadata{UserId: 1}}
+	if got, err := c.ContactsResolvePhone(&mtproto.TLContactsResolvePhone{Phone: "+12025550103"}); got != nil || err != mtproto.ErrInternalServerError {
+		t.Fatalf("resolve = (%v, %v), want nil result and INTERNAL_SERVER_ERROR", got, err)
+	}
+}

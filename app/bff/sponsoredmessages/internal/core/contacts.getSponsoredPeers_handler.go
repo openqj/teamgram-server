@@ -32,8 +32,12 @@ func (c *SponsoredMessagesCore) ContactsGetSponsoredPeers(in *mtproto.TLContacts
 		return nil, mtproto.ErrInputRequestInvalid
 	}
 
-	// An empty inventory is not equivalent to an unavailable inventory: clients
-	// use this method to decide whether sponsored results are supported. Without
-	// an authoritative ad provider, fail closed instead of fabricating success.
-	return nil, mtproto.ErrMethodNotImpl
+	var result mtproto.Contacts_SponsoredPeers
+	if err := c.callSponsoredProvider("contacts.getSponsoredPeers", map[string]any{"q": in.GetQ()}, &result); err != nil {
+		return nil, err
+	}
+	if result.GetPredicateName() == "" {
+		return nil, mtproto.ErrInternalServerError
+	}
+	return &result, nil
 }

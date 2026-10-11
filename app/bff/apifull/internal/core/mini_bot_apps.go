@@ -240,14 +240,11 @@ func (c *ApiFullCore) MessagesRequestWebView(in *mtproto.TLMessagesRequestWebVie
 	if err != nil {
 		return nil, err
 	}
+	if in == nil || in.GetUrl() == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
 	if !persist.PostgresEnabled() {
 		return nil, mtproto.ErrMethodNotImpl
-	}
-	if in == nil {
-		return nil, mtproto.ErrInputRequestInvalid
-	}
-	if in.GetUrl() == nil {
-		return nil, mtproto.ErrInputRequestInvalid
 	}
 	return c.requestMiniWebView(uid, in.GetBot(), in.GetUrl().GetValue(), "requestWebView", in.GetPlatform(), !in.GetCompact(), in.GetFullscreen(), in)
 }
@@ -257,11 +254,11 @@ func (c *ApiFullCore) MessagesProlongWebView(in *mtproto.TLMessagesProlongWebVie
 	if err != nil {
 		return nil, err
 	}
-	if !persist.PostgresEnabled() {
-		return nil, mtproto.ErrMethodNotImpl
-	}
 	if in == nil || in.GetQueryId() <= 0 {
 		return nil, mtproto.ErrQueryIdEmpty
+	}
+	if !persist.PostgresEnabled() {
+		return nil, mtproto.ErrMethodNotImpl
 	}
 	prolonged, err := persist.ProlongWebViewQuery(uid, in.GetQueryId(), 5*time.Minute)
 	if err != nil {
@@ -278,11 +275,11 @@ func (c *ApiFullCore) MessagesRequestSimpleWebView413A3E73(in *mtproto.TLMessage
 	if err != nil {
 		return nil, err
 	}
-	if !persist.PostgresEnabled() {
-		return nil, mtproto.ErrMethodNotImpl
-	}
 	if in == nil || in.GetUrl() == nil {
 		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if !persist.PostgresEnabled() {
+		return nil, mtproto.ErrMethodNotImpl
 	}
 	return c.requestMiniWebView(uid, in.GetBot(), in.GetUrl().GetValue(), "requestSimpleWebView", in.GetPlatform(), !in.GetCompact(), in.GetFullscreen(), in)
 }
@@ -291,35 +288,102 @@ func (c *ApiFullCore) MessagesSendWebViewResultMessage(in *mtproto.TLMessagesSen
 	if _, err := c.requireUserId(); err != nil {
 		return nil, err
 	}
-	return nil, mtproto.ErrMethodNotImpl
+	if in == nil || strings.TrimSpace(in.GetBotQueryId()) == "" || in.GetResult() == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	result := new(mtproto.WebViewMessageSent)
+	if err := c.callBusinessProvider("messages.sendWebViewResultMessage", map[string]any{
+		"bot_query_id": in.GetBotQueryId(), "result": in.GetResult(),
+	}, result); err != nil {
+		return nil, err
+	}
+	if result.GetPredicateName() == "" {
+		return nil, mtproto.ErrInternalServerError
+	}
+	return result, nil
 }
 
 func (c *ApiFullCore) MessagesSendWebViewData(in *mtproto.TLMessagesSendWebViewData) (*mtproto.Updates, error) {
 	if _, err := c.requireUserId(); err != nil {
 		return nil, err
 	}
-	return nil, mtproto.ErrMethodNotImpl
+	if in == nil || in.GetBot() == nil || in.GetRandomId() == 0 || in.GetButtonText() == "" || len(in.GetData()) > 4096 {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	result := new(mtproto.Updates)
+	if err := c.callBusinessProvider("messages.sendWebViewData", map[string]any{
+		"bot": in.GetBot(), "random_id": in.GetRandomId(), "button_text": in.GetButtonText(), "data": in.GetData(),
+	}, result); err != nil {
+		return nil, err
+	}
+	if result.GetPredicateName() == "" {
+		return nil, mtproto.ErrInternalServerError
+	}
+	return result, nil
 }
 
 func (c *ApiFullCore) MessagesGetBotApp(in *mtproto.TLMessagesGetBotApp) (*mtproto.Messages_BotApp, error) {
 	if _, err := c.requireUserId(); err != nil {
 		return nil, err
 	}
-	return nil, mtproto.ErrMethodNotImpl
+	if in == nil || in.GetApp() == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	result := new(mtproto.Messages_BotApp)
+	if err := c.callBusinessProvider("messages.getBotApp", map[string]any{
+		"app": in.GetApp(), "hash": in.GetHash(),
+	}, result); err != nil {
+		return nil, err
+	}
+	if result.GetPredicateName() == "" || result.GetApp() == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
+	return result, nil
 }
 
 func (c *ApiFullCore) MessagesRequestAppWebView53618BCE(in *mtproto.TLMessagesRequestAppWebView53618BCE) (*mtproto.WebViewResult, error) {
 	if _, err := c.requireUserId(); err != nil {
 		return nil, err
 	}
-	return nil, mtproto.ErrMethodNotImpl
+	if in == nil || in.GetPeer() == nil || in.GetApp() == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	result := new(mtproto.WebViewResult)
+	if err := c.callBusinessProvider("messages.requestAppWebView", map[string]any{
+		"write_allowed": in.GetWriteAllowed(), "compact": in.GetCompact(), "fullscreen": in.GetFullscreen(),
+		"peer": in.GetPeer(), "app": in.GetApp(), "start_param": in.GetStartParam(), "theme_params": in.GetThemeParams(), "platform": in.GetPlatform(),
+	}, result); err != nil {
+		return nil, err
+	}
+	if result.GetUrl() == "" || result.GetPredicateName() == "" {
+		return nil, mtproto.ErrInternalServerError
+	}
+	if _, err := miniWebViewURL(result.GetUrl()); err != nil {
+		return nil, mtproto.ErrInternalServerError
+	}
+	return result, nil
 }
 
 func (c *ApiFullCore) MessagesRequestChatJoinWebView(in *mtproto.TLMessagesRequestChatJoinWebView) (*mtproto.WebViewResult, error) {
 	if _, err := c.requireUserId(); err != nil {
 		return nil, err
 	}
-	return nil, mtproto.ErrMethodNotImpl
+	if in == nil || in.GetQueryId() <= 0 {
+		return nil, mtproto.ErrQueryIdEmpty
+	}
+	result := new(mtproto.WebViewResult)
+	if err := c.callBusinessProvider("messages.requestChatJoinWebView", map[string]any{
+		"query_id": in.GetQueryId(), "theme_params": in.GetThemeParams(), "platform": in.GetPlatform(),
+	}, result); err != nil {
+		return nil, err
+	}
+	if result.GetUrl() == "" || result.GetPredicateName() == "" {
+		return nil, mtproto.ErrInternalServerError
+	}
+	if _, err := miniWebViewURL(result.GetUrl()); err != nil {
+		return nil, mtproto.ErrInternalServerError
+	}
+	return result, nil
 }
 
 func (c *ApiFullCore) BotsCanSendMessage(in *mtproto.TLBotsCanSendMessage) (*mtproto.Bool, error) {
@@ -327,11 +391,11 @@ func (c *ApiFullCore) BotsCanSendMessage(in *mtproto.TLBotsCanSendMessage) (*mtp
 	if err != nil {
 		return nil, err
 	}
-	if !persist.PostgresEnabled() {
-		return nil, mtproto.ErrMethodNotImpl
-	}
 	if in == nil {
 		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if !persist.PostgresEnabled() {
+		return nil, mtproto.ErrMethodNotImpl
 	}
 	botID, err := c.verifyMiniBot(in.GetBot())
 	if err != nil {
@@ -352,11 +416,11 @@ func (c *ApiFullCore) BotsAllowSendMessage(in *mtproto.TLBotsAllowSendMessage) (
 	if err != nil {
 		return nil, err
 	}
-	if !persist.PostgresEnabled() {
-		return nil, mtproto.ErrMethodNotImpl
-	}
 	if in == nil {
 		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if !persist.PostgresEnabled() {
+		return nil, mtproto.ErrMethodNotImpl
 	}
 	botID, err := c.verifyMiniBot(in.GetBot())
 	if err != nil {
@@ -374,14 +438,40 @@ func (c *ApiFullCore) BotsInvokeWebViewCustomMethod(in *mtproto.TLBotsInvokeWebV
 	if _, err := c.requireUserId(); err != nil {
 		return nil, err
 	}
-	return nil, mtproto.ErrMethodNotImpl
+	if in == nil || in.GetBot() == nil || strings.TrimSpace(in.GetCustomMethod()) == "" || in.GetParams() == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	result := new(mtproto.DataJSON)
+	if err := c.callBusinessProvider("bots.invokeWebViewCustomMethod", map[string]any{
+		"bot": in.GetBot(), "custom_method": in.GetCustomMethod(), "params": in.GetParams(),
+	}, result); err != nil {
+		return nil, err
+	}
+	if result.GetData() == "" {
+		return nil, mtproto.ErrInternalServerError
+	}
+	return result, nil
 }
 
 func (c *ApiFullCore) BotsCheckDownloadFileParams(in *mtproto.TLBotsCheckDownloadFileParams) (*mtproto.Bool, error) {
 	if _, err := c.requireUserId(); err != nil {
 		return nil, err
 	}
-	return nil, mtproto.ErrMethodNotImpl
+	if in == nil || in.GetBot() == nil || strings.TrimSpace(in.GetFileName()) == "" || strings.TrimSpace(in.GetUrl()) == "" {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	var result struct {
+		Value bool `json:"value"`
+	}
+	if err := c.callBusinessProvider("bots.checkDownloadFileParams", map[string]any{
+		"bot": in.GetBot(), "file_name": in.GetFileName(), "url": in.GetUrl(),
+	}, &result); err != nil {
+		return nil, err
+	}
+	if result.Value {
+		return mtproto.BoolTrue, nil
+	}
+	return mtproto.BoolFalse, nil
 }
 
 func (c *ApiFullCore) BotsRequestWebViewButton(in *mtproto.TLBotsRequestWebViewButton) (*mtproto.Bots_RequestedButton, error) {
@@ -389,11 +479,11 @@ func (c *ApiFullCore) BotsRequestWebViewButton(in *mtproto.TLBotsRequestWebViewB
 	if err != nil {
 		return nil, err
 	}
-	if !persist.PostgresEnabled() {
-		return nil, mtproto.ErrMethodNotImpl
-	}
 	if in == nil {
 		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if !persist.PostgresEnabled() {
+		return nil, mtproto.ErrMethodNotImpl
 	}
 	userID, err := c.verifyMiniUser(uid, in.GetUserId())
 	if err != nil {
@@ -428,11 +518,11 @@ func (c *ApiFullCore) BotsGetRequestedWebViewButton(in *mtproto.TLBotsGetRequest
 	if err != nil {
 		return nil, err
 	}
-	if !persist.PostgresEnabled() {
-		return nil, mtproto.ErrMethodNotImpl
-	}
 	if in == nil {
 		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if !persist.PostgresEnabled() {
+		return nil, mtproto.ErrMethodNotImpl
 	}
 	botID, err := c.verifyMiniBot(in.GetBot())
 	if err != nil {
@@ -460,11 +550,11 @@ func (c *ApiFullCore) MessagesRequestSimpleWebView1A46500A(in *mtproto.TLMessage
 	if err != nil {
 		return nil, err
 	}
-	if !persist.PostgresEnabled() {
-		return nil, mtproto.ErrMethodNotImpl
-	}
 	if in == nil || in.GetUrl() == nil {
 		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if !persist.PostgresEnabled() {
+		return nil, mtproto.ErrMethodNotImpl
 	}
 	return c.requestMiniSimpleWebView(uid, in.GetBot(), in.GetUrl().GetValue(), "requestSimpleWebView", in.GetPlatform(), in)
 }

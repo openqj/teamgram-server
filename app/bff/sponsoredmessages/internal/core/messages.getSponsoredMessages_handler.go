@@ -31,5 +31,12 @@ func (c *SponsoredMessagesCore) MessagesGetSponsoredMessages(in *mtproto.TLMessa
 	if in == nil || in.GetPeer() == nil {
 		return nil, mtproto.ErrPeerIdInvalid
 	}
-	return nil, mtproto.ErrMethodNotImpl
+	var result mtproto.Messages_SponsoredMessages
+	if err := c.callSponsoredProvider("messages.getSponsoredMessages", map[string]any{"peer": in.GetPeer()}, &result); err != nil {
+		return nil, err
+	}
+	if result.GetPredicateName() == "" {
+		return nil, mtproto.ErrInternalServerError
+	}
+	return &result, nil
 }

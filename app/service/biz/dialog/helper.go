@@ -12,7 +12,6 @@ package dialog_helper
 
 import (
 	"github.com/teamgram/teamgram-server/app/service/biz/dialog/internal/config"
-	"github.com/teamgram/teamgram-server/app/service/biz/dialog/internal/dal/dao/mysql_dao"
 	"github.com/teamgram/teamgram-server/app/service/biz/dialog/internal/dal/dao/postgres_dao"
 	"github.com/teamgram/teamgram-server/app/service/biz/dialog/internal/dal/dataobject"
 	"github.com/teamgram/teamgram-server/app/service/biz/dialog/internal/dao"
@@ -30,9 +29,7 @@ func New(c Config) *service.Service {
 }
 
 type (
-	DialogsDAO           = mysql_dao.DialogsDAO
 	DialogsDO            = dataobject.DialogsDO
-	SavedDialogsDAO      = mysql_dao.SavedDialogsDAO
 	SavedDialogsDO       = dataobject.SavedDialogsDO
 	PostgresDB           = postgres_dao.DB
 	PostgresDialogsDAO   = postgres_dao.DialogsDAO
@@ -43,8 +40,6 @@ type (
 
 var (
 	VerifyPostgresSchema       = postgres_dao.VerifySchema
-	NewDialogsDAO              = mysql_dao.NewDialogsDAO
-	NewSavedDialogsDAO         = mysql_dao.NewSavedDialogsDAO
 	NewPostgresDialogsDAO      = postgres_dao.NewDialogsDAO
 	NewPostgresSavedDialogsDAO = postgres_dao.NewSavedDialogsDAO
 )

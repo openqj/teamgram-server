@@ -65,8 +65,10 @@ func completePasswordReset(st *acctPasswordState) {
 // account.resetPassword#9308ce1b = account.ResetPasswordResult;
 func (c *AuthorizationCore) AccountResetPassword(in *mtproto.TLAccountResetPassword) (*mtproto.Account_ResetPasswordResult, error) {
 	_ = in
-	if c.MD.GetUserId() == 0 {
-		c.Logger.Errorf("account.resetPassword - user not bound")
+	if c == nil || c.MD == nil || c.MD.GetUserId() == 0 {
+		if c != nil {
+			c.Logger.Errorf("account.resetPassword - user not bound")
+		}
 		return nil, mtproto.ErrAuthKeyUnregistered
 	}
 	userID := c.MD.GetUserId()

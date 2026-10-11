@@ -1,6 +1,6 @@
 // Package postgres_dao contains the PostgreSQL persistence boundary for media.
 // It uses pgx directly so media writes can participate in a caller-owned
-// transaction during the migration from Teamgram's MySQL wrapper.
+// transaction when saving an aggregate.
 package postgres_dao
 
 import (

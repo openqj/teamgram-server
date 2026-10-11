@@ -28,6 +28,15 @@ import (
 // AccountGetPrivacy
 // account.getPrivacy#dadbc950 key:InputPrivacyKey = account.PrivacyRules;
 func (c *PrivacySettingsCore) AccountGetPrivacy(in *mtproto.TLAccountGetPrivacy) (*mtproto.Account_PrivacyRules, error) {
+	if c == nil || c.MD == nil || c.MD.GetUserId() <= 0 {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
+	if in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.UserClient == nil || c.svcCtx.Dao.ChatClient == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
 	var (
 		key  = mtproto.FromInputPrivacyKeyType(in.Key)
 		rVal *mtproto.Account_PrivacyRules

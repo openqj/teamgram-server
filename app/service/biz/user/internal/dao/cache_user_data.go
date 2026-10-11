@@ -8,14 +8,11 @@ package dao
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"sort"
-	"strconv"
-	"strings"
 
-	"github.com/teamgram/marmota/pkg/stores/sqlc"
-	"github.com/teamgram/marmota/pkg/stores/sqlx"
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/service/biz/user/internal/dal/dataobject"
 	"github.com/teamgram/teamgram-server/app/service/biz/user/user"
@@ -28,7 +25,6 @@ import (
 
 const (
 	cacheUserDataKeyPrefix = "user_data.4"
-	cachePhoneUserPrefix   = "phone_user.1"
 )
 
 var (
@@ -37,23 +33,6 @@ var (
 
 func genCacheUserDataCacheKey(id int64) string {
 	return fmt.Sprintf("%s#%d", cacheUserDataKeyPrefix, id)
-}
-
-func genCachePhoneUserKey(id string) string {
-	return fmt.Sprintf("%s#%s", cachePhoneUserPrefix, id)
-}
-
-func parseCacheUserDataCacheKey(k string) int64 {
-	if strings.HasPrefix(k, cacheUserDataKeyPrefix+"#") {
-		v, _ := strconv.ParseInt(k[len(cacheUserDataKeyPrefix)+1:], 10, 64)
-		return v
-	}
-
-	return 0
-}
-
-func isCacheUserDataCacheKey(k string) bool {
-	return strings.HasPrefix(k, cacheUserDataKeyPrefix)
 }
 
 type CacheUserData struct {
@@ -103,31 +82,7 @@ func (d *Dao) GetCacheUserData(ctx context.Context, id int64) *CacheUserData {
 }
 
 func (d *Dao) GetCacheUserDataWithError(ctx context.Context, id int64) (*CacheUserData, error) {
-	if d.Postgres != nil {
-		return d.GetNoCacheUserData(ctx, id)
-	}
-	var (
-		cacheUserData *CacheUserData
-	)
-
-	err := d.CachedConn.QueryRow(
-		ctx,
-		&cacheUserData,
-		genCacheUserDataCacheKey(id),
-		func(ctx context.Context, conn *sqlx.DB, v interface{}) error {
-			cacheData, err2 := d.GetNoCacheUserData(ctx, id)
-			if err2 != nil {
-				return err2
-			}
-			*v.(**CacheUserData) = cacheData
-
-			return nil
-		})
-	if err != nil {
-		return nil, err
-	}
-
-	return cacheUserData, nil
+	return d.GetNoCacheUserData(ctx, id)
 }
 
 func makeEmojiStatus(documentId int64, until int32) *mtproto.EmojiStatus {
@@ -237,13 +192,10 @@ func (d *Dao) GetNoCacheUserData(ctx context.Context, id int64) (*CacheUserData,
 		return nil, err3
 	}
 	if do == nil {
-		return nil, sqlc.ErrNotFound
+		return nil, sql.ErrNoRows
 	}
 
-	var (
-		rules0, rules1, rules2 *mtproto.PrivacyKeyRules
-		cacheData              = NewCacheUserData()
-	)
+	var cacheData = NewCacheUserData()
 
 	userData := d.MakeUserDataByDO(do)
 	if do.Restricted {
@@ -256,14 +208,12 @@ func (d *Dao) GetNoCacheUserData(ctx context.Context, id int64) (*CacheUserData,
 		do.Deleted {
 		return cacheData, nil
 	}
-	if d.Postgres != nil {
-		if _, err := d.SelectUsernames(ctx, id, func(v *dataobject.UsernameDO) {
-			userData.Usernames = append(userData.Usernames, mtproto.MakeTLUsername(&mtproto.Username{
-				Editable: v.Editable, Active: v.Active, Username: v.Username,
-			}).To_Username())
-		}); err != nil {
-			return nil, err
-		}
+	if _, err := d.SelectUsernames(ctx, id, func(v *dataobject.UsernameDO) {
+		userData.Usernames = append(userData.Usernames, mtproto.MakeTLUsername(&mtproto.Username{
+			Editable: v.Editable, Active: v.Active, Username: v.Username,
+		}).To_Username())
+	}); err != nil {
+		return nil, err
 	}
 
 	if do.UserType == user.UserTypeBot {
@@ -288,7 +238,7 @@ func (d *Dao) GetNoCacheUserData(ctx context.Context, id int64) (*CacheUserData,
 		return cacheData, nil
 	}
 
-	var contactErr, reverseContactErr, usernamesErr error
+	var contactErr, reverseContactErr error
 	var privacyErr error
 	mr.FinishVoid(
 		func() {
@@ -313,30 +263,7 @@ func (d *Dao) GetNoCacheUserData(ctx context.Context, id int64) (*CacheUserData,
 			}
 		},
 		func() {
-			if d.Postgres != nil {
-				cacheData.CachesPrivacyKeyRules, privacyErr = d.GetUserPrivacyRulesListByKeys(ctx, id, userPrivacyKeys...)
-				return
-			}
-			rules0, privacyErr = d.GetUserPrivacyRules(ctx, id, mtproto.STATUS_TIMESTAMP)
-			if privacyErr != nil {
-				return
-			}
-			rules1, privacyErr = d.GetUserPrivacyRules(ctx, id, mtproto.PROFILE_PHOTO)
-			if privacyErr != nil {
-				return
-			}
-			rules2, privacyErr = d.GetUserPrivacyRules(ctx, id, mtproto.PHONE_NUMBER)
-		},
-		func() {
-			if d.Postgres == nil && do.Username != "" {
-				_, usernamesErr = d.SelectUsernames(ctx, id, func(v *dataobject.UsernameDO) {
-					cacheData.UserData.Usernames = append(cacheData.UserData.Usernames, mtproto.MakeTLUsername(&mtproto.Username{
-						Editable: v.Editable,
-						Active:   v.Active,
-						Username: v.Username,
-					}).To_Username())
-				})
-			}
+			cacheData.CachesPrivacyKeyRules, privacyErr = d.GetUserPrivacyRulesListByKeys(ctx, id, userPrivacyKeys...)
 		})
 	if contactErr != nil {
 		return nil, contactErr
@@ -347,20 +274,6 @@ func (d *Dao) GetNoCacheUserData(ctx context.Context, id int64) (*CacheUserData,
 	if privacyErr != nil {
 		return nil, privacyErr
 	}
-	if usernamesErr != nil {
-		return nil, usernamesErr
-	}
-
-	if rules0 != nil {
-		cacheData.CachesPrivacyKeyRules = append(cacheData.CachesPrivacyKeyRules, rules0)
-	}
-	if rules1 != nil {
-		cacheData.CachesPrivacyKeyRules = append(cacheData.CachesPrivacyKeyRules, rules1)
-	}
-	if rules2 != nil {
-		cacheData.CachesPrivacyKeyRules = append(cacheData.CachesPrivacyKeyRules, rules2)
-	}
-
 	// TODO
 	// close_friends:Vector<long>
 
@@ -370,106 +283,29 @@ func (d *Dao) GetNoCacheUserData(ctx context.Context, id int64) (*CacheUserData,
 }
 
 func (d *Dao) GetCacheUserDataListByIdList(ctx context.Context, idList []int64) ([]*CacheUserData, error) {
-	if d.Postgres != nil {
-		result := make([]*CacheUserData, 0, len(idList))
-		for _, id := range idList {
-			value, err := d.GetNoCacheUserData(ctx, id)
-			if errors.Is(err, sqlc.ErrNotFound) {
-				continue
-			}
-			if err != nil {
-				return nil, err
-			}
-			if value != nil {
-				result = append(result, value)
-			}
-		}
-		return result, nil
-	}
-	var (
-		keyList   = make([]string, 0, len(idList))
-		cDataList = make([]*CacheUserData, 0, len(idList))
-	)
-
+	result := make([]*CacheUserData, 0, len(idList))
 	for _, id := range idList {
-		keyList = append(keyList, genCacheUserDataCacheKey(id))
+		value, err := d.GetNoCacheUserData(ctx, id)
+		if errors.Is(err, sql.ErrNoRows) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		if value != nil {
+			result = append(result, value)
+		}
 	}
-
-	err := d.CachedConn.QueryRows(
-		ctx,
-		func(ctx context.Context, conn *sqlx.DB, keys ...string) (map[string]interface{}, error) {
-			vList := make(map[string]interface{}, len(keys))
-
-			// TODO: mr
-			for _, key := range keys {
-				id := parseCacheUserDataCacheKey(key)
-				if cacheData, err2 := d.GetNoCacheUserData(ctx, id); errors.Is(err2, sqlc.ErrNotFound) {
-					continue
-				} else if err2 != nil {
-					return nil, err2
-				} else {
-					vList[key] = cacheData
-					cDataList = append(cDataList, cacheData)
-				}
-			}
-
-			return vList, nil
-		},
-		func(k, v string) (interface{}, error) {
-			var (
-				c   *CacheUserData
-				err error
-			)
-			err = jsonx.UnmarshalFromString(v, &c)
-			if err != nil {
-				return nil, err
-			}
-
-			cDataList = append(cDataList, c)
-
-			return c, nil
-		},
-		keyList...)
-
-	return cDataList, err
+	return result, nil
 }
 
 func (d *Dao) GetUserIdByPhone(ctx context.Context, phone string) (int64, error) {
-	if d.Postgres != nil {
-		do, err := d.SelectUserByPhone(ctx, phone)
-		if err != nil {
-			return 0, err
-		}
-		if do == nil {
-			return 0, mtproto.ErrPhoneNotOccupied
-		}
-		return do.Id, nil
-	}
-	var (
-		id int64
-	)
-
-	err := d.CachedConn.QueryRow(
-		ctx,
-		&id,
-		genCachePhoneUserKey(phone),
-		func(ctx context.Context, conn *sqlx.DB, v interface{}) error {
-			do, err := d.SelectUserByPhone(ctx, phone)
-			if err != nil {
-				return err
-			} else if do == nil {
-				return mtproto.ErrPhoneNotOccupied
-			}
-
-			*v.(*int64) = do.Id
-
-			return nil
-		})
-
+	do, err := d.SelectUserByPhone(ctx, phone)
 	if err != nil {
-		// logx.WithContext(ctx).Errorf("GetUserIdByPhone(%s) - error: %v", phone, err)
 		return 0, err
 	}
-
-	return id, nil
+	if do == nil {
+		return 0, mtproto.ErrPhoneNotOccupied
+	}
+	return do.Id, nil
 }

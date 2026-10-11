@@ -9,13 +9,25 @@
 
 package core
 
-import "github.com/teamgram/teamgram-server/app/service/biz/user/user"
+import (
+	"github.com/teamgram/proto/mtproto"
+	"github.com/teamgram/teamgram-server/app/service/biz/user/user"
+)
 
 // UserCheckBlockUserList
 // user.checkBlockUserList user_id:long id:Vector<long> = Vector<long>;
 func (c *UserCore) UserCheckBlockUserList(in *user.TLUserCheckBlockUserList) (*user.Vector_Long, error) {
+	if in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if in.GetUserId() <= 0 {
+		return nil, mtproto.ErrUserIdInvalid
+	}
 	if err := c.requirePostgres(); err != nil {
 		return nil, err
+	}
+	if c.svcCtx.Dao.Postgres.Store.PeerBlocks == nil {
+		return nil, mtproto.ErrMethodNotImpl
 	}
 	var (
 		rVal = &user.Vector_Long{}

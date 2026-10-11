@@ -28,6 +28,12 @@ import (
 // AccountGetGlobalPrivacySettings
 // account.getGlobalPrivacySettings#eb2b4cf6 = GlobalPrivacySettings;
 func (c *PrivacySettingsCore) AccountGetGlobalPrivacySettings(in *mtproto.TLAccountGetGlobalPrivacySettings) (*mtproto.GlobalPrivacySettings, error) {
+	if c == nil || c.MD == nil || c.MD.GetUserId() <= 0 {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
+	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.UserClient == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
 	_ = in
 	globalPrivacySettings, err := c.svcCtx.Dao.UserGetGlobalPrivacySettings(c.ctx, &userpb.TLUserGetGlobalPrivacySettings{
 		UserId: c.MD.UserId,

@@ -12,7 +12,6 @@ package chat_helper
 
 import (
 	"github.com/teamgram/teamgram-server/app/service/biz/chat/internal/config"
-	"github.com/teamgram/teamgram-server/app/service/biz/chat/internal/dal/dao/mysql_dao"
 	"github.com/teamgram/teamgram-server/app/service/biz/chat/internal/dal/dao/postgres_dao"
 	"github.com/teamgram/teamgram-server/app/service/biz/chat/internal/dal/dataobject"
 	"github.com/teamgram/teamgram-server/app/service/biz/chat/internal/server/grpc/service"
@@ -25,7 +24,6 @@ type (
 )
 
 type (
-	ChatParticipantsDAO      = mysql_dao.ChatParticipantsDAO
 	ChatParticipantsDO       = dataobject.ChatParticipantsDO
 	PostgresDB               = postgres_dao.DB
 	PostgresChatParticipants = postgres_dao.ChatParticipantsDAO
@@ -33,7 +31,6 @@ type (
 
 var (
 	VerifyPostgresSchema           = postgres_dao.VerifySchema
-	NewChatParticipantsDAO         = mysql_dao.NewChatParticipantsDAO
 	NewPostgresChatParticipantsDAO = postgres_dao.NewChatParticipantsDAO
 )
 

@@ -39,8 +39,12 @@ func (c *FilesCore) UploadGetCdnFile(in *mtproto.TLUploadGetCdnFile) (*mtproto.U
 	if in.GetLimit() <= 0 {
 		return nil, mtproto.ErrLimitInvalid
 	}
-	if c != nil && c.Logger != nil {
-		c.Logger.Errorf("upload.getCdnFile - error: %v", mtproto.ErrCdnMethodInvalid)
+	result := new(mtproto.Upload_CdnFile)
+	if err := c.callCDNProvider("upload.getCdnFile", map[string]any{"file_token": in.GetFileToken(), "offset": offset, "limit": in.GetLimit()}, result); err != nil {
+		return nil, err
 	}
-	return nil, mtproto.ErrCdnMethodInvalid
+	if result.GetPredicateName() == "" || (len(result.GetBytes()) == 0 && len(result.GetRequestToken()) == 0) {
+		return nil, mtproto.ErrCdnMethodInvalid
+	}
+	return result, nil
 }

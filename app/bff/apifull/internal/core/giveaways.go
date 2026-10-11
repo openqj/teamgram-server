@@ -18,6 +18,7 @@
 package core
 
 import (
+	"encoding/json"
 	"strings"
 
 	"github.com/teamgram/proto/mtproto"
@@ -76,13 +77,6 @@ func normalizeGiveawayInfo(info *mtproto.Payments_GiveawayInfo) bool {
 }
 
 // RPCGiveawaysServer: Layer 229 methods previously returned ERR_ENTERPRISE_IS_BLOCKED.
-
-func (c *ApiFullCore) giveawaysUnavailable() error {
-	if _, err := c.requireUserId(); err != nil {
-		return err
-	}
-	return mtproto.ErrMethodNotImpl
-}
 
 func (c *ApiFullCore) PaymentsGetPremiumGiftCodeOptions(in *mtproto.TLPaymentsGetPremiumGiftCodeOptions) (*mtproto.Vector_PremiumGiftCodeOption, error) {
 	uid, err := c.requireUserId()
@@ -156,8 +150,54 @@ func (c *ApiFullCore) PaymentsGetGiveawayInfo(in *mtproto.TLPaymentsGetGiveawayI
 }
 
 func (c *ApiFullCore) PaymentsLaunchPrepaidGiveaway(in *mtproto.TLPaymentsLaunchPrepaidGiveaway) (*mtproto.Updates, error) {
-	_ = in
-	return nil, c.giveawaysUnavailable()
+	uid, err := c.requireUserId()
+	if err != nil {
+		return nil, err
+	}
+	if in == nil || !validRevenuePeer(uid, in.GetPeer()) {
+		return nil, mtproto.ErrPeerIdInvalid
+	}
+	if in.GetGiveawayId() <= 0 || in.GetPurpose() == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	purpose := in.GetPurpose()
+	if purpose.GetPredicateName() == "" {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	switch purpose.GetPredicateName() {
+	case mtproto.Predicate_inputStorePaymentPremiumGiveaway, mtproto.Predicate_inputStorePaymentStarsGiveaway:
+	default:
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if purpose.GetAmount() < 0 || purpose.GetStars() < 0 || purpose.GetUntilDate() < 0 {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	var raw json.RawMessage
+	if err = c.callBusinessProvider("payments.launchPrepaidGiveaway", map[string]any{
+		"peer": in.GetPeer(), "giveaway_id": in.GetGiveawayId(), "purpose": purpose,
+	}, &raw); err != nil {
+		return nil, err
+	}
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil, mtproto.ErrInternalServerError
+	}
+	var updates mtproto.Updates
+	if err = json.Unmarshal(raw, &updates); err != nil || updates.GetPredicateName() == "" {
+		return nil, mtproto.ErrInternalServerError
+	}
+	switch updates.GetPredicateName() {
+	case mtproto.Predicate_updates,
+		mtproto.Predicate_updatesCombined,
+		mtproto.Predicate_updatesTooLong,
+		mtproto.Predicate_updateShort,
+		mtproto.Predicate_updateShortMessage,
+		mtproto.Predicate_updateShortChatMessage,
+		mtproto.Predicate_updateShortSentMessage,
+		mtproto.Predicate_updateAccountResetAuthorization:
+	default:
+		return nil, mtproto.ErrInternalServerError
+	}
+	return &updates, nil
 }
 
 func (c *ApiFullCore) PaymentsGetStarsGiveawayOptions(in *mtproto.TLPaymentsGetStarsGiveawayOptions) (*mtproto.Vector_StarsGiveawayOption, error) {

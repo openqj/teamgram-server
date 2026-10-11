@@ -788,6 +788,9 @@ func (c *ApiFullCore) validateRequestedInfoWithProvider(ctx context.Context, uid
 
 func loadSavedPayInfo(uid int64) (savedPayInfo, bool, error) {
 	if persist.PostgresEnabled() {
+		if !domain.PostgresEnabled() {
+			return savedPayInfo{}, false, mtproto.ErrPaymentUnsupported
+		}
 		info, found, err := domain.LoadSavedPaymentInfo(uid)
 		if err != nil {
 			return savedPayInfo{}, false, err
@@ -824,6 +827,9 @@ func requestedFromSaved(info savedPayInfo) *mtproto.PaymentRequestedInfo {
 
 func hasSavedCredentials(uid int64) (bool, error) {
 	if persist.PostgresEnabled() {
+		if !domain.PostgresEnabled() {
+			return false, mtproto.ErrPaymentUnsupported
+		}
 		info, _, err := domain.LoadSavedPaymentInfo(uid)
 		if err != nil {
 			return false, err
@@ -1015,23 +1021,43 @@ func (c *ApiFullCore) AccountGetTmpPassword(in *mtproto.TLAccountGetTmpPassword)
 }
 
 func (c *ApiFullCore) MessagesSetBotShippingResults(in *mtproto.TLMessagesSetBotShippingResults) (*mtproto.Bool, error) {
-	if _, err := c.requireUserId(); err != nil {
+	uid, err := c.requireUserId()
+	if err != nil {
 		return nil, err
 	}
 	if in == nil || in.GetQueryId() == 0 {
 		return nil, mtproto.ErrQueryIdEmpty
 	}
-	return nil, mtproto.ErrMethodNotImpl
+	var result mtproto.Bool
+	if err = c.callBusinessProvider("messages.setBotShippingResults", map[string]any{
+		"user_id": uid, "query_id": in.GetQueryId(), "error": in.GetError(), "shipping_options": in.GetShippingOptions(),
+	}, &result); err != nil {
+		return nil, err
+	}
+	if result.GetPredicateName() == "" || (result.GetPredicateName() != mtproto.Predicate_boolTrue && result.GetPredicateName() != mtproto.Predicate_boolFalse) {
+		return nil, mtproto.ErrInternalServerError
+	}
+	return &result, nil
 }
 
 func (c *ApiFullCore) MessagesSetBotPrecheckoutResults(in *mtproto.TLMessagesSetBotPrecheckoutResults) (*mtproto.Bool, error) {
-	if _, err := c.requireUserId(); err != nil {
+	uid, err := c.requireUserId()
+	if err != nil {
 		return nil, err
 	}
 	if in == nil || in.GetQueryId() == 0 {
 		return nil, mtproto.ErrQueryIdEmpty
 	}
-	return nil, mtproto.ErrMethodNotImpl
+	var result mtproto.Bool
+	if err = c.callBusinessProvider("messages.setBotPrecheckoutResults", map[string]any{
+		"user_id": uid, "query_id": in.GetQueryId(), "success": in.GetSuccess(), "error": in.GetError(),
+	}, &result); err != nil {
+		return nil, err
+	}
+	if result.GetPredicateName() == "" || (result.GetPredicateName() != mtproto.Predicate_boolTrue && result.GetPredicateName() != mtproto.Predicate_boolFalse) {
+		return nil, mtproto.ErrInternalServerError
+	}
+	return &result, nil
 }
 
 func (c *ApiFullCore) grantPremiumForPayment(ctx context.Context, uid, formID int64, request domain.PaymentRequest, receipt domain.PaymentReceipt) error {

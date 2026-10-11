@@ -29,8 +29,14 @@ func (c *UserCore) UserGetBirthdays(in *user.TLUserGetBirthdays) (*user.Vector_C
 	rV := &user.Vector_ContactBirthday{
 		Datas: make([]*mtproto.ContactBirthday, 0),
 	}
-	if in == nil || in.GetUserId() <= 0 {
+	if in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if in.GetUserId() <= 0 {
 		return nil, mtproto.ErrUserIdInvalid
+	}
+	if err := c.requirePostgres(); err != nil {
+		return nil, err
 	}
 
 	self, err := c.svcCtx.Dao.GetImmutableUser(c.ctx, in.GetUserId(), false)

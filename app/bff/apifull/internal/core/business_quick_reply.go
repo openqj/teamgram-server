@@ -44,6 +44,17 @@ func quickReplyKey(userId int64) string {
 }
 
 func loadQuickReplies(userId int64) ([]quickReplyStored, error) {
+	if persist.PostgresEnabled() {
+		records, err := persist.LoadQuickReplyRecords(userId)
+		if err != nil {
+			return nil, err
+		}
+		list := make([]quickReplyStored, 0, len(records))
+		for _, record := range records {
+			list = append(list, quickReplyStored{ShortcutId: record.ShortcutID, Shortcut: record.Shortcut})
+		}
+		return list, nil
+	}
 	raw, err := persist.Default.Get(quickReplyKey(userId))
 	if err != nil || raw == "" {
 		return nil, err
@@ -56,6 +67,24 @@ func loadQuickReplies(userId int64) ([]quickReplyStored, error) {
 }
 
 func saveQuickReplies(userId int64, list []quickReplyStored) error {
+	if persist.PostgresEnabled() {
+		_, err := persist.MutateQuickReplyRecords(userId, func(current []persist.QuickReplyRecord) ([]persist.QuickReplyRecord, error) {
+			messageIDs := make(map[int32][]int32, len(current))
+			for _, record := range current {
+				messageIDs[record.ShortcutID] = append([]int32(nil), record.MessageIDs...)
+			}
+			next := make([]persist.QuickReplyRecord, 0, len(list))
+			for _, item := range list {
+				next = append(next, persist.QuickReplyRecord{
+					ShortcutID: item.ShortcutId,
+					Shortcut:   item.Shortcut,
+					MessageIDs: messageIDs[item.ShortcutId],
+				})
+			}
+			return next, nil
+		})
+		return err
+	}
 	if list == nil {
 		list = []quickReplyStored{}
 	}
@@ -76,6 +105,17 @@ func quickReplyMsgKey(userId int64) string {
 }
 
 func loadQuickReplyMsgs(userId int64) ([]qrMsgItem, error) {
+	if persist.PostgresEnabled() {
+		records, err := persist.LoadQuickReplyRecords(userId)
+		if err != nil {
+			return nil, err
+		}
+		items := make([]qrMsgItem, 0, len(records))
+		for _, record := range records {
+			items = append(items, qrMsgItem{ShortcutId: record.ShortcutID, Ids: append([]int32(nil), record.MessageIDs...)})
+		}
+		return items, nil
+	}
 	raw, err := persist.Default.Get(quickReplyMsgKey(userId))
 	if err != nil || raw == "" {
 		return nil, err
@@ -88,6 +128,23 @@ func loadQuickReplyMsgs(userId int64) ([]qrMsgItem, error) {
 }
 
 func saveQuickReplyMsgs(userId int64, list []qrMsgItem) error {
+	if persist.PostgresEnabled() {
+		_, err := persist.MutateQuickReplyRecords(userId, func(current []persist.QuickReplyRecord) ([]persist.QuickReplyRecord, error) {
+			messageIDs := make(map[int32][]int32, len(list))
+			for _, item := range list {
+				messageIDs[item.ShortcutId] = append([]int32(nil), item.Ids...)
+			}
+			next := make([]persist.QuickReplyRecord, 0, len(current))
+			for _, record := range current {
+				if ids, ok := messageIDs[record.ShortcutID]; ok {
+					record.MessageIDs = ids
+				}
+				next = append(next, record)
+			}
+			return next, nil
+		})
+		return err
+	}
 	if list == nil {
 		list = []qrMsgItem{}
 	}

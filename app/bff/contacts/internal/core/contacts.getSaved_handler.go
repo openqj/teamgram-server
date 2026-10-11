@@ -20,11 +20,21 @@ package core
 
 import (
 	"github.com/teamgram/proto/mtproto"
+	"github.com/teamgram/teamgram-server/app/bff/apifull/persist"
 )
 
 // ContactsGetSaved
 // contacts.getSaved#82f1e39f = Vector<SavedContact>;
 func (c *ContactsCore) ContactsGetSaved(in *mtproto.TLContactsGetSaved) (*mtproto.Vector_SavedContact, error) {
+	if c == nil || c.MD == nil || c.MD.UserId <= 0 {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
+	if in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if persist.Default == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
 	saved, err := loadSavedContacts(c.MD.UserId)
 	if err != nil {
 		c.Logger.Errorf("contacts.getSaved - error: %v", err)

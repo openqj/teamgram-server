@@ -26,9 +26,13 @@ import (
 
 type Config struct {
 	zrpc.RpcServerConf
-	PostgresDSN       string                    `json:",optional"`
-	KV                kv.KvConf                 `json:",optional"`
-	Code              *conf.SmsVerifyCodeConfig `json:",optional"`
-	AuthsessionClient zrpc.RpcClientConf
-	UserClient        zrpc.RpcClientConf
+	PostgresDSN                    string                    `json:",optional"`
+	PassportProviderEndpoint       string                    `json:",optional"`
+	PassportProviderKey            string                    `json:",optional"`
+	PassportProviderSigningKey     string                    `json:",optional"`
+	PassportProviderTimeoutSeconds int                       `json:",optional"`
+	KV                             kv.KvConf                 `json:",optional"`
+	Code                           *conf.SmsVerifyCodeConfig `json:",optional"`
+	AuthsessionClient              zrpc.RpcClientConf
+	UserClient                     zrpc.RpcClientConf
 }

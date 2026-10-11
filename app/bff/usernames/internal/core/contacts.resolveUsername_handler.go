@@ -33,9 +33,17 @@ func (c *UsernamesCore) ContactsResolveUsername(in *mtproto.TLContactsResolveUse
 	// 400	USERNAME_INVALID	The provided username is not valid
 	// 400	USERNAME_NOT_OCCUPIED	The provided username is not occupied
 	//
-	var (
-		peer *mtproto.PeerUtil
-	)
+	if c == nil || c.MD == nil || c.MD.UserId <= 0 {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
+	if in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.UserClient == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
+
+	var peer *mtproto.PeerUtil
 
 	id := userpb.GetBotIdByName(in.GetUsername())
 	if id > 0 {
@@ -49,7 +57,13 @@ func (c *UsernamesCore) ContactsResolveUsername(in *mtproto.TLContactsResolveUse
 			return nil, err
 		}
 
+		if rName == nil {
+			return nil, mtproto.ErrUsernameNotOccupied
+		}
 		peer = mtproto.FromPeer(rName)
+	}
+	if peer == nil {
+		return nil, mtproto.ErrUsernameNotOccupied
 	}
 
 	resolvedPeer := mtproto.MakeTLContactsResolvedPeer(&mtproto.Contacts_ResolvedPeer{
@@ -87,13 +101,20 @@ func (c *UsernamesCore) ContactsResolveUsername(in *mtproto.TLContactsResolveUse
 			return nil, mtproto.ErrInternalServerError
 		}
 	case mtproto.PEER_CHAT:
-		chat, _ := c.svcCtx.Dao.ChatClient.ChatGetChatBySelfId(c.ctx, &chat.TLChatGetChatBySelfId{
+		if c.svcCtx.Dao.ChatClient == nil {
+			return nil, mtproto.ErrInternalServerError
+		}
+		chat, err := c.svcCtx.Dao.ChatClient.ChatGetChatBySelfId(c.ctx, &chat.TLChatGetChatBySelfId{
 			SelfId: c.MD.UserId,
 			ChatId: peer.PeerId,
 		})
-		if chat != nil {
-			resolvedPeer.Chats = []*mtproto.Chat{chat.ToUnsafeChat(c.MD.UserId)}
+		if err != nil {
+			return nil, err
 		}
+		if chat == nil {
+			return nil, mtproto.ErrInternalServerError
+		}
+		resolvedPeer.Chats = []*mtproto.Chat{chat.ToUnsafeChat(c.MD.UserId)}
 	case mtproto.PEER_CHANNEL:
 		channels := c.channelChatsByID(c.MD.UserId, []int64{peer.PeerId})
 		if len(channels) == 0 && c.svcCtx.Plugin != nil {

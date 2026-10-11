@@ -29,6 +29,12 @@ import (
 // AccountResetNotifySettings
 // account.resetNotifySettings#db7e1747 = Bool;
 func (c *NotificationCore) AccountResetNotifySettings(in *mtproto.TLAccountResetNotifySettings) (*mtproto.Bool, error) {
+	if c == nil || c.MD == nil || c.MD.GetUserId() <= 0 {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
+	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.UserClient == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
 	result, err := c.svcCtx.Dao.UserClient.UserResetNotifySettings(c.ctx, &userpb.TLUserResetNotifySettings{
 		UserId: c.MD.UserId,
 	})
@@ -41,6 +47,9 @@ func (c *NotificationCore) AccountResetNotifySettings(in *mtproto.TLAccountReset
 	}
 	if result.GetPredicateName() != mtproto.Predicate_boolTrue {
 		return result, nil
+	}
+	if c.svcCtx.Dao.SyncClient == nil {
+		return nil, mtproto.ErrInternalServerError
 	}
 
 	pushNotifySettingsFunc := func(peerType int32) error {

@@ -3,10 +3,12 @@ module github.com/teamgram/teamgram-server
 go 1.25.0
 
 require (
+	github.com/IBM/sarama v1.43.2
 	github.com/alicebob/miniredis/v2 v2.36.1
 	github.com/bwmarrin/snowflake v0.3.1-0.20221123153919-bc74ab286f15
 	github.com/chai2010/webp v1.4.0
 	github.com/disintegration/imaging v1.6.3-0.20201218193011-d40f48ce0f09
+	github.com/go-webauthn/webauthn v0.12.3
 	github.com/gobwas/httphead v0.1.0
 	github.com/gobwas/ws v1.4.0
 	github.com/jackc/pgx/v5 v5.11.0
@@ -28,8 +30,6 @@ require (
 )
 
 require (
-	filippo.io/edwards25519 v1.1.0 // indirect
-	github.com/IBM/sarama v1.43.2 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cenkalti/backoff/v4 v4.3.0 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
@@ -49,8 +49,6 @@ require (
 	github.com/go-openapi/jsonpointer v0.19.6 // indirect
 	github.com/go-openapi/jsonreference v0.20.2 // indirect
 	github.com/go-openapi/swag v0.22.4 // indirect
-	github.com/go-sql-driver/mysql v1.9.3 // indirect
-	github.com/go-webauthn/webauthn v0.12.3 // indirect
 	github.com/go-webauthn/x v0.1.20 // indirect
 	github.com/gobwas/pool v0.2.1 // indirect
 	github.com/gogo/protobuf v1.3.2 // indirect

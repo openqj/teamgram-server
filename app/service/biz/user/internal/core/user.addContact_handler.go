@@ -20,6 +20,15 @@ import (
 // UserAddContact
 // user.addContact user_id:long add_phone_privacy_exception:Bool id:long first_name:string last_name:string phone:string = Bool;
 func (c *UserCore) UserAddContact(in *user.TLUserAddContact) (*mtproto.Bool, error) {
+	if in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if in.GetUserId() <= 0 || in.GetId() <= 0 {
+		return nil, mtproto.ErrUserIdInvalid
+	}
+	if err := c.requirePostgres(); err != nil {
+		return nil, err
+	}
 	var (
 		needCheckMutual = false
 		changeMutual    = false

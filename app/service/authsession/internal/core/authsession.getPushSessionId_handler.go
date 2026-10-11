@@ -10,9 +10,8 @@
 package core
 
 import (
+	"database/sql"
 	"errors"
-
-	"github.com/teamgram/marmota/pkg/stores/sqlc"
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/service/authsession/authsession"
 )
@@ -41,7 +40,7 @@ func (c *AuthsessionCore) AuthsessionGetPushSessionId(in *authsession.TLAuthsess
 
 	cData, err := c.svcCtx.GetCacheAuthData(c.ctx, keyData.PermAuthKeyId)
 	if err != nil {
-		if !errors.Is(err, sqlc.ErrNotFound) {
+		if !errors.Is(err, sql.ErrNoRows) {
 			c.Logger.Errorf("authsession.getAuthStateData - error: %v", err)
 			return nil, err
 		}

@@ -148,8 +148,8 @@ func TestSavePhotoAggregateV2Postgres18Atomicity(t *testing.T) {
 		t.Fatalf("SavePhotoAggregateV2 success path: %v", err)
 	}
 	if _, err := pool.Exec(ctx, `INSERT INTO documents
- (document_id, access_hash, dc_id, file_path, mime_type, thumb_id)
- VALUES (904, 905, 1, 'document.dat', 'image/jpeg', 903)`); err != nil {
+	 (document_id, access_hash, dc_id, file_path, mime_type, thumb_id, video_thumb_id)
+ VALUES (904, 905, 1, 'document.dat', 'image/jpeg', 903, 903)`); err != nil {
 		t.Fatal(err)
 	}
 	for table, want := range map[string]int{"photos": 1, "photo_sizes": 1, "video_sizes": 1} {
@@ -170,12 +170,38 @@ func TestSavePhotoAggregateV2Postgres18Atomicity(t *testing.T) {
 		t.Fatalf("GetPhotoSizeListListE = (%v, %v), want persisted photo size", sizeLists, err)
 	}
 	document, err := dao.GetDocumentById(ctx, 904)
-	if err != nil || len(document.GetThumbs()) != 1 {
-		t.Fatalf("GetDocumentById = (%v, %v), want persisted thumbnail", document, err)
+	if err != nil || len(document.GetThumbs()) != 1 || len(document.GetVideoThumbs()) != 1 {
+		t.Fatalf("GetDocumentById = (%v, %v), want persisted thumbnails", document, err)
 	}
 	documents, err := dao.GetDocumentListByIdList(ctx, []int64{904})
-	if err != nil || len(documents) != 1 || len(documents[0].GetThumbs()) != 1 {
-		t.Fatalf("GetDocumentListByIdList = (%v, %v), want persisted thumbnail", documents, err)
+	if err != nil || len(documents) != 1 || len(documents[0].GetThumbs()) != 1 || len(documents[0].GetVideoThumbs()) != 1 {
+		t.Fatalf("GetDocumentListByIdList = (%v, %v), want persisted thumbnails", documents, err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE documents SET deleted = TRUE WHERE document_id = 904`); err != nil {
+		t.Fatal(err)
+	}
+	deletedDocument, err := dao.GetDocumentById(ctx, 904)
+	if err != nil || deletedDocument.GetPredicateName() != mtproto.Predicate_documentEmpty {
+		t.Fatalf("GetDocumentById(deleted) = (%v, %v), want documentEmpty", deletedDocument, err)
+	}
+	deletedDocuments, err := dao.GetDocumentListByIdList(ctx, []int64{904})
+	if err != nil || len(deletedDocuments) != 0 {
+		t.Fatalf("GetDocumentListByIdList(deleted) = (%v, %v), want no documents", deletedDocuments, err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE documents SET deleted = FALSE WHERE document_id = 904`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `ALTER TABLE video_sizes RENAME TO video_sizes_unavailable`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := dao.GetDocumentById(ctx, 904); err == nil {
+		t.Fatal("GetDocumentById hid the video-size database error")
+	}
+	if _, err := dao.GetDocumentListByIdList(ctx, []int64{904}); err == nil {
+		t.Fatal("GetDocumentListByIdList hid the video-size database error")
+	}
+	if _, err := pool.Exec(ctx, `ALTER TABLE video_sizes_unavailable RENAME TO video_sizes`); err != nil {
+		t.Fatal(err)
 	}
 	if _, err := pool.Exec(ctx, `ALTER TABLE photo_sizes RENAME TO photo_sizes_unavailable`); err != nil {
 		t.Fatal(err)

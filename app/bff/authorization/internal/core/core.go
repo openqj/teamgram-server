@@ -107,6 +107,9 @@ If you didn't request this code by trying to log in on another device, simply ig
 )
 
 func (c *AuthorizationCore) pushSignInMessage(ctx context.Context, signInUserId int64, code string) {
+	if c == nil || c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.MsgClient == nil {
+		return
+	}
 	time.AfterFunc(2*time.Second, func() {
 		message := mtproto.MakeTLMessage(&mtproto.Message{
 			Out:     true,

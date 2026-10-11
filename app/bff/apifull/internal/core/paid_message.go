@@ -32,6 +32,13 @@ type paidMessagesRevenueProviderResponse struct {
 	StarsAmount  int64 `json:"stars_amount"`
 }
 
+type paidMessagesExceptionProviderResponse struct {
+	Verified     bool  `json:"verified"`
+	CallerUserID int64 `json:"caller_user_id"`
+	UserID       int64 `json:"user_id"`
+	Result       *bool `json:"result"`
+}
+
 // RPCPaidMessageServer: Layer 229 methods previously returned ERR_ENTERPRISE_IS_BLOCKED.
 
 func (c *ApiFullCore) paidMessagesUnavailable() error {
@@ -79,8 +86,43 @@ func (c *ApiFullCore) AccountGetPaidMessagesRevenue(in *mtproto.TLAccountGetPaid
 }
 
 func (c *ApiFullCore) AccountToggleNoPaidMessagesException(in *mtproto.TLAccountToggleNoPaidMessagesException) (*mtproto.Bool, error) {
-	_ = in
-	return nil, c.paidMessagesUnavailable()
+	callerID, err := c.requireUserId()
+	if err != nil {
+		return nil, err
+	}
+	if in == nil || in.GetUserId() == nil {
+		return nil, c.paidMessagesUnavailable()
+	}
+	target := in.GetUserId()
+	targetPeer := mtproto.FromInputUser(callerID, target)
+	if targetPeer == nil || targetPeer.PeerId <= 0 ||
+		(targetPeer.PeerType != mtproto.PEER_SELF && targetPeer.PeerType != mtproto.PEER_USER) {
+		return nil, mtproto.ErrUserIdInvalid
+	}
+	if parent := in.GetParentPeer(); parent != nil && !validRevenuePeer(callerID, parent) {
+		return nil, mtproto.ErrPeerIdInvalid
+	}
+	targetID := targetPeer.PeerId
+	var response paidMessagesExceptionProviderResponse
+	err = c.callStarsRevenueProvider(c.secretContext(), struct {
+		Operation      string             `json:"operation"`
+		CallerUserID   int64              `json:"caller_user_id"`
+		UserID         int64              `json:"user_id"`
+		User           *mtproto.InputUser `json:"user"`
+		ParentPeer     *mtproto.InputPeer `json:"parent_peer,omitempty"`
+		RefundCharged  bool               `json:"refund_charged"`
+		RequirePayment bool               `json:"require_payment"`
+	}{"toggle_no_paid_messages_exception", callerID, targetID, target, in.GetParentPeer(), in.GetRefundCharged(), in.GetRequirePayment()}, &response)
+	if err != nil {
+		return nil, err
+	}
+	if !response.Verified || response.CallerUserID != callerID || response.UserID != targetID || response.Result == nil {
+		return nil, mtproto.ErrPaymentProviderInvalid
+	}
+	if *response.Result {
+		return mtproto.BoolTrue, nil
+	}
+	return mtproto.BoolFalse, nil
 }
 
 func (c *ApiFullCore) ChannelsUpdatePaidMessagesPrice(in *mtproto.TLChannelsUpdatePaidMessagesPrice) (*mtproto.Updates, error) {

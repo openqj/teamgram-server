@@ -24,5 +24,9 @@ import (
 
 type Config struct {
 	zrpc.RpcServerConf
-	PostgresDSN string `json:",optional"`
+	PostgresDSN                   string `json:",optional"`
+	PaymentProviderEndpoint       string `json:",optional"`
+	PaymentProviderKey            string `json:",optional"`
+	PaymentProviderSigningKey     string `json:",optional"`
+	PaymentProviderTimeoutSeconds int    `json:",optional"`
 }

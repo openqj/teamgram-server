@@ -27,6 +27,15 @@ import (
 // UserSetStoriesHidden
 // user.setStoriesHidden user_id:long id:long hidden:Bool = Bool;
 func (c *UserCore) UserSetStoriesHidden(in *user.TLUserSetStoriesHidden) (*mtproto.Bool, error) {
+	if in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if in.GetUserId() <= 0 || in.GetId() <= 0 {
+		return nil, mtproto.ErrUserIdInvalid
+	}
+	if err := c.requirePostgres(); err != nil {
+		return nil, err
+	}
 	err := c.svcCtx.Dao.Postgres.InTx(c.ctx, func(tx pgx.Tx) error {
 		_, err := c.svcCtx.Dao.Postgres.Store.Contacts.UpdateStoriesHiddenTx(c.ctx, tx, mtproto.FromBool(in.Hidden), in.UserId, in.Id)
 		return err

@@ -2,6 +2,7 @@ package dao
 
 import (
 	"context"
+	"errors"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/teamgram/proto/mtproto"
@@ -13,6 +14,9 @@ import (
 // SendMessagesWithDeliveries commits the sender's entire batch and recipient
 // snapshot together. A worker can resume delivery after a process restart.
 func (d *Dao) SendMessagesWithDeliveries(ctx context.Context, senderID int64, peer *mtproto.PeerUtil, messages []*msg.OutboxMessage, recipients []*inbox.TLInboxSendUserMessageToInboxV2) ([]*mtproto.MessageBox, error) {
+	if d == nil || d.Postgres == nil || d.Postgres.Pool == nil || d.Postgres.Store == nil {
+		return nil, errors.New("messenger/msg: postgres store is not configured")
+	}
 	if senderID <= 0 || peer == nil || peer.PeerId <= 0 || len(messages) == 0 || len(recipients) == 0 {
 		return nil, mtproto.ErrInputRequestInvalid
 	}

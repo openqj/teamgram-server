@@ -21,10 +21,9 @@ import (
 )
 
 type Dao struct {
-	*Mysql
 	// These interfaces are the narrow update-store surface consumed by the
-	// generated RPC core. They can point at either the PostgreSQL DAOs or the
-	// legacy MySQL DAOs used by isolated compatibility tests.
+	// generated RPC core. Production construction always supplies PostgreSQL
+	// implementations.
 	AuthSeqUpdatesDAO AuthSeqUpdatesStore
 	UserPtsUpdatesDAO UserPtsUpdatesStore
 	Postgres          *Postgres

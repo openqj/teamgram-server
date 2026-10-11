@@ -27,8 +27,23 @@ import (
 // ContactsGetBlocked
 // contacts.getBlocked#9a868f80 flags:# my_stories_from:flags.0?true offset:int limit:int = contacts.Blocked;
 func (c *ContactsCore) ContactsGetBlocked(in *mtproto.TLContactsGetBlocked) (*mtproto.Contacts_Blocked, error) {
+	if c == nil || c.MD == nil || c.MD.UserId <= 0 {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
+	if in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if in.GetOffset() < 0 {
+		return nil, mtproto.ErrOffsetInvalid
+	}
+	if in.GetLimit() < 0 {
+		return nil, mtproto.ErrLimitInvalid
+	}
+	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.UserClient == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
 	var (
-		limit           = in.Limit
+		limit           = in.GetLimit()
 		contactsBlocked *mtproto.Contacts_Blocked
 	)
 
@@ -44,6 +59,9 @@ func (c *ContactsCore) ContactsGetBlocked(in *mtproto.TLContactsGetBlocked) (*mt
 	if err != nil {
 		c.Logger.Errorf("contacts.getBlocked - error: %v", err)
 		return nil, err
+	}
+	if blockedList == nil {
+		return nil, mtproto.ErrInternalServerError
 	}
 
 	if len(blockedList.GetDatas()) > 0 {

@@ -25,13 +25,23 @@ import (
 // PaymentsAssignPlayMarketTransaction
 // payments.assignPlayMarketTransaction#dffd50d3 receipt:DataJSON purpose:InputStorePaymentPurpose = Updates;
 func (c *PremiumCore) PaymentsAssignPlayMarketTransaction(in *mtproto.TLPaymentsAssignPlayMarketTransaction) (*mtproto.Updates, error) {
-	if _, err := c.requireUserId(); err != nil {
+	uid, err := c.requireUserId()
+	if err != nil {
 		return nil, err
 	}
 	if in == nil || in.GetReceipt().GetData() == "" {
 		return nil, mtproto.ErrPaymentProviderInvalid
 	}
+	if in.GetPurpose() == nil && premiumPaymentProviderConfigured(c) {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
 
-	// Receipt is not verified and Premium is not granted.
-	return nil, mtproto.ErrPaymentUnsupported
+	var result premiumUpdatesProviderResult
+	if err = c.callPaymentProvider("payments.assignPlayMarketTransaction", map[string]any{"user_id": uid, "receipt": in.GetReceipt(), "purpose": in.GetPurpose(), "purchase_token": in.GetPurchaseToken()}, &result); err != nil {
+		return nil, paymentAssignmentError(err)
+	}
+	if !result.Accepted || !normalizePremiumUpdates(result.Updates) {
+		return nil, mtproto.ErrPaymentProviderInvalid
+	}
+	return result.Updates, nil
 }

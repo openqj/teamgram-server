@@ -63,7 +63,7 @@ func TestConferenceBroadcastAndChainReadback(t *testing.T) {
 		t.Fatalf("broadcast blocks = %#v, want persisted block", got)
 	}
 	// A client may retry a broadcast after a transport failure. Replaying the
-	// same block must remain successful even when MySQL reports zero changed rows.
+	// same block must remain successful even when the database reports zero changed rows.
 	replay, err := c.PhoneSendConferenceCallBroadcast(&mtproto.TLPhoneSendConferenceCallBroadcast{
 		Call:  input,
 		Block: []byte("broadcast-block"),

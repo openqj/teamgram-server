@@ -96,7 +96,10 @@ func (m *Dao) MakeDocumentByDO(
 	document.MimeType = do.MimeType
 	document.Size2_INT32 = int32(do.FileSize)
 	document.Size2_INT64 = do.FileSize
-	var photoSizeErr error
+	var (
+		photoSizeErr error
+		videoSizeErr error
+	)
 
 	if do.ThumbId != 0 && do.VideoThumbId != 0 {
 		if len(thumbs) > 0 && len(videoThumbs) > 0 {
@@ -108,10 +111,13 @@ func (m *Dao) MakeDocumentByDO(
 					document.Thumbs, photoSizeErr = m.GetPhotoSizeListV2(ctx, do.ThumbId)
 				},
 				func() {
-					document.VideoThumbs = m.GetVideoSizeList(ctx, do.VideoThumbId)
+					document.VideoThumbs, videoSizeErr = m.GetVideoSizeListE(ctx, do.VideoThumbId)
 				})
 			if photoSizeErr != nil {
 				return photoSizeErr
+			}
+			if videoSizeErr != nil {
+				return videoSizeErr
 			}
 		}
 	} else {
@@ -133,7 +139,10 @@ func (m *Dao) MakeDocumentByDO(
 			if len(videoThumbs) > 0 {
 				document.VideoThumbs = videoThumbs
 			} else {
-				document.VideoThumbs = m.GetVideoSizeList(ctx, do.VideoThumbId)
+				document.VideoThumbs, videoSizeErr = m.GetVideoSizeListE(ctx, do.VideoThumbId)
+				if videoSizeErr != nil {
+					return videoSizeErr
+				}
 			}
 		}
 	}
@@ -219,6 +228,7 @@ func (m *Dao) GetDocumentListByIdList(ctx context.Context, idList []int64) ([]*m
 		thumbSizeListList      map[int64][]*mtproto.PhotoSize
 		videoThumbSizeListList map[int64][]*mtproto.VideoSize
 		photoSizeErr           error
+		videoSizeErr           error
 	)
 	if len(thumbSizeIdList) > 0 && len(videoThumbSizeIdList) > 0 {
 		mr.FinishVoid(
@@ -226,18 +236,21 @@ func (m *Dao) GetDocumentListByIdList(ctx context.Context, idList []int64) ([]*m
 				thumbSizeListList, photoSizeErr = m.GetPhotoSizeListListE(ctx, thumbSizeIdList)
 			},
 			func() {
-				videoThumbSizeListList = m.GetVideoSizeListList(ctx, videoThumbSizeIdList)
+				videoThumbSizeListList, videoSizeErr = m.GetVideoSizeListListE(ctx, videoThumbSizeIdList)
 			})
 	} else {
 		if len(thumbSizeIdList) != 0 {
 			thumbSizeListList, photoSizeErr = m.GetPhotoSizeListListE(ctx, thumbSizeIdList)
 		}
 		if len(videoThumbSizeIdList) != 0 {
-			videoThumbSizeListList = m.GetVideoSizeListList(ctx, videoThumbSizeIdList)
+			videoThumbSizeListList, videoSizeErr = m.GetVideoSizeListListE(ctx, videoThumbSizeIdList)
 		}
 	}
 	if photoSizeErr != nil {
 		return nil, photoSizeErr
+	}
+	if videoSizeErr != nil {
+		return nil, videoSizeErr
 	}
 
 	documents := make([]*mtproto.Document, 0, len(idList))

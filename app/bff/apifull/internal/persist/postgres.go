@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"hash/fnv"
-	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -175,169 +174,91 @@ func (s *postgresStore) CompareAndSwap(key, expected, replacement string) (bool,
 
 var postgresOpenOnce sync.Mutex
 
-var (
-	postgresInsertIgnorePattern = regexp.MustCompile(`(?is)^\s*INSERT\s+IGNORE\s+INTO\b`)
-	postgresDuplicatePattern    = regexp.MustCompile(`(?is)\s+ON\s+DUPLICATE\s+KEY\s+UPDATE\s+(.+?)\s*;?\s*$`)
-	postgresValuesPattern       = regexp.MustCompile(`(?i)VALUES\s*\(\s*([a-z0-9_]+)\s*\)`)
-	postgresInsertTablePattern  = regexp.MustCompile(`(?is)\bINSERT\s+INTO\s+([a-z0-9_]+)`)
-	postgresGetLockPattern      = regexp.MustCompile(`(?is)GET_LOCK\s*\(\s*([^,()]+)\s*,\s*([^)]*)\)`)
-	postgresReleaseLockPattern  = regexp.MustCompile(`(?is)RELEASE_LOCK\s*\(\s*([^()]+)\s*\)`)
-)
-
-var postgresConflictTargets = map[string]string{
-	"apifull_channel":                 "id",
-	"apifull_channel_member":          "channel_id, user_id",
-	"apifull_channel_message":         "channel_id, message_id",
-	"apifull_channel_read_state":      "user_id, channel_id",
-	"apifull_call":                    "id",
-	"apifull_group_call":              "id",
-	"apifull_group_call_conference":   "call_id",
-	"apifull_group_call_invite":       "call_id",
-	"apifull_group_call_participant":  "call_id, user_id",
-	"apifull_group_call_send_as":      "call_id, user_id",
-	"apifull_group_call_settings":     "call_id",
-	"apifull_group_call_subscription": "call_id, user_id",
-	"apifull_payment_ledger":          "request_id, state",
-	"apifull_report":                  "dedupe_key",
-	"apifull_stars":                   "user_id",
-	"apifull_stars_offer":             "kind, stars, store_product, currency, amount",
-	"apifull_star_tx":                 "user_id, idem",
-	"apifull_username":                "username",
-}
-
-// postgresCompatConnector keeps the existing APIFull query surface portable
-// while its stores move from MySQL to PostgreSQL. The legacy code uses the
-// database/sql `?` placeholder form; pgx requires PostgreSQL's `$1` form.
-// Translating at the driver boundary lets the domain code migrate in focused
-// slices without maintaining two copies of every query.
-type postgresCompatConnector struct {
+// postgresPlaceholderConnector keeps the database/sql query surface using the
+// PostgreSQL wire protocol while legacy call sites are incrementally converted
+// from anonymous placeholders to positional PostgreSQL placeholders.
+type postgresPlaceholderConnector struct {
 	connector driver.Connector
 }
 
-func (c postgresCompatConnector) Connect(ctx context.Context) (driver.Conn, error) {
+func (c postgresPlaceholderConnector) Connect(ctx context.Context) (driver.Conn, error) {
 	conn, err := c.connector.Connect(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return postgresCompatConn{Conn: conn}, nil
+	return postgresPlaceholderConn{Conn: conn}, nil
 }
 
-func (c postgresCompatConnector) Driver() driver.Driver { return c.connector.Driver() }
+func (c postgresPlaceholderConnector) Driver() driver.Driver { return c.connector.Driver() }
 
-type postgresCompatConn struct {
+type postgresPlaceholderConn struct {
 	driver.Conn
 }
 
-func (c postgresCompatConn) Prepare(query string) (driver.Stmt, error) {
-	return c.Conn.Prepare(rewritePostgresSQL(query))
+func (c postgresPlaceholderConn) Prepare(query string) (driver.Stmt, error) {
+	return c.Conn.Prepare(rewritePostgresPlaceholders(query))
 }
 
-func (c postgresCompatConn) PrepareContext(ctx context.Context, query string) (driver.Stmt, error) {
+func (c postgresPlaceholderConn) PrepareContext(ctx context.Context, query string) (driver.Stmt, error) {
 	if conn, ok := c.Conn.(driver.ConnPrepareContext); ok {
-		return conn.PrepareContext(ctx, rewritePostgresSQL(query))
+		return conn.PrepareContext(ctx, rewritePostgresPlaceholders(query))
 	}
 	return c.Prepare(query)
 }
 
-func (c postgresCompatConn) BeginTx(ctx context.Context, opts driver.TxOptions) (driver.Tx, error) {
+func (c postgresPlaceholderConn) BeginTx(ctx context.Context, opts driver.TxOptions) (driver.Tx, error) {
 	if conn, ok := c.Conn.(driver.ConnBeginTx); ok {
 		return conn.BeginTx(ctx, opts)
 	}
 	return nil, driver.ErrSkip
 }
 
-func (c postgresCompatConn) ExecContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Result, error) {
+func (c postgresPlaceholderConn) ExecContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Result, error) {
 	if conn, ok := c.Conn.(driver.ExecerContext); ok {
-		return conn.ExecContext(ctx, rewritePostgresSQL(query), args)
+		return conn.ExecContext(ctx, rewritePostgresPlaceholders(query), args)
 	}
 	return nil, driver.ErrSkip
 }
 
-func (c postgresCompatConn) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
+func (c postgresPlaceholderConn) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
 	if conn, ok := c.Conn.(driver.QueryerContext); ok {
-		return conn.QueryContext(ctx, rewritePostgresSQL(query), args)
+		return conn.QueryContext(ctx, rewritePostgresPlaceholders(query), args)
 	}
 	return nil, driver.ErrSkip
 }
 
-func (c postgresCompatConn) Ping(ctx context.Context) error {
+func (c postgresPlaceholderConn) Ping(ctx context.Context) error {
 	if conn, ok := c.Conn.(driver.Pinger); ok {
 		return conn.Ping(ctx)
 	}
 	return driver.ErrSkip
 }
 
-func (c postgresCompatConn) ResetSession(ctx context.Context) error {
+func (c postgresPlaceholderConn) ResetSession(ctx context.Context) error {
 	if conn, ok := c.Conn.(driver.SessionResetter); ok {
 		return conn.ResetSession(ctx)
 	}
 	return nil
 }
 
-func (c postgresCompatConn) CheckNamedValue(value *driver.NamedValue) error {
+func (c postgresPlaceholderConn) CheckNamedValue(value *driver.NamedValue) error {
 	if conn, ok := c.Conn.(driver.NamedValueChecker); ok {
 		return conn.CheckNamedValue(value)
 	}
 	return nil
 }
 
-// rewritePostgresSQL handles the small set of MySQL expressions still present
-// in the transitional APIFull domain and then changes unquoted `?` markers to
-// positional markers. Quoted values and SQL comments are copied verbatim so
+// rewritePostgresPlaceholders changes unquoted anonymous markers to positional
+// PostgreSQL markers. Quoted values and SQL comments are copied verbatim so
 // question marks in message text and LIKE patterns remain literal.
-func rewritePostgresSQL(query string) string {
-	// MySQL treats '\\' as one escaped backslash in a string literal. With
-	// PostgreSQL standard_conforming_strings enabled, use an escape string so
-	// LIKE ... ESCAPE continues to receive exactly one character.
-	query = strings.ReplaceAll(query, `ESCAPE '\\'`, `ESCAPE E'\\'`)
-	// Keep the retry schedule in SQL while translating the MySQL date and
-	// numeric helpers used by the legacy APIFull query surface.
-	query = strings.ReplaceAll(query, `UNIX_TIMESTAMP()`, `(EXTRACT(EPOCH FROM CURRENT_TIMESTAMP)::bigint)`)
-	query = strings.ReplaceAll(query, `CAST(POW(2, LEAST(attempts+1, 10)) AS UNSIGNED)`, `power(2::numeric, LEAST(attempts+1, 10))::bigint`)
-	query = postgresGetLockPattern.ReplaceAllStringFunc(query, func(expression string) string {
-		match := postgresGetLockPattern.FindStringSubmatch(expression)
-		return "CASE WHEN " + match[2] + " < 0 THEN NULL::bigint WHEN pg_try_advisory_lock(hashtextextended(" + match[1] + ", 0)) THEN 1 ELSE 0 END"
-	})
-	query = postgresReleaseLockPattern.ReplaceAllStringFunc(query, func(expression string) string {
-		match := postgresReleaseLockPattern.FindStringSubmatch(expression)
-		return "CASE WHEN pg_advisory_unlock(hashtextextended(" + match[1] + ", 0)) THEN 1 ELSE 0 END"
-	})
-	if postgresInsertIgnorePattern.MatchString(query) {
-		query = postgresInsertIgnorePattern.ReplaceAllString(query, "INSERT INTO")
-		query = appendPostgresConflict(query, "DO NOTHING")
-	}
-	if match := postgresDuplicatePattern.FindStringSubmatch(query); len(match) == 2 {
-		assignments := postgresValuesPattern.ReplaceAllString(match[1], "EXCLUDED.$1")
-		target := ""
-		if table := postgresInsertTablePattern.FindStringSubmatch(query); len(table) == 2 {
-			target = postgresConflictTargets[strings.ToLower(table[1])]
-		}
-		if target != "" {
-			target = " (" + target + ")"
-		}
-		query = postgresDuplicatePattern.ReplaceAllString(query, " ON CONFLICT"+target+" DO UPDATE SET "+assignments)
-	}
-	return rewritePostgresPlaceholders(query)
-}
-
-func appendPostgresConflict(query, action string) string {
-	trimmed := strings.TrimSpace(query)
-	semicolon := strings.HasSuffix(trimmed, ";")
-	if semicolon {
-		trimmed = strings.TrimSpace(strings.TrimSuffix(trimmed, ";"))
-	}
-	trimmed += " ON CONFLICT " + action
-	if semicolon {
-		trimmed += ";"
-	}
-	return trimmed
-}
-
 func rewritePostgresPlaceholders(query string) string {
 	var out strings.Builder
 	out.Grow(len(query) + 8)
 	placeholder := 1
-	state := byte(0) // 0 normal, 1 single quote, 2 double quote, 3 line comment, 4 block comment
+	state := byte(0) // 0 normal, 1 single quote, 2 double quote, 3 line comment, 4 block comment, 5 dollar quote
+	blockDepth := 0
+	dollarTag := ""
+	escapeString := false
 	for i := 0; i < len(query); i++ {
 		ch := query[i]
 		switch state {
@@ -345,8 +266,19 @@ func rewritePostgresPlaceholders(query string) string {
 			switch ch {
 			case '\'':
 				state = 1
+				escapeString = i > 0 && (query[i-1] == 'E' || query[i-1] == 'e')
 			case '"':
 				state = 2
+			case '$':
+				if i == 0 || !isPostgresIdentifierPart(query[i-1]) {
+					if tag, ok := postgresDollarQuoteTag(query[i:]); ok {
+						out.WriteString(tag)
+						i += len(tag) - 1
+						dollarTag = tag
+						state = 5
+						continue
+					}
+				}
 			case '-':
 				if i+1 < len(query) && query[i+1] == '-' {
 					state = 3
@@ -354,6 +286,7 @@ func rewritePostgresPlaceholders(query string) string {
 			case '/':
 				if i+1 < len(query) && query[i+1] == '*' {
 					state = 4
+					blockDepth = 1
 				}
 			case '?':
 				out.WriteByte('$')
@@ -362,6 +295,12 @@ func rewritePostgresPlaceholders(query string) string {
 				continue
 			}
 		case 1:
+			if escapeString && ch == '\\' && i+1 < len(query) {
+				out.WriteByte(ch)
+				i++
+				out.WriteByte(query[i])
+				continue
+			}
 			if ch == '\'' {
 				if i+1 < len(query) && query[i+1] == '\'' {
 					out.WriteByte(ch)
@@ -370,6 +309,7 @@ func rewritePostgresPlaceholders(query string) string {
 					continue
 				}
 				state = 0
+				escapeString = false
 			}
 		case 2:
 			if ch == '"' {
@@ -382,14 +322,32 @@ func rewritePostgresPlaceholders(query string) string {
 				state = 0
 			}
 		case 3:
-			if ch == '\n' {
+			if ch == '\n' || ch == '\r' {
 				state = 0
 			}
 		case 4:
+			if ch == '/' && i+1 < len(query) && query[i+1] == '*' {
+				out.WriteByte(ch)
+				i++
+				out.WriteByte(query[i])
+				blockDepth++
+				continue
+			}
 			if ch == '*' && i+1 < len(query) && query[i+1] == '/' {
 				out.WriteByte(ch)
 				i++
 				out.WriteByte(query[i])
+				blockDepth--
+				if blockDepth == 0 {
+					state = 0
+				}
+				continue
+			}
+		case 5:
+			if strings.HasPrefix(query[i:], dollarTag) {
+				out.WriteString(dollarTag)
+				i += len(dollarTag) - 1
+				dollarTag = ""
 				state = 0
 				continue
 			}
@@ -399,10 +357,39 @@ func rewritePostgresPlaceholders(query string) string {
 	return out.String()
 }
 
-// OpenPostgres creates the APIFull KV table if needed and points Default at
-// it. A second call with the same process replaces Default.
+func isPostgresIdentifierPart(ch byte) bool {
+	return ch == '_' ||
+		(ch >= 'a' && ch <= 'z') ||
+		(ch >= 'A' && ch <= 'Z') ||
+		(ch >= '0' && ch <= '9')
+}
+
+func postgresDollarQuoteTag(query string) (string, bool) {
+	if len(query) < 2 || query[0] != '$' {
+		return "", false
+	}
+	if query[1] == '$' {
+		return "$$", true
+	}
+	if !((query[1] == '_') || (query[1] >= 'a' && query[1] <= 'z') || (query[1] >= 'A' && query[1] <= 'Z')) {
+		return "", false
+	}
+	for i := 2; i < len(query); i++ {
+		if query[i] == '$' {
+			return query[:i+1], true
+		}
+		if !isPostgresIdentifierPart(query[i]) {
+			return "", false
+		}
+	}
+	return "", false
+}
+
+// OpenPostgres opens the deployment-owned APIFull PostgreSQL schema and points
+// Default at it. Schema migrations are applied out of process. A second call
+// with the same process replaces Default.
 func OpenPostgres(dsn string) error {
-	return openPostgres(dsn, true)
+	return openPostgres(dsn, false)
 }
 
 // OpenPostgresReadOnly connects to an already-provisioned APIFull schema
@@ -453,14 +440,14 @@ func openPostgres(dsn string, createSchema bool) error {
 		var latestApplied bool
 		if err = db.QueryRow(`SELECT EXISTS (
 			SELECT 1 FROM schema_migrations
-			WHERE version = '063_apifull_bot_updates_status'
+			WHERE version = '064_biz_user_bot_manager_index'
 		)`).Scan(&latestApplied); err != nil {
 			_ = db.Close()
 			return fmt.Errorf("apifull: migration journal is unavailable: %w", err)
 		}
 		if !latestApplied {
 			_ = db.Close()
-			return errors.New("apifull: PostgreSQL migrations are incomplete (063_apifull_bot_updates_status is required)")
+			return errors.New("apifull: PostgreSQL migrations are incomplete (064_biz_user_bot_manager_index is required)")
 		}
 	}
 	if createSchema {
@@ -692,7 +679,7 @@ func OpenPostgresDB(dsn string) (*sql.DB, error) {
 	if config.ConnectTimeout <= 0 {
 		config.ConnectTimeout = 10 * time.Second
 	}
-	db := sql.OpenDB(postgresCompatConnector{connector: stdlib.GetConnector(*config)})
+	db := sql.OpenDB(postgresPlaceholderConnector{connector: stdlib.GetConnector(*config)})
 	db.SetMaxOpenConns(8)
 	db.SetMaxIdleConns(8)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

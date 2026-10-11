@@ -30,49 +30,92 @@ import (
 	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
-func (m *Dao) GetVideoSizeListList(ctx context.Context, idList []int64) (sizes map[int64][]*mtproto.VideoSize) {
-	sizes = make(map[int64][]*mtproto.VideoSize)
+// GetVideoSizeListListE reads video thumbnails and preserves storage or decode
+// failures. A missing/corrupt thumbnail must not be turned into a successful
+// response with silently incomplete media metadata.
+func (m *Dao) GetVideoSizeListListE(ctx context.Context, idList []int64) (map[int64][]*mtproto.VideoSize, error) {
+	sizes := make(map[int64][]*mtproto.VideoSize)
 	if len(idList) == 0 {
-		return
+		return sizes, nil
 	}
 
-	_, _ = m.videoSizesStore().SelectListByVideoSizeIdListWithCB(
+	var decodeErr error
+	_, err := m.videoSizesStore().SelectListByVideoSizeIdListWithCB(
 		ctx,
 		idList,
 		func(sz, i int, v *dataobject.VideoSizesDO) {
-			szList, ok := sizes[v.VideoSizeId]
-			if !ok {
-				szList = []*mtproto.VideoSize{}
+			decoded, currentErr := getVideoSizeE(v)
+			if currentErr != nil {
+				// The callback API cannot return an error directly. Keep the
+				// first one in the closure and let the caller inspect it below.
+				if decodeErr == nil {
+					decodeErr = currentErr
+				}
+				return
 			}
-
-			sz2 := getVideoSize(v)
-			if sz2 != nil {
-				szList = append(szList, sz2)
-				// szList = append(szList, getVideoSize(v))
-				sizes[v.VideoSizeId] = szList
-			}
+			sizes[v.VideoSizeId] = append(sizes[v.VideoSizeId], decoded)
 		})
+	if err != nil {
+		return nil, err
+	}
+	if decodeErr != nil {
+		return nil, decodeErr
+	}
+	return sizes, nil
+}
 
+// GetVideoSizeListList retains the historical best-effort helper for callers
+// that cannot return an error. Production hydration uses the E variant above.
+func (m *Dao) GetVideoSizeListList(ctx context.Context, idList []int64) (sizes map[int64][]*mtproto.VideoSize) {
+	sizes, _ = m.GetVideoSizeListListE(ctx, idList)
 	return
 }
 
-func (m *Dao) GetVideoSizeList(ctx context.Context, sizeId int64) (sizes []*mtproto.VideoSize) {
-	sizes = make([]*mtproto.VideoSize, 0, 2)
-
-	_, _ = m.videoSizesStore().SelectListByVideoSizeIdWithCB(
+// GetVideoSizeListE returns all video sizes for one media identity and
+// propagates both query and malformed JSON errors.
+func (m *Dao) GetVideoSizeListE(ctx context.Context, sizeId int64) ([]*mtproto.VideoSize, error) {
+	sizes := make([]*mtproto.VideoSize, 0, 2)
+	var decodeErr error
+	_, err := m.videoSizesStore().SelectListByVideoSizeIdWithCB(
 		ctx,
 		sizeId,
 		func(sz, i int, v *dataobject.VideoSizesDO) {
-			sz2 := getVideoSize(v)
-			if sz2 != nil {
-				sizes = append(sizes, sz2)
+			decoded, currentErr := getVideoSizeE(v)
+			if currentErr != nil {
+				if decodeErr == nil {
+					decodeErr = currentErr
+				}
+				return
+			}
+			if decoded != nil {
+				sizes = append(sizes, decoded)
 			}
 		})
+	if err != nil {
+		return nil, err
+	}
+	if decodeErr != nil {
+		return nil, decodeErr
+	}
+	return sizes, nil
+}
 
+// GetVideoSizeList retains the historical best-effort helper for callers that
+// cannot return an error. Production hydration uses GetVideoSizeListE.
+func (m *Dao) GetVideoSizeList(ctx context.Context, sizeId int64) (sizes []*mtproto.VideoSize) {
+	sizes, _ = m.GetVideoSizeListE(ctx, sizeId)
 	return
 }
 
 func getVideoSize(sz *dataobject.VideoSizesDO) *mtproto.VideoSize {
+	videoSize, _ := getVideoSizeE(sz)
+	return videoSize
+}
+
+func getVideoSizeE(sz *dataobject.VideoSizesDO) (*mtproto.VideoSize, error) {
+	if sz == nil {
+		return nil, nil
+	}
 	var (
 		videoSize *mtproto.VideoSize
 	)
@@ -81,14 +124,12 @@ func getVideoSize(sz *dataobject.VideoSizesDO) *mtproto.VideoSize {
 	case "e":
 		err := jsonx.UnmarshalFromString(sz.FilePath, &videoSize)
 		if err != nil {
-			// TODO(@benqi): log
-			// return nil
+			return nil, fmt.Errorf("media: decode emoji video size: %w", err)
 		}
 	case "s":
 		err := jsonx.UnmarshalFromString(sz.FilePath, &videoSize)
 		if err != nil {
-			// TODO(@benqi): log
-			// return nil
+			return nil, fmt.Errorf("media: decode sticker video size: %w", err)
 		}
 	default:
 		videoSize = mtproto.MakeTLVideoSize(&mtproto.VideoSize{
@@ -102,7 +143,10 @@ func getVideoSize(sz *dataobject.VideoSizesDO) *mtproto.VideoSize {
 			videoSize.VideoStartTs = &wrapperspb.DoubleValue{Value: sz.VideoStartTs}
 		}
 	}
-	return videoSize
+	if videoSize == nil {
+		return nil, fmt.Errorf("media: empty video size for type %q", sz.SizeType)
+	}
+	return videoSize, nil
 }
 
 func (m *Dao) SaveVideoSizeV2(ctx context.Context, szId int64, szList []*mtproto.VideoSize) error {

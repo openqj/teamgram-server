@@ -18,9 +18,7 @@
 
 package core
 
-import (
-	"github.com/teamgram/proto/mtproto"
-)
+import "github.com/teamgram/proto/mtproto"
 
 // RPCBotVerificationIconsServer: Layer 229 methods previously returned ERR_ENTERPRISE_IS_BLOCKED.
 
@@ -28,12 +26,43 @@ func (c *ApiFullCore) BotsSetCustomVerification(in *mtproto.TLBotsSetCustomVerif
 	if _, err := c.requireUserId(); err != nil {
 		return nil, err
 	}
-	return nil, mtproto.ErrMethodNotImpl
+	if in == nil || in.GetBot() == nil || in.GetPeer() == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	var result struct {
+		Value bool `json:"value"`
+	}
+	if err := c.callBusinessProvider("bots.setCustomVerification", map[string]any{
+		"enabled": in.GetEnabled(), "bot": in.GetBot(), "peer": in.GetPeer(), "custom_description": in.GetCustomDescription(),
+	}, &result); err != nil {
+		return nil, err
+	}
+	if result.Value {
+		return mtproto.BoolTrue, nil
+	}
+	return mtproto.BoolFalse, nil
 }
 
 func (c *ApiFullCore) BotsGetBotRecommendations(in *mtproto.TLBotsGetBotRecommendations) (*mtproto.Users_Users, error) {
-	if _, err := c.requireUserId(); err != nil {
+	uid, err := c.requireUserId()
+	if err != nil {
 		return nil, err
 	}
-	return nil, mtproto.ErrMethodNotImpl
+	if in == nil || in.GetBot() == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	botID, err := c.verifyMiniBot(in.GetBot())
+	if err != nil {
+		return nil, err
+	}
+	result := new(mtproto.Users_Users)
+	if err = c.callBusinessProvider("bots.getBotRecommendations", map[string]any{
+		"caller_user_id": uid, "bot_id": botID,
+	}, result); err != nil {
+		return nil, err
+	}
+	if result == nil || len(result.GetUsers()) > 10000 {
+		return nil, mtproto.ErrInternalServerError
+	}
+	return result, nil
 }

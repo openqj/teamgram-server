@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/teamgram/marmota/pkg/stores/sqlx"
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/messenger/msg/internal/dal/dao/postgres_dao"
 	"github.com/teamgram/teamgram-server/app/messenger/msg/internal/dal/dataobject"
@@ -90,11 +89,10 @@ func (d *Dao) AddToPtsQueueE(ctx context.Context, userId int64, pts, ptsCount in
 	}
 
 	var i int64
-	if d.Postgres != nil && d.Postgres.Store != nil && d.Postgres.Store.UserPtsUpdates != nil {
-		i, _, err = d.Postgres.Store.UserPtsUpdates.Insert(ctx, do)
-	} else {
-		i, _, err = d.UserPtsUpdatesDAO.Insert(ctx, do)
+	if d.Postgres == nil || d.Postgres.Store == nil || d.Postgres.Store.UserPtsUpdates == nil {
+		return 0, errors.New("messenger/msg: postgres pts store is not configured")
 	}
+	i, _, err = d.Postgres.Store.UserPtsUpdates.Insert(ctx, do)
 	if err != nil {
 		logx.WithContext(ctx).Errorf("AddToPtsQueue - insert into user_pts_updates error: %v, do: %v", err, do)
 		return int32(i), err
@@ -102,34 +100,14 @@ func (d *Dao) AddToPtsQueueE(ctx context.Context, userId int64, pts, ptsCount in
 	return int32(i), nil
 }
 
-func (d *Dao) AddToPtsQueueTx(tx *sqlx.Tx, userId int64, pts, ptsCount int32, update *mtproto.Update) (int32, error) {
-	updateData, err := jsonx.Marshal(update)
-	if err != nil {
-		return 0, err
-	}
-
-	do := &dataobject.UserPtsUpdatesDO{
-		UserId:     userId,
-		Pts:        pts,
-		PtsCount:   ptsCount,
-		UpdateType: mtproto.GetUpdateType(update),
-		UpdateData: string(updateData),
-		Date2:      time.Now().Unix(),
-	}
-
-	i, _, err := d.UserPtsUpdatesDAO.InsertTx(tx, do)
-	return int32(i), err
-}
-
 // CheckPtsContinuity checks whether a user's pts sequence is continuous
 // starting from afterPts. Returns any gaps found as (expectedPts, actualPts) pairs.
 func (d *Dao) CheckPtsContinuity(ctx context.Context, userId int64, afterPts int32) (gaps [][2]int32, err error) {
 	var rows []dataobject.UserPtsUpdatesDO
-	if d.Postgres != nil && d.Postgres.Store != nil && d.Postgres.Store.UserPtsUpdates != nil {
-		rows, err = d.Postgres.Store.UserPtsUpdates.SelectByGtPts(ctx, userId, afterPts)
-	} else {
-		rows, err = d.UserPtsUpdatesDAO.SelectByGtPts(ctx, userId, afterPts)
+	if d.Postgres == nil || d.Postgres.Store == nil || d.Postgres.Store.UserPtsUpdates == nil {
+		return nil, errors.New("messenger/msg: postgres pts store is not configured")
 	}
+	rows, err = d.Postgres.Store.UserPtsUpdates.SelectByGtPts(ctx, userId, afterPts)
 	if err != nil {
 		return nil, err
 	}

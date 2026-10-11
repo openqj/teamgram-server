@@ -48,6 +48,9 @@ func (c *MessagesCore) MessagesSendMedia(in *mtproto.TLMessagesSendMedia) (*mtpr
 	)
 
 	peer = mtproto.FromInputPeer2(c.MD.UserId, in.Peer)
+	if peer == nil || peer.PeerId <= 0 {
+		return nil, mtproto.ErrPeerIdInvalid
+	}
 	switch peer.PeerType {
 	case mtproto.PEER_SELF:
 		peer.PeerType = mtproto.PEER_USER
@@ -134,6 +137,9 @@ func (c *MessagesCore) MessagesSendMedia(in *mtproto.TLMessagesSendMedia) (*mtpr
 			c.Logger.Errorf("messages.sendMedia stored: %v", err)
 		}
 		return up, err
+	}
+	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.MsgClient == nil {
+		return nil, mtproto.ErrInternalServerError
 	}
 
 	outMessage := mtproto.MakeTLMessage(&mtproto.Message{

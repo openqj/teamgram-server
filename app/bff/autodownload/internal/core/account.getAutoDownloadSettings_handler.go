@@ -29,6 +29,9 @@ import (
 // AccountGetAutoDownloadSettings
 // account.getAutoDownloadSettings#56da0b3f = account.AutoDownloadSettings;
 func (c *AutoDownloadCore) AccountGetAutoDownloadSettings(in *mtproto.TLAccountGetAutoDownloadSettings) (*mtproto.Account_AutoDownloadSettings, error) {
+	if c == nil || c.MD == nil || c.MD.GetUserId() <= 0 {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
 	_ = in
 
 	makeAutoDownloadSettings := func(disabled, videoPreloadLarge, audioPreloadNext, phonecallsLessData bool, photoSizeMax, videoSizeMax, fileSizeMax int32) *mtproto.AutoDownloadSettings {
@@ -45,47 +48,61 @@ func (c *AutoDownloadCore) AccountGetAutoDownloadSettings(in *mtproto.TLAccountG
 		}).To_AutoDownloadSettings()
 	}
 
+	low, err := loadAutoDownload(c.MD.UserId, "low", makeAutoDownloadSettings(
+		false,
+		true,
+		true,
+		true,
+		1048576,
+		512000,
+		512000))
+	if err != nil {
+		return nil, err
+	}
+	medium, err := loadAutoDownload(c.MD.UserId, "medium", makeAutoDownloadSettings(
+		false,
+		true,
+		true,
+		false,
+		1048576,
+		10485760,
+		1048576))
+	if err != nil {
+		return nil, err
+	}
+	high, err := loadAutoDownload(c.MD.UserId, "high", makeAutoDownloadSettings(
+		false,
+		true,
+		true,
+		false,
+		1048576,
+		15728640,
+		3145728))
+	if err != nil {
+		return nil, err
+	}
+
 	return mtproto.MakeTLAccountAutoDownloadSettings(&mtproto.Account_AutoDownloadSettings{
-		Low: loadAutoDownload(c.MD.UserId, "low", makeAutoDownloadSettings(
-			false,
-			true,
-			true,
-			true,
-			1048576,
-			512000,
-			512000)),
-		Medium: loadAutoDownload(c.MD.UserId, "medium", makeAutoDownloadSettings(
-			false,
-			true,
-			true,
-			false,
-			1048576,
-			10485760,
-			1048576)),
-		High: loadAutoDownload(c.MD.UserId, "high", makeAutoDownloadSettings(
-			false,
-			true,
-			true,
-			false,
-			1048576,
-			15728640,
-			3145728)),
+		Low: low, Medium: medium, High: high,
 	}).To_Account_AutoDownloadSettings(), nil
 }
 
-func loadAutoDownload(userID int64, slot string, fallback *mtproto.AutoDownloadSettings) *mtproto.AutoDownloadSettings {
+func loadAutoDownload(userID int64, slot string, fallback *mtproto.AutoDownloadSettings) (*mtproto.AutoDownloadSettings, error) {
 	if persist.Default == nil {
-		return fallback
+		return nil, mtproto.ErrInternalServerError
 	}
 	raw, err := persist.Default.Get(autoDownloadKey(userID, slot))
-	if err != nil || raw == "" {
-		return fallback
+	if err != nil {
+		return nil, err
+	}
+	if raw == "" {
+		return fallback, nil
 	}
 	var saved mtproto.AutoDownloadSettings
 	if err = json.Unmarshal([]byte(raw), &saved); err != nil {
-		return fallback
+		return nil, err
 	}
-	return normalizeAutoDownload(&saved)
+	return normalizeAutoDownload(&saved), nil
 }
 
 func normalizeAutoDownload(s *mtproto.AutoDownloadSettings) *mtproto.AutoDownloadSettings {

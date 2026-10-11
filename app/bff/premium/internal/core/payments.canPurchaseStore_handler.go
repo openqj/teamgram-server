@@ -25,9 +25,28 @@ import (
 // PaymentsCanPurchaseStore
 // payments.canPurchaseStore#4fdc5ea7 purpose:InputStorePaymentPurpose = Bool;
 func (c *PremiumCore) PaymentsCanPurchaseStore(in *mtproto.TLPaymentsCanPurchaseStore) (*mtproto.Bool, error) {
-	_ = in
-	if _, err := c.requireUserId(); err != nil {
+	uid, err := c.requireUserId()
+	if err != nil {
 		return nil, err
 	}
-	return nil, mtproto.ErrMethodNotImpl
+	if in == nil || in.GetPurpose() == nil {
+		if !premiumPaymentProviderConfigured(c) {
+			return nil, mtproto.ErrMethodNotImpl
+		}
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	var result premiumBoolProviderResult
+	if err = c.callPaymentProvider("payments.canPurchaseStore", map[string]any{"user_id": uid, "purpose": in.GetPurpose()}, &result); err != nil {
+		return nil, err
+	}
+	if result.Bool != nil {
+		if !normalizePremiumBool(result.Bool) {
+			return nil, mtproto.ErrPaymentProviderInvalid
+		}
+		return result.Bool, nil
+	}
+	if result.Allowed {
+		return mtproto.BoolTrue, nil
+	}
+	return mtproto.BoolFalse, nil
 }

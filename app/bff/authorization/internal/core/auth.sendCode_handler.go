@@ -152,7 +152,7 @@ func (c *AuthorizationCore) authSendCode(authKeyId, sessionId int64, request *mt
 	if request == nil || request.GetSettings() == nil {
 		return nil, mtproto.ErrInputRequestInvalid
 	}
-	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.AuthLogic == nil {
+	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.AuthLogic == nil || c.svcCtx.Dao.UserClient == nil {
 		return nil, mtproto.ErrInternalServerError
 	}
 	settings := request.GetSettings()
@@ -284,6 +284,9 @@ func (c *AuthorizationCore) authSendCode(authKeyId, sessionId int64, request *mt
 		//}
 	} else {
 		phoneRegistered = true
+		if user.GetUser() == nil {
+			return nil, mtproto.ErrInternalServerError
+		}
 	}
 
 	if phoneRegistered {
@@ -293,6 +296,9 @@ func (c *AuthorizationCore) authSendCode(authKeyId, sessionId int64, request *mt
 		for _, v := range settings.GetLogoutTokens() {
 			id, _ := c.svcCtx.Dao.GetFutureAuthToken(c.ctx, v)
 			if id == user.Id() {
+				if c.svcCtx.Dao.AuthsessionClient == nil {
+					return nil, mtproto.ErrInternalServerError
+				}
 				// Bind authKeyId and userId
 				bindHash, bindErr := c.svcCtx.Dao.AuthsessionClient.AuthsessionBindAuthKeyUser(c.ctx, &authsession.TLAuthsessionBindAuthKeyUser{
 					AuthKeyId: c.MD.PermAuthKeyId,
@@ -360,11 +366,13 @@ func (c *AuthorizationCore) authSendCode(authKeyId, sessionId int64, request *mt
 					requestedCode = "12345"
 					codeData2.SentCodeType = model.SentCodeTypeApp
 				} else {
-					if status2, _ := c.svcCtx.StatusClient.StatusGetUserOnlineSessions(c.ctx, &statuspb.TLStatusGetUserOnlineSessions{
-						UserId: user.User.Id,
-					}); len(status2.GetUserSessions()) > 0 {
-						channel = verification.ChannelApp
-						codeData2.SentCodeType = model.SentCodeTypeApp
+					if c.svcCtx.StatusClient != nil {
+						if status2, _ := c.svcCtx.StatusClient.StatusGetUserOnlineSessions(c.ctx, &statuspb.TLStatusGetUserOnlineSessions{
+							UserId: user.User.Id,
+						}); len(status2.GetUserSessions()) > 0 {
+							channel = verification.ChannelApp
+							codeData2.SentCodeType = model.SentCodeTypeApp
+						}
 					}
 				}
 			}

@@ -62,6 +62,15 @@ if (!messageObject.scheduled) {
 // MessagesGetMessageEditData
 // messages.getMessageEditData#fda68d36 peer:InputPeer id:int = messages.MessageEditData;
 func (c *MessagesCore) MessagesGetMessageEditData(in *mtproto.TLMessagesGetMessageEditData) (*mtproto.Messages_MessageEditData, error) {
+	if c == nil || c.MD == nil || c.MD.UserId <= 0 {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
+	if in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if in.GetPeer() == nil {
+		return nil, mtproto.ErrPeerIdInvalid
+	}
 	var (
 		peer   = mtproto.FromInputPeer2(c.MD.UserId, in.Peer)
 		boxMsg *mtproto.MessageBox

@@ -32,6 +32,9 @@ func (c *UsersCore) UsersGetUsers(in *mtproto.TLUsersGetUsers) (*mtproto.Vector_
 	if in == nil {
 		return nil, mtproto.ErrInputRequestInvalid
 	}
+	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.UserClient == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
 	var (
 		idList []int64
 	)

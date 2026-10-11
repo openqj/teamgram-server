@@ -21,24 +21,19 @@ package dao
 import (
 	"context"
 	"errors"
-	"fmt"
 	"math"
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/teamgram/marmota/pkg/hack"
-	"github.com/teamgram/marmota/pkg/stores/sqlx"
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/messenger/msg/internal/dal/dataobject"
 	"github.com/teamgram/teamgram-server/app/messenger/msg/msg/msg"
-	"github.com/teamgram/teamgram-server/app/service/biz/dialog/dialog"
 	idgen_client "github.com/teamgram/teamgram-server/app/service/idgen/client"
 	"github.com/teamgram/teamgram-server/app/service/idgen/counter"
 
 	"github.com/zeromicro/go-zero/core/jsonx"
 	"github.com/zeromicro/go-zero/core/logx"
 	"google.golang.org/protobuf/proto"
-	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
 func makeMessageBoxByDO(boxDO *dataobject.MessagesDO) *mtproto.MessageBox {
@@ -69,242 +64,13 @@ func (d *Dao) sendMessageToOutbox(ctx context.Context, fromId int64, peer *mtpro
 	if d.Postgres != nil && d.Postgres.Store != nil {
 		return d.sendMessageToOutboxPostgres(ctx, fromId, peer, outboxMessage)
 	}
-	var (
-		dialogId = mtproto.MakeDialogId(fromId, peer.PeerType, peer.PeerId)
-		err      error
-		message  = outboxMessage.Message
-	)
+	return nil, false, errors.New("messenger/msg: postgres store is not configured")
 
-	idList := d.IDGenClient2.GetNextIdList(
-		ctx,
-		idgen_client.MakeIDTypeNextId(),
-		idgen_client.MakeIDTypeNgen(idgen_client.IDTypeMessageBox, fromId),
-		idgen_client.MakeIDTypeNgen(idgen_client.IDTypePts, fromId))
-	if len(idList) != 3 {
-		err = mtproto.ErrInternalServerError
-		return nil, false, err
-	}
-
-	dialogMessageId := idList[0].Id
-	outBoxMsgId := int32(idList[1].Id)
-	pts := int32(idList[2].Id)
-
-	if dialogMessageId == 0 || outBoxMsgId == 0 || pts == 0 {
-		err = mtproto.ErrInternalServerError
-		return nil, false, err
-	}
-
-	var (
-		dialogDO *dataobject.DialogsDO
-	)
-
-	// A, B
-	tR := sqlx.TxWrapper(ctx, d.DB, func(tx *sqlx.Tx, result *sqlx.StoreResult) {
-		message.Out = true
-		message.Id = outBoxMsgId
-		// message.Mentioned = model.CheckHasMention(message.Entities, fromId)
-		//if message.Mentioned {
-		//	message.MediaUnread = true
-		//}
-		//if !message.MediaUnread {
-		message.MediaUnread = mtproto.CheckHasMediaUnread(message)
-		//}
-		// Pts:              pts,
-		// PtsCount:         ptsCount,
-		// mType, mData := mtproto.EncodeMessage(message)
-		mData, _ := jsonx.Marshal(message)
-		outMsgBox := &mtproto.MessageBox{
-			UserId:            fromId,
-			SenderUserId:      fromId,
-			PeerType:          peer.PeerType,
-			PeerId:            peer.PeerId,
-			MessageId:         outBoxMsgId,
-			DialogId1:         dialogId.A,
-			DialogId2:         dialogId.B,
-			DialogMessageId:   dialogMessageId,
-			RandomId:          outboxMessage.RandomId,
-			Pts:               0,
-			PtsCount:          0,
-			MessageFilterType: mtproto.GetMediaType(message),
-			Message:           message,
-		}
-
-		var (
-			savedPeerUtil *mtproto.PeerUtil
-		)
-		if message.GetSavedPeerId() != nil {
-			savedPeerUtil = mtproto.FromPeer(message.GetSavedPeerId())
-		} else {
-			savedPeerUtil = &mtproto.PeerUtil{PeerType: mtproto.PEER_EMPTY, PeerId: 0}
-		}
-
-		outBoxDO := &dataobject.MessagesDO{
-			UserId:            outMsgBox.UserId,
-			UserMessageBoxId:  outMsgBox.MessageId,
-			DialogId1:         outMsgBox.DialogId1,
-			DialogId2:         outMsgBox.DialogId2,
-			DialogMessageId:   outMsgBox.DialogMessageId,
-			SenderUserId:      outMsgBox.UserId,
-			PeerType:          peer.PeerType,
-			PeerId:            peer.PeerId,
-			RandomId:          outMsgBox.RandomId,
-			MessageFilterType: outMsgBox.MessageFilterType,
-			MessageData:       hack.String(mData),
-			Message:           message.Message,
-			Mentioned:         false,
-			MediaUnread:       message.MediaUnread,
-			Date2:             int64(outMsgBox.Message.Date),
-			SavedPeerType:     savedPeerUtil.PeerType,
-			SavedPeerId:       savedPeerUtil.PeerId,
-			Deleted:           false,
-		}
-
-		lastInsertId, rowsAffected, err := d.MessagesDAO.InsertOrReturnIdTx(tx, outBoxDO)
-		if err != nil {
-			result.Err = err
-			return
-		}
-
-		if rowsAffected == 0 {
-			// TODO(@benqi): random_id已经存在
-			if lastInsertId > 0 {
-				result.Data = lastInsertId
-				return
-			} else {
-				result.Err = errors.New("insert error")
-				return
-			}
-		}
-
-		//outMsgBox.Pts = d.IDGenClient2.NextPtsId(ctx, fromId)
-		//outMsgBox.PtsCount = 1
-		// logx.WithContext(ctx).Infof("sendMessage - (pts: %d, pts_count: %d)", outMsgBox.Pts, outMsgBox.PtsCount)
-
-		switch peer.PeerType {
-		case mtproto.PEER_USER:
-			dialogDO = &dataobject.DialogsDO{
-				UserId:           fromId,
-				PeerType:         peer.PeerType,
-				PeerId:           peer.PeerId,
-				PeerDialogId:     mtproto.MakePeerDialogId(mtproto.PEER_USER, peer.PeerId),
-				TopMessage:       outBoxMsgId,
-				UnreadCount:      0,
-				DraftMessageData: "null",
-				Date2:            int64(outMsgBox.Message.Date),
-			}
-
-			result.Data = outMsgBox
-		case mtproto.PEER_CHAT:
-			dialogDO = &dataobject.DialogsDO{
-				UserId:           fromId,
-				PeerType:         peer.PeerType,
-				PeerId:           peer.PeerId,
-				PeerDialogId:     mtproto.MakePeerDialogId(mtproto.PEER_CHAT, peer.PeerId),
-				TopMessage:       outBoxMsgId,
-				UnreadCount:      0,
-				DraftMessageData: "null",
-				Date2:            int64(outMsgBox.Message.Date),
-			}
-
-			result.Data = outMsgBox
-		default:
-			result.Err = fmt.Errorf("fatal error - invalid peer_type: %v", peer)
-			logx.WithContext(ctx).Errorf("%v", result)
-			return
-		}
-
-		for _, entity := range message.GetEntities() {
-			if entity.GetPredicateName() == mtproto.Predicate_messageEntityHashtag {
-				if entity.GetUrl() != "" {
-					d.HashTagsDAO.InsertOrUpdateTx(tx, &dataobject.HashTagsDO{
-						UserId:           outMsgBox.UserId,
-						PeerType:         peer.PeerType,
-						PeerId:           peer.PeerId,
-						HashTag:          entity.GetUrl(),
-						HashTagMessageId: outMsgBox.MessageId,
-					})
-				}
-			}
-		}
-
-		_, err = d.AddToPtsQueueTx(tx, fromId, pts, 1, mtproto.MakeTLUpdateNewMessage(&mtproto.Update{
-			Message_MESSAGE: outMsgBox.Message,
-			Pts_INT32:       pts,
-			PtsCount:        1,
-		}).To_Update())
-		if err != nil {
-			result.Err = err
-			return
-		}
-	})
-
-	if tR.Err != nil {
-		return nil, false, tR.Err
-	}
-
-	var outBox *mtproto.MessageBox
-
-	switch tR.Data.(type) {
-	case *mtproto.MessageBox:
-		// TODO: use rpc
-		d.CachedConn.Exec(
-			ctx,
-			func(ctx context.Context, conn *sqlx.DB) (int64, int64, error) {
-				rowsAffected, err2 := d.DialogsDAO.UpdateOutboxDialog(
-					ctx,
-					dialogDO.TopMessage,
-					dialogDO.Date2,
-					fromId,
-					peer.PeerType,
-					peer.PeerId)
-				if err2 != nil {
-					return 0, 0, err2
-				}
-				// again handle rowsAffected == 0
-				if rowsAffected == 0 {
-					_, _, err2 = d.InsertIgnoreDialog(ctx, dialogDO)
-				}
-
-				return 0, 0, nil
-			},
-			dialog.GetDialogCacheKeyByPeer(fromId, peer.PeerType, peer.PeerId))
-
-		outBox = tR.Data.(*mtproto.MessageBox)
-		outBox.Pts = pts // d.IDGenClient2.NextPtsId(ctx, fromId)
-		outBox.PtsCount = 1
-
-	case int64:
-		if tR.Data.(int64) <= 0 {
-			logx.WithContext(ctx).Error("unknown error")
-			return nil, false, errors.New("fatal unknown error")
-		}
-
-		// dup, we'll recreate box
-		do, err := d.SelectMessageByRandomID(ctx, fromId, outboxMessage.RandomId)
-		if err != nil {
-			return nil, false, err
-		}
-		if do != nil {
-			outBox = makeMessageBoxByDO(do)
-			outBox.Pts = d.IDGenClient2.CurrentPtsId(ctx, outBox.UserId)
-			outBox.PtsCount = 1
-			return outBox, false, nil
-		} else {
-			logx.WithContext(ctx).Error("unknown error")
-			return nil, false, errors.New("fatal unknown error")
-		}
-	default:
-		logx.WithContext(ctx).Error("unknown error")
-		return nil, false, errors.New("fatal unknown error")
-	}
-
-	return outBox, true, nil
 }
 
 // sendMessageToOutboxPostgres persists the message view, dialog projection,
 // hashtag rows, and pts update atomically. It is the runtime path used by the
-// PostgreSQL-only service constructor; the generated MySQL implementation
-// above remains only as a migration-boundary fallback for tests.
+// sendMessageToOutboxPostgres persists the message view and delivery state atomically.
 func (d *Dao) sendMessageToOutboxPostgres(ctx context.Context, fromID int64, peer *mtproto.PeerUtil, outboxMessage *msg.OutboxMessage) (*mtproto.MessageBox, bool, error) {
 	var box *mtproto.MessageBox
 	var inserted bool
@@ -527,7 +293,7 @@ func (d *Dao) DeleteMessages(ctx context.Context, userId int64, msgIds []int32) 
 	if err != nil {
 		// mtproto.ErrMsgIdInvalid
 		return nil, nil, err
-	} else if dialogId.IsZero() {
+	} else if dialogId == nil || dialogId.IsZero() {
 		return mtproto.MakePeerUtil(mtproto.PEER_EMPTY, 0), []int64{}, nil
 	}
 
@@ -582,36 +348,7 @@ func (d *Dao) DeleteMessages(ctx context.Context, userId int64, msgIds []int32) 
 		return peer, deletedMsgDataIdList, nil
 	}
 
-	tR := sqlx.TxWrapper(ctx, d.DB, func(tx *sqlx.Tx, result *sqlx.StoreResult) {
-		_, result.Err = d.MessagesDAO.DeleteMessagesByMessageIdListTx(tx, userId, msgIds)
-		if result.Err != nil {
-			return
-		}
-	})
-	if tR.Err != nil {
-		return nil, nil, tR.Err
-	}
-
-	topMessage, _ := getLastTopMessage(topMessageIndex)
-	d.CachedConn.Exec(
-		ctx,
-		func(ctx context.Context, conn *sqlx.DB) (int64, int64, error) {
-			_, err2 := d.DialogsDAO.UpdateOutboxDialog(
-				ctx,
-				topMessage,
-				time.Now().Unix(),
-				userId,
-				peer.PeerType,
-				peer.PeerId)
-
-			return 0, 0, err2
-		},
-		dialog.GetDialogCacheKeyByPeer(userId, peer.PeerType, peer.PeerId))
-
-	for i := 0; i < len(msgDOList); i++ {
-		deletedMsgDataIdList = append(deletedMsgDataIdList, msgDOList[i].DialogMessageId)
-	}
-	return peer, deletedMsgDataIdList, nil
+	return nil, nil, errors.New("messenger/msg: postgres store is not configured")
 }
 
 //func (d *Dao) editOutboxMessage(ctx context.Context, fromId int32, peer *model.PeerUtil, toId int32, message *mtproto.Message) (box *model.MessageBox, err error) {
@@ -736,26 +473,10 @@ func (d *Dao) DeletePhoneCallHistory(ctx context.Context, userId int64) ([]int32
 		if err != nil {
 			return nil, nil, err
 		}
-		if d.Postgres != nil && d.Postgres.Store != nil {
-			if _, err = d.Postgres.Store.Dialogs.UpdateCustomMap(ctx, map[string]any{"top_message": lastMessageId}, userId, mtproto.PEER_USER, mtproto.GetPeerIdByDialogId(userId, dialogId)); err != nil {
-				return nil, nil, err
-			}
-			continue
+		if d.Postgres == nil || d.Postgres.Store == nil {
+			return nil, nil, errors.New("messenger/msg: postgres store is not configured")
 		}
-		_, _, err = d.CachedConn.Exec(
-			ctx,
-			func(ctx context.Context, conn *sqlx.DB) (int64, int64, error) {
-				_, err2 := d.UpdateDialogCustomMap(
-					ctx,
-					map[string]interface{}{
-						"top_message": lastMessageId,
-					},
-					userId,
-					mtproto.PEER_USER, mtproto.GetPeerIdByDialogId(userId, dialogId))
-				return 0, 0, err2
-			},
-			dialog.GetDialogCacheKeyByPeer(userId, mtproto.PEER_USER, mtproto.GetPeerIdByDialogId(userId, dialogId)))
-		if err != nil {
+		if _, err = d.Postgres.Store.Dialogs.UpdateCustomMap(ctx, map[string]any{"top_message": lastMessageId}, userId, mtproto.PEER_USER, mtproto.GetPeerIdByDialogId(userId, dialogId)); err != nil {
 			return nil, nil, err
 		}
 	}
@@ -777,105 +498,8 @@ func (d *Dao) sendMessageToOutboxV1(ctx context.Context, fromId int64, peer *mtp
 	if d.Postgres != nil && d.Postgres.Store != nil {
 		return d.sendMessageToOutboxV1Postgres(ctx, fromId, peer, outMsgBox, writePts)
 	}
-	message := outMsgBox.Message
-	mData, _ := jsonx.Marshal(outMsgBox.GetMessage())
-	outBoxMsgId := outMsgBox.MessageId
+	return false, errors.New("messenger/msg: postgres store is not configured")
 
-	var (
-		savedPeerUtil *mtproto.PeerUtil
-	)
-
-	if message.GetSavedPeerId() != nil {
-		savedPeerUtil = mtproto.FromPeer(message.GetSavedPeerId())
-	} else {
-		savedPeerUtil = &mtproto.PeerUtil{PeerType: mtproto.PEER_EMPTY, PeerId: 0}
-	}
-
-	inserted := false
-	tR := sqlx.TxWrapper(ctx, d.DB, func(tx *sqlx.Tx, result *sqlx.StoreResult) {
-		_, rowsAffected, err := d.MessagesDAO.InsertOrReturnIdTx(
-			tx,
-			&dataobject.MessagesDO{
-				UserId:            outMsgBox.UserId,
-				UserMessageBoxId:  outMsgBox.MessageId,
-				DialogId1:         outMsgBox.DialogId1,
-				DialogId2:         outMsgBox.DialogId2,
-				DialogMessageId:   outMsgBox.DialogMessageId,
-				SenderUserId:      outMsgBox.UserId,
-				PeerType:          peer.PeerType,
-				PeerId:            peer.PeerId,
-				RandomId:          outMsgBox.RandomId,
-				MessageFilterType: outMsgBox.MessageFilterType,
-				MessageData:       hack.String(mData),
-				Message:           message.GetMessage(),
-				Mentioned:         false,
-				MediaUnread:       message.GetMediaUnread(),
-				Date2:             int64(outMsgBox.Message.Date),
-				SavedPeerType:     savedPeerUtil.PeerType,
-				SavedPeerId:       savedPeerUtil.PeerId,
-				Deleted:           false,
-			})
-		if err != nil {
-			result.Err = err
-			return
-		}
-		if rowsAffected == 0 {
-			return
-		}
-		inserted = true
-
-		for _, entity := range message.GetEntities() {
-			if entity.GetPredicateName() == mtproto.Predicate_messageEntityHashtag {
-				if entity.GetUrl() != "" {
-					_, _, err = d.HashTagsDAO.InsertOrUpdateTx(tx, &dataobject.HashTagsDO{
-						UserId:           outMsgBox.UserId,
-						PeerType:         peer.PeerType,
-						PeerId:           peer.PeerId,
-						HashTag:          entity.GetUrl(),
-						HashTagMessageId: outMsgBox.MessageId,
-					})
-				}
-			}
-		}
-
-		if writePts {
-			_, err = d.AddToPtsQueueTx(tx, fromId, outMsgBox.Pts, outMsgBox.PtsCount, mtproto.MakeTLUpdateNewMessage(&mtproto.Update{
-				Message_MESSAGE: outMsgBox.Message,
-				Pts_INT32:       outMsgBox.Pts,
-				PtsCount:        outMsgBox.PtsCount,
-			}).To_Update())
-			if err != nil {
-				result.Err = err
-				return
-			}
-		}
-	})
-
-	if tR.Err != nil {
-		return false, tR.Err
-	}
-	if !inserted {
-		return false, nil
-	}
-	_, err := d.DialogClient.DialogInsertOrUpdateDialog(
-		ctx,
-		&dialog.TLDialogInsertOrUpdateDialog{
-			UserId:          fromId,
-			PeerType:        peer.PeerType,
-			PeerId:          peer.PeerId,
-			TopMessage:      &wrapperspb.Int32Value{Value: outBoxMsgId},
-			ReadOutboxMaxId: nil,
-			ReadInboxMaxId:  nil,
-			UnreadCount:     &wrapperspb.Int32Value{Value: 0},
-			UnreadMark:      false,
-			PinnedMsgId:     nil,
-			Date2:           &wrapperspb.Int64Value{Value: int64(outMsgBox.Message.Date)},
-		})
-	if err != nil {
-		// return i
-	}
-
-	return true, tR.Err
 }
 
 func (d *Dao) sendMessageToOutboxV1Postgres(ctx context.Context, fromID int64, peer *mtproto.PeerUtil, outMsgBox *mtproto.MessageBox, writePts bool) (bool, error) {

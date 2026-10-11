@@ -44,10 +44,19 @@ func New(ctx context.Context, svcCtx *svc.ServiceContext) *UserCore {
 }
 
 // requirePostgres keeps production handlers on the authoritative PostgreSQL
-// store. MySQL DAOs remain available only to isolated migration-boundary code.
+// store. Generated legacy DAOs remain available only to isolated migration-boundary code.
 func (c *UserCore) requirePostgres() error {
-	if c == nil || c.svcCtx == nil || c.svcCtx.Dao == nil ||
-		c.svcCtx.Dao.Postgres == nil || c.svcCtx.Dao.Postgres.Store == nil {
+	if c == nil || c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.Postgres == nil {
+		return mtproto.ErrMethodNotImpl
+	}
+	s := c.svcCtx.Dao.Postgres.Store
+	if c.svcCtx.Dao.Postgres.Pool == nil || s == nil ||
+		s.Pool == nil || s.Users == nil || s.Contacts == nil || s.Username == nil ||
+		s.Presences == nil || s.Privacies == nil || s.PeerBlocks == nil ||
+		s.PeerSettings == nil || s.Settings == nil || s.NotifySettings == nil ||
+		s.GlobalPrivacy == nil || s.ProfilePhotos == nil || s.SavedMusic == nil ||
+		s.Bots == nil || s.BotCommands == nil || s.Imported == nil ||
+		s.Unregistered == nil || s.HistoryTTL == nil {
 		return mtproto.ErrMethodNotImpl
 	}
 	return nil

@@ -43,9 +43,18 @@ func autoDownloadSlot(in *mtproto.TLAccountSaveAutoDownloadSettings) string {
 // AccountSaveAutoDownloadSettings
 // account.saveAutoDownloadSettings#76f36233 flags:# low:flags.0?true high:flags.1?true settings:AutoDownloadSettings = Bool;
 func (c *AutoDownloadCore) AccountSaveAutoDownloadSettings(in *mtproto.TLAccountSaveAutoDownloadSettings) (*mtproto.Bool, error) {
+	if c == nil || c.MD == nil || c.MD.GetUserId() <= 0 {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
+	if in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
 	settings := in.GetSettings()
 	if settings == nil {
-		return mtproto.BoolTrue, nil
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if persist.Default == nil {
+		return nil, mtproto.ErrInternalServerError
 	}
 	raw, err := json.Marshal(settings)
 	if err != nil {

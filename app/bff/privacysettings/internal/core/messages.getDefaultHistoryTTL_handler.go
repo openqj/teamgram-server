@@ -26,7 +26,15 @@ import (
 // MessagesGetDefaultHistoryTTL
 // messages.getDefaultHistoryTTL#658b7188 = DefaultHistoryTTL;
 func (c *PrivacySettingsCore) MessagesGetDefaultHistoryTTL(in *mtproto.TLMessagesGetDefaultHistoryTTL) (*mtproto.DefaultHistoryTTL, error) {
-	_ = in
+	if c == nil || c.MD == nil || c.MD.UserId <= 0 {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
+	if in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.UserClient == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
 
 	rV, err := c.svcCtx.Dao.UserClient.UserGetDefaultHistoryTTL(c.ctx, &user.TLUserGetDefaultHistoryTTL{
 		UserId: c.MD.UserId,

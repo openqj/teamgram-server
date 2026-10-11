@@ -1,7 +1,7 @@
 // Package postgres_dao exposes the PostgreSQL persistence surface used by the
 // messenger service. The aggregate implementations live in the corresponding
 // business services; aliases here keep the messenger DAO contract stable while
-// the runtime moves off the MySQL wrapper.
+// the runtime uses PostgreSQL persistence.
 package postgres_dao
 
 import (
