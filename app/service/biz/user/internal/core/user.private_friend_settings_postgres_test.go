@@ -32,6 +32,8 @@ func TestUserPostgresPrivateFriendSettingsRoundTrip(t *testing.T) {
 	}
 	assertCloseFriendState(t, ctx, pg, ownerID, friendID, true)
 	assertCloseFriendState(t, ctx, pg, ownerID, otherID, false)
+	assertContactCloseFriend(t, c, ownerID, friendID, true)
+	assertContactCloseFriend(t, c, ownerID, otherID, false)
 
 	privacyRules := []*mtproto.PrivacyRule{
 		mtproto.MakeTLPrivacyValueDisallowAll(nil).To_PrivacyRule(),
@@ -52,6 +54,8 @@ func TestUserPostgresPrivateFriendSettingsRoundTrip(t *testing.T) {
 	}
 	assertCloseFriendState(t, ctx, pg, ownerID, friendID, false)
 	assertCloseFriendState(t, ctx, pg, ownerID, otherID, true)
+	assertContactCloseFriend(t, c, ownerID, friendID, false)
+	assertContactCloseFriend(t, c, ownerID, otherID, true)
 	if allowed, err := c.UserCheckPrivacy(&user.TLUserCheckPrivacy{UserId: ownerID, KeyType: mtproto.ABOUT, PeerId: friendID}); err != nil || mtproto.FromBool(allowed) {
 		t.Fatalf("replaced close friend privacy = (%v, %v), want denied", allowed, err)
 	}
@@ -88,12 +92,24 @@ func TestUserPostgresPrivateFriendSettingsRoundTrip(t *testing.T) {
 	if result, err := c.UserEditCloseFriends(&user.TLUserEditCloseFriends{UserId: ownerID}); err != nil || !mtproto.FromBool(result) {
 		t.Fatalf("clear close friends = (%v, %v)", result, err)
 	}
+	assertContactCloseFriend(t, c, ownerID, otherID, false)
 	if allowed, err := c.UserCheckPrivacy(&user.TLUserCheckPrivacy{UserId: ownerID, KeyType: mtproto.ABOUT, PeerId: otherID}); err != nil || mtproto.FromBool(allowed) {
 		t.Fatalf("cleared close friend privacy = (%v, %v), want denied", allowed, err)
 	}
 
 	if _, err := c.UserCheckPrivacy(&user.TLUserCheckPrivacy{UserId: ownerID, KeyType: mtproto.ABOUT, PeerId: ownerID + 99}); !errors.Is(err, mtproto.ErrUserIdInvalid) {
 		t.Fatalf("missing privacy peer error = %v, want USER_ID_INVALID", err)
+	}
+}
+
+func assertContactCloseFriend(t *testing.T, c *UserCore, ownerID, peerID int64, want bool) {
+	t.Helper()
+	contact, err := c.UserGetContact(&user.TLUserGetContact{UserId: ownerID, Id: peerID})
+	if err != nil {
+		t.Fatalf("get contact %d: %v", peerID, err)
+	}
+	if contact == nil || contact.GetCloseFriend() != want {
+		t.Fatalf("contact %d close_friend = %v, want %v", peerID, contact.GetCloseFriend(), want)
 	}
 }
 
