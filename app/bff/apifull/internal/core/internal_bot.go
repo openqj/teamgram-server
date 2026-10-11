@@ -99,14 +99,17 @@ func (c *ApiFullCore) BotsAnswerWebhookJSONQuery(in *mtproto.TLBotsAnswerWebhook
 		return nil, mtproto.ErrInputRequestInvalid
 	}
 	var result struct {
-		Value bool `json:"value"`
+		Value *bool `json:"value"`
 	}
 	if err := c.callBusinessProvider("bots.answerWebhookJSONQuery", map[string]any{
 		"query_id": in.GetQueryId(), "data": in.GetData(),
 	}, &result); err != nil {
 		return nil, err
 	}
-	if result.Value {
+	if result.Value == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
+	if *result.Value {
 		return mtproto.BoolTrue, nil
 	}
 	return mtproto.BoolFalse, nil

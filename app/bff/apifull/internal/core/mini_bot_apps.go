@@ -496,14 +496,17 @@ func (c *ApiFullCore) BotsCheckDownloadFileParams(in *mtproto.TLBotsCheckDownloa
 		return nil, mtproto.ErrInputRequestInvalid
 	}
 	var result struct {
-		Value bool `json:"value"`
+		Value *bool `json:"value"`
 	}
 	if err := c.callBusinessProvider("bots.checkDownloadFileParams", map[string]any{
 		"bot": in.GetBot(), "file_name": in.GetFileName(), "url": in.GetUrl(),
 	}, &result); err != nil {
 		return nil, err
 	}
-	if result.Value {
+	if result.Value == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
+	if *result.Value {
 		return mtproto.BoolTrue, nil
 	}
 	return mtproto.BoolFalse, nil

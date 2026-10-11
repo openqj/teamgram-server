@@ -382,14 +382,17 @@ func (c *ApiFullCore) MessagesEditInlineBotMessage(in *mtproto.TLMessagesEditInl
 		return nil, mtproto.ErrInputRequestInvalid
 	}
 	var result struct {
-		Value bool `json:"value"`
+		Value *bool `json:"value"`
 	}
 	if err := c.callBusinessProvider("messages.editInlineBotMessage", map[string]any{
 		"no_webpage": in.GetNoWebpage(), "invert_media": in.GetInvertMedia(), "id": in.GetId(), "message": in.GetMessage(), "media": in.GetMedia(), "reply_markup": in.GetReplyMarkup(), "entities": in.GetEntities(), "rich_message": in.GetRichMessage(),
 	}, &result); err != nil {
 		return nil, err
 	}
-	if result.Value {
+	if result.Value == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
+	if *result.Value {
 		return mtproto.BoolTrue, nil
 	}
 	return mtproto.BoolFalse, nil
@@ -408,7 +411,7 @@ func (c *ApiFullCore) MessagesGetBotCallbackAnswer(in *mtproto.TLMessagesGetBotC
 	}, result); err != nil {
 		return nil, err
 	}
-	if result.GetPredicateName() == "" || result.GetCacheTime() < 0 {
+	if result.GetPredicateName() != mtproto.Predicate_messages_botCallbackAnswer || result.GetCacheTime() < 0 {
 		return nil, mtproto.ErrInternalServerError
 	}
 	return result, nil
@@ -422,14 +425,17 @@ func (c *ApiFullCore) MessagesSetBotCallbackAnswer(in *mtproto.TLMessagesSetBotC
 		return nil, mtproto.ErrInputRequestInvalid
 	}
 	var result struct {
-		Value bool `json:"value"`
+		Value *bool `json:"value"`
 	}
 	if err := c.callBusinessProvider("messages.setBotCallbackAnswer", map[string]any{
 		"alert": in.GetAlert(), "query_id": in.GetQueryId(), "message": in.GetMessage(), "url": in.GetUrl(), "cache_time": in.GetCacheTime(),
 	}, &result); err != nil {
 		return nil, err
 	}
-	if result.Value {
+	if result.Value == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
+	if *result.Value {
 		return mtproto.BoolTrue, nil
 	}
 	return mtproto.BoolFalse, nil
