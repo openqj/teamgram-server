@@ -514,7 +514,7 @@ func (c *ApiFullCore) BotsInvokeWebViewCustomMethod(in *mtproto.TLBotsInvokeWebV
 	if _, err := c.requireUserId(); err != nil {
 		return nil, err
 	}
-	if in == nil || in.GetBot() == nil || strings.TrimSpace(in.GetCustomMethod()) == "" || in.GetParams() == nil {
+	if in == nil || in.GetBot() == nil || strings.TrimSpace(in.GetCustomMethod()) == "" || !validBotDataJSON(in.GetParams()) {
 		return nil, mtproto.ErrInputRequestInvalid
 	}
 	result := new(mtproto.DataJSON)
@@ -523,7 +523,7 @@ func (c *ApiFullCore) BotsInvokeWebViewCustomMethod(in *mtproto.TLBotsInvokeWebV
 	}, result); err != nil {
 		return nil, err
 	}
-	if result.GetData() == "" {
+	if !validBotDataJSON(result) {
 		return nil, mtproto.ErrInternalServerError
 	}
 	return result, nil

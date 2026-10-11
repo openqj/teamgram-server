@@ -38,6 +38,10 @@ func miscSave(uid int64, method string, in any) error {
 	return persist.Default.Set("misc:"+strconv.FormatInt(uid, 10)+":"+method, string(raw))
 }
 
+func validBotDataJSON(value *mtproto.DataJSON) bool {
+	return value != nil && strings.TrimSpace(value.GetData()) != "" && json.Valid([]byte(value.GetData()))
+}
+
 // RPCInternalBotServer: status reporting is backed by the canonical
 // PostgreSQL bot-status row; opaque bot requests remain fail closed until
 // their respective providers are wired.
@@ -76,7 +80,7 @@ func (c *ApiFullCore) BotsSendCustomRequest(in *mtproto.TLBotsSendCustomRequest)
 	if _, err := c.requireUserId(); err != nil {
 		return nil, err
 	}
-	if in == nil || in.GetCustomMethod() == "" || len(in.GetCustomMethod()) > 128 || in.GetParams() == nil {
+	if in == nil || in.GetCustomMethod() == "" || len(in.GetCustomMethod()) > 128 || !validBotDataJSON(in.GetParams()) {
 		return nil, mtproto.ErrInputRequestInvalid
 	}
 	result := new(mtproto.DataJSON)
@@ -85,7 +89,7 @@ func (c *ApiFullCore) BotsSendCustomRequest(in *mtproto.TLBotsSendCustomRequest)
 	}, result); err != nil {
 		return nil, err
 	}
-	if result.GetData() == "" {
+	if !validBotDataJSON(result) {
 		return nil, mtproto.ErrInternalServerError
 	}
 	return result, nil

@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/teamgram/proto/mtproto"
+	"github.com/teamgram/proto/mtproto/rpc/metadata"
 )
 
 func TestWebViewProviderRejectsNonCanonicalUpdates(t *testing.T) {
@@ -65,5 +66,22 @@ func TestBotProviderRejectsMissingBooleanValue(t *testing.T) {
 	})
 	if result != nil || !errors.Is(err, mtproto.ErrInternalServerError) {
 		t.Fatalf("missing webhook boolean = (%v, %v), want internal error", result, err)
+	}
+}
+
+func TestBotProviderRejectsInvalidDataJSON(t *testing.T) {
+	core := &ApiFullCore{MD: &metadata.RpcMetadata{UserId: 42}}
+	if result, err := core.BotsSendCustomRequest(&mtproto.TLBotsSendCustomRequest{
+		CustomMethod: "status",
+		Params:       &mtproto.DataJSON{Data: "not-json"},
+	}); result != nil || !errors.Is(err, mtproto.ErrInputRequestInvalid) {
+		t.Fatalf("invalid custom request JSON = (%v, %v), want input error", result, err)
+	}
+	if result, err := core.BotsInvokeWebViewCustomMethod(&mtproto.TLBotsInvokeWebViewCustomMethod{
+		Bot:          &mtproto.InputUser{UserId: 7, AccessHash: 9},
+		CustomMethod: "status",
+		Params:       &mtproto.DataJSON{Data: "not-json"},
+	}); result != nil || !errors.Is(err, mtproto.ErrInputRequestInvalid) {
+		t.Fatalf("invalid WebView custom JSON = (%v, %v), want input error", result, err)
 	}
 }
