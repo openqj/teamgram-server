@@ -8,6 +8,8 @@ import (
 	"github.com/teamgram/proto/mtproto/rpc/metadata"
 	apifullDao "github.com/teamgram/teamgram-server/app/bff/apifull/internal/dao"
 	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/svc"
+	chatpb "github.com/teamgram/teamgram-server/app/service/biz/chat/chat"
+	chat_client "github.com/teamgram/teamgram-server/app/service/biz/chat/client"
 )
 
 func TestDeepLinkMethodsReturnTypedEmptyResults(t *testing.T) {
@@ -77,4 +79,67 @@ func TestMessagesStartBotDirectUserDispatchesValidatedStartMessage(t *testing.T)
 	if outbox.GetRandomId() != randomID || outbox.GetMessage().GetMessage() != "/start launch_1" || !outbox.GetNoWebpage() {
 		t.Fatalf("dispatch outbox = %+v", outbox)
 	}
+}
+
+func TestMessagesStartBotGroupDispatchesOnlyForActiveMembers(t *testing.T) {
+	const (
+		callerID   int64 = 11101
+		botID      int64 = 11102
+		chatID     int64 = 11103
+		accessHash int64 = 771200
+		randomID   int64 = 9911003
+	)
+	sender := &scheduledSenderStub{}
+	users := &miniBotAppsUserClient{users: map[int64]*mtproto.ImmutableUser{
+		botID: miniBotProfile(botID, accessHash, true),
+	}}
+	chats := &startBotChatClient{chat: &mtproto.MutableChat{
+		Chat: mtproto.MakeTLImmutableChat(&mtproto.ImmutableChat{Id: chatID}).To_ImmutableChat(),
+		ChatParticipants: []*mtproto.ImmutableChatParticipant{
+			{UserId: callerID, State: mtproto.ChatMemberStateNormal},
+			{UserId: botID, State: mtproto.ChatMemberStateNormal, IsBot: true},
+		},
+	}}
+	c := &ApiFullCore{
+		ctx: context.Background(),
+		svcCtx: &svc.ServiceContext{Dao: &apifullDao.Dao{
+			UserClient:             users,
+			ChatClient:             chats,
+			ScheduledMessageSender: sender,
+		}},
+		MD: &metadata.RpcMetadata{UserId: callerID, PermAuthKeyId: 92},
+	}
+	updates, err := c.MessagesStartBot(&mtproto.TLMessagesStartBot{
+		Bot:        mtproto.MakeTLInputUser(&mtproto.InputUser{UserId: botID, AccessHash: accessHash}).To_InputUser(),
+		Peer:       mtproto.MakeTLInputPeerChat(&mtproto.InputPeer{ChatId: chatID}).To_InputPeer(),
+		RandomId:   randomID,
+		StartParam: "launch_2",
+	})
+	if err != nil || updates == nil {
+		t.Fatalf("group start bot = (%+v, %v), want typed updates", updates, err)
+	}
+	if sender.request == nil || sender.request.GetPeerType() != mtproto.PEER_CHAT || sender.request.GetPeerId() != chatID {
+		t.Fatalf("group dispatch request = %+v", sender.request)
+	}
+	if len(sender.request.GetMessage()) != 1 || sender.request.GetMessage()[0].GetMessage().GetPeerId().GetChatId() != chatID {
+		t.Fatalf("group dispatch message = %+v", sender.request.GetMessage())
+	}
+
+	chats.chat.ChatParticipants[1].State = mtproto.ChatMemberStateLeft
+	if updates, err = c.MessagesStartBot(&mtproto.TLMessagesStartBot{
+		Bot:      mtproto.MakeTLInputUser(&mtproto.InputUser{UserId: botID, AccessHash: accessHash}).To_InputUser(),
+		Peer:     mtproto.MakeTLInputPeerChat(&mtproto.InputPeer{ChatId: chatID}).To_InputPeer(),
+		RandomId: randomID + 1,
+	}); updates != nil || err != mtproto.ErrBotInvalid {
+		t.Fatalf("inactive bot member = (%+v, %v), want BOT_INVALID", updates, err)
+	}
+}
+
+type startBotChatClient struct {
+	chat_client.ChatClient
+	chat *mtproto.MutableChat
+}
+
+func (c *startBotChatClient) ChatGetMutableChat(context.Context, *chatpb.TLChatGetMutableChat) (*mtproto.MutableChat, error) {
+	return c.chat, nil
 }

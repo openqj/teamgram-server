@@ -72,3 +72,22 @@ func TestAicomposeGetToneExampleUsesSignedProvider(t *testing.T) {
 		t.Fatalf("tone example = (%v, %v), want signed provider result", got, err)
 	}
 }
+
+func TestMessagesComposeMessageWithAIUsesOpenAICompatibleProvider(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/chat/completions" || r.Header.Get("Authorization") != "Bearer openai-test-key" {
+			t.Fatalf("path/auth = %s/%q", r.URL.Path, r.Header.Get("Authorization"))
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"message": map[string]string{"content": `{"result_text":{"text":"rewritten","entities":[]},"diff_text":null}`}}}})
+	}))
+	defer server.Close()
+	core := &ApiFullCore{
+		svcCtx: &svc.ServiceContext{Config: config.Config{AIProviderEndpoint: server.URL + "/v1", AIProviderKey: "openai-test-key", AIProviderModel: "gpt-6.1-sol"}},
+		MD:     &metadata.RpcMetadata{UserId: 42},
+	}
+	input := mtproto.MakeTLTextWithEntities(&mtproto.TextWithEntities{Text: "source"}).To_TextWithEntities()
+	got, err := core.MessagesComposeMessageWithAI(&mtproto.TLMessagesComposeMessageWithAI{Text: input})
+	if err != nil || got == nil || got.GetResultText() == nil || got.GetResultText().GetText() != "rewritten" {
+		t.Fatalf("compose = (%v, %v), want OpenAI-compatible result", got, err)
+	}
+}

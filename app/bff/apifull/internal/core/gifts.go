@@ -27,6 +27,42 @@ import (
 	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
+// validGiftProviderPredicate keeps a signed provider response on the exact
+// Layer 229 result union requested by the RPC. A non-empty predicate alone is
+// insufficient because the generated codec accepts any constructor name
+// until encode time.
+func validGiftProviderPredicate(result interface{ GetPredicateName() string }, allowed ...string) bool {
+	if result == nil {
+		return false
+	}
+	predicate := result.GetPredicateName()
+	for _, candidate := range allowed {
+		if predicate == candidate {
+			return true
+		}
+	}
+	return false
+}
+
+func validUpdatesProviderResult(result *mtproto.Updates) bool {
+	if result == nil {
+		return false
+	}
+	switch result.GetPredicateName() {
+	case mtproto.Predicate_updates,
+		mtproto.Predicate_updatesCombined,
+		mtproto.Predicate_updatesTooLong,
+		mtproto.Predicate_updateShort,
+		mtproto.Predicate_updateShortMessage,
+		mtproto.Predicate_updateShortChatMessage,
+		mtproto.Predicate_updateShortSentMessage,
+		mtproto.Predicate_updateAccountResetAuthorization:
+		return true
+	default:
+		return false
+	}
+}
+
 // RPCGiftsServer: Layer 229 methods previously returned ERR_ENTERPRISE_IS_BLOCKED.
 
 func (c *ApiFullCore) giftsUnavailable() error {
@@ -130,7 +166,7 @@ func (c *ApiFullCore) PaymentsGetStarGiftUpgradePreview(in *mtproto.TLPaymentsGe
 	if err := c.callBusinessProvider("payments.getStarGiftUpgradePreview", map[string]any{"gift_id": in.GetGiftId()}, result); err != nil {
 		return nil, err
 	}
-	if result.GetPredicateName() == "" {
+	if !validGiftProviderPredicate(result, mtproto.Predicate_payments_starGiftUpgradePreview) {
 		return nil, mtproto.ErrInternalServerError
 	}
 	return result, nil
@@ -147,7 +183,7 @@ func (c *ApiFullCore) PaymentsUpgradeStarGift(in *mtproto.TLPaymentsUpgradeStarG
 	if err := c.callBusinessProvider("payments.upgradeStarGift", map[string]any{"keep_original_details": in.GetKeepOriginalDetails(), "stargift": in.GetStargift(), "msg_id": in.GetMsgId()}, result); err != nil {
 		return nil, err
 	}
-	if result.GetPredicateName() == "" {
+	if !validUpdatesProviderResult(result) {
 		return nil, mtproto.ErrInternalServerError
 	}
 	return result, nil
@@ -393,7 +429,7 @@ func (c *ApiFullCore) PaymentsGetStarGiftWithdrawalUrl(in *mtproto.TLPaymentsGet
 	if err := c.callBusinessProvider("payments.getStarGiftWithdrawalUrl", map[string]any{"request": in}, result); err != nil {
 		return nil, err
 	}
-	if result.GetPredicateName() == "" {
+	if !validGiftProviderPredicate(result, mtproto.Predicate_payments_starGiftWithdrawalUrl) || strings.TrimSpace(result.GetUrl()) == "" || !strings.HasPrefix(strings.ToLower(result.GetUrl()), "https://") {
 		return nil, mtproto.ErrInternalServerError
 	}
 	return result, nil
@@ -481,7 +517,7 @@ func (c *ApiFullCore) PaymentsGetResaleStarGifts(in *mtproto.TLPaymentsGetResale
 	if err := c.callBusinessProvider("payments.getResaleStarGifts", map[string]any{"request": in}, result); err != nil {
 		return nil, err
 	}
-	if result.GetPredicateName() == "" {
+	if !validGiftProviderPredicate(result, mtproto.Predicate_payments_resaleStarGifts) || result.GetCount() < 0 || len(result.GetGifts()) > 10000 {
 		return nil, mtproto.ErrInternalServerError
 	}
 	return result, nil
@@ -498,7 +534,7 @@ func (c *ApiFullCore) PaymentsUpdateStarGiftPrice(in *mtproto.TLPaymentsUpdateSt
 	if err := c.callBusinessProvider("payments.updateStarGiftPrice", map[string]any{"request": in}, result); err != nil {
 		return nil, err
 	}
-	if result.GetPredicateName() == "" {
+	if !validUpdatesProviderResult(result) {
 		return nil, mtproto.ErrInternalServerError
 	}
 	return result, nil
@@ -515,7 +551,7 @@ func (c *ApiFullCore) PaymentsGetUniqueStarGiftValueInfo(in *mtproto.TLPaymentsG
 	if err := c.callBusinessProvider("payments.getUniqueStarGiftValueInfo", map[string]any{"request": in}, result); err != nil {
 		return nil, err
 	}
-	if result.GetPredicateName() == "" {
+	if !validGiftProviderPredicate(result, mtproto.Predicate_payments_uniqueStarGiftValueInfo) || result.GetValue() < 0 || result.GetInitialSaleStars() < 0 || result.GetInitialSalePrice() < 0 {
 		return nil, mtproto.ErrInternalServerError
 	}
 	return result, nil
@@ -532,7 +568,7 @@ func (c *ApiFullCore) PaymentsCheckCanSendGift(in *mtproto.TLPaymentsCheckCanSen
 	if err := c.callBusinessProvider("payments.checkCanSendGift", map[string]any{"request": in}, result); err != nil {
 		return nil, err
 	}
-	if result.GetPredicateName() == "" {
+	if !validGiftProviderPredicate(result, mtproto.Predicate_payments_checkCanSendGiftResultOk, mtproto.Predicate_payments_checkCanSendGiftResultFail) {
 		return nil, mtproto.ErrInternalServerError
 	}
 	return result, nil
@@ -549,7 +585,7 @@ func (c *ApiFullCore) PaymentsGetStarGiftAuctionState(in *mtproto.TLPaymentsGetS
 	if err := c.callBusinessProvider("payments.getStarGiftAuctionState", map[string]any{"request": in}, result); err != nil {
 		return nil, err
 	}
-	if result.GetPredicateName() == "" {
+	if !validGiftProviderPredicate(result, mtproto.Predicate_payments_starGiftAuctionState) {
 		return nil, mtproto.ErrInternalServerError
 	}
 	return result, nil
@@ -566,7 +602,7 @@ func (c *ApiFullCore) PaymentsGetStarGiftAuctionAcquiredGifts(in *mtproto.TLPaym
 	if err := c.callBusinessProvider("payments.getStarGiftAuctionAcquiredGifts", map[string]any{"request": in}, result); err != nil {
 		return nil, err
 	}
-	if result.GetPredicateName() == "" {
+	if !validGiftProviderPredicate(result, mtproto.Predicate_payments_starGiftAuctionAcquiredGifts) || len(result.GetGifts()) > 10000 {
 		return nil, mtproto.ErrInternalServerError
 	}
 	return result, nil
@@ -583,7 +619,7 @@ func (c *ApiFullCore) PaymentsGetStarGiftActiveAuctions(in *mtproto.TLPaymentsGe
 	if err := c.callBusinessProvider("payments.getStarGiftActiveAuctions", map[string]any{"request": in}, result); err != nil {
 		return nil, err
 	}
-	if result.GetPredicateName() == "" {
+	if !validGiftProviderPredicate(result, mtproto.Predicate_payments_starGiftActiveAuctions, mtproto.Predicate_payments_starGiftActiveAuctionsNotModified) || len(result.GetAuctions()) > 10000 {
 		return nil, mtproto.ErrInternalServerError
 	}
 	return result, nil
@@ -600,7 +636,7 @@ func (c *ApiFullCore) PaymentsResolveStarGiftOffer(in *mtproto.TLPaymentsResolve
 	if err := c.callBusinessProvider("payments.resolveStarGiftOffer", map[string]any{"request": in}, result); err != nil {
 		return nil, err
 	}
-	if result.GetPredicateName() == "" {
+	if !validUpdatesProviderResult(result) {
 		return nil, mtproto.ErrInternalServerError
 	}
 	return result, nil
@@ -617,7 +653,7 @@ func (c *ApiFullCore) PaymentsSendStarGiftOffer(in *mtproto.TLPaymentsSendStarGi
 	if err := c.callBusinessProvider("payments.sendStarGiftOffer", map[string]any{"request": in}, result); err != nil {
 		return nil, err
 	}
-	if result.GetPredicateName() == "" {
+	if !validUpdatesProviderResult(result) {
 		return nil, mtproto.ErrInternalServerError
 	}
 	return result, nil
@@ -634,7 +670,7 @@ func (c *ApiFullCore) PaymentsGetStarGiftUpgradeAttributes(in *mtproto.TLPayment
 	if err := c.callBusinessProvider("payments.getStarGiftUpgradeAttributes", map[string]any{"request": in}, result); err != nil {
 		return nil, err
 	}
-	if result.GetPredicateName() == "" {
+	if !validGiftProviderPredicate(result, mtproto.Predicate_payments_starGiftUpgradeAttributes) || len(result.GetAttributes()) > 10000 {
 		return nil, mtproto.ErrInternalServerError
 	}
 	return result, nil
@@ -651,7 +687,7 @@ func (c *ApiFullCore) PaymentsGetCraftStarGifts(in *mtproto.TLPaymentsGetCraftSt
 	if err := c.callBusinessProvider("payments.getCraftStarGifts", map[string]any{"request": in}, result); err != nil {
 		return nil, err
 	}
-	if result.GetPredicateName() == "" {
+	if !validGiftProviderPredicate(result, mtproto.Predicate_payments_savedStarGifts) || result.GetCount() < 0 || len(result.GetGifts()) > 10000 {
 		return nil, mtproto.ErrInternalServerError
 	}
 	return result, nil
@@ -668,7 +704,7 @@ func (c *ApiFullCore) PaymentsCraftStarGift(in *mtproto.TLPaymentsCraftStarGift)
 	if err := c.callBusinessProvider("payments.craftStarGift", map[string]any{"request": in}, result); err != nil {
 		return nil, err
 	}
-	if result.GetPredicateName() == "" {
+	if !validUpdatesProviderResult(result) {
 		return nil, mtproto.ErrInternalServerError
 	}
 	return result, nil

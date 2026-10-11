@@ -23,6 +23,7 @@ import (
 
 	"github.com/teamgram/proto/mtproto"
 	msgpb "github.com/teamgram/teamgram-server/app/messenger/msg/msg/msg"
+	chatpb "github.com/teamgram/teamgram-server/app/service/biz/chat/chat"
 	userpb "github.com/teamgram/teamgram-server/app/service/biz/user/user"
 )
 
@@ -44,13 +45,6 @@ func (c *ApiFullCore) MessagesStartBot(in *mtproto.TLMessagesStartBot) (*mtproto
 	if bot.GetPredicateName() != mtproto.Predicate_inputUser || bot.GetUserId() <= 0 || bot.GetAccessHash() == 0 {
 		return nil, mtproto.ErrUserIdInvalid
 	}
-	if peer.GetPredicateName() != mtproto.Predicate_inputPeerUser {
-		return nil, mtproto.ErrMethodNotImpl
-	}
-	if peer.GetUserId() != bot.GetUserId() || peer.GetAccessHash() == 0 || peer.GetAccessHash() != bot.GetAccessHash() {
-		return nil, mtproto.ErrUserIdInvalid
-	}
-
 	d := c.apifullDao()
 	if d == nil || d.UserClient == nil || d.ScheduledMessageSender == nil {
 		return nil, mtproto.ErrMethodNotImpl
@@ -66,6 +60,11 @@ func (c *ApiFullCore) MessagesStartBot(in *mtproto.TLMessagesStartBot) (*mtproto
 		return nil, mtproto.ErrUserIdInvalid
 	}
 
+	peerType, peerID, err := c.validateBotStartPeer(userID, bot.GetUserId(), bot.GetAccessHash(), peer)
+	if err != nil {
+		return nil, err
+	}
+
 	message := "/start"
 	if in.GetStartParam() != "" {
 		message += " " + in.GetStartParam()
@@ -73,15 +72,15 @@ func (c *ApiFullCore) MessagesStartBot(in *mtproto.TLMessagesStartBot) (*mtproto
 	updates, err := d.ScheduledMessageSender.MsgSendMessageV2(callContext(c), &msgpb.TLMsgSendMessageV2{
 		UserId:    userID,
 		AuthKeyId: c.MD.PermAuthKeyId,
-		PeerType:  mtproto.PEER_USER,
-		PeerId:    bot.GetUserId(),
+		PeerType:  peerType,
+		PeerId:    peerID,
 		Message: []*msgpb.OutboxMessage{msgpb.MakeTLOutboxMessage(&msgpb.OutboxMessage{
 			NoWebpage: true,
 			RandomId:  in.GetRandomId(),
 			Message: mtproto.MakeTLMessage(&mtproto.Message{
 				Out:     true,
 				FromId:  mtproto.MakePeerUser(userID),
-				PeerId:  mtproto.MakePeerUser(bot.GetUserId()),
+				PeerId:  startBotPeer(peerType, peerID),
 				Date:    int32(time.Now().Unix()),
 				Message: message,
 			}).To_Message(),
@@ -94,6 +93,66 @@ func (c *ApiFullCore) MessagesStartBot(in *mtproto.TLMessagesStartBot) (*mtproto
 		return nil, mtproto.ErrInternalServerError
 	}
 	return updates, nil
+}
+
+// validateBotStartPeer checks that a start command is sent only to a peer
+// where both the caller and target bot currently have an active membership.
+// User peers are restricted to the bot itself; group membership is resolved
+// by the authoritative Chat service before MsgSendMessageV2 is called.
+func (c *ApiFullCore) validateBotStartPeer(callerID, botID, botAccessHash int64, peer *mtproto.InputPeer) (int32, int64, error) {
+	if peer == nil {
+		return 0, 0, mtproto.ErrInputRequestInvalid
+	}
+	switch peer.GetPredicateName() {
+	case mtproto.Predicate_inputPeerUser:
+		if peer.GetUserId() != botID || peer.GetAccessHash() == 0 || peer.GetAccessHash() != botAccessHash {
+			return 0, 0, mtproto.ErrUserIdInvalid
+		}
+		return mtproto.PEER_USER, botID, nil
+	case mtproto.Predicate_inputPeerChat:
+		if peer.GetChatId() <= 0 {
+			return 0, 0, mtproto.ErrPeerIdInvalid
+		}
+		d := c.apifullDao()
+		if d == nil || d.ChatClient == nil {
+			return 0, 0, mtproto.ErrMethodNotImpl
+		}
+		chat, err := d.ChatClient.ChatGetMutableChat(callContext(c), &chatpb.TLChatGetMutableChat{ChatId: peer.GetChatId()})
+		if err != nil {
+			return 0, 0, err
+		}
+		if chat == nil || chat.GetChat() == nil || chat.GetChat().GetId() != peer.GetChatId() {
+			return 0, 0, mtproto.ErrPeerIdInvalid
+		}
+		callerMember, botMember := false, false
+		for _, participant := range chat.GetChatParticipants() {
+			if participant == nil || !participant.IsChatMemberStateNormal() {
+				continue
+			}
+			switch participant.GetUserId() {
+			case callerID:
+				callerMember = true
+			case botID:
+				botMember = true
+			}
+		}
+		if !callerMember {
+			return 0, 0, mtproto.ErrUserNotParticipant
+		}
+		if !botMember {
+			return 0, 0, mtproto.ErrBotInvalid
+		}
+		return mtproto.PEER_CHAT, peer.GetChatId(), nil
+	default:
+		return 0, 0, mtproto.ErrMethodNotImpl
+	}
+}
+
+func startBotPeer(peerType int32, peerID int64) *mtproto.Peer {
+	if peerType == mtproto.PEER_CHAT {
+		return mtproto.MakePeerChat(peerID)
+	}
+	return mtproto.MakePeerUser(peerID)
 }
 
 func validBotStartParam(param string) bool {

@@ -87,3 +87,21 @@ func TestMessagesComposeRichMessageWithAIRejectsUnsignedProvider(t *testing.T) {
 		t.Fatalf("compose = (%v, %v), want unsigned provider rejection", got, err)
 	}
 }
+
+func TestMessagesSummarizeTextUsesOpenAICompatibleProvider(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/chat/completions" || r.Header.Get("Authorization") != "Bearer openai-test-key" {
+			t.Fatalf("path/auth = %s/%q", r.URL.Path, r.Header.Get("Authorization"))
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"message": map[string]string{"content": `{"text":"summary","entities":[]}`}}}})
+	}))
+	defer server.Close()
+	core := &MessagesCore{
+		svcCtx: &svc.ServiceContext{Config: config.Config{AIProviderEndpoint: server.URL + "/v1", AIProviderKey: "openai-test-key", AIProviderModel: "gpt-6.1-sol"}},
+		MD:     &metadata.RpcMetadata{UserId: 42},
+	}
+	got, err := core.MessagesSummarizeText(&mtproto.TLMessagesSummarizeText{Id: 7})
+	if err != nil || got == nil || got.GetText() != "summary" {
+		t.Fatalf("summary = (%v, %v), want OpenAI-compatible result", got, err)
+	}
+}
