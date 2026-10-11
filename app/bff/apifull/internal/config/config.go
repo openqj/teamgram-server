@@ -27,6 +27,7 @@ import (
 
 type Config struct {
 	zrpc.RpcServerConf
+	DcId                           int32 `json:",optional"`
 	DialogClient                   zrpc.RpcClientConf
 	UserClient                     zrpc.RpcClientConf
 	ChatClient                     zrpc.RpcClientConf

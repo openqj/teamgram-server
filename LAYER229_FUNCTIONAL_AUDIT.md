@@ -1,5 +1,19 @@
 # Layer 229 API 功能验收
 
+## 2026-10-12：Sponsored preference consumer 接通
+
+- `account.toggleSponsoredMessages` 的 PostgreSQL 18 caller preference 现在由 `messages.getSponsoredMessages` 在 provider/inventory 访问前读取；禁用时返回规范 `messages.sponsoredMessagesEmpty`，缺省仍保持 enabled，损坏 preference 或 inventory fail-closed。新增开关消费者定向测试；广告 provisioning、provider/event consumer、实时会话和生产流量仍未验收，生产状态不提升。
+
+## 2026-10-12：Bot custom verification 本地读回闭环
+
+- `bots.setCustomVerification` 写入的 PostgreSQL-backed bot/peer 状态现在由共享持久化 API 读取；`users.getFullUser` 对 bot 的 self scope 输出规范 `BotVerification(bot_id, icon, description)`，损坏记录 fail-closed。新增用户详情定向回环测试；chat-scoped message authorization、外部签名 provider、实时会话和生产流量仍未验收，因此生产状态继续为 `BLOCKED_BY_IMPLEMENTATION_GAP`。
+
+## 2026-10-11：赞助 inventory 与真实阻塞复核
+
+- `contacts.getSponsoredPeers` 与 `messages.getSponsoredMessages` 在未配置外部 SponsoredProvider 时读取 PostgreSQL 18 `apifull_sponsored_inventory` 的时间窗口与 active 状态，并只返回经过 Layer 229 构造器校验的 inventory；缺行、过期行或非法 JSON 继续 fail-closed。新增迁移 067、存取 API、handler round-trip 和缺失 inventory 定向测试，台账从 `BLOCKED_BY_IMPLEMENTATION_GAP` 调整为 `PARTIAL_ISOLATED_DB_ONLY`。
+- `messages.setBotShippingResults` 与 `messages.setBotPrecheckoutResults` 已具备 caller-owned pending query 的过期、归属、阶段转移和幂等状态机，但当前支付流程尚未把 query producer 接入该状态机；因此两项仍保留为真实阻塞，不能仅凭 callback 状态表宣称业务闭环。
+- 当前 813 个唯一方法的生产状态为 `PARTIAL_ISOLATED_SESSION_E2E=309`、`PARTIAL_ISOLATED_DB_ONLY=251`、`PARTIAL_COMPONENT_ONLY=162`、`BLOCKED_BY_IMPLEMENTATION_GAP=72`、`TRANSPORT_ONLY=11`、`ISOLATED_COMPONENT_ONLY=6`、`ISOLATED_DB_ONLY=2`。未运行全量编译或全仓测试。
+
 ## 2026-10-11：实现阻塞项再审计与统计反应计数
 
 - `auth.importBotAuthorization`、`messages.startBot`、`bots.getBotInfo` 已有本地权威业务路径：分别使用 PostgreSQL User token registry/authsession、canonical Msg + APIFull PostgreSQL direct/group/channel 投递、User profile + bot registry 读取。它们从 `BLOCKED_BY_IMPLEMENTATION_GAP` 调整为 `PARTIAL_ISOLATED_DB_ONLY`；实时 Layer 229 会话、重启回放和生产流量证据仍未具备。
@@ -8,7 +22,7 @@
 
 ## 2026-10-11：当前总指挥阶段（Bot Emoji 与 Premium promo）
 
-- 当前台账仍为 813 个唯一方法；本轮重算生产状态为 `PARTIAL_ISOLATED_SESSION_E2E=309`、`PARTIAL_ISOLATED_DB_ONLY=247`、`PARTIAL_COMPONENT_ONLY=162`、`BLOCKED_BY_IMPLEMENTATION_GAP=76`、`TRANSPORT_ONLY=11`、`ISOLATED_COMPONENT_ONLY=6`、`ISOLATED_DB_ONLY=2`。
+- 当前台账仍为 813 个唯一方法；本轮重算生产状态为 `PARTIAL_ISOLATED_SESSION_E2E=309`、`PARTIAL_ISOLATED_DB_ONLY=249`、`PARTIAL_COMPONENT_ONLY=162`、`BLOCKED_BY_IMPLEMENTATION_GAP=74`、`TRANSPORT_ONLY=11`、`ISOLATED_COMPONENT_ONLY=6`、`ISOLATED_DB_ONLY=2`。
 - `bots.updateUserEmojiStatus` 与 `bots.toggleUserEmojiStatusPermission` 已接入 PostgreSQL 18 权限表 `apifull_user_emoji_status_permission`（迁移 065），通过 User service 做 Bot/目标/access-hash 校验，权限 upsert 使用事务与 advisory lock，状态更新复用 canonical User service。
 - `help.getPremiumPromo` 已接入 PostgreSQL 18 单例目录 `apifull_premium_promo`（迁移 066），目录数据必须存在且通过完整 Layer 229 构造器校验；目录缺失时才使用签名 PaymentProvider，空目录或非法 JSON 不会生成套餐。
 - `phone.getGroupCallStars` 对 APIFull 自有群通话已接入 PostgreSQL 18 已结算 paid-message ledger：发送端扣 Stars、通话创建者入账、`random_id` 冲突/重试幂等，查询按未删除消息聚合 donor；原生媒体控制面仍走签名 provider，缺失时 fail-closed。
@@ -63,7 +77,7 @@
 - 继续按 namespace 批量收口 Layer 229 持久化边界：APIFull autosave、business chat links、themes、recent emoji status、ringtone 和 Stars catalog mutations now use the shared PostgreSQL transaction boundary; message handlers reject unauthenticated or missing-peer inputs before touching providers; messenger/message DAO fallbacks fail closed instead of returning empty success; User bot registry and bot profile reads use the PostgreSQL path with media-provider errors propagated.
 - `OpenPostgresReadOnly` now requires the latest checked-in migration `064_biz_user_bot_manager_index`, so a service cannot start against a schema that predates the manager-hierarchy index. PostgreSQL 18.6 replay against `teamgram_batch_replay_20261011` reports `server_version_num=180006`, `62` applied and distinct migrations, latest `064_biz_user_bot_manager_index`, and a second checksum-protected pass skipped every migration.
 - Focused package compilation and tests passed for APIFull core/domain/persist, messages boundary validation, Passport, authsession, User bot/profile/registry, message DAO user scoping, messenger DAO fail-closed behavior, autosave/ringtone/themes/emoji, mini-bot provider boundaries, and PostgreSQL catalog/registry readbacks. The final `go build ./...` now also passes.
-- User DAO adapters now guard promoted legacy DAO pointers and return an explicit PostgreSQL-store-unavailable error when neither the PostgreSQL aggregate nor an isolated legacy fixture is configured; `TestPostgresMethodsFailClosedWhenStoreIsMissing` covers representative reads and writes. The three previously untested provider blockers (`account.getBotBusinessConnection`, `account.confirmBotConnection`, and `messages.getSponsoredMessages`) now have explicit nil-result/METHOD_NOT_IMPL fail-closed tests.
+- User DAO adapters now guard promoted legacy DAO pointers and return an explicit PostgreSQL-store-unavailable error when neither the PostgreSQL aggregate nor an isolated legacy fixture is configured; `TestPostgresMethodsFailClosedWhenStoreIsMissing` covers representative reads and writes. The remaining provider-only blockers (`account.confirmBotConnection` and `messages.getSponsoredMessages`) have explicit nil-result/METHOD_NOT_IMPL fail-closed tests; `account.getBotBusinessConnection` now has a PostgreSQL registry path with a fail-closed provider fallback.
 - Ledger remains authoritative at `813` unique methods with production statuses `PARTIAL_ISOLATED_SESSION_E2E=309`, `PARTIAL_ISOLATED_DB_ONLY=238`, `PARTIAL_COMPONENT_ONLY=154`, `BLOCKED_BY_IMPLEMENTATION_GAP=93`, `TRANSPORT_ONLY=11`, `ISOLATED_COMPONENT_ONLY=6`, and `ISOLATED_DB_ONLY=2`. Audit statuses now include `PARTIAL_COMPONENT_VERIFIED=364` and `KNOWN_INCOMPLETE_STATIC=49` after signed provider boundaries were added for bot custom requests, webhook answers, affiliate programs, bot verification, recommendations, Mini App/WebView operations, CDN methods, inline bot operations and unique-gift themes. Full production acceptance is still `0/813`; the 93 blocked methods require external providers or business capabilities that are not present and remain explicit fail-closed paths.
 
 ## 2026-10-11：help.setBotUpdatesStatus PostgreSQL 18 provider
@@ -1124,7 +1138,7 @@
 - **礼物、兑换码与合集：** `payments.getStarGifts`、`saveStarGift`、`convertStarGift`、`getStarGiftUpgradePreview`、`upgradeStarGift`、`transferStarGift`、`getUniqueStarGift`、`getSavedStarGifts`、`getSavedStarGift`、`getStarGiftWithdrawalUrl`、`toggleChatStarGiftNotifications`、`toggleStarGiftsPinnedToTop`、`getResaleStarGifts`、`updateStarGiftPrice`、`getUniqueStarGiftValueInfo`、`checkCanSendGift`、`getStarGiftAuctionState`、`getStarGiftAuctionAcquiredGifts`、`getStarGiftActiveAuctions`、`resolveStarGiftOffer`、`sendStarGiftOffer`、`getStarGiftUpgradeAttributes`、`getCraftStarGifts`、`craftStarGift`；`payments.checkGiftCode`、`applyGiftCode`；`payments.createStarGiftCollection`、`updateStarGiftCollection`、`reorderStarGiftCollections`、`deleteStarGiftCollection`、`getStarGiftCollections`。礼物只用每用户一个文本/slug 模拟，合集只有一个标题；目录、库存、所有权、拍卖、兑换权益、合集条目与排序都没有业务实现。测试只验证保存 slug 或标题后本地可读回。
 - **社区与秘密聊天：** `communities.create`、`togglePeerLink`、`getJoinedCommunities`、`toggleCommunityCollapsedInDialogs`、`getPeerLinkRequests`、`togglePeerLinkRequestApproval`、`toggleAllPeerLinkRequestApproval`、`toggleParticipantBanned`、`getParticipantJoinedChats`；`messages.requestEncryption`、`acceptEncryption`、`discardEncryption`、`setEncryptedTyping`、`readEncryptedHistory`、`sendEncrypted`、`sendEncryptedFile`、`sendEncryptedService`、`receivedQueue`。社区只写标题或原始请求、生成合成 Chat，部分查询固定空；秘密聊天只存调用者本地 ID/DH 字段，发送返回空加密结果且接收队列固定为空。`messages.getDhConfig` 及 `messages.uploadEncryptedFile` 不在这组缺口中。
 - **举报与内联机器人：** `account.reportPeer`、`account.reportProfilePhoto`、`messages.reportSpam`、`messages.report`、`messages.reportEncryptedSpam`、`messages.reportMusicListen`、`channels.reportSpam` 只写本地举报日志；`messages.reportReadMetrics` 只更新 APIFull 本地 views。`messages.getInlineBotResults` 现在在 PostgreSQL APIFull 状态中创建或复用 requester-scoped query ID，并读取 bot 发布的结果；`messages.setInlineBotResults` 校验 bot 身份后以事务方式发布结果，重复相同提交幂等、冲突提交失败。两者仍没有 bot 执行器、完整媒体 provider、`sendInlineBotResult`/`editInlineBotMessage` 消息投递、请求 peer 或 callback 查询 provider；`setBotGuestChatResult` 继续失败关闭。
-- **事实核查、快捷回复与 Business Bot：** `messages.editFactCheck`、`deleteFactCheck`、`getFactCheck` 只按调用用户在 APIFull 本地读写，不确认消息存在或编辑权限，也不通知消息服务。`messages.getQuickReplies` 和 `getQuickReplyMessages` 通过 `MessageGetUserMessage` 读取真实消息对象；快捷回复关联仍是 APIFull 本地状态，但 `sendQuickReplyMessages` 已通过 `MsgSendMessageV2` 写入真实消息，`deleteQuickReplyMessages` 已返回 typed `Updates` 并删除关联。`account.updateConnectedBot` / `getConnectedBots` 仅有本地连接配置，未接到业务消息投递；`getBotBusinessConnection` 固定空，暂停/禁用设置只覆盖单条不被消费的 JSON。`ephemeral.reportMessage` 和 `getCallbackAnswer` 也只写入/读回每用户一条 note，没有举报或 callback 查询处理。
+- **事实核查、快捷回复与 Business Bot：** `messages.editFactCheck`、`deleteFactCheck`、`getFactCheck` 只按调用用户在 APIFull 本地读写，不确认消息存在或编辑权限，也不通知消息服务。`messages.getQuickReplies` 和 `getQuickReplyMessages` 通过 `MessageGetUserMessage` 读取真实消息对象；快捷回复关联仍是 APIFull 本地状态，但 `sendQuickReplyMessages` 已通过 `MsgSendMessageV2` 写入真实消息，`deleteQuickReplyMessages` 已返回 typed `Updates` 并删除关联。`account.updateConnectedBot` 在 PostgreSQL 中原子写入 owner/bot 配置、连接 ID、DC/date/qts 和 outbox，worker 通过 `SyncPushBotUpdates` 投递 `updateBotBusinessConnect`；`getConnectedBots` 读取同一配置，`getBotBusinessConnection` 按 bot caller 和 connection ID 返回标准 updates。PostgreSQL round-trip、重启和真实 bot session acceptance 仍待环境验收。`ephemeral.reportMessage` 和 `getCallbackAnswer` 也只写入/读回每用户一条 note，没有举报或 callback 查询处理。
 - **AI 文本、支持信息与广告：** `messages.summarizeText`、`translateRichMessage`、`composeRichMessageWithAI` 都返回原文或原 rich-text，没有摘要、翻译或生成服务。`messages.setTyping` 已补齐用户、普通群和 APIFull 频道的成员校验与 `UpdateChannelUserTyping` 推送；跨用户隔离会话已通过，生产双用户投递和重启持久性仍未验收。`help.getSupport`、`getSupportName`、`getInviteText` 固定空；`getAppUpdate` 不查询更新源而始终返回无更新。赞助消息的 `contacts.getSponsoredPeers`、`messages.getSponsoredMessages` 在没有广告库存 provider 时返回 `METHOD_NOT_IMPL`，不再把空目录冒充成功；`account.toggleSponsoredMessages`、`channels.restrictSponsoredMessages` 已通过 PostgreSQL 18 事务路径持久化偏好和频道策略，view/click/report 已以 `(user,event,random_id)` 幂等记录 PostgreSQL 事件，但广告库存、分析消费和审核服务仍未接入。
 - **Passkey：** `account.initPasskeyRegistration`、`registerPasskey` 只处理挑战并存 credential ID，没有校验 attestation 或保存公钥；`getPasskeys`、`deletePasskey` 只管理这份本地 ID 列表。`auth.initPasskeyLogin` 使用空凭证白名单和 `localhost` RP；`auth.finishPasskeyLogin` 不验证 assertion，消费挑战后固定返回 `AUTH_BYTES_INVALID`，不会创建授权会话。
 - **媒体与搜索：** `messages.getDocumentByHash` 校验参数后固定返回 `DocumentEmpty`，`help.getCdnConfig` 固定报 `CDN_METHOD_INVALID`，`messages.receivedMessages` 校验认证、请求构造器和 `max_id` 后在缺少回执 provider 时返回 `METHOD_NOT_IMPL`。`contacts.getTopPeers` 用用户 ID 合成排序分数且跳过非联系人分类；`messages.getRecentLocations` 把读取失败伪装成空结果并没有回填频道；`getSearchResultsPositions` 把当前页索引当全局位置；`channels.checkSearchPostsFlood` 永远给固定免费额度，不执行限流。
@@ -1152,7 +1166,7 @@
 | Premium 商店门面 | `help.getPremiumPromo`（无 Premium offer catalogue/provider 时鉴权后返回 `METHOD_NOT_IMPL`，不再返回零价格空套餐）；`payments.canPurchaseStore`（忽略 purpose，只看本地 Premium 标记，没有商店/provider 检查）。 |
 | 表情状态和颜色 | `account.updateEmojiStatus`、`getDefaultEmojiStatuses`、`getRecentEmojiStatuses`、`clearRecentEmojiStatuses`、`getChannelDefaultEmojiStatuses`、`getChannelRestrictedStatusEmojis`、`getCollectibleEmojiStatuses`；`account.updateColor`、`getDefaultBackgroundEmojis`、`channels.updateEmojiStatus`；`bots.updateUserEmojiStatus`、`toggleUserEmojiStatusPermission`。状态/颜色目录和跨用户同步仍缺失；recent 接口复用当前状态记录，clear 会把当前状态清空。`channels.updateColor` 已单独接入 canonical 频道资料，仍只有隔离数据库证据。 |
 | 历史导入和讨论线程 | `messages.checkHistoryImport`、`initHistoryImport`、`startHistoryImport`、`checkHistoryImportPeer`（只记本地文件名/导入元数据，未导入消息）；`uploadImportedMedia` 已对带媒体请求校验导入会话和目标 peer，并通过 DFS 返回真实照片/文档，但最终导入消息投递仍未接入；`messages.getReplies`、`getDiscussionMessage`（合成线程/讨论消息，不读取真实回复或关联讨论群）；`messages.toggleSuggestedPostApproval`（只存单条 note，不更新频道待审批状态）；`payments.exportInvoice`（有效输入仍固定 `PAYMENT_UNSUPPORTED`）。 |
-| 其他 | `account.getTmpPassword`（始终返回空令牌）；`messages.setBotShippingResults`、`setBotPrecheckoutResults`（认证并校验非零 `query_id` 后返回 `METHOD_NOT_IMPL`；没有待处理付款查询状态或消费响应的流程）；`fragment.getCollectibleInfo`（仅回显 slug）；`messages.hideChatJoinRequest`（当前只支持群组，不支持频道申请）；`account.updateUsername`（写入错误被吞掉，跨存储无回滚）；`stats.loadAsyncGraph`（空 token 返回 `TOKEN_EMPTY`，非空 token 返回 `METHOD_NOT_IMPL`，不再回显 token）；`aicompose.getToneExample`（忽略 tone，固定空文本）。 |
+| 其他 | `account.getTmpPassword`（始终返回空令牌）；`messages.setBotShippingResults`、`setBotPrecheckoutResults`（认证并校验非零 `query_id`；PostgreSQL 已具备 caller-owned pending query 的 TTL、阶段和幂等回调状态，但当前支付流程尚未接入 query producer/consumer，完整业务链路仍阻塞）；`fragment.getCollectibleInfo`（仅回显 slug）；`messages.hideChatJoinRequest`（当前只支持群组，不支持频道申请）；`account.updateUsername`（写入错误被吞掉，跨存储无回滚）；`stats.loadAsyncGraph`（空 token 返回 `TOKEN_EMPTY`，非空 token 返回 `METHOD_NOT_IMPL`，不再回显 token）；`aicompose.getToneExample`（忽略 tone，固定空文本）。 |
 
 第三次复核时的台账分布为 451 项静态缺口和 323 项仅确认路由；此后新增的缺口和修复记录见下方第四次复核。
 
@@ -1296,7 +1310,7 @@
 ## 本轮第十五次复核：占位成功与错误传播
 
 - `messages.getMessages` 现在拒绝未认证请求和非正消息 ID，传播消息、用户与基础群 RPC/实体读取错误；读取结果涉及频道而当前 BFF 无频道 resolver 时返回 `METHOD_NOT_IMPL`，不再忽略错误或静默省略频道实体。`go build ./app/bff/messages/internal/core` 通过；没有运行测试或访问服务/数据库。该方法改列为静态缺口，完整业务链路仍未验收。
-- `account.getBotBusinessConnection` 校验调用者和 connection ID 后返回 `METHOD_NOT_IMPL`；APIFull 只保存按用户关联的 connected-bot 偏好，不存 connection ID，也没有权威业务连接查询服务。
+- `account.getBotBusinessConnection` 在 PostgreSQL 路径校验 bot caller 和 connection ID，从 `apifull_business_connection` 读取 owner、bot、DC、date、rights、qts，并返回标准 `updates.updateBotBusinessConnect`；`account.updateConnectedBot` 同事务写入连接 registry 与 outbox，reconciler 复用 `SyncPushBotUpdates`。窄包检查只完成组件编译/语义验证，本机未配置 DSN，因此 PostgreSQL round-trip、投递确认、重启和真实 Layer 229 session acceptance 仍未完成。
 - `communities.getParticipantJoinedChats` 校验调用者、社区频道和参与者后返回 `METHOD_NOT_IMPL`；现有 chat RPC 只提供基础群成员关系，没有社区到群组映射、创建者/加入者分类或所需实体聚合。
 - 两个 `stats.getMessagePublicForwards` 构造器验证频道访问哈希、创建者与本地源消息；`stats.getStoryPublicForwards` 验证调用者自己的已存储 Story。三者都因没有权威转发记录或反向索引而返回 `METHOD_NOT_IMPL`，不再返回伪造的空转发列表。
 - `contacts.search` 现在通过 `chat.search` 查询当前用户仍在群内的基础群（`chat_participants.state=0`），并校验完整群实体；查询与 hydration 错误会传播。`chat.search` 的非零 offset 语义没有定义，当前对该参数失败关闭；联系人搜索使用首屏 offset=0。同一隔离审计用例中的 `ChatSearch` 通过 bufconn 调用 Chat gRPC，在 `layer229-audit-mysql/teamgram_audit` 命中当前成员所在的临时群组，排除已退出群（`state=1`）和非成员，并在测试清理临时数据。生产 contacts 服务仍以 `Plugin=nil` 初始化，频道结果失败关闭；没有完整 session→BFF→Chat gRPC 验收。
@@ -1388,9 +1402,9 @@
 
 ## 本轮第二十七次复核：Bot 付款查询响应失败关闭
 
-- `messages.setBotShippingResults` 和 `messages.setBotPrecheckoutResults` 现在保留认证检查，并拒绝 nil 请求或零 `query_id`；其余请求返回 `METHOD_NOT_IMPL`，不再将通用支付日志写入当作响应成功。
-- 静态搜索仅找到这两个 APIFull 路由和处理器，没有 shipping/precheckout 查询的创建者、待处理查询存储或响应消费者。`recordPay` 按用户 ID 追加操作名，不保存 `query_id`、结果或待处理状态，不能完成付款查询响应。未连接服务或数据库；没有做完整 BFF/session 流程验收。
-- 台账保持 `KNOWN_INCOMPLETE_STATIC` / `BLOCKED_BY_IMPLEMENTATION_GAP`，两项证据更新为无状态源/消费者及合法输入失败关闭；本轮未运行测试或 build。
+- `messages.setBotShippingResults` 和 `messages.setBotPrecheckoutResults` 现在保留认证检查，并拒绝 nil 请求或零 `query_id`。PostgreSQL 已增加按 `query_id` 锁定的待处理查询状态、bot/buyer 归属、TTL、shipping/precheckout 阶段及幂等结果；回调只接受已有且归属正确的查询，冲突/过期/越权失败关闭。
+- 当前代码库仍没有付款流程创建 shipping/precheckout 查询或消费最终结果的生产者；未知 `query_id` 仅在旧部署上回落签名 BusinessProvider。因此本地回调状态机和 PostgreSQL focused tests 已完成，但没有完整 BFF/session 业务流验收，台账继续保持 `BLOCKED_BY_IMPLEMENTATION_GAP`。
+- 本轮仅运行 APIFull persist/core 定向测试和 PostgreSQL 18 focused callback 测试，未运行全量 build 或测试。
 
 ## 本轮第二十八次复核：outbox 阅读日期和清单一致性
 
@@ -2570,3 +2584,18 @@
 - `messages.summarizeText`、`messages.translateRichMessage`、`messages.composeRichMessageWithAI`、`messages.composeMessageWithAI` 和 `aicompose.getToneExample` 已接入统一的 HTTP AI provider 边界。请求带随机 request ID、调用者 user ID 和 operation，使用 HMAC 请求签名；响应必须通过 HMAC 验签、request/user 绑定和 TL 结果构造校验，超时、未配置或非法响应均失败关闭。
 - 消息 BFF 与 APIFull 各自补充 provider endpoint/key/signing-key/timeout 配置；所有成功路径只接受 provider 返回的文本或 rich-message，不回显输入、不合成空结果。focused provider success、未配置和未签名拒绝测试均通过。
 - 这 5 项的 `audit_status` 提升为 `PARTIAL_COMPONENT_VERIFIED`，生产列仍为 `BLOCKED_BY_IMPLEMENTATION_GAP`：当前没有真实 AI endpoint/凭据、生产 session、重启/故障恢复或生产流量证据，因此不宣称这些方法已完成生产验收。
+
+## 2026-10-11：真实阻塞收口 checkpoint
+
+- 本 checkpoint 未运行全量编译或全仓测试，只验证了 UserChannelProfiles、APIFull inline 和聚合 BFF 注册的相关包/测试。`users.suggestBirthday` 的本地 durable message 路径已通过真实 `msg.sendMessageV2` 接线，`messages.sendInlineBotResult` 的 text 路径已通过隔离 PostgreSQL 查询与 producer round-trip；二者仍保留 session、重启和生产 provider 证据缺口。
+- 台账当前 813 个唯一方法：`PARTIAL_ISOLATED_SESSION_E2E=309`、`PARTIAL_ISOLATED_DB_ONLY=254`、`PARTIAL_COMPONENT_ONLY=163`、`BLOCKED_BY_IMPLEMENTATION_GAP=68`、`TRANSPORT_ONLY=11`、`ISOLATED_COMPONENT_ONLY=6`、`ISOLATED_DB_ONLY=2`。外部认证、支付、CDN、Bot/Inline、Live/Stats 和其他业务 provider 仍不能用本地空数据替代。
+
+## 2026-10-11：users.suggestBirthday durable message workflow
+
+- `users.suggestBirthday` 在未配置外部 provider 时不再只失败关闭或写入无人读取的本地记录。UserChannelProfiles BFF 现在校验目标用户 access hash，并通过现有 `msg.sendMessageV2` 写入 Layer 229 `messageActionSuggestBirthday` service message；消息服务负责 PostgreSQL 持久化、返回 canonical `Updates` 并执行收件箱 fan-out。配置 provider 时仍保留签名 provider 路径。
+- `UsersSuggestBirthdayUsesDurableMessageServiceWhenProviderIsUnset` 与既有 provider/拒绝测试通过，覆盖调用者与收件人绑定、私聊路由、service action birthday payload 和缺依赖失败关闭。真实收件人 session、重启回读和生产流量验收仍未完成，因此台账提升到 `PARTIAL_COMPONENT_ONLY`，不宣称该方法生产完成。
+
+## 2026-10-11：inline bot text result durable delivery
+
+- `messages.sendInlineBotResult` 的 text/media-auto 分支已有 PostgreSQL inline query/result 状态和 `msg.sendMessageV2` durable producer。`TestInlineBotResultsPostgresRoundTrip` 覆盖查询创建、Bot 发布、请求方回读和消息服务请求绑定；媒体 result 变体及真实跨客户端 session 仍按 Telegram 语义失败关闭。
+- 该方法从 `BLOCKED_BY_IMPLEMENTATION_GAP` 调整为 `PARTIAL_ISOLATED_DB_ONLY`，只反映已验证的隔离数据库/producer 边界，不代表完整 inline 业务或生产验收完成。

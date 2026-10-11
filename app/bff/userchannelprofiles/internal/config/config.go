@@ -31,6 +31,7 @@ type Config struct {
 	UserChannelProfilesProviderSigningKey     string `json:",optional"`
 	UserChannelProfilesProviderTimeoutSeconds int    `json:",optional"`
 	MediaClient                               zrpc.RpcClientConf
+	MsgClient                                 zrpc.RpcClientConf
 	UserClient                                zrpc.RpcClientConf
 	SyncClient                                *kafka.KafkaProducerConf
 }

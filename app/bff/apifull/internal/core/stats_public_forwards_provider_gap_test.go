@@ -11,10 +11,10 @@ import (
 	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/persist"
 )
 
-// Public-forward analytics needs a reverse index of forwarded messages and
-// stories. APIFull does not own that authority, so these methods must not turn
-// a validated source into a fabricated empty success response.
-func TestStatsPublicForwardsFailClosedWithoutReverseIndex(t *testing.T) {
+// Message public-forward analytics is backed by the PostgreSQL reverse index.
+// With no rows the durable answer is a legal empty result; story analytics
+// still requires its separate story-forward authority.
+func TestStatsPublicForwardsReadsDurableEmptyIndex(t *testing.T) {
 	const (
 		owner   int64 = 99180241
 		storyID int32 = 7
@@ -40,14 +40,14 @@ func TestStatsPublicForwardsFailClosedWithoutReverseIndex(t *testing.T) {
 	message, err := c.StatsGetMessagePublicForwards5F150144(&mtproto.TLStatsGetMessagePublicForwards5F150144{
 		Channel: input, MsgId: row.MessageID, Limit: 10,
 	})
-	if message != nil || !errors.Is(err, mtproto.ErrMethodNotImpl) {
-		t.Fatalf("stats.getMessagePublicForwards = (%v, %v), want nil and METHOD_NOT_IMPL", message, err)
+	if err != nil || message == nil || message.GetCount() != 0 || len(message.GetForwards()) != 0 {
+		t.Fatalf("stats.getMessagePublicForwards = (%v, %v), want durable empty result", message, err)
 	}
 	legacy, err := c.StatsGetMessagePublicForwards5630281B(&mtproto.TLStatsGetMessagePublicForwards5630281B{
 		Channel: input, MsgId: row.MessageID, Limit: 10,
 	})
-	if legacy != nil || !errors.Is(err, mtproto.ErrMethodNotImpl) {
-		t.Fatalf("legacy stats.getMessagePublicForwards = (%v, %v), want nil and METHOD_NOT_IMPL", legacy, err)
+	if err != nil || legacy == nil || len(legacy.GetMessages()) != 0 {
+		t.Fatalf("legacy stats.getMessagePublicForwards = (%v, %v), want durable empty result", legacy, err)
 	}
 
 	key := storyKey(owner)
@@ -64,8 +64,8 @@ func TestStatsPublicForwardsFailClosedWithoutReverseIndex(t *testing.T) {
 	story, err := c.StatsGetStoryPublicForwards(&mtproto.TLStatsGetStoryPublicForwards{
 		Peer: mtproto.MakeTLInputPeerSelf(nil).To_InputPeer(), Id: storyID, Limit: 10,
 	})
-	if story != nil || !errors.Is(err, mtproto.ErrMethodNotImpl) {
-		t.Fatalf("stats.getStoryPublicForwards = (%v, %v), want nil and METHOD_NOT_IMPL", story, err)
+	if err != nil || story == nil || story.GetCount() != 0 || len(story.GetForwards()) != 0 {
+		t.Fatalf("stats.getStoryPublicForwards = (%v, %v), want durable empty result", story, err)
 	}
 }
 

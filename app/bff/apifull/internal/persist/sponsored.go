@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"strconv"
 	"strings"
 )
 
@@ -65,6 +66,38 @@ func SetSponsoredMessagesEnabled(ctx context.Context, userID int64, enabled bool
 		}
 		return "false", nil
 	})
+}
+
+// GetSponsoredMessagesEnabled reads the caller's sponsored-message
+// preference. An absent row preserves Telegram's default-enabled behavior;
+// malformed persisted state fails closed instead of silently re-enabling ads.
+func GetSponsoredMessagesEnabled(ctx context.Context, userID int64) (enabled, found bool, err error) {
+	if userID <= 0 {
+		return false, false, errors.New("sponsored user id is required")
+	}
+	ctx = sponsoredContext(ctx)
+	if store, ok := sponsoredPostgres(); ok {
+		err = store.db.QueryRowContext(ctx, `SELECT enabled FROM apifull_sponsored_user_setting WHERE user_id=$1`, userID).Scan(&enabled)
+		if errors.Is(err, sql.ErrNoRows) {
+			return true, false, nil
+		}
+		if err != nil {
+			return false, false, err
+		}
+		return enabled, true, nil
+	}
+	raw, getErr := Default.Get(fmt.Sprintf("sponsored:%d:enabled", userID))
+	if getErr != nil {
+		return false, false, getErr
+	}
+	if strings.TrimSpace(raw) == "" {
+		return true, false, nil
+	}
+	enabled, err = strconv.ParseBool(raw)
+	if err != nil {
+		return false, true, fmt.Errorf("sponsored: invalid enabled state: %w", err)
+	}
+	return enabled, true, nil
 }
 
 // RecordSponsoredEvent stores a retry-safe analytics event. A repeated event

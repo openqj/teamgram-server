@@ -95,6 +95,10 @@ func (s *inboxSyncStub) SyncUpdatesNotMe(_ context.Context, in *syncpb.TLSyncUpd
 	return s.push(in.Updates)
 }
 
+func (s *inboxSyncStub) SyncPushBotUpdates(_ context.Context, in *syncpb.TLSyncPushBotUpdates) (*mtproto.Void, error) {
+	return s.push(in.Updates)
+}
+
 type inboxIDStub struct {
 	idgen.UnimplementedRPCIdgenServer
 	seq map[string]int64
@@ -281,5 +285,36 @@ func TestPostgresInboxConsumerMissingSyncResultKeepsDelivery(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestPostgresInboxBotDeliveryUsesBotSyncClient(t *testing.T) {
+	d, _, push := newInboxSendFixture(t)
+	ctx := context.Background()
+	if _, err := d.Pool.Exec(ctx, `UPDATE users SET is_bot=TRUE WHERE id=202`); err != nil {
+		t.Fatal(err)
+	}
+	boxes, err := d.SendMessagesWithDeliveries(ctx, 101, mtproto.MakePeerUtil(mtproto.PEER_USER, 202), []*msg.OutboxMessage{{
+		RandomId: 404,
+		Message:  mtproto.MakeTLMessage(&mtproto.Message{Message: "bot delivery", Date: 1, PeerId: mtproto.MakePeerUser(202)}).To_Message(),
+	}}, []*inbox.TLInboxSendUserMessageToInboxV2{
+		{UserId: 101, Out: true, FromId: 101, PeerType: mtproto.PEER_USER, PeerId: 202},
+		{UserId: 202, FromId: 101, PeerType: mtproto.PEER_USER, PeerId: 202},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := &inbox.TLInboxSendUserMessageToInboxV2{
+		UserId: 202, FromId: 101, PeerType: mtproto.PEER_USER, PeerId: 202,
+		BoxList: boxes,
+		Users:   []*mtproto.User{mtproto.MakeTLUser(&mtproto.User{Id: 202, Bot: true}).To_User()},
+	}
+	d.BotSyncClient = push
+	if _, err := New(ctx, &svc.ServiceContext{Dao: d}).InboxSendUserMessageToInboxV2(request); err != nil {
+		t.Fatal(err)
+	}
+	pending, err := d.HasPendingInboxDelivery(ctx, 101, boxes[0].DialogMessageId, 202)
+	if err != nil || pending || push.count != 1 {
+		t.Fatalf("bot delivery pending=%t push_count=%d err=%v", pending, push.count, err)
 	}
 }

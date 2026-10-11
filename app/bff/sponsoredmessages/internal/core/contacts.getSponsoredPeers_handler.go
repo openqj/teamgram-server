@@ -19,7 +19,10 @@
 package core
 
 import (
+	"strings"
+
 	"github.com/teamgram/proto/mtproto"
+	"github.com/teamgram/teamgram-server/app/bff/apifull/persist"
 )
 
 // ContactsGetSponsoredPeers
@@ -32,6 +35,16 @@ func (c *SponsoredMessagesCore) ContactsGetSponsoredPeers(in *mtproto.TLContacts
 		return nil, mtproto.ErrInputRequestInvalid
 	}
 
+	if c.svcCtx != nil && strings.TrimSpace(c.svcCtx.Config.SponsoredProviderEndpoint) == "" {
+		result, found, err := persist.LoadSponsoredPeers(c.ctx, in.GetQ())
+		if err != nil {
+			return nil, mtproto.ErrInternalServerError
+		}
+		if !found {
+			return nil, mtproto.ErrMethodNotImpl
+		}
+		return result, nil
+	}
 	var result mtproto.Contacts_SponsoredPeers
 	if err := c.callSponsoredProvider("contacts.getSponsoredPeers", map[string]any{"q": in.GetQ()}, &result); err != nil {
 		return nil, err

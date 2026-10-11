@@ -2,12 +2,14 @@ package core
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"sync"
 	"testing"
 
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/proto/mtproto/rpc/metadata"
+	apifullpersist "github.com/teamgram/teamgram-server/app/bff/apifull/persist"
 	"github.com/teamgram/teamgram-server/app/bff/users/internal/dao"
 	"github.com/teamgram/teamgram-server/app/bff/users/internal/svc"
 	chatpb "github.com/teamgram/teamgram-server/app/service/biz/chat/chat"
@@ -197,6 +199,7 @@ func TestCheckFullUserPrivacyUsesAuthoritativeUserService(t *testing.T) {
 type fullUserProfilePrivacyClient struct {
 	*fullUserErrorUserClient
 	allowed      map[int32]bool
+	bot          bool
 	failKey      int32
 	privacyErr   error
 	nilPrivacy   bool
@@ -206,12 +209,20 @@ type fullUserProfilePrivacyClient struct {
 }
 
 func (c *fullUserProfilePrivacyClient) UserGetMutableUsersV2(_ context.Context, in *userpb.TLUserGetMutableUsersV2) (*mtproto.MutableUsers, error) {
+	var bot *mtproto.BotData
+	if c.bot {
+		bot = mtproto.MakeTLBotData(&mtproto.BotData{BotInfoVersion: 1}).To_BotData()
+	}
 	c.usersRequest = in
 	return &mtproto.MutableUsers{Users: []*mtproto.ImmutableUser{
 		{User: &mtproto.UserData{Id: 1}},
 		{User: &mtproto.UserData{Id: 2, AccessHash: 200, About: mtproto.MakeFlagsString("Private bio"),
-			ProfilePhoto: &mtproto.Photo{Id: 20}, SavedMusic: &mtproto.Document{Id: 30}, Birthday: "0000-01-01"}},
+			ProfilePhoto: &mtproto.Photo{Id: 20}, SavedMusic: &mtproto.Document{Id: 30}, Birthday: "0000-01-01", Bot: bot}},
 	}}, nil
+}
+
+func (c *fullUserProfilePrivacyClient) UserGetBotInfo(context.Context, *userpb.TLUserGetBotInfo) (*mtproto.BotInfo, error) {
+	return &mtproto.BotInfo{UserId_INT64: 2}, nil
 }
 
 func (*fullUserProfilePrivacyClient) UserGetPeerSettings(context.Context, *userpb.TLUserGetPeerSettings) (*mtproto.PeerSettings, error) {
@@ -285,5 +296,53 @@ func TestUsersGetFullUserPropagatesEveryPrivacyQueryFailure(t *testing.T) {
 				t.Fatalf("full user key %d nil=%v = (%v, %v), want error %v", key, nilResult, got, err, want)
 			}
 		}
+	}
+}
+
+type botVerificationTestStore struct {
+	values map[string]string
+}
+
+func (s *botVerificationTestStore) Get(key string) (string, error) {
+	return s.values[key], nil
+}
+
+func (s *botVerificationTestStore) Set(key, value string) error {
+	s.values[key] = value
+	return nil
+}
+
+func TestUsersGetFullUserReadsBotCustomVerification(t *testing.T) {
+	store := &botVerificationTestStore{values: make(map[string]string)}
+	previous := apifullpersist.Default
+	apifullpersist.Default = store
+	t.Cleanup(func() { apifullpersist.Default = previous })
+
+	state, err := json.Marshal(apifullpersist.BotCustomVerification{
+		Enabled: true, Description: "trusted support", UpdatedAt: 1700000000,
+	})
+	if err != nil {
+		t.Fatalf("marshal verification state: %v", err)
+	}
+	key := apifullpersist.BotCustomVerificationKey(2, mtproto.PEER_SELF, 2)
+	store.values[key] = string(state)
+
+	client := &fullUserProfilePrivacyClient{allowed: map[int32]bool{}, bot: true}
+	full, err := newFullUserProfilePrivacyCore(client).UsersGetFullUser(&mtproto.TLUsersGetFullUser{
+		Id: mtproto.MakeTLInputUser(&mtproto.InputUser{UserId: 2, AccessHash: 200}).To_InputUser(),
+	})
+	if err != nil || full == nil || full.GetFullUser() == nil {
+		t.Fatalf("UsersGetFullUser() = (%v, %v), want bot full user", full, err)
+	}
+	verification := full.GetFullUser().GetBotVerification()
+	if verification == nil || verification.GetBotId() != 2 || verification.GetIcon() != 0 || verification.GetDescription() != "trusted support" {
+		t.Fatalf("bot verification = %v, want bot_id=2 icon=0 description=trusted support", verification)
+	}
+
+	store.values[key] = "{" // Corrupt state must never become a partial success.
+	if got, err := newFullUserProfilePrivacyCore(client).UsersGetFullUser(&mtproto.TLUsersGetFullUser{
+		Id: mtproto.MakeTLInputUser(&mtproto.InputUser{UserId: 2, AccessHash: 200}).To_InputUser(),
+	}); got != nil || !errors.Is(err, mtproto.ErrInternalServerError) {
+		t.Fatalf("malformed bot verification = (%v, %v), want INTERNAL_SERVER_ERROR", got, err)
 	}
 }

@@ -79,13 +79,13 @@ func TestBotGapMethodsUseSignedBusinessProvider(t *testing.T) {
 func TestBotPaymentResultMethodsUseSignedBusinessProvider(t *testing.T) {
 	core := newBusinessProviderGapCore(t, "messages.setBotShippingResults", map[string]any{"predicate_name": "boolTrue"})
 	shipping, err := core.MessagesSetBotShippingResults(&mtproto.TLMessagesSetBotShippingResults{QueryId: 11})
-	if err != nil || shipping != mtproto.BoolTrue {
+	if err != nil || shipping == nil || shipping.GetPredicateName() != mtproto.Predicate_boolTrue {
 		t.Fatalf("set bot shipping results = (%v, %v)", shipping, err)
 	}
 
 	core = newBusinessProviderGapCore(t, "messages.setBotPrecheckoutResults", map[string]any{"predicate_name": "boolTrue"})
 	precheckout, err := core.MessagesSetBotPrecheckoutResults(&mtproto.TLMessagesSetBotPrecheckoutResults{QueryId: 12, Success: true})
-	if err != nil || precheckout != mtproto.BoolTrue {
+	if err != nil || precheckout == nil || precheckout.GetPredicateName() != mtproto.Predicate_boolTrue {
 		t.Fatalf("set bot precheckout results = (%v, %v)", precheckout, err)
 	}
 }

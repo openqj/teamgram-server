@@ -20,7 +20,6 @@ package core
 
 import (
 	"encoding/json"
-	"fmt"
 	"strings"
 	"time"
 
@@ -93,7 +92,7 @@ type botCustomVerificationState struct {
 }
 
 func customVerificationKey(botID int64, peerType int32, peerID int64) string {
-	return fmt.Sprintf("bot-custom-verification:%d:%d:%d", botID, peerType, peerID)
+	return apifullpersist.BotCustomVerificationKey(botID, peerType, peerID)
 }
 
 func customVerificationPeer(selfID int64, peer *mtproto.InputPeer) (int32, int64, error) {

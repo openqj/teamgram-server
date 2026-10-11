@@ -26,6 +26,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -1028,6 +1029,34 @@ func (c *ApiFullCore) MessagesSetBotShippingResults(in *mtproto.TLMessagesSetBot
 	if in == nil || in.GetQueryId() == 0 {
 		return nil, mtproto.ErrQueryIdEmpty
 	}
+	// PostgreSQL is authoritative for deployed APIFull payment queries. A
+	// missing query falls through to the existing signed business provider so
+	// older installations can roll forward without silently accepting an
+	// arbitrary query ID; all stateful local outcomes fail closed.
+	if persist.PostgresEnabled() {
+		options := in.GetShippingOptions()
+		if !validPaymentShippingOptions(options) || !normalizePaymentShippingOptions(options) {
+			return nil, mtproto.ErrInputRequestInvalid
+		}
+		if options == nil {
+			options = []*mtproto.ShippingOption{}
+		}
+		encoded, marshalErr := json.Marshal(options)
+		if marshalErr != nil {
+			return nil, mtproto.ErrInternalServerError
+		}
+		errorText := ""
+		if in.GetError() != nil {
+			errorText = in.GetError().GetValue()
+		}
+		localErr := persist.SetBotShippingResults(uid, in.GetQueryId(), errorText, encoded)
+		if localErr == nil {
+			return mtproto.BoolTrue, nil
+		}
+		if !errors.Is(localErr, persist.ErrBotPaymentQueryNotFound) {
+			return nil, botPaymentQueryError(localErr)
+		}
+	}
 	var result mtproto.Bool
 	if err = c.callBusinessProvider("messages.setBotShippingResults", map[string]any{
 		"user_id": uid, "query_id": in.GetQueryId(), "error": in.GetError(), "shipping_options": in.GetShippingOptions(),
@@ -1048,6 +1077,19 @@ func (c *ApiFullCore) MessagesSetBotPrecheckoutResults(in *mtproto.TLMessagesSet
 	if in == nil || in.GetQueryId() == 0 {
 		return nil, mtproto.ErrQueryIdEmpty
 	}
+	if persist.PostgresEnabled() {
+		errorText := ""
+		if in.GetError() != nil {
+			errorText = in.GetError().GetValue()
+		}
+		localErr := persist.SetBotPrecheckoutResults(uid, in.GetQueryId(), in.GetSuccess(), errorText)
+		if localErr == nil {
+			return mtproto.BoolTrue, nil
+		}
+		if !errors.Is(localErr, persist.ErrBotPaymentQueryNotFound) {
+			return nil, botPaymentQueryError(localErr)
+		}
+	}
 	var result mtproto.Bool
 	if err = c.callBusinessProvider("messages.setBotPrecheckoutResults", map[string]any{
 		"user_id": uid, "query_id": in.GetQueryId(), "success": in.GetSuccess(), "error": in.GetError(),
@@ -1058,6 +1100,18 @@ func (c *ApiFullCore) MessagesSetBotPrecheckoutResults(in *mtproto.TLMessagesSet
 		return nil, mtproto.ErrInternalServerError
 	}
 	return &result, nil
+}
+
+func botPaymentQueryError(err error) error {
+	switch {
+	case errors.Is(err, persist.ErrBotPaymentQueryExpired),
+		errors.Is(err, persist.ErrBotPaymentQueryOwner),
+		errors.Is(err, persist.ErrBotPaymentQueryState),
+		errors.Is(err, persist.ErrBotPaymentQueryConflict):
+		return mtproto.ErrQueryIdInvalid
+	default:
+		return mtproto.ErrMethodNotImpl
+	}
 }
 
 func (c *ApiFullCore) grantPremiumForPayment(ctx context.Context, uid, formID int64, request domain.PaymentRequest, receipt domain.PaymentReceipt) error {

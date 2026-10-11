@@ -325,3 +325,127 @@ func TestStarsRefundChargeUsesVerifiedProviderAndPostgresLedger(t *testing.T) {
 		t.Fatalf("refunded Stars balance = %d err=%v", balance, balanceErr)
 	}
 }
+
+func TestStarsFormSettlementUsesSignedProviderAndPostgresLedger(t *testing.T) {
+	dsn := os.Getenv("APIFULL_POSTGRES_DSN")
+	if dsn == "" {
+		t.Skip("APIFULL_POSTGRES_DSN is not configured")
+	}
+	if err := domain.OpenPostgresReadOnly(dsn); err != nil {
+		t.Skipf("PostgreSQL schema unavailable: %v", err)
+	}
+	t.Cleanup(func() { _ = domain.Close() })
+	cleanup, err := persist.OpenPostgresDB(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = cleanup.Close() })
+
+	uid := time.Now().UnixNano()
+	product := fmt.Sprintf("stars-form-%d", uid)
+	formID := int64(7401)
+	const stars int64 = 100
+	const amount int64 = 199
+	if err = domain.UpsertStarsOffer("topup", stars, product, "USD", amount, false); err != nil {
+		t.Fatalf("publish Stars offer: %v", err)
+	}
+	t.Cleanup(func() {
+		for _, table := range []string{"apifull_payment_receipt", "apifull_payment_ledger", "apifull_payment_request", "apifull_star_tx", "apifull_stars"} {
+			if _, cleanupErr := cleanup.Exec(`DELETE FROM `+table+` WHERE user_id=$1`, uid); cleanupErr != nil {
+				t.Errorf("clean %s fixture: %v", table, cleanupErr)
+			}
+		}
+		if _, cleanupErr := cleanup.Exec(`DELETE FROM apifull_stars_offer WHERE store_product=$1`, product); cleanupErr != nil {
+			t.Errorf("clean Stars offer fixture: %v", cleanupErr)
+		}
+	})
+
+	option := mtproto.MakeTLStarsTopupOption(&mtproto.StarsTopupOption{
+		Stars:        stars,
+		StoreProduct: wrapperspb.String(product),
+		Currency:     "USD",
+		Amount:       amount,
+	}).To_StarsTopupOption()
+	invoice := mtproto.MakeTLInputInvoiceStars(&mtproto.InputInvoice{
+		Option_STARSTOPUPOPTION: option,
+	}).To_InputInvoice()
+	request := &mtproto.TLPaymentsSendStarsForm{
+		Constructor: mtproto.TLConstructor_CRC32_payments_sendStarsForm_7998c914,
+		FormId:      formID,
+		Invoice:     invoice,
+	}
+	if err = request.Encode(mtproto.NewEncodeBuf(4096), 229); err != nil {
+		t.Fatalf("Stars form request did not encode at Layer 229: %v", err)
+	}
+	fingerprint := starsPaymentFingerprint(formID, invoice)
+	requestKey := starsPaymentRequestKey(uid, formID, fingerprint)
+	offer, found, err := domain.FindActiveStarsTopupOffer(stars, product, "USD", amount, nil)
+	if err != nil || !found {
+		t.Fatalf("load published Stars offer: %+v found=%v err=%v", offer, found, err)
+	}
+	transactionID := fmt.Sprintf("stars-form-transaction-%d", uid)
+	var providerCalls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		providerCalls.Add(1)
+		var submitted struct {
+			Operation         string            `json:"operation"`
+			UserID            int64             `json:"user_id"`
+			BeneficiaryUserID int64             `json:"beneficiary_user_id"`
+			RequiredProduct   string            `json:"required_product"`
+			RequestKey        string            `json:"request_key"`
+			Fingerprint       string            `json:"fingerprint"`
+			FormID            int64             `json:"form_id"`
+			OfferID           int64             `json:"offer_id"`
+			Offer             domain.StarsOffer `json:"offer"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&submitted); err != nil {
+			t.Errorf("decode Stars settlement request: %v", err)
+			http.Error(w, "invalid fixture", http.StatusBadRequest)
+			return
+		}
+		if submitted.Operation != "settle_stars" || submitted.UserID != uid || submitted.BeneficiaryUserID != uid ||
+			submitted.RequiredProduct != "stars_topup" || submitted.RequestKey != requestKey || submitted.Fingerprint != fingerprint ||
+			submitted.FormID != formID || submitted.OfferID != offer.ID || submitted.Offer.Stars != stars ||
+			submitted.Offer.StoreProduct != product || r.Header.Get("Idempotency-Key") != paymentProviderIdempotencyKey(uid, requestKey) {
+			t.Errorf("Stars settlement request binding = %+v, idempotency=%q", submitted, r.Header.Get("Idempotency-Key"))
+		}
+		writeSignedPaymentProviderResponse(t, w, paymentProviderResponse{
+			Verified: true, UserID: uid, BeneficiaryUserID: uid, RequestKey: requestKey, Fingerprint: fingerprint,
+			FormID: formID, ProductType: "stars_topup", OfferID: offer.ID, Stars: stars, StoreProduct: product,
+			TransactionID: transactionID, Currency: "USD", Amount: amount, Title: "Stars top-up",
+			Receipt: json.RawMessage(`{"provider_transaction":true}`),
+		})
+	}))
+	defer server.Close()
+
+	c := &ApiFullCore{
+		ctx:    context.Background(),
+		svcCtx: &svc.ServiceContext{Config: config.Config{PaymentProviderEndpoint: server.URL, PaymentProviderSigningKey: paymentProviderTestSigningKey}},
+		MD:     &metadata.RpcMetadata{UserId: uid},
+	}
+	for attempt := 0; attempt < 2; attempt++ {
+		result, callErr := c.PaymentsSendStarsForm(request)
+		if callErr != nil || result == nil || result.GetPredicateName() != mtproto.Predicate_payments_paymentResult {
+			t.Fatalf("Stars settlement attempt %d = (%#v, %v)", attempt, result, callErr)
+		}
+		if err = result.Encode(mtproto.NewEncodeBuf(1024), 229); err != nil {
+			t.Fatalf("Stars payment result did not encode at Layer 229: %v", err)
+		}
+	}
+	if providerCalls.Load() != 1 {
+		t.Fatalf("provider calls = %d, want one idempotent settlement", providerCalls.Load())
+	}
+	if balance, balanceErr := domain.StarsBalance(uid); balanceErr != nil || balance != stars {
+		t.Fatalf("Stars balance = %d err=%v, want %d", balance, balanceErr, stars)
+	}
+	var transactions, receipts, ledgerEntries int
+	if err = cleanup.QueryRow(`SELECT COUNT(*) FROM apifull_star_tx WHERE user_id=$1`, uid).Scan(&transactions); err != nil || transactions != 1 {
+		t.Fatalf("Stars transaction rows = %d err=%v, want one", transactions, err)
+	}
+	if err = cleanup.QueryRow(`SELECT COUNT(*) FROM apifull_payment_receipt WHERE user_id=$1`, uid).Scan(&receipts); err != nil || receipts != 1 {
+		t.Fatalf("payment receipt rows = %d err=%v, want one", receipts, err)
+	}
+	if err = cleanup.QueryRow(`SELECT COUNT(*) FROM apifull_payment_ledger WHERE user_id=$1`, uid).Scan(&ledgerEntries); err != nil || ledgerEntries != 2 {
+		t.Fatalf("payment ledger rows = %d err=%v, want pending+settled", ledgerEntries, err)
+	}
+}

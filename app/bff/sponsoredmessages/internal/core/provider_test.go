@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/proto/mtproto/rpc/metadata"
@@ -49,7 +50,7 @@ func TestMessagesGetSponsoredMessagesUsesVerifiedProvider(t *testing.T) {
 	}))
 	defer server.Close()
 	c := New(context.Background(), &svc.ServiceContext{Config: config.Config{SponsoredProviderEndpoint: server.URL, SponsoredProviderSigningKey: sponsoredProviderTestKey}})
-	c.MD = &metadata.RpcMetadata{UserId: 42}
+	c.MD = &metadata.RpcMetadata{UserId: time.Now().UnixNano()}
 	peer := mtproto.MakeTLInputPeerSelf(&mtproto.InputPeer{}).To_InputPeer()
 	got, err := c.MessagesGetSponsoredMessages(&mtproto.TLMessagesGetSponsoredMessages{Peer: peer})
 	if err != nil || got == nil || got.GetPredicateName() == "" {

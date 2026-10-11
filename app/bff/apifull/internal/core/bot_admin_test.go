@@ -16,8 +16,8 @@ func TestBotAdminStateRoundTrip81017(t *testing.T) {
 		t.Fatalf("attach menu without user provider: got=%v err=%v, want USER_ID_INVALID", got, err)
 	}
 
-	if got, err := c.BotsSetCustomVerification(&mtproto.TLBotsSetCustomVerification{}); got != nil || !errors.Is(err, mtproto.ErrMethodNotImpl) {
-		t.Fatalf("custom verification: got=%v err=%v, want METHOD_NOT_IMPL", got, err)
+	if got, err := c.BotsSetCustomVerification(&mtproto.TLBotsSetCustomVerification{}); got != nil || !errors.Is(err, mtproto.ErrInputRequestInvalid) {
+		t.Fatalf("custom verification: got=%v err=%v, want INPUT_REQUEST_INVALID", got, err)
 	}
 }
 

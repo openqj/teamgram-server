@@ -25,7 +25,11 @@ import (
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/domain"
 	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/persist"
+	"github.com/teamgram/teamgram-server/pkg/rpc/dccontext"
+	"google.golang.org/grpc/status"
 )
+
+var errBusinessConnectionIDInvalid = status.Error(mtproto.ErrBadRequest, "CONNECTION_ID_INVALID")
 
 // RPCBusinessConnectedBotsServer: Layer 229 methods previously returned ERR_ENTERPRISE_IS_BLOCKED.
 
@@ -140,15 +144,19 @@ func (c *ApiFullCore) AccountUpdateConnectedBot(in *mtproto.TLAccountUpdateConne
 			botId = in.GetBot().GetUserId()
 		}
 	}
+	if in == nil || botId <= 0 {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
 	if domain.Ready() {
-		if deleted {
-			if err := domain.DeleteConnectedBot(c.MD.UserId, botId); err != nil {
-				return nil, err
-			}
-			return mtproto.MakeEmptyUpdates(), nil
+		dcID := int32(0)
+		if c.svcCtx != nil {
+			dcID = c.svcCtx.Config.DcId
 		}
-		if botId <= 0 {
-			return nil, mtproto.ErrInputRequestInvalid
+		if actual, ok := dccontext.DCID(c.requestContext()); ok {
+			dcID = actual
+		}
+		if dcID <= 0 {
+			return nil, mtproto.ErrDcIdInvalid
 		}
 		rights, err := marshalConnectedJSON(in.GetRights())
 		if err != nil {
@@ -167,10 +175,8 @@ func (c *ApiFullCore) AccountUpdateConnectedBot(in *mtproto.TLAccountUpdateConne
 		if in.GetRecipients_INPUTBUSINESSRECIPIENTS() == nil {
 			recipients = nil
 		}
-		if err := domain.SetConnectedBot(c.MD.UserId, domain.ConnectedBotRecord{
-			BotID: botId, CanReply: canReply, Rights: rights,
-			RecipientsBot: recipientsBot, Recipients: recipients,
-		}); err != nil {
+		if _, err := domain.UpsertConnectedBotAndConnection(c.MD.UserId, botId, canReply,
+			rights, recipientsBot, recipients, dcID, deleted); err != nil {
 			return nil, err
 		}
 		return mtproto.MakeEmptyUpdates(), nil
@@ -302,6 +308,16 @@ func (c *ApiFullCore) AccountGetBotBusinessConnection(in *mtproto.TLAccountGetBo
 	if in == nil || in.GetConnectionId() == "" {
 		return nil, mtproto.ErrInputRequestInvalid
 	}
+	if domain.Ready() {
+		record, found, loadErr := domain.LoadBusinessConnection(uid, in.GetConnectionId())
+		if loadErr != nil {
+			return nil, loadErr
+		}
+		if !found {
+			return nil, errBusinessConnectionIDInvalid
+		}
+		return businessConnectionUpdates(record)
+	}
 	var result mtproto.Updates
 	if err = c.callBusinessProvider("account.getBotBusinessConnection", map[string]any{
 		"user_id": uid, "connection_id": in.GetConnectionId(),
@@ -312,6 +328,25 @@ func (c *ApiFullCore) AccountGetBotBusinessConnection(in *mtproto.TLAccountGetBo
 		return nil, mtproto.ErrInternalServerError
 	}
 	return &result, nil
+}
+
+func businessConnectionUpdates(record domain.BusinessConnectionRecord) (*mtproto.Updates, error) {
+	if record.ConnectionID == "" || record.OwnerUserID <= 0 || record.BotUserID <= 0 || record.DCID <= 0 || record.Date <= 0 || record.QTS <= 0 || len(record.Rights) == 0 {
+		return nil, mtproto.ErrInternalServerError
+	}
+	rights := mtproto.MakeTLBusinessBotRights(&mtproto.BusinessBotRights{}).To_BusinessBotRights()
+	if err := json.Unmarshal(record.Rights, rights); err != nil {
+		return nil, mtproto.ErrInternalServerError
+	}
+	connection := mtproto.MakeTLBotBusinessConnection(&mtproto.BotBusinessConnection{
+		Disabled: record.Disabled, ConnectionId: record.ConnectionID,
+		UserId: record.OwnerUserID, DcId: record.DCID, Date: record.Date,
+		Rights: rights, CanReply: record.CanReply,
+	}).To_BotBusinessConnection()
+	update := mtproto.MakeTLUpdateBotBusinessConnect(&mtproto.Update{
+		Connection: connection, Qts: record.QTS,
+	}).To_Update()
+	return mtproto.MakeUpdatesByUpdates(update), nil
 }
 
 func (c *ApiFullCore) AccountToggleConnectedBotPaused(in *mtproto.TLAccountToggleConnectedBotPaused) (*mtproto.Bool, error) {

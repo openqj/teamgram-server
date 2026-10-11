@@ -754,6 +754,7 @@ func (s *Server) Initialize() error {
 				UserChannelProfilesProviderSigningKey:     c.UserChannelProfilesProviderSigningKey,
 				UserChannelProfilesProviderTimeoutSeconds: c.UserChannelProfilesProviderTimeoutSeconds,
 				MediaClient:                               c.MediaClient,
+				MsgClient:                                 c.MsgClient,
 				UserClient:                                c.BizServiceClient,
 				SyncClient:                                c.SyncClient,
 			}))
@@ -778,6 +779,7 @@ func (s *Server) Initialize() error {
 
 		apiFull := apifull_helper.New(apifull_helper.Config{
 			RpcServerConf:                  c.RpcServerConf,
+			DcId:                           c.DcId,
 			DialogClient:                   c.BizServiceClient,
 			UserClient:                     c.BizServiceClient,
 			ChatClient:                     c.BizServiceClient,

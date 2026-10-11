@@ -20,13 +20,16 @@ package core
 
 import (
 	"encoding/json"
+	"hash/fnv"
 	"strconv"
 
 	"github.com/teamgram/proto/mtproto"
+	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/domain"
 	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/persist"
 	dialogpb "github.com/teamgram/teamgram-server/app/service/biz/dialog/dialog"
 	"github.com/teamgram/teamgram-server/app/service/dfs/dfs"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
 // RPCThemesServer: Layer 229 methods previously returned ERR_ENTERPRISE_IS_BLOCKED.
@@ -487,16 +490,91 @@ func (c *ApiFullCore) AccountGetUniqueGiftChatThemes(in *mtproto.TLAccountGetUni
 	if in == nil || in.GetLimit() < 0 || in.GetLimit() > 100 {
 		return nil, mtproto.ErrLimitInvalid
 	}
-	result := new(mtproto.Account_ChatThemes)
-	if err := c.callBusinessProvider("account.getUniqueGiftChatThemes", map[string]any{
-		"offset": in.GetOffset_STRING(), "offset_int": in.GetOffset_INT32(), "limit": in.GetLimit(), "hash": in.GetHash(),
-	}, result); err != nil {
+	if c.businessProviderConfigured() {
+		result := new(mtproto.Account_ChatThemes)
+		if err := c.callBusinessProvider("account.getUniqueGiftChatThemes", map[string]any{
+			"offset": in.GetOffset_STRING(), "offset_int": in.GetOffset_INT32(), "limit": in.GetLimit(), "hash": in.GetHash(),
+		}, result); err != nil {
+			return nil, err
+		}
+		if result.GetPredicateName() == "" || len(result.GetThemes()) > 10000 {
+			return nil, mtproto.ErrInternalServerError
+		}
+		return result, nil
+	}
+	if !domain.Ready() {
+		return nil, mtproto.ErrMethodNotImpl
+	}
+	offset, err := giftChatThemeOffset(in)
+	if err != nil {
 		return nil, err
 	}
-	if result.GetPredicateName() == "" || len(result.GetThemes()) > 10000 {
-		return nil, mtproto.ErrInternalServerError
+	records, err := domain.ListGiftChatThemes()
+	if err != nil {
+		return nil, err
 	}
-	return result, nil
+	hash := giftChatThemeHash(records)
+	if in.GetHash() != 0 && in.GetHash() == hash {
+		return mtproto.MakeTLAccountChatThemesNotModified(&mtproto.Account_ChatThemes{}).To_Account_ChatThemes(), nil
+	}
+	if offset > len(records) {
+		return nil, mtproto.ErrOffsetInvalid
+	}
+	limit := int(in.GetLimit())
+	if limit == 0 {
+		limit = 100
+	}
+	end := offset + limit
+	if end > len(records) {
+		end = len(records)
+	}
+	themes := make([]*mtproto.ChatTheme, 0, end-offset)
+	for _, record := range records[offset:end] {
+		themes = append(themes, mtproto.MakeTLChatThemeUniqueGift(&mtproto.ChatTheme{
+			Gift:          makeWireStarGift(record),
+			ThemeSettings: []*mtproto.ThemeSettings{},
+		}).To_ChatTheme())
+	}
+	result := &mtproto.Account_ChatThemes{
+		Hash:   hash,
+		Themes: themes,
+		Chats:  []*mtproto.Chat{},
+		Users:  []*mtproto.User{},
+	}
+	if end < len(records) {
+		result.NextOffset_FLAGSTRING = wrapperspb.String(strconv.Itoa(end))
+	}
+	return mtproto.MakeTLAccountChatThemes(result).To_Account_ChatThemes(), nil
+}
+
+// giftChatThemeOffset accepts the generated compatibility field used by older
+// Layer 229 request descriptors when the canonical offset string is empty.
+// A negative integer must never fall through as the first page.
+func giftChatThemeOffset(in *mtproto.TLAccountGetUniqueGiftChatThemes) (int, error) {
+	if in == nil {
+		return 0, mtproto.ErrInputConstructorInvalid
+	}
+	if offset := in.GetOffset_STRING(); offset != "" {
+		return parseStarsOffset(offset)
+	}
+	if offset := in.GetOffset_INT32(); offset < 0 {
+		return 0, mtproto.ErrOffsetInvalid
+	} else if offset > 0 {
+		return int(offset), nil
+	}
+	return 0, nil
+}
+
+func giftChatThemeHash(records []domain.Gift) int64 {
+	h := fnv.New64a()
+	for _, record := range records {
+		_, _ = h.Write([]byte(strconv.FormatInt(record.ID, 10)))
+		_, _ = h.Write([]byte{0})
+		_, _ = h.Write([]byte(record.Slug))
+		_, _ = h.Write([]byte{0})
+		_, _ = h.Write([]byte(strconv.FormatInt(record.Stars, 10)))
+	}
+	return int64(h.Sum64() & 0x7fffffffffffffff)
 }
 
 func (c *ApiFullCore) MessagesSetChatTheme(in *mtproto.TLMessagesSetChatTheme) (*mtproto.Updates, error) {

@@ -77,22 +77,24 @@ func seedHistoryImportMeta(t *testing.T, uid, importID int64, peer *mtproto.Inpu
 	})
 }
 
-func TestHistoryImportOrchestrationFailsClosed(t *testing.T) {
+func TestHistoryImportOrchestrationLocalAndFailClosed(t *testing.T) {
 	c := &ApiFullCore{MD: &metadata.RpcMetadata{UserId: 81012}}
 	peer := &mtproto.InputPeer{UserId: 81013}
 	cases := []struct {
-		name string
-		call func() (bool, error)
+		name      string
+		call      func() (bool, error)
+		wantValue bool
+		wantErr   error
 	}{
 		{
-			name: "check",
+			name: "check", wantErr: mtproto.ErrInputRequestInvalid,
 			call: func() (bool, error) {
 				result, err := c.MessagesCheckHistoryImport(&mtproto.TLMessagesCheckHistoryImport{ImportHead: "export.json"})
 				return result != nil, err
 			},
 		},
 		{
-			name: "init",
+			name: "init", wantValue: true, wantErr: nil,
 			call: func() (bool, error) {
 				result, err := c.MessagesInitHistoryImport(&mtproto.TLMessagesInitHistoryImport{
 					Peer:       peer,
@@ -103,14 +105,14 @@ func TestHistoryImportOrchestrationFailsClosed(t *testing.T) {
 			},
 		},
 		{
-			name: "start",
+			name: "start", wantErr: mtproto.ErrInputRequestInvalid,
 			call: func() (bool, error) {
 				result, err := c.MessagesStartHistoryImport(&mtproto.TLMessagesStartHistoryImport{Peer: peer, ImportId: 1})
 				return result != nil, err
 			},
 		},
 		{
-			name: "peer",
+			name: "peer", wantValue: true, wantErr: nil,
 			call: func() (bool, error) {
 				result, err := c.MessagesCheckHistoryImportPeer(&mtproto.TLMessagesCheckHistoryImportPeer{Peer: peer})
 				return result != nil, err
@@ -120,11 +122,11 @@ func TestHistoryImportOrchestrationFailsClosed(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			got, err := tc.call()
-			if got {
-				t.Fatal("result is non-nil, want nil")
+			if got != tc.wantValue {
+				t.Fatalf("result present=%v, want %v", got, tc.wantValue)
 			}
-			if !errors.Is(err, mtproto.ErrMethodNotImpl) {
-				t.Fatalf("error = %v, want METHOD_NOT_IMPL", err)
+			if !errors.Is(err, tc.wantErr) {
+				t.Fatalf("error = %v, want %v", err, tc.wantErr)
 			}
 		})
 	}

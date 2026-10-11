@@ -433,23 +433,31 @@ func openPostgres(dsn string, createSchema bool) error {
 			`SELECT owner_user_id, collectible_id, document_id FROM apifull_collectible_emoji_status LIMIT 0`,
 			`SELECT owner_user_id, bot_user_id, enabled FROM apifull_user_emoji_status_permission LIMIT 0`,
 			`SELECT id, promo FROM apifull_premium_promo LIMIT 0`,
+			`SELECT id, inventory_type, query, peer_key, payload FROM apifull_sponsored_inventory LIMIT 0`,
+			`SELECT id, source_channel_id, source_message_id, destination_peer_type, destination_peer_id, destination_message_id, message_json FROM apifull_public_forward_message LIMIT 0`,
+			`SELECT id, source_user_id, source_story_id, destination_peer_type, destination_peer_id, destination_story_id, story_json, peer_json FROM apifull_public_forward_story LIMIT 0`,
+			`SELECT gift_id FROM apifull_gift_chat_theme LIMIT 0`,
+			`SELECT connection_id, owner_user_id, bot_user_id, dc_id, qts FROM apifull_business_connection LIMIT 0`,
+			`SELECT id, bot_user_id, connection_id, qts, state, payload FROM apifull_business_connection_outbox LIMIT 0`,
 		} {
 			if _, err = db.Exec(query); err != nil {
 				_ = db.Close()
 				return fmt.Errorf("apifull: required PostgreSQL schema is unavailable: %w", err)
 			}
 		}
-		var latestApplied bool
-		if err = db.QueryRow(`SELECT EXISTS (
-			SELECT 1 FROM schema_migrations
-			WHERE version = '066_apifull_premium_promo'
-		)`).Scan(&latestApplied); err != nil {
+		const requiredMigrationCount = 8
+		var appliedMigrationCount int
+		if err = db.QueryRow(`SELECT COUNT(*) FROM schema_migrations
+			WHERE version IN ('010_apifull', '014_user_premium_payment_grant',
+				'065_apifull_user_emoji_status_permissions', '066_apifull_premium_promo',
+				'067_apifull_sponsored_inventory', '068_apifull_public_forwards',
+				'070_apifull_gift_chat_themes', '071_apifull_business_connections')`).Scan(&appliedMigrationCount); err != nil {
 			_ = db.Close()
 			return fmt.Errorf("apifull: migration journal is unavailable: %w", err)
 		}
-		if !latestApplied {
+		if appliedMigrationCount != requiredMigrationCount {
 			_ = db.Close()
-			return errors.New("apifull: PostgreSQL migrations are incomplete (066_apifull_premium_promo is required)")
+			return errors.New("apifull: PostgreSQL migrations are incomplete (010_apifull, 014_user_premium_payment_grant, 065_apifull_user_emoji_status_permissions, 066_apifull_premium_promo, 067_apifull_sponsored_inventory, 068_apifull_public_forwards, 070_apifull_gift_chat_themes, and 071_apifull_business_connections are required)")
 		}
 	}
 	if createSchema {
@@ -640,6 +648,8 @@ func openPostgres(dsn string, createSchema bool) error {
 			`SELECT channel_id, last_message_id, pts FROM apifull_channel_message_seq LIMIT 0`,
 			`SELECT owner_user_id, bot_user_id, can_reply FROM apifull_connected_bot LIMIT 0`,
 			`SELECT owner_user_id, peer_type, peer_id FROM apifull_connected_bot_peer LIMIT 0`,
+			`SELECT connection_id, owner_user_id, bot_user_id, dc_id, qts FROM apifull_business_connection LIMIT 0`,
+			`SELECT id, bot_user_id, connection_id, qts, state, payload FROM apifull_business_connection_outbox LIMIT 0`,
 			`SELECT id, call_id, sender_user_id FROM apifull_group_call_encrypted_message LIMIT 0`,
 			`SELECT id, call_id, sender_user_id FROM apifull_group_call_message LIMIT 0`,
 			`SELECT credential_id, user_id, name FROM apifull_passkey_credential LIMIT 0`,

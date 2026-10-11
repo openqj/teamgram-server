@@ -31,15 +31,15 @@ func TestMiniAppRequestWebView(t *testing.T) {
 	if got, err := c.MessagesRequestWebView(&mtproto.TLMessagesRequestWebView{}); got != nil || !errors.Is(err, mtproto.ErrInputRequestInvalid) {
 		t.Fatalf("request webview: got=%v err=%v, want INPUT_REQUEST_INVALID", got, err)
 	}
-	if got, err := c.MessagesGetBotApp(&mtproto.TLMessagesGetBotApp{}); got != nil || !errors.Is(err, mtproto.ErrMethodNotImpl) {
-		t.Fatalf("get bot app: got=%v err=%v, want METHOD_NOT_IMPL", got, err)
+	if got, err := c.MessagesGetBotApp(&mtproto.TLMessagesGetBotApp{}); got != nil || !errors.Is(err, mtproto.ErrInputRequestInvalid) {
+		t.Fatalf("get bot app: got=%v err=%v, want INPUT_REQUEST_INVALID", got, err)
 	}
 }
 
 func TestMiniAppURL(t *testing.T) {
 	c := &ApiFullCore{MD: &metadata.RpcMetadata{UserId: 14}}
-	if got, err := c.MessagesSendWebViewData(&mtproto.TLMessagesSendWebViewData{}); got != nil || !errors.Is(err, mtproto.ErrMethodNotImpl) {
-		t.Fatalf("send webview data: got=%v err=%v, want METHOD_NOT_IMPL", got, err)
+	if got, err := c.MessagesSendWebViewData(&mtproto.TLMessagesSendWebViewData{}); got != nil || !errors.Is(err, mtproto.ErrInputRequestInvalid) {
+		t.Fatalf("send webview data: got=%v err=%v, want INPUT_REQUEST_INVALID", got, err)
 	}
 	if got, err := c.MessagesProlongWebView(&mtproto.TLMessagesProlongWebView{}); got != nil || !errors.Is(err, mtproto.ErrQueryIdEmpty) {
 		t.Fatalf("prolong webview: got=%v err=%v, want QUERY_ID_EMPTY", got, err)

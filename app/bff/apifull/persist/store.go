@@ -2,6 +2,7 @@ package persist
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -11,9 +12,35 @@ import (
 )
 
 var (
-	ErrSponsoredChannelMissing      = internal.ErrSponsoredChannelMissing
-	ErrSponsoredChannelAccessHash   = internal.ErrSponsoredChannelAccessHash
-	ErrSponsoredChannelUnauthorized = internal.ErrSponsoredChannelUnauthorized
+	ErrSponsoredChannelMissing       = internal.ErrSponsoredChannelMissing
+	ErrSponsoredChannelAccessHash    = internal.ErrSponsoredChannelAccessHash
+	ErrSponsoredChannelUnauthorized  = internal.ErrSponsoredChannelUnauthorized
+	ErrSponsoredInventoryInvalid     = internal.ErrSponsoredInventoryInvalid
+	ErrSponsoredInventoryUnavailable = internal.ErrSponsoredInventoryUnavailable
+	ErrBotPaymentQueryNotFound       = internal.ErrBotPaymentQueryNotFound
+	ErrBotPaymentQueryConflict       = internal.ErrBotPaymentQueryConflict
+	ErrBotPaymentQueryExpired        = internal.ErrBotPaymentQueryExpired
+	ErrBotPaymentQueryOwner          = internal.ErrBotPaymentQueryOwner
+	ErrBotPaymentQueryState          = internal.ErrBotPaymentQueryState
+)
+
+type BotPaymentQuery = internal.BotPaymentQuery
+
+// BotCustomVerification is the durable local state written by
+// bots.setCustomVerification. The record is scoped to one bot and peer; the
+// user service only reads the bot's self scope because users.getFullUser has
+// no chat context to select another peer scope.
+type BotCustomVerification struct {
+	Enabled     bool   `json:"enabled"`
+	Description string `json:"description,omitempty"`
+	UpdatedAt   int64  `json:"updated_at"`
+}
+
+const (
+	BotPaymentStageShippingPending     = internal.BotPaymentStageShippingPending
+	BotPaymentStageShippingAnswered    = internal.BotPaymentStageShippingAnswered
+	BotPaymentStagePrecheckoutPending  = internal.BotPaymentStagePrecheckoutPending
+	BotPaymentStagePrecheckoutAnswered = internal.BotPaymentStagePrecheckoutAnswered
 )
 
 // Store is the process-wide blob store shared with apifull.
@@ -74,6 +101,10 @@ func SetSponsoredMessagesEnabled(ctx context.Context, userID int64, enabled bool
 	return internal.SetSponsoredMessagesEnabled(ctx, userID, enabled)
 }
 
+func GetSponsoredMessagesEnabled(ctx context.Context, userID int64) (enabled, found bool, err error) {
+	return internal.GetSponsoredMessagesEnabled(ctx, userID)
+}
+
 func RecordSponsoredEvent(ctx context.Context, userID int64, eventType string, randomID []byte, payload any) error {
 	return internal.RecordSponsoredEvent(ctx, userID, eventType, randomID, payload)
 }
@@ -92,6 +123,77 @@ func StorePremiumPromo(ctx context.Context, promo *mtproto.Help_PremiumPromo) er
 
 func DeletePremiumPromo(ctx context.Context) error {
 	return internal.DeletePremiumPromo(ctx)
+}
+
+func CreateBotPaymentQuery(query BotPaymentQuery) error {
+	return internal.CreateBotPaymentQuery(query)
+}
+
+func AdvanceBotPaymentQuery(queryID, botUserID int64, stage string) error {
+	return internal.AdvanceBotPaymentQuery(queryID, botUserID, stage)
+}
+
+func SetBotShippingResults(botUserID, queryID int64, errorText string, options []byte) error {
+	return internal.SetBotShippingResults(botUserID, queryID, errorText, options)
+}
+
+func SetBotPrecheckoutResults(botUserID, queryID int64, success bool, errorText string) error {
+	return internal.SetBotPrecheckoutResults(botUserID, queryID, success, errorText)
+}
+
+func LoadBotPaymentQuery(queryID int64) (BotPaymentQuery, bool, error) {
+	return internal.LoadBotPaymentQuery(queryID)
+}
+
+// BotCustomVerificationKey is shared by the writer and all read paths so a
+// local verification record cannot silently become write-only.
+func BotCustomVerificationKey(botID int64, peerType int32, peerID int64) string {
+	return fmt.Sprintf("bot-custom-verification:%d:%d:%d", botID, peerType, peerID)
+}
+
+// LoadBotCustomVerification reads a bot/peer verification record from the
+// process-wide PostgreSQL-backed store. A missing row is not an error; a
+// malformed row is returned as an error so callers never emit unverifiable
+// Layer 229 data.
+func LoadBotCustomVerification(botID int64, peerType int32, peerID int64) (*BotCustomVerification, bool, error) {
+	if botID <= 0 || peerID <= 0 {
+		return nil, false, fmt.Errorf("apifull: invalid bot custom verification scope")
+	}
+	raw, err := Default.Get(BotCustomVerificationKey(botID, peerType, peerID))
+	if err != nil {
+		return nil, false, err
+	}
+	if strings.TrimSpace(raw) == "" {
+		return nil, false, nil
+	}
+	var state BotCustomVerification
+	if err = json.Unmarshal([]byte(raw), &state); err != nil {
+		return nil, false, fmt.Errorf("apifull: decode bot custom verification: %w", err)
+	}
+	if state.UpdatedAt <= 0 || len(state.Description) > 512 {
+		return nil, false, fmt.Errorf("apifull: invalid bot custom verification state")
+	}
+	return &state, true, nil
+}
+
+func LoadSponsoredPeers(ctx context.Context, query string) (*mtproto.Contacts_SponsoredPeers, bool, error) {
+	return internal.LoadSponsoredPeers(ctx, query)
+}
+
+func StoreSponsoredPeers(ctx context.Context, query string, peers *mtproto.Contacts_SponsoredPeers) error {
+	return internal.StoreSponsoredPeers(ctx, query, peers)
+}
+
+func LoadSponsoredMessages(ctx context.Context, peerKey string) (*mtproto.Messages_SponsoredMessages, bool, error) {
+	return internal.LoadSponsoredMessages(ctx, peerKey)
+}
+
+func StoreSponsoredMessages(ctx context.Context, peerKey string, messages *mtproto.Messages_SponsoredMessages) error {
+	return internal.StoreSponsoredMessages(ctx, peerKey, messages)
+}
+
+func DeleteSponsoredInventory(ctx context.Context, query, peerKey string) error {
+	return internal.DeleteSponsoredInventory(ctx, query, peerKey)
 }
 
 type live struct{}

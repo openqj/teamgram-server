@@ -40,7 +40,7 @@ func TestPhoneGetGroupCallStarsReadsAuthoritativePostgresLedger(t *testing.T) {
 	if err != nil || got == nil || got.GetTotalStars() != 7 || len(got.GetTopDonors()) != 1 {
 		t.Fatalf("group call stars = (%#v, %v)", got, err)
 	}
-	if donor := got.GetTopDonors()[0]; donor.GetPeerId() == nil || donor.GetPeerId().GetUserId() != senderID || donor.GetStars() != 7 || !donor.GetMy() {
+	if donor := got.GetTopDonors()[0]; donor.GetPeerId() == nil || donor.GetPeerId().GetUserId() != senderID || donor.GetStars() != 7 || donor.GetMy() {
 		t.Fatalf("group call donor = %#v", got.GetTopDonors()[0])
 	}
 	if _, err = core.PhoneGetGroupCallStars(&mtproto.TLPhoneGetGroupCallStars{

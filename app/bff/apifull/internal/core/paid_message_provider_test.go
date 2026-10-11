@@ -134,7 +134,8 @@ func TestAccountToggleNoPaidMessagesExceptionRejectsMalformedProviderData(t *tes
 		MD: &metadata.RpcMetadata{UserId: callerID},
 	}
 	target := mtproto.MakeTLInputUserSelf(&mtproto.InputUser{}).To_InputUser()
-	got, err := c.AccountToggleNoPaidMessagesException(&mtproto.TLAccountToggleNoPaidMessagesException{UserId: target})
+	parent := mtproto.MakeTLInputPeerUser(&mtproto.InputPeer{UserId: callerID, AccessHash: callerID + 100}).To_InputPeer()
+	got, err := c.AccountToggleNoPaidMessagesException(&mtproto.TLAccountToggleNoPaidMessagesException{ParentPeer: parent, UserId: target})
 	if got != nil || !errors.Is(err, mtproto.ErrPaymentProviderInvalid) {
 		t.Fatalf("toggle = (%#v, %v), want provider-invalid refusal", got, err)
 	}

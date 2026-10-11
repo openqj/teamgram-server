@@ -1564,6 +1564,19 @@ func (c *ApiFullCore) PhoneGetGroupCallStars(in *mtproto.TLPhoneGetGroupCallStar
 		if !domain.Ready() {
 			return nil, mtproto.ErrMethodNotImpl
 		}
+		// Distinguish an unavailable local call from a forged/stale access hash.
+		// Both used to collapse into METHOD_NOT_IMPL, which violates the Layer 229
+		// error contract for an existing call.
+		localCall, found, loadErr := domain.LoadGroupCallRecord(in.GetCall().GetId())
+		if loadErr != nil {
+			return nil, loadErr
+		}
+		if !found {
+			return nil, mtproto.ErrMethodNotImpl
+		}
+		if localCall.AccessHash != in.GetCall().GetAccessHash() {
+			return nil, mtproto.ErrGroupCallInvalid
+		}
 		_, record, _, loadErr := c.loadAuthorizedGroupCall(in.GetCall())
 		if loadErr != nil {
 			if errors.Is(loadErr, mtproto.ErrGroupCallInvalid) {

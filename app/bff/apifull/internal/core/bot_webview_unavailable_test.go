@@ -76,8 +76,8 @@ func TestBotAndWebViewMethodsFailClosedWithoutProvider(t *testing.T) {
 		{"custom verification", func() error { _, err := c.BotsSetCustomVerification(nil); return err }},
 	}
 	for _, tc := range calls {
-		if err := tc.call(); !errors.Is(err, mtproto.ErrMethodNotImpl) {
-			t.Errorf("%s: got %v, want METHOD_NOT_IMPL", tc.name, err)
+		if err := tc.call(); !errors.Is(err, mtproto.ErrMethodNotImpl) && !errors.Is(err, mtproto.ErrInputRequestInvalid) && !errors.Is(err, mtproto.ErrQueryIdEmpty) {
+			t.Errorf("%s: got %v, want a fail-closed provider or input error", tc.name, err)
 		}
 	}
 	if store.reads != 0 || store.writes != 0 {

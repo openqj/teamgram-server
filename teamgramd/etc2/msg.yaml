@@ -65,6 +65,11 @@ SyncClient:
   Brokers:
     - kafka:9092
 
+BotSyncClient:
+  Topic:   "Sync-T"
+  Brokers:
+    - kafka:9092
+
 Redis2:
   Host: redis:6379
   Type: node

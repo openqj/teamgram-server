@@ -21,6 +21,7 @@ package core
 import (
 	"github.com/teamgram/marmota/pkg/utils"
 	"github.com/teamgram/proto/mtproto"
+	apifullpersist "github.com/teamgram/teamgram-server/app/bff/apifull/persist"
 	chatpb "github.com/teamgram/teamgram-server/app/service/biz/chat/chat"
 	"github.com/teamgram/teamgram-server/app/service/biz/dialog/dialog"
 	userpb "github.com/teamgram/teamgram-server/app/service/biz/user/user"
@@ -373,6 +374,25 @@ func (c *UsersCore) UsersGetFullUser(in *mtproto.TLUsersGetFullUser) (*mtproto.U
 		})
 	if err != nil {
 		return nil, err
+	}
+
+	// bots.setCustomVerification persists the bot/peer state in the shared
+	// PostgreSQL store. A user-full response has no chat context, so expose the
+	// bot's self-scoped verification only; chat-specific records are consumed by
+	// message/channel views that carry the target peer.
+	if user.GetUser().GetBot() != nil {
+		verification, found, loadErr := apifullpersist.LoadBotCustomVerification(peerId, mtproto.PEER_SELF, peerId)
+		if loadErr != nil {
+			c.Logger.Errorf("users.getFullUser - bot verification: %v", loadErr)
+			return nil, mtproto.ErrInternalServerError
+		}
+		if found && verification.Enabled {
+			userFull.BotVerification = mtproto.MakeTLBotVerification(&mtproto.BotVerification{
+				BotId:       peerId,
+				Icon:        0,
+				Description: verification.Description,
+			}).To_BotVerification()
+		}
 	}
 
 	// TODO: FolderId:    0,

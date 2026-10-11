@@ -34,6 +34,9 @@ func NewServiceContext(c config.Config) *ServiceContext {
 	if strings.TrimSpace(c.Postgres.DSN) == "" {
 		panic(errors.New("messenger/msg/inbox: Postgres.DSN is required"))
 	}
+	if c.BotSyncClient == nil || strings.TrimSpace(c.BotSyncClient.Topic) == "" || len(c.BotSyncClient.Brokers) == 0 {
+		panic(errors.New("messenger/msg/inbox: BotSyncClient with topic and brokers is required"))
+	}
 	daoStore := &dao.Dao{
 		IDGenClient2: idgen_client.NewIDGenClient2(rpcx.GetCachedRpcClient(c.IdgenClient)),
 		UserClient:   user_client.NewUserClient(rpcx.GetCachedRpcClient(c.UserClient)),

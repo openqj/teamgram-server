@@ -65,11 +65,11 @@ func TestInlineBotRoundtrip(t *testing.T) {
 	if got, err := c.MessagesSetBotCallbackAnswer(&mtproto.TLMessagesSetBotCallbackAnswer{QueryId: 81007}); got != nil || !errors.Is(err, mtproto.ErrMethodNotImpl) {
 		t.Fatalf("set callback: got=%v err=%v, want METHOD_NOT_IMPL", got, err)
 	}
-	if got, err := c.MessagesGetBotCallbackAnswer(&mtproto.TLMessagesGetBotCallbackAnswer{Peer: mtproto.MakeTLInputPeerSelf(nil).To_InputPeer(), MsgId: 1}); got != nil || !errors.Is(err, mtproto.ErrMethodNotImpl) {
-		t.Fatalf("get callback: got=%v err=%v, want METHOD_NOT_IMPL", got, err)
+	if got, err := c.MessagesGetBotCallbackAnswer(&mtproto.TLMessagesGetBotCallbackAnswer{Peer: mtproto.MakeTLInputPeerSelf(nil).To_InputPeer(), MsgId: 1}); got != nil || !errors.Is(err, mtproto.ErrInputRequestInvalid) {
+		t.Fatalf("get callback: got=%v err=%v, want INPUT_REQUEST_INVALID", got, err)
 	}
-	if got, err := c.MessagesSetBotGuestChatResult(&mtproto.TLMessagesSetBotGuestChatResult{QueryId: 81007}); got != nil || !errors.Is(err, mtproto.ErrMethodNotImpl) {
-		t.Fatalf("guest result: got=%v err=%v, want METHOD_NOT_IMPL", got, err)
+	if got, err := c.MessagesSetBotGuestChatResult(&mtproto.TLMessagesSetBotGuestChatResult{QueryId: 81007}); got != nil || !errors.Is(err, mtproto.ErrInputRequestInvalid) {
+		t.Fatalf("guest result: got=%v err=%v, want INPUT_REQUEST_INVALID", got, err)
 	}
 }
 

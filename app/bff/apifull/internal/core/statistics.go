@@ -20,6 +20,7 @@ package core
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
@@ -485,23 +486,45 @@ func (c *ApiFullCore) StatsGetMessagePublicForwards5F150144(in *mtproto.TLStatsG
 	if err = c.validatePublicForwardsMessage(uid, in.GetChannel(), in.GetMsgId()); err != nil {
 		return nil, err
 	}
-	var result mtproto.Stats_PublicForwards
-	if err = c.callBusinessProvider("stats.getMessagePublicForwards", map[string]any{
-		"channel": in.GetChannel(), "msg_id": in.GetMsgId(), "offset": in.GetOffset(), "limit": in.GetLimit(),
-	}, &result); err != nil {
+	if c.businessProviderConfigured() {
+		var result mtproto.Stats_PublicForwards
+		if err = c.callBusinessProvider("stats.getMessagePublicForwards", map[string]any{
+			"channel": in.GetChannel(), "msg_id": in.GetMsgId(), "offset": in.GetOffset(), "limit": in.GetLimit(),
+		}, &result); err != nil {
+			return nil, err
+		}
+		if result.GetCount() < 0 || len(result.GetForwards()) > int(in.GetLimit()) {
+			return nil, mtproto.ErrInternalServerError
+		}
+		if result.GetForwards() == nil {
+			result.Forwards = []*mtproto.PublicForward{}
+		}
+		if result.GetUsers() == nil {
+			result.Users = []*mtproto.User{}
+		}
+		if result.GetChats() == nil {
+			result.Chats = []*mtproto.Chat{}
+		}
+		return mtproto.MakeTLStatsPublicForwards(&result).To_Stats_PublicForwards(), nil
+	}
+	rows, count, next, err := domain.ListPublicForwardMessages(inputChannelID(in.GetChannel()), in.GetMsgId(), in.GetOffset(), in.GetLimit())
+	if err != nil {
+		if errors.Is(err, domain.ErrPublicForwardCursorInvalid) {
+			return nil, mtproto.ErrOffsetInvalid
+		}
+		if errors.Is(err, domain.ErrPublicForwardInvalid) {
+			return nil, mtproto.ErrInternalServerError
+		}
 		return nil, err
 	}
-	if result.GetCount() < 0 || len(result.GetForwards()) > int(in.GetLimit()) {
-		return nil, mtproto.ErrInternalServerError
+	result := mtproto.Stats_PublicForwards{
+		Count:    count,
+		Forwards: domain.PublicForwardMessagesToTL(rows),
+		Users:    []*mtproto.User{},
+		Chats:    []*mtproto.Chat{},
 	}
-	if result.GetForwards() == nil {
-		result.Forwards = []*mtproto.PublicForward{}
-	}
-	if result.GetUsers() == nil {
-		result.Users = []*mtproto.User{}
-	}
-	if result.GetChats() == nil {
-		result.Chats = []*mtproto.Chat{}
+	if next != "" {
+		result.NextOffset = wrapperspb.String(next)
 	}
 	return mtproto.MakeTLStatsPublicForwards(&result).To_Stats_PublicForwards(), nil
 }
@@ -612,23 +635,45 @@ func (c *ApiFullCore) StatsGetStoryPublicForwards(in *mtproto.TLStatsGetStoryPub
 	if stories.Items[in.GetId()] == nil {
 		return nil, mtproto.ErrStoryIdEmpty
 	}
-	var result mtproto.Stats_PublicForwards
-	if err = c.callBusinessProvider("stats.getStoryPublicForwards", map[string]any{
-		"peer": in.GetPeer(), "story_id": in.GetId(), "offset": in.GetOffset(), "limit": in.GetLimit(),
-	}, &result); err != nil {
+	if c.businessProviderConfigured() {
+		var result mtproto.Stats_PublicForwards
+		if err = c.callBusinessProvider("stats.getStoryPublicForwards", map[string]any{
+			"peer": in.GetPeer(), "story_id": in.GetId(), "offset": in.GetOffset(), "limit": in.GetLimit(),
+		}, &result); err != nil {
+			return nil, err
+		}
+		if result.GetCount() < 0 || len(result.GetForwards()) > int(in.GetLimit()) {
+			return nil, mtproto.ErrInternalServerError
+		}
+		if result.GetForwards() == nil {
+			result.Forwards = []*mtproto.PublicForward{}
+		}
+		if result.GetUsers() == nil {
+			result.Users = []*mtproto.User{}
+		}
+		if result.GetChats() == nil {
+			result.Chats = []*mtproto.Chat{}
+		}
+		return mtproto.MakeTLStatsPublicForwards(&result).To_Stats_PublicForwards(), nil
+	}
+	rows, count, next, err := domain.ListPublicForwardStories(uid, in.GetId(), in.GetOffset(), in.GetLimit())
+	if err != nil {
+		if errors.Is(err, domain.ErrPublicForwardCursorInvalid) {
+			return nil, mtproto.ErrOffsetInvalid
+		}
+		if errors.Is(err, domain.ErrPublicForwardInvalid) {
+			return nil, mtproto.ErrInternalServerError
+		}
 		return nil, err
 	}
-	if result.GetCount() < 0 || len(result.GetForwards()) > int(in.GetLimit()) {
-		return nil, mtproto.ErrInternalServerError
+	result := mtproto.Stats_PublicForwards{
+		Count:    count,
+		Forwards: domain.PublicForwardStoriesToTL(rows),
+		Users:    []*mtproto.User{},
+		Chats:    []*mtproto.Chat{},
 	}
-	if result.GetForwards() == nil {
-		result.Forwards = []*mtproto.PublicForward{}
-	}
-	if result.GetUsers() == nil {
-		result.Users = []*mtproto.User{}
-	}
-	if result.GetChats() == nil {
-		result.Chats = []*mtproto.Chat{}
+	if next != "" {
+		result.NextOffset = wrapperspb.String(next)
 	}
 	return mtproto.MakeTLStatsPublicForwards(&result).To_Stats_PublicForwards(), nil
 }
@@ -679,24 +724,49 @@ func (c *ApiFullCore) StatsGetMessagePublicForwards5630281B(in *mtproto.TLStatsG
 	if err = c.validatePublicForwardsMessage(uid, in.GetChannel(), in.GetMsgId()); err != nil {
 		return nil, err
 	}
-	var result mtproto.Messages_Messages
-	if err = c.callBusinessProvider("stats.getMessagePublicForwardsLegacy", map[string]any{
-		"channel": in.GetChannel(), "msg_id": in.GetMsgId(), "offset_rate": in.GetOffsetRate(),
-		"offset_peer": in.GetOffsetPeer(), "offset_id": in.GetOffsetId(), "limit": in.GetLimit(),
-	}, &result); err != nil {
+	// The legacy constructor uses a peer/id cursor. The durable reverse index
+	// is ordered by its identity, so preserve the client's offset id as the
+	// cursor while retaining the canonical empty peer semantics.
+	offset := ""
+	if in.GetOffsetId() > 0 {
+		offset = strconv.FormatInt(int64(in.GetOffsetId()), 10)
+	}
+	if c.businessProviderConfigured() {
+		var result mtproto.Messages_Messages
+		if err = c.callBusinessProvider("stats.getMessagePublicForwardsLegacy", map[string]any{
+			"channel": in.GetChannel(), "msg_id": in.GetMsgId(), "offset_rate": in.GetOffsetRate(),
+			"offset_peer": in.GetOffsetPeer(), "offset_id": in.GetOffsetId(), "limit": in.GetLimit(),
+		}, &result); err != nil {
+			return nil, err
+		}
+		if len(result.GetMessages()) > int(in.GetLimit()) {
+			return nil, mtproto.ErrInternalServerError
+		}
+		if result.GetMessages() == nil {
+			result.Messages = []*mtproto.Message{}
+		}
+		if result.GetUsers() == nil {
+			result.Users = []*mtproto.User{}
+		}
+		if result.GetChats() == nil {
+			result.Chats = []*mtproto.Chat{}
+		}
+		return mtproto.MakeTLMessagesMessages(&result).To_Messages_Messages(), nil
+	}
+	rows, _, _, err := domain.ListPublicForwardMessages(inputChannelID(in.GetChannel()), in.GetMsgId(), offset, in.GetLimit())
+	if err != nil {
+		if errors.Is(err, domain.ErrPublicForwardCursorInvalid) {
+			return nil, mtproto.ErrOffsetInvalid
+		}
+		if errors.Is(err, domain.ErrPublicForwardInvalid) {
+			return nil, mtproto.ErrInternalServerError
+		}
 		return nil, err
 	}
-	if len(result.GetMessages()) > int(in.GetLimit()) {
-		return nil, mtproto.ErrInternalServerError
-	}
-	if result.GetMessages() == nil {
-		result.Messages = []*mtproto.Message{}
-	}
-	if result.GetUsers() == nil {
-		result.Users = []*mtproto.User{}
-	}
-	if result.GetChats() == nil {
-		result.Chats = []*mtproto.Chat{}
+	result := mtproto.Messages_Messages{
+		Messages: domain.PublicForwardMessagesToLegacy(rows),
+		Users:    []*mtproto.User{},
+		Chats:    []*mtproto.Chat{},
 	}
 	return mtproto.MakeTLMessagesMessages(&result).To_Messages_Messages(), nil
 }

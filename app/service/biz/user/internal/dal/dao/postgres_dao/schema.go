@@ -31,5 +31,6 @@ func VerifySchema(ctx context.Context, db DB) error {
 		`SELECT 1 FROM phone_books LIMIT 0`,
 		`SELECT 1 FROM popular_contacts LIMIT 0`,
 		`SELECT 1 FROM predefined_users LIMIT 0`,
-		`SELECT 1 FROM unregistered_contacts LIMIT 0`)
+		`SELECT 1 FROM unregistered_contacts LIMIT 0`,
+		`SELECT transaction_key,provider,transaction_id,user_id,months,created_at FROM user_premium_payment_grant LIMIT 0`)
 }

@@ -1378,6 +1378,67 @@ type Gift struct {
 	Saved bool
 }
 
+// SetGiftChatThemeAvailable records the provider-owned catalogue projection
+// for one already-issued gift. It never creates inventory or accepts a
+// client-supplied gift as authoritative catalogue data.
+func SetGiftChatThemeAvailable(giftID int64, available bool) error {
+	if db == nil {
+		return errors.New("domain PostgreSQL is not open")
+	}
+	if giftID <= 0 {
+		return ErrGiftNotFound
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	var exists bool
+	if err = tx.QueryRow(`SELECT EXISTS(SELECT 1 FROM apifull_gift WHERE id=$1)`, giftID).Scan(&exists); err != nil {
+		return err
+	}
+	if !exists {
+		return ErrGiftNotFound
+	}
+	if available {
+		if _, err = tx.Exec(`INSERT INTO apifull_gift_chat_theme (gift_id) VALUES ($1) ON CONFLICT (gift_id) DO NOTHING`, giftID); err != nil {
+			return err
+		}
+	} else if _, err = tx.Exec(`DELETE FROM apifull_gift_chat_theme WHERE gift_id=$1`, giftID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// ListGiftChatThemes returns only gifts explicitly published to the durable
+// unique-gift theme catalogue, ordered by gift identity for stable paging.
+func ListGiftChatThemes() ([]Gift, error) {
+	if db == nil {
+		return nil, errors.New("domain PostgreSQL is not open")
+	}
+	rows, err := db.Query(`SELECT g.id, g.from_user, g.to_user, g.slug, g.stars, g.saved
+		FROM apifull_gift_chat_theme t JOIN apifull_gift g ON g.id=t.gift_id
+		ORDER BY g.id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]Gift, 0)
+	for rows.Next() {
+		var gift Gift
+		var saved int
+		if err = rows.Scan(&gift.ID, &gift.From, &gift.To, &gift.Slug, &gift.Stars, &saved); err != nil {
+			return nil, err
+		}
+		gift.Saved = saved != 0
+		out = append(out, gift)
+		if len(out) > 10000 {
+			return nil, errors.New("domain: unique-gift chat-theme catalogue exceeds limit")
+		}
+	}
+	return out, rows.Err()
+}
+
 type rower interface {
 	QueryRow(query string, args ...any) *sql.Row
 }

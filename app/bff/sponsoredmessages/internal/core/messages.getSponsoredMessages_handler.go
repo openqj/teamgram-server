@@ -19,17 +19,42 @@
 package core
 
 import (
+	"errors"
+	"strings"
+
 	"github.com/teamgram/proto/mtproto"
+	"github.com/teamgram/teamgram-server/app/bff/apifull/persist"
 )
 
 // MessagesGetSponsoredMessages
 // messages.getSponsoredMessages#9bd2f439 peer:InputPeer = messages.SponsoredMessages;
 func (c *SponsoredMessagesCore) MessagesGetSponsoredMessages(in *mtproto.TLMessagesGetSponsoredMessages) (*mtproto.Messages_SponsoredMessages, error) {
-	if _, err := c.requireSponsoredUser(); err != nil {
+	uid, err := c.requireSponsoredUser()
+	if err != nil {
 		return nil, err
 	}
 	if in == nil || in.GetPeer() == nil {
 		return nil, mtproto.ErrPeerIdInvalid
+	}
+	enabled, _, err := persist.GetSponsoredMessagesEnabled(c.ctx, uid)
+	if err != nil {
+		return nil, mtproto.ErrInternalServerError
+	}
+	if !enabled {
+		return mtproto.MakeTLMessagesSponsoredMessagesEmpty(nil).To_Messages_SponsoredMessages(), nil
+	}
+	if c.svcCtx != nil && strings.TrimSpace(c.svcCtx.Config.SponsoredProviderEndpoint) == "" {
+		result, found, err := persist.LoadSponsoredMessages(c.ctx, sponsoredPeer(in.GetPeer()))
+		if err != nil {
+			if errors.Is(err, persist.ErrSponsoredInventoryUnavailable) {
+				return nil, mtproto.ErrMethodNotImpl
+			}
+			return nil, mtproto.ErrInternalServerError
+		}
+		if !found {
+			return nil, mtproto.ErrMethodNotImpl
+		}
+		return result, nil
 	}
 	var result mtproto.Messages_SponsoredMessages
 	if err := c.callSponsoredProvider("messages.getSponsoredMessages", map[string]any{"peer": in.GetPeer()}, &result); err != nil {
