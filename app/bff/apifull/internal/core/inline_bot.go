@@ -448,8 +448,8 @@ func (c *ApiFullCore) MessagesSendBotRequestedPeer(in *mtproto.TLMessagesSendBot
 	}, result); err != nil {
 		return nil, err
 	}
-	if result.GetPredicateName() == "" {
-		return nil, mtproto.ErrInternalServerError
+	if err := validateUpdatesResult(result); err != nil {
+		return nil, err
 	}
 	return result, nil
 }

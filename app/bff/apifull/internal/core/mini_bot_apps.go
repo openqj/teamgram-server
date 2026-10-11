@@ -161,6 +161,47 @@ func miniWebViewPayload(kind, rawURL, platform string, queryID int64, request an
 	return string(b), nil
 }
 
+func validateWebViewMessageSent(result *mtproto.WebViewMessageSent) error {
+	if result == nil || result.GetPredicateName() != mtproto.Predicate_webViewMessageSent {
+		return mtproto.ErrInternalServerError
+	}
+	if result.GetMsgId() != nil {
+		id := result.GetMsgId()
+		if id.GetPredicateName() == "" || id.GetDcId() <= 0 || (id.GetId_INT64() == 0 && id.GetId_INT32() == 0) {
+			return mtproto.ErrInternalServerError
+		}
+	}
+	return nil
+}
+
+func validateUpdatesResult(result *mtproto.Updates) error {
+	if result == nil {
+		return mtproto.ErrInternalServerError
+	}
+	switch result.GetPredicateName() {
+	case mtproto.Predicate_updates, mtproto.Predicate_updatesCombined, mtproto.Predicate_updatesTooLong:
+		return nil
+	default:
+		return mtproto.ErrInternalServerError
+	}
+}
+
+func validateWebViewResult(result *mtproto.WebViewResult) error {
+	if result == nil || result.GetPredicateName() != mtproto.Predicate_webViewResultUrl || strings.TrimSpace(result.GetUrl()) == "" {
+		return mtproto.ErrInternalServerError
+	}
+	if _, err := miniWebViewURL(result.GetUrl()); err != nil {
+		return mtproto.ErrInternalServerError
+	}
+	if result.GetQueryId_FLAGINT64() != nil && result.GetQueryId_FLAGINT64().GetValue() <= 0 {
+		return mtproto.ErrInternalServerError
+	}
+	if result.GetQueryId_INT64() < 0 {
+		return mtproto.ErrInternalServerError
+	}
+	return nil
+}
+
 func (c *ApiFullCore) requestMiniWebView(uid int64, bot *mtproto.InputUser, rawURL, kind, platform string, fullsize, fullscreen bool, request any) (*mtproto.WebViewResult, error) {
 	if !persist.PostgresEnabled() {
 		return nil, mtproto.ErrMethodNotImpl
@@ -297,8 +338,8 @@ func (c *ApiFullCore) MessagesSendWebViewResultMessage(in *mtproto.TLMessagesSen
 	}, result); err != nil {
 		return nil, err
 	}
-	if result.GetPredicateName() == "" {
-		return nil, mtproto.ErrInternalServerError
+	if err := validateWebViewMessageSent(result); err != nil {
+		return nil, err
 	}
 	return result, nil
 }
@@ -316,8 +357,8 @@ func (c *ApiFullCore) MessagesSendWebViewData(in *mtproto.TLMessagesSendWebViewD
 	}, result); err != nil {
 		return nil, err
 	}
-	if result.GetPredicateName() == "" {
-		return nil, mtproto.ErrInternalServerError
+	if err := validateUpdatesResult(result); err != nil {
+		return nil, err
 	}
 	return result, nil
 }
@@ -335,7 +376,7 @@ func (c *ApiFullCore) MessagesGetBotApp(in *mtproto.TLMessagesGetBotApp) (*mtpro
 	}, result); err != nil {
 		return nil, err
 	}
-	if result.GetPredicateName() == "" || result.GetApp() == nil {
+	if result.GetPredicateName() != mtproto.Predicate_messages_botApp || result.GetApp() == nil {
 		return nil, mtproto.ErrInternalServerError
 	}
 	return result, nil
@@ -355,11 +396,8 @@ func (c *ApiFullCore) MessagesRequestAppWebView53618BCE(in *mtproto.TLMessagesRe
 	}, result); err != nil {
 		return nil, err
 	}
-	if result.GetUrl() == "" || result.GetPredicateName() == "" {
-		return nil, mtproto.ErrInternalServerError
-	}
-	if _, err := miniWebViewURL(result.GetUrl()); err != nil {
-		return nil, mtproto.ErrInternalServerError
+	if err := validateWebViewResult(result); err != nil {
+		return nil, err
 	}
 	return result, nil
 }
@@ -377,11 +415,8 @@ func (c *ApiFullCore) MessagesRequestChatJoinWebView(in *mtproto.TLMessagesReque
 	}, result); err != nil {
 		return nil, err
 	}
-	if result.GetUrl() == "" || result.GetPredicateName() == "" {
-		return nil, mtproto.ErrInternalServerError
-	}
-	if _, err := miniWebViewURL(result.GetUrl()); err != nil {
-		return nil, mtproto.ErrInternalServerError
+	if err := validateWebViewResult(result); err != nil {
+		return nil, err
 	}
 	return result, nil
 }
