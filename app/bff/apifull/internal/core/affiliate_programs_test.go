@@ -39,3 +39,23 @@ func TestAffiliateAndGiveawayMethodsFailClosedWithoutProvider(t *testing.T) {
 		})
 	}
 }
+
+func TestAffiliateProviderRejectsWrongConstructors(t *testing.T) {
+	core := newBusinessProviderGapCore(t, "bots.updateStarRefProgram", map[string]any{
+		"predicate_name": "payments_connectedStarRefBots", "bot_id": 7, "commission_permille": 125,
+	})
+	result, err := core.BotsUpdateStarRefProgram(&mtproto.TLBotsUpdateStarRefProgram{
+		Bot: &mtproto.InputUser{UserId: 7, AccessHash: 9}, CommissionPermille: 125,
+	})
+	if result != nil || !paymentRPCErrorCode(err, mtproto.ErrInternalServerError) {
+		t.Fatalf("wrong affiliate constructor = (%v, %v), want INTERNAL_SERVER_ERROR", result, err)
+	}
+
+	core = newBusinessProviderGapCore(t, "payments.getSuggestedStarRefBots", map[string]any{
+		"predicate_name": "payments_connectedStarRefBots", "count": 0,
+	})
+	suggested, err := core.PaymentsGetSuggestedStarRefBots(&mtproto.TLPaymentsGetSuggestedStarRefBots{Limit: 10})
+	if suggested != nil || !paymentRPCErrorCode(err, mtproto.ErrInternalServerError) {
+		t.Fatalf("wrong suggested constructor = (%v, %v), want INTERNAL_SERVER_ERROR", suggested, err)
+	}
+}

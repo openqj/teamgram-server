@@ -56,6 +56,56 @@ func TestCheckGiftCodeUsesVerifiedProvider(t *testing.T) {
 	}
 }
 
+func TestGiftProviderRejectsWrongConstructors(t *testing.T) {
+	tests := []struct {
+		name      string
+		operation string
+		result    any
+		call      func(*ApiFullCore) (any, error)
+	}{
+		{
+			name:      "upgrade preview",
+			operation: "payments.getStarGiftUpgradePreview",
+			result:    map[string]any{"predicate_name": "payments_resaleStarGifts"},
+			call: func(c *ApiFullCore) (any, error) {
+				return c.PaymentsGetStarGiftUpgradePreview(&mtproto.TLPaymentsGetStarGiftUpgradePreview{GiftId: 1})
+			},
+		},
+		{
+			name:      "resale inventory",
+			operation: "payments.getResaleStarGifts",
+			result:    map[string]any{"predicate_name": "payments_starGiftUpgradePreview"},
+			call: func(c *ApiFullCore) (any, error) {
+				return c.PaymentsGetResaleStarGifts(&mtproto.TLPaymentsGetResaleStarGifts{})
+			},
+		},
+		{
+			name:      "withdrawal URL",
+			operation: "payments.getStarGiftWithdrawalUrl",
+			result:    map[string]any{"predicate_name": "payments_resaleStarGifts"},
+			call: func(c *ApiFullCore) (any, error) {
+				return c.PaymentsGetStarGiftWithdrawalUrl(&mtproto.TLPaymentsGetStarGiftWithdrawalUrl{})
+			},
+		},
+		{
+			name:      "upgrade updates",
+			operation: "payments.upgradeStarGift",
+			result:    map[string]any{"predicate_name": "payments_resaleStarGifts"},
+			call: func(c *ApiFullCore) (any, error) {
+				return c.PaymentsUpgradeStarGift(&mtproto.TLPaymentsUpgradeStarGift{Stargift: &mtproto.InputSavedStarGift{Slug: "gift"}})
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			result, err := tc.call(newBusinessProviderGapCore(t, tc.operation, tc.result))
+			if result != nil || !paymentRPCErrorCode(err, mtproto.ErrInternalServerError) {
+				t.Fatalf("wrong gift constructor = (%v, %v), want INTERNAL_SERVER_ERROR", result, err)
+			}
+		})
+	}
+}
+
 func TestGiftHandlersUnauthed(t *testing.T) {
 	for _, c := range []*ApiFullCore{{}, {MD: &metadata.RpcMetadata{}}} {
 		calls := []func() error{

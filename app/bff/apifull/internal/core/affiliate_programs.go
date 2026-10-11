@@ -31,18 +31,37 @@ func (c *ApiFullCore) affiliateProgramsUnavailable() error {
 }
 
 func validStarRefProgram(program *mtproto.StarRefProgram) bool {
-	if program == nil || program.GetBotId() <= 0 || program.GetCommissionPermille() < 0 || program.GetCommissionPermille() > 1000 {
+	if program == nil || program.GetPredicateName() != mtproto.Predicate_starRefProgram || program.GetBotId() <= 0 || program.GetCommissionPermille() < 0 || program.GetCommissionPermille() > 1000 {
+		return false
+	}
+	if duration := program.GetDurationMonths(); duration != nil && (duration.GetValue() <= 0 || duration.GetValue() > 120) {
 		return false
 	}
 	return true
 }
 
 func validConnectedStarRefBots(result *mtproto.Payments_ConnectedStarRefBots) bool {
-	return result != nil && result.GetCount() >= 0 && len(result.GetConnectedBots()) <= 10000
+	if result == nil || result.GetPredicateName() != mtproto.Predicate_payments_connectedStarRefBots || result.GetCount() < 0 || len(result.GetConnectedBots()) > 10000 {
+		return false
+	}
+	for _, bot := range result.GetConnectedBots() {
+		if bot == nil || bot.GetPredicateName() != mtproto.Predicate_connectedBotStarRef || bot.GetBotId() <= 0 || bot.GetCommissionPermille() < 0 || bot.GetCommissionPermille() > 1000 || bot.GetUrl() == "" || bot.GetDate() < 0 || bot.GetParticipants() < 0 || bot.GetRevenue() < 0 {
+			return false
+		}
+	}
+	return true
 }
 
 func validSuggestedStarRefBots(result *mtproto.Payments_SuggestedStarRefBots) bool {
-	return result != nil && result.GetCount() >= 0 && len(result.GetSuggestedBots()) <= 10000
+	if result == nil || result.GetPredicateName() != mtproto.Predicate_payments_suggestedStarRefBots || result.GetCount() < 0 || len(result.GetSuggestedBots()) > 10000 {
+		return false
+	}
+	for _, program := range result.GetSuggestedBots() {
+		if !validStarRefProgram(program) {
+			return false
+		}
+	}
+	return true
 }
 
 func (c *ApiFullCore) BotsUpdateStarRefProgram(in *mtproto.TLBotsUpdateStarRefProgram) (*mtproto.StarRefProgram, error) {
