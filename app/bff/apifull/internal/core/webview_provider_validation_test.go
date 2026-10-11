@@ -48,3 +48,22 @@ func TestWebViewProviderRejectsNonCanonicalWebViewResult(t *testing.T) {
 		t.Fatalf("wrong WebView result constructor = (%v, %v), want internal error", result, err)
 	}
 }
+
+func TestBotProviderRejectsMissingBooleanValue(t *testing.T) {
+	core := newBusinessProviderGapCore(t, "messages.setBotCallbackAnswer", map[string]any{})
+	result, err := core.MessagesSetBotCallbackAnswer(&mtproto.TLMessagesSetBotCallbackAnswer{
+		QueryId: 9,
+	})
+	if result != nil || !errors.Is(err, mtproto.ErrInternalServerError) {
+		t.Fatalf("missing callback boolean = (%v, %v), want internal error", result, err)
+	}
+
+	core = newBusinessProviderGapCore(t, "bots.answerWebhookJSONQuery", map[string]any{})
+	result, err = core.BotsAnswerWebhookJSONQuery(&mtproto.TLBotsAnswerWebhookJSONQuery{
+		QueryId: 9,
+		Data:    &mtproto.DataJSON{Data: `{}`},
+	})
+	if result != nil || !errors.Is(err, mtproto.ErrInternalServerError) {
+		t.Fatalf("missing webhook boolean = (%v, %v), want internal error", result, err)
+	}
+}
