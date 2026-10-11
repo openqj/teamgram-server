@@ -173,7 +173,7 @@ func TestInlineProviderMethodsUseSignedResponses(t *testing.T) {
 		t.Fatalf("requested peer = (%v, %v)", updates, err)
 	}
 
-	core = newBusinessProviderGapCore(t, "messages.setBotGuestChatResult", map[string]any{"predicate_name": "inputBotInlineMessageID", "dc_id": 2, "id": "aWQ=", "access_hash": "aGFzaA=="})
+	core = newBusinessProviderGapCore(t, "messages.setBotGuestChatResult", map[string]any{"predicate_name": "inputBotInlineMessageID", "dc_id": 2, "id_INT64": 9001, "access_hash": 9002})
 	result, err := core.MessagesSetBotGuestChatResult(&mtproto.TLMessagesSetBotGuestChatResult{
 		QueryId: 1, Result: &mtproto.InputBotInlineResult{Id: "r", Type: "article"},
 	})

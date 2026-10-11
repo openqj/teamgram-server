@@ -186,6 +186,38 @@ func validateUpdatesResult(result *mtproto.Updates) error {
 	}
 }
 
+func validateInputBotInlineMessageID(result *mtproto.InputBotInlineMessageID) error {
+	if result == nil || (result.GetPredicateName() != mtproto.Predicate_inputBotInlineMessageID && result.GetPredicateName() != mtproto.Predicate_inputBotInlineMessageID64) || result.GetDcId() <= 0 || result.GetAccessHash() == 0 {
+		return mtproto.ErrInternalServerError
+	}
+	if result.GetId_INT64() == 0 && result.GetId_INT32() == 0 {
+		return mtproto.ErrInternalServerError
+	}
+	return nil
+}
+
+func validateInputBotApp(app *mtproto.InputBotApp) error {
+	if app == nil || app.GetBotId() == nil {
+		return mtproto.ErrInputRequestInvalid
+	}
+	if app.GetBotId().GetPredicateName() != mtproto.Predicate_inputUser || app.GetBotId().GetUserId() <= 0 || app.GetBotId().GetAccessHash() == 0 {
+		return mtproto.ErrUserIdInvalid
+	}
+	switch app.GetPredicateName() {
+	case mtproto.Predicate_inputBotAppID:
+		if app.GetId() <= 0 || app.GetAccessHash() == 0 {
+			return mtproto.ErrInputRequestInvalid
+		}
+	case mtproto.Predicate_inputBotAppShortName:
+		if strings.TrimSpace(app.GetShortName()) == "" || len(app.GetShortName()) > 64 {
+			return mtproto.ErrInputRequestInvalid
+		}
+	default:
+		return mtproto.ErrInputConstructorInvalid
+	}
+	return nil
+}
+
 func validateWebViewResult(result *mtproto.WebViewResult) error {
 	if result == nil || result.GetPredicateName() != mtproto.Predicate_webViewResultUrl || strings.TrimSpace(result.GetUrl()) == "" {
 		return mtproto.ErrInternalServerError
@@ -332,6 +364,12 @@ func (c *ApiFullCore) MessagesSendWebViewResultMessage(in *mtproto.TLMessagesSen
 	if in == nil || strings.TrimSpace(in.GetBotQueryId()) == "" || in.GetResult() == nil {
 		return nil, mtproto.ErrInputRequestInvalid
 	}
+	if strings.TrimSpace(in.GetResult().GetId()) == "" || strings.TrimSpace(in.GetResult().GetType()) == "" {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if err := validateInlineResultPredicate(in.GetResult().GetPredicateName()); err != nil {
+		return nil, err
+	}
 	result := new(mtproto.WebViewMessageSent)
 	if err := c.callBusinessProvider("messages.sendWebViewResultMessage", map[string]any{
 		"bot_query_id": in.GetBotQueryId(), "result": in.GetResult(),
@@ -369,6 +407,9 @@ func (c *ApiFullCore) MessagesGetBotApp(in *mtproto.TLMessagesGetBotApp) (*mtpro
 	}
 	if in == nil || in.GetApp() == nil {
 		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if err := validateInputBotApp(in.GetApp()); err != nil {
+		return nil, err
 	}
 	result := new(mtproto.Messages_BotApp)
 	if err := c.callBusinessProvider("messages.getBotApp", map[string]any{
