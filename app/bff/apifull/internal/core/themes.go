@@ -568,6 +568,11 @@ func validGiftChatThemesProviderResult(result *mtproto.Account_ChatThemes) bool 
 			default:
 				return false
 			}
+			switch gift.GetSticker().GetPredicateName() {
+			case mtproto.Predicate_document, mtproto.Predicate_documentEmpty:
+			default:
+				return false
+			}
 		}
 		return true
 	default:
