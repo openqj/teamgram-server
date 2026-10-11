@@ -105,3 +105,19 @@ func TestMessagesSummarizeTextUsesOpenAICompatibleProvider(t *testing.T) {
 		t.Fatalf("summary = (%v, %v), want OpenAI-compatible result", got, err)
 	}
 }
+
+func TestMessagesTranslateRichMessageUsesOpenAICompatibleProvider(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"message": map[string]string{"content": `[{"blocks":[],"photos":[],"documents":[]}]`}}}})
+	}))
+	defer server.Close()
+	core := &MessagesCore{
+		svcCtx: &svc.ServiceContext{Config: config.Config{AIProviderEndpoint: server.URL + "/v1", AIProviderKey: "openai-test-key", AIProviderModel: "gpt-6.1-sol"}},
+		MD:     &metadata.RpcMetadata{UserId: 42},
+	}
+	input := mtproto.MakeTLInputRichMessage(&mtproto.InputRichMessage{Html: "source"}).To_InputRichMessage()
+	got, err := core.MessagesTranslateRichMessage(&mtproto.TLMessagesTranslateRichMessage{Text: []*mtproto.InputRichMessage{input}, ToLang: "fr"})
+	if err != nil || got == nil || len(got.GetResult()) != 1 || got.GetResult()[0].GetPredicateName() != mtproto.Predicate_richMessage {
+		t.Fatalf("translation = (%v, %v), want OpenAI-compatible result", got, err)
+	}
+}
