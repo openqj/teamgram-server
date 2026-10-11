@@ -41,3 +41,13 @@ func TestGiftChatThemesProviderResultRequiresCanonicalUnion(t *testing.T) {
 		}
 	}
 }
+
+func TestUniqueGiftChatThemesRejectsUnknownProviderConstructor(t *testing.T) {
+	core := newBusinessProviderGapCore(t, "account.getUniqueGiftChatThemes", map[string]any{
+		"predicate_name": "updates",
+	})
+	result, err := core.AccountGetUniqueGiftChatThemes(&mtproto.TLAccountGetUniqueGiftChatThemes{Limit: 10})
+	if result != nil || !errors.Is(err, mtproto.ErrInternalServerError) {
+		t.Fatalf("unknown provider constructor = (%v, %v), want nil and INTERNAL_SERVER_ERROR", result, err)
+	}
+}
