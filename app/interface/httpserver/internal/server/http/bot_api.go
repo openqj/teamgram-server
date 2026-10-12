@@ -1865,7 +1865,7 @@ func answerInlineQuery(ctx *svc.ServiceContext, requestCtx context.Context, botI
 		result, err := botAPIWebAppInlineResult(item)
 		if err != nil {
 			if errors.Is(err, errBotAPIWebAppResultUnsupported) {
-				return nil, http.StatusNotImplemented, 501, "Not Implemented: only article inline results are supported"
+				return nil, http.StatusNotImplemented, 501, "Not Implemented: this inline result type is not supported"
 			}
 			return nil, http.StatusBadRequest, 400, "Bad Request: inline result is invalid"
 		}
