@@ -1916,16 +1916,81 @@ func botAPIWebAppInlineResult(raw map[string]json.RawMessage) (*mtproto.InputBot
 	if resultType == "" || resultID == "" {
 		return nil, errors.New("result type and id are required")
 	}
-	if resultType != "article" {
+	sendMessage, err := botAPIInlineSendMessage(raw, resultType)
+	if err != nil {
+		return nil, err
+	}
+	base := &mtproto.InputBotInlineResult{
+		Id:          resultID,
+		Type:        resultType,
+		Title:       optionalString(rawString(raw, "title")),
+		Description: optionalString(rawString(raw, "description")),
+		Url:         optionalString(rawString(raw, "url")),
+		SendMessage: sendMessage,
+	}
+	switch resultType {
+	case "article":
+		if sendMessage == nil || strings.TrimSpace(sendMessage.GetMessage()) == "" {
+			return nil, errors.New("article message is required")
+		}
+		return mtproto.MakeTLInputBotInlineResult(base).To_InputBotInlineResult(), nil
+	case "photo", "gif", "mpeg4_gif", "video", "audio", "voice", "document":
+		contentURL, thumbURL, mimeType := botAPIInlineMediaURLs(raw, resultType)
+		if contentURL == "" {
+			return nil, errors.New("inline media url is required")
+		}
+		base.Content = botAPIInputWebDocument(contentURL, mimeType, rawInt(raw, "photo_width"), rawInt(raw, "photo_height"))
+		if thumbURL != "" {
+			base.Thumb = botAPIInputWebDocument(thumbURL, "image/jpeg", rawInt(raw, "thumbnail_width"), rawInt(raw, "thumbnail_height"))
+		}
+		return mtproto.MakeTLInputBotInlineResult(base).To_InputBotInlineResult(), nil
+	case "location":
+		return mtproto.MakeTLInputBotInlineResult(base).To_InputBotInlineResult(), nil
+	case "venue", "contact":
+		return mtproto.MakeTLInputBotInlineResult(base).To_InputBotInlineResult(), nil
+	case "game":
+		shortName := strings.TrimSpace(rawString(raw, "game_short_name"))
+		if shortName == "" {
+			return nil, errors.New("game_short_name is required")
+		}
+		base.ShortName = shortName
+		return mtproto.MakeTLInputBotInlineResultGame(base).To_InputBotInlineResult(), nil
+	case "cached_photo", "cached_document", "cached_gif", "cached_mpeg4_gif", "cached_video", "cached_audio", "cached_voice":
+		fileID := rawString(raw, "photo_file_id")
+		if fileID == "" {
+			fileID = rawString(raw, "document_file_id")
+		}
+		if fileID == "" {
+			fileID = rawString(raw, "audio_file_id")
+		}
+		ref, parseErr := parseBotAPIFileID(fileID)
+		if parseErr != nil {
+			return nil, parseErr
+		}
+		if ref.kind == "photo" {
+			base.Photo = mtproto.MakeTLInputPhoto(&mtproto.InputPhoto{Id: ref.id, AccessHash: ref.accessHash}).To_InputPhoto()
+			return mtproto.MakeTLInputBotInlineResultPhoto(base).To_InputBotInlineResult(), nil
+		}
+		base.Document = mtproto.MakeTLInputDocument(&mtproto.InputDocument{Id: ref.id, AccessHash: ref.accessHash}).To_InputDocument()
+		return mtproto.MakeTLInputBotInlineResultDocument(base).To_InputBotInlineResult(), nil
+	default:
 		return nil, errBotAPIWebAppResultUnsupported
 	}
+}
+
+func botAPIInlineSendMessage(raw map[string]json.RawMessage, resultType string) (*mtproto.InputBotInlineMessage, error) {
 	content := rawObject(raw, "input_message_content")
 	messageText := rawString(content, "message_text")
 	if messageText == "" {
-		return nil, errors.New("input_message_content.message_text is required")
+		messageText = rawString(raw, "caption")
 	}
 	var entities []botapi.MessageEntity
 	if entityValue, ok := content["entities"]; ok {
+		if err := json.Unmarshal(entityValue, &entities); err != nil {
+			return nil, err
+		}
+	}
+	if entityValue, ok := raw["caption_entities"]; len(entities) == 0 && ok {
 		if err := json.Unmarshal(entityValue, &entities); err != nil {
 			return nil, err
 		}
@@ -1936,21 +2001,102 @@ func botAPIWebAppInlineResult(raw map[string]json.RawMessage) (*mtproto.InputBot
 			return nil, err
 		}
 	}
-	message := mtproto.MakeTLInputBotInlineMessageText(&mtproto.InputBotInlineMessage{
-		Message:     messageText,
-		Entities:    botapi.MessageEntitiesToMTProto(entities),
-		ReplyMarkup: botapi.ReplyMarkupToMTProto(markup),
-		NoWebpage:   rawBool(content, "disable_web_page_preview"),
-	}).To_InputBotInlineMessage()
-	result := mtproto.MakeTLInputBotInlineResult(&mtproto.InputBotInlineResult{
-		Id:          resultID,
-		Type:        resultType,
-		Title:       optionalString(rawString(raw, "title")),
-		Description: optionalString(rawString(raw, "description")),
-		Url:         optionalString(rawString(raw, "url")),
-		SendMessage: message,
-	}).To_InputBotInlineResult()
-	return result, nil
+	replyMarkup := botapi.ReplyMarkupToMTProto(markup)
+	switch resultType {
+	case "location":
+		latitude, longitude := rawFloat(raw, "latitude"), rawFloat(raw, "longitude")
+		if latitude < -90 || latitude > 90 || longitude < -180 || longitude > 180 {
+			return nil, errors.New("location coordinates are invalid")
+		}
+		return mtproto.MakeTLInputBotInlineMessageMediaGeo(&mtproto.InputBotInlineMessage{
+			GeoPoint:    mtproto.MakeTLInputGeoPoint(&mtproto.InputGeoPoint{Lat: latitude, Long: longitude}).To_InputGeoPoint(),
+			ReplyMarkup: replyMarkup,
+		}).To_InputBotInlineMessage(), nil
+	case "venue":
+		latitude, longitude := rawFloat(raw, "latitude"), rawFloat(raw, "longitude")
+		if strings.TrimSpace(rawString(raw, "title")) == "" || strings.TrimSpace(rawString(raw, "address")) == "" {
+			return nil, errors.New("venue title and address are required")
+		}
+		return mtproto.MakeTLInputBotInlineMessageMediaVenue(&mtproto.InputBotInlineMessage{
+			GeoPoint: mtproto.MakeTLInputGeoPoint(&mtproto.InputGeoPoint{Lat: latitude, Long: longitude}).To_InputGeoPoint(),
+			Title:    rawString(raw, "title"), Address: rawString(raw, "address"), Provider: rawString(raw, "foursquare_id"),
+			VenueId: rawString(raw, "foursquare_id"), VenueType: rawString(raw, "foursquare_type"), ReplyMarkup: replyMarkup,
+		}).To_InputBotInlineMessage(), nil
+	case "contact":
+		if strings.TrimSpace(rawString(raw, "phone_number")) == "" || strings.TrimSpace(rawString(raw, "first_name")) == "" {
+			return nil, errors.New("contact phone_number and first_name are required")
+		}
+		return mtproto.MakeTLInputBotInlineMessageMediaContact(&mtproto.InputBotInlineMessage{
+			PhoneNumber: rawString(raw, "phone_number"), FirstName: rawString(raw, "first_name"), LastName: rawString(raw, "last_name"), Vcard: rawString(raw, "vcard"), ReplyMarkup: replyMarkup,
+		}).To_InputBotInlineMessage(), nil
+	case "game":
+		return mtproto.MakeTLInputBotInlineMessageGame(&mtproto.InputBotInlineMessage{ReplyMarkup: replyMarkup}).To_InputBotInlineMessage(), nil
+	default:
+		if messageText == "" && resultType == "article" {
+			return nil, errors.New("input_message_content.message_text is required")
+		}
+		return mtproto.MakeTLInputBotInlineMessageText(&mtproto.InputBotInlineMessage{
+			Message: messageText, Entities: botapi.MessageEntitiesToMTProto(entities), ReplyMarkup: replyMarkup,
+			NoWebpage: rawBool(content, "disable_web_page_preview"),
+		}).To_InputBotInlineMessage(), nil
+	}
+}
+
+func botAPIInlineMediaURLs(raw map[string]json.RawMessage, resultType string) (content, thumb, mimeType string) {
+	switch resultType {
+	case "photo":
+		content, thumb, mimeType = rawString(raw, "photo_url"), rawString(raw, "thumbnail_url"), "image/jpeg"
+	case "gif":
+		content, thumb, mimeType = rawString(raw, "gif_url"), rawString(raw, "thumbnail_url"), "image/gif"
+	case "mpeg4_gif":
+		content, thumb, mimeType = rawString(raw, "mpeg4_url"), rawString(raw, "thumbnail_url"), "video/mp4"
+	case "video":
+		content, thumb, mimeType = rawString(raw, "video_url"), rawString(raw, "thumbnail_url"), rawString(raw, "mime_type")
+	case "audio":
+		content, thumb, mimeType = rawString(raw, "audio_url"), "", "audio/mpeg"
+	case "voice":
+		content, thumb, mimeType = rawString(raw, "voice_url"), "", "audio/ogg"
+	case "document":
+		content, thumb, mimeType = rawString(raw, "document_url"), rawString(raw, "thumbnail_url"), rawString(raw, "mime_type")
+	}
+	if mimeType == "" {
+		mimeType = "application/octet-stream"
+	}
+	return content, thumb, mimeType
+}
+
+func botAPIInputWebDocument(rawURL, mimeType string, width, height int) *mtproto.InputWebDocument {
+	attributes := []*mtproto.DocumentAttribute{}
+	if width > 0 || height > 0 {
+		attributes = append(attributes, mtproto.MakeTLDocumentAttributeImageSize(&mtproto.DocumentAttribute{W: int32(width), H: int32(height)}).To_DocumentAttribute())
+	}
+	return mtproto.MakeTLInputWebDocument(&mtproto.InputWebDocument{Url: rawURL, MimeType: mimeType, Attributes: attributes}).To_InputWebDocument()
+}
+
+func rawInt(values map[string]json.RawMessage, key string) int {
+	value, ok := values[key]
+	if !ok {
+		return 0
+	}
+	var parsed int
+	if json.Unmarshal(value, &parsed) == nil {
+		return parsed
+	}
+	parsed, _ = strconv.Atoi(strings.TrimSpace(string(value)))
+	return parsed
+}
+
+func rawFloat(values map[string]json.RawMessage, key string) float64 {
+	value, ok := values[key]
+	if !ok {
+		return 0
+	}
+	var parsed float64
+	if json.Unmarshal(value, &parsed) == nil {
+		return parsed
+	}
+	parsed, _ = strconv.ParseFloat(strings.TrimSpace(string(value)), 64)
+	return parsed
 }
 
 func rawString(values map[string]json.RawMessage, key string) string {

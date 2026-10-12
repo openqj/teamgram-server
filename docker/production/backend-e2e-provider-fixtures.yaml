@@ -28,6 +28,8 @@ services:
       CODE_PROVIDER_SECRET: "${TEAMGRAM_CODE_PROVIDER_SECRET:?TEAMGRAM_CODE_PROVIDER_SECRET is required}"
       CODE_PROVIDER_PORT: "23193"
     expose: ["23193"]
+    ports:
+      - "127.0.0.1:23193:23193"
     healthcheck:
       test: ["CMD", "/code-provider", "--healthcheck"]
       interval: 5s
