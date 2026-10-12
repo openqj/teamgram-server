@@ -117,8 +117,17 @@ func normalizePremiumPromo(promo *mtproto.Help_PremiumPromo) bool {
 	if promo.GetPredicateName() == "" {
 		promo.To_HelpPremiumPromo()
 	}
-	if promo.GetPredicateName() != mtproto.Predicate_help_premiumPromo ||
-		strings.TrimSpace(promo.GetCurrency()) == "" || promo.GetMonthlyAmount() < 0 || len(promo.GetPeriodOptions()) == 0 {
+	if promo.GetPredicateName() != mtproto.Predicate_help_premiumPromo {
+		return false
+	}
+	switch promo.GetConstructor() {
+	case mtproto.TLConstructor_CRC32_UNKNOWN:
+		promo.Constructor = mtproto.TLConstructor_CRC32_help_premiumPromo_5334759c
+	case mtproto.TLConstructor_CRC32_help_premiumPromo_5334759c:
+	default:
+		return false
+	}
+	if len(promo.GetPeriodOptions()) == 0 {
 		return false
 	}
 	for _, option := range promo.GetPeriodOptions() {
@@ -130,6 +139,13 @@ func normalizePremiumPromo(promo *mtproto.Help_PremiumPromo) bool {
 			option.To_PremiumSubscriptionOption()
 		}
 		if option.GetPredicateName() != mtproto.Predicate_premiumSubscriptionOption {
+			return false
+		}
+		switch option.GetConstructor() {
+		case mtproto.TLConstructor_CRC32_UNKNOWN:
+			option.Constructor = mtproto.TLConstructor_CRC32_premiumSubscriptionOption_5f2d1df2
+		case mtproto.TLConstructor_CRC32_premiumSubscriptionOption_5f2d1df2:
+		default:
 			return false
 		}
 	}
@@ -258,7 +274,7 @@ func verifyPremiumProviderSignature(key, signature string, body []byte) bool {
 	return hmac.Equal(provided, h.Sum(nil))
 }
 
-func securePremiumProviderURL(parsed *url.URL) bool {
+func securePremiumProviderURL(parsed *url.URL, allowInsecureHTTP bool) bool {
 	if parsed == nil {
 		return false
 	}
@@ -267,6 +283,9 @@ func securePremiumProviderURL(parsed *url.URL) bool {
 	}
 	if !strings.EqualFold(parsed.Scheme, "http") {
 		return false
+	}
+	if allowInsecureHTTP {
+		return true
 	}
 	host := strings.TrimSuffix(strings.ToLower(parsed.Hostname()), ".")
 	if host == "localhost" {
@@ -290,7 +309,7 @@ func (c *PremiumCore) callPaymentProvider(operation string, payload any, result 
 		return mtproto.ErrPaymentProviderInvalid
 	}
 	parsed, err := url.Parse(endpoint)
-	if err != nil || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || !securePremiumProviderURL(parsed) {
+	if err != nil || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || !securePremiumProviderURL(parsed, c.svcCtx.Config.AllowInsecureProviderHTTP) {
 		return mtproto.ErrPaymentProviderInvalid
 	}
 	if c.svcCtx.Config.PaymentProviderTimeoutSeconds < 0 || c.svcCtx.Config.PaymentProviderTimeoutSeconds > 300 {

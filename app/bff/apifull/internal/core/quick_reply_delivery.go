@@ -74,6 +74,9 @@ func quickReplyIDs(userID int64, shortcutID int32, requested []int32) ([]int32, 
 }
 
 func (c *ApiFullCore) MessagesSendQuickReplyMessages(in *mtproto.TLMessagesSendQuickReplyMessages) (*mtproto.Updates, error) {
+	if err := c.requirePremium(); err != nil {
+		return nil, err
+	}
 	userID, err := c.requireUserId()
 	if err != nil {
 		return nil, err
@@ -149,6 +152,9 @@ func (c *ApiFullCore) MessagesSendQuickReplyMessages(in *mtproto.TLMessagesSendQ
 }
 
 func (c *ApiFullCore) MessagesDeleteQuickReplyMessages(in *mtproto.TLMessagesDeleteQuickReplyMessages) (*mtproto.Updates, error) {
+	if err := c.requirePremium(); err != nil {
+		return nil, err
+	}
 	userID, err := c.requireUserId()
 	if err != nil {
 		return nil, err

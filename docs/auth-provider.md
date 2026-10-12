@@ -66,3 +66,14 @@ import, the returned user ID must also match the active Bot registry record
 resolved by the User service from the supplied token. Provider failures,
 signature failures, malformed identity, deleted users, and authsession bind
 failures never produce an authorization response.
+
+## Isolated acceptance fixture
+
+The `docker/production/provider-fixtures.acceptance.yaml` overlay wires
+authorization, Passport, and bot-connection requests to the signed
+`identity-provider-fixture`. It requires explicit
+`TEAMGRAM_IDENTITY_PROVIDER_KEY`, `TEAMGRAM_IDENTITY_PROVIDER_SIGNING_KEY`,
+`IDENTITY_PROVIDER_WEB_TOKENS`, and `IDENTITY_PROVIDER_BOT_IDS` values. The
+overlay sets `TEAMGRAM_PROVIDER_FIXTURE_MODE=1` and uses the `.test` service
+alias for its HTTP endpoint. Keep that mode unset in production; without it,
+non-HTTPS, non-loopback provider endpoints remain rejected.

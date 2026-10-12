@@ -12,6 +12,7 @@ import (
 type ForumTopic struct {
 	ID          int32
 	Title       string
+	IconColor   int32
 	Closed      bool
 	Pinned      bool
 	Hidden      bool
@@ -34,6 +35,10 @@ func forumPeerLock(tx *sql.Tx, peerKey string) error {
 }
 
 func CreateForumTopic(peerKey string, userID int64, title string) error {
+	return CreateForumTopicWithStyle(peerKey, userID, title, 0, 0)
+}
+
+func CreateForumTopicWithStyle(peerKey string, userID int64, title string, iconColor int32, iconEmojiID int64) error {
 	if db == nil {
 		return errors.New("domain PostgreSQL is not open")
 	}
@@ -53,8 +58,10 @@ func CreateForumTopic(peerKey string, userID int64, title string) error {
 		return err
 	}
 	var topicID int32
-	if err = tx.QueryRow(`INSERT INTO apifull_forum_topic (peer_key, title, creator_user_id, topic_date, position)
-		VALUES ($1, $2, $3, $4, $5) RETURNING topic_id`, peerKey, title, userID, int32(time.Now().Unix()), position).Scan(&topicID); err != nil {
+	if err = tx.QueryRow(`INSERT INTO apifull_forum_topic
+		(peer_key, title, creator_user_id, icon_color, icon_emoji_id, topic_date, position)
+		VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING topic_id`,
+		peerKey, title, userID, iconColor, iconEmojiID, int32(time.Now().Unix()), position).Scan(&topicID); err != nil {
 		return err
 	}
 	if _, err = tx.Exec(`UPDATE apifull_forum_topic SET top_message=$1 WHERE peer_key=$2 AND topic_id=$3`, topicID, peerKey, topicID); err != nil {
@@ -71,7 +78,7 @@ func ListForumTopics(peerKey string) ([]ForumTopic, error) {
 	if db == nil {
 		return nil, errors.New("domain PostgreSQL is not open")
 	}
-	rows, err := db.Query(`SELECT topic_id, title, closed, pinned, hidden, topic_date, creator_user_id,
+	rows, err := db.Query(`SELECT topic_id, title, icon_color, closed, pinned, hidden, topic_date, creator_user_id,
 		icon_emoji_id, top_message, position FROM apifull_forum_topic WHERE peer_key=$1 ORDER BY position, topic_id`, peerKey)
 	if err != nil {
 		return nil, err
@@ -80,7 +87,7 @@ func ListForumTopics(peerKey string) ([]ForumTopic, error) {
 	topics := make([]ForumTopic, 0)
 	for rows.Next() {
 		var topic ForumTopic
-		if err = rows.Scan(&topic.ID, &topic.Title, &topic.Closed, &topic.Pinned, &topic.Hidden, &topic.Date,
+		if err = rows.Scan(&topic.ID, &topic.Title, &topic.IconColor, &topic.Closed, &topic.Pinned, &topic.Hidden, &topic.Date,
 			&topic.CreatorID, &topic.IconEmojiID, &topic.TopMessage, &topic.Position); err != nil {
 			return nil, err
 		}
@@ -105,10 +112,10 @@ func UpdateForumTopic(peerKey string, topicID int32, update func(*ForumTopic) er
 		return err
 	}
 	var topic ForumTopic
-	err = tx.QueryRow(`SELECT topic_id, title, closed, pinned, hidden, topic_date, creator_user_id,
+	err = tx.QueryRow(`SELECT topic_id, title, icon_color, closed, pinned, hidden, topic_date, creator_user_id,
 		icon_emoji_id, top_message, position FROM apifull_forum_topic
 		WHERE peer_key=$1 AND topic_id=$2 FOR UPDATE`, peerKey, topicID).Scan(
-		&topic.ID, &topic.Title, &topic.Closed, &topic.Pinned, &topic.Hidden, &topic.Date,
+		&topic.ID, &topic.Title, &topic.IconColor, &topic.Closed, &topic.Pinned, &topic.Hidden, &topic.Date,
 		&topic.CreatorID, &topic.IconEmojiID, &topic.TopMessage, &topic.Position)
 	if err == sql.ErrNoRows {
 		return mtproto.ErrTopicIdInvalid

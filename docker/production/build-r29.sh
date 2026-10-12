@@ -51,6 +51,7 @@ fi
 # teamgramd/etc2 PostgreSQL runtime configuration, not a stale base image copy.
 docker build --pull=false --platform linux/arm64 \
   $add_host_args \
+  --build-arg "UBUNTU_MIRROR_IP=$ubuntu_mirror_ip" \
   -f "$repo_root/docker/production/Dockerfile.backend-r29" \
   -t "$image_tag" "$workspace_root"
 

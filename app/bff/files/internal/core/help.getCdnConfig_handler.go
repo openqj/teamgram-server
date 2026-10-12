@@ -19,6 +19,8 @@
 package core
 
 import (
+	"strings"
+
 	"github.com/teamgram/proto/mtproto"
 )
 
@@ -32,8 +34,13 @@ func (c *FilesCore) HelpGetCdnConfig(in *mtproto.TLHelpGetCdnConfig) (*mtproto.C
 	if err := c.callCDNProvider("help.getCdnConfig", map[string]any{}, result); err != nil {
 		return nil, err
 	}
-	if result.GetPredicateName() == "" || len(result.GetPublicKeys()) > 1000 {
+	if result.GetPredicateName() != mtproto.Predicate_cdnConfig || len(result.GetPublicKeys()) == 0 || len(result.GetPublicKeys()) > 1000 {
 		return nil, mtproto.ErrCdnMethodInvalid
+	}
+	for _, key := range result.GetPublicKeys() {
+		if key == nil || key.GetPredicateName() != mtproto.Predicate_cdnPublicKey || key.GetDcId() <= 0 || strings.TrimSpace(key.GetPublicKey()) == "" {
+			return nil, mtproto.ErrCdnMethodInvalid
+		}
 	}
 	return result, nil
 }

@@ -24,7 +24,7 @@ Here are some sample inline bots, in case you’re curious to see one in action.
 @sticker – Find and send stickers based on emoji
 */
 const (
-	BotFatherId   = int64(6)
+	BotFatherId   = int64(900000000010)
 	BotFatherName = "BotFather"
 )
 

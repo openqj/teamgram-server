@@ -19,7 +19,11 @@
 package core
 
 import (
+	"errors"
+
 	"github.com/teamgram/proto/mtproto"
+	"github.com/teamgram/teamgram-server/app/bff/apifull/channelview"
+	"github.com/teamgram/teamgram-server/app/bff/apifull/state"
 	chatpb "github.com/teamgram/teamgram-server/app/service/biz/chat/chat"
 )
 
@@ -35,7 +39,23 @@ func (c *ChatsCore) MessagesEditChatAbout(in *mtproto.TLMessagesEditChatAbout) (
 	peer := mtproto.FromInputPeer2(c.MD.UserId, in.Peer)
 
 	switch peer.PeerType {
-	case mtproto.PEER_CHAT, mtproto.PEER_CHANNEL:
+	case mtproto.PEER_CHANNEL:
+		if _, err := channelview.ValidateInputPeer(c.MD.UserId, in.GetPeer()); err != nil {
+			c.Logger.Errorf("messages.editChatAbout - channel validation error: %v", err)
+			return nil, err
+		}
+		if err := state.UpdateChannelAbout(c.MD.UserId, peer.PeerId, in.GetAbout()); err != nil {
+			c.Logger.Errorf("messages.editChatAbout - channel update error: %v", err)
+			switch {
+			case errors.Is(err, state.ErrChannelMissing):
+				return nil, mtproto.ErrChannelInvalid
+			case errors.Is(err, state.ErrNotCreator):
+				return nil, mtproto.ErrChatAdminRequired
+			default:
+				return nil, mtproto.ErrInternalServerError
+			}
+		}
+	case mtproto.PEER_CHAT:
 		chat, err := c.svcCtx.Dao.ChatClient.Client().ChatEditChatAbout(c.ctx, &chatpb.TLChatEditChatAbout{
 			ChatId:     peer.PeerId,
 			EditUserId: c.MD.UserId,

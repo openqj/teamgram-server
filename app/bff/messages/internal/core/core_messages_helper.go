@@ -11,6 +11,7 @@ import (
 	"math/rand"
 
 	"github.com/teamgram/proto/mtproto"
+	"github.com/teamgram/teamgram-server/app/bff/paymentinvoice"
 	"github.com/teamgram/teamgram-server/app/messenger/sync/sync"
 	"github.com/teamgram/teamgram-server/app/service/biz/dialog/dialog"
 	userpb "github.com/teamgram/teamgram-server/app/service/biz/user/user"
@@ -248,14 +249,16 @@ func (c *MessagesCore) makeMediaByInputMedia(media *mtproto.InputMedia) (message
 		return nil, mtproto.ErrMethodNotImpl
 	case mtproto.Predicate_inputMediaGame:
 		// inputMediaGame#d33f43f3 id:InputGame = InputMedia;
-
-		// TODO(@benqi): Not impl inputMediaGame
-		return nil, mtproto.ErrMethodNotImpl
+		game := media.To_InputMediaGame().GetId_INPUTGAME()
+		if game == nil || game.GetPredicateName() != mtproto.Predicate_inputGameShortName || game.GetShortName() == "" {
+			return nil, mtproto.ErrInputConstructorInvalid
+		}
+		messageMedia = mtproto.MakeTLMessageMediaGame(&mtproto.MessageMedia{
+			Game: &mtproto.Game{ShortName: game.GetShortName()},
+		}).To_MessageMedia()
 	case mtproto.Predicate_inputMediaInvoice:
 		// inputMediaInvoice#d9799874 flags:# title:string description:string photo:flags.0?InputWebDocument invoice:Invoice payload:bytes provider:string provider_data:DataJSON start_param:flags.1?string = InputMedia;
-
-		// TODO(@benqi): Not impl inputMediaGame
-		return nil, mtproto.ErrMethodNotImpl
+		return paymentinvoice.FromInputMedia(media)
 	case mtproto.Predicate_inputMediaGeoLive:
 		// inputMediaGeoLive#971fa843 flags:# stopped:flags.0?true geo_point:InputGeoPoint heading:flags.2?int period:flags.1?int proximity_notification_radius:flags.3?int = InputMedia;
 

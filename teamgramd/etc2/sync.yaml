@@ -24,6 +24,7 @@ Log:
 SyncConsumer:
   Topics:
     - "Sync-T"
+    - "BotFather-T"
   Brokers:
     - kafka:9092
   Group: "Sync-MainCommunity-S"
@@ -72,3 +73,15 @@ ChatClient:
     Hosts:
       - etcd:2379
     Key: service.biz_service
+
+UserClient:
+  Etcd:
+    Hosts:
+      - etcd:2379
+    Key: service.biz_service
+
+MsgClient:
+  Etcd:
+    Hosts:
+      - etcd:2379
+    Key: messenger.msg

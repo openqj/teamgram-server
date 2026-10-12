@@ -57,8 +57,10 @@ func TestForumTopicsCreateGetDelete(t *testing.T) {
 	c := &ApiFullCore{MD: &metadata.RpcMetadata{UserId: 1}}
 	peer := mtproto.MakeTLInputPeerChannel(&mtproto.InputPeer{ChannelId: 7, AccessHash: 7007}).To_InputPeer()
 	if _, err := c.MessagesCreateForumTopic(&mtproto.TLMessagesCreateForumTopic{
-		Title: "topic-a",
-		Peer:  peer,
+		Title:       "topic-a",
+		Peer:        peer,
+		IconColor:   wrapperspb.Int32(0x123456),
+		IconEmojiId: wrapperspb.Int64(99),
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -67,7 +69,8 @@ func TestForumTopicsCreateGetDelete(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got == nil || len(got.Topics) != 1 || got.Topics[0].GetTitle() != "topic-a" {
+	if got == nil || len(got.Topics) != 1 || got.Topics[0].GetTitle() != "topic-a" ||
+		got.Topics[0].GetIconColor() != 0x123456 || got.Topics[0].GetIconEmojiId().GetValue() != 99 {
 		t.Fatalf("get: %+v", got)
 	}
 	if got.Topics[0].GetPeer() == nil || got.Topics[0].GetFromId() == nil || got.Topics[0].GetNotifySettings() == nil {

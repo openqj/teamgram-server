@@ -70,7 +70,11 @@ func handleMessage(ctx context.Context, svcCtx *svc.ServiceContext, method, key 
 	case *sync.TLSyncPushUpdatesIfNot:
 		_, err = c.SyncPushUpdatesIfNot(in)
 	case *sync.TLSyncPushBotUpdates:
-		_, err = c.SyncPushBotUpdates(in)
+		if delivery, ok := mqconsumer.MetadataFromContext(ctx); ok && delivery.Topic == core.BotFatherTopic {
+			_, err = c.HandleBotFatherUpdates(in)
+		} else {
+			_, err = c.SyncPushBotUpdates(in)
+		}
 	case *sync.TLSyncPushRpcResult:
 		_, err = c.SyncPushRpcResult(in)
 	case *sync.TLSyncBroadcastUpdates:

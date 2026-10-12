@@ -16,6 +16,8 @@
 package core
 
 import (
+	"context"
+
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/messenger/sync/sync"
 )
@@ -32,6 +34,13 @@ func (c *SyncCore) SyncPushBotUpdates(in *sync.TLSyncPushBotUpdates) (*mtproto.V
 	if c == nil || c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.StatusClient == nil {
 		return nil, mtproto.ErrMethodNotImpl
 	}
+	if c.svcCtx.Dao.Postgres == nil || c.svcCtx.Dao.Postgres.BotAPI == nil {
+		return nil, mtproto.ErrMethodNotImpl
+	}
+	if err := c.svcCtx.Dao.Postgres.BotAPI.Append(c.ctx, in.GetUserId(), in.GetUpdates()); err != nil {
+		return nil, err
+	}
+	go c.svcCtx.Dao.Postgres.BotAPI.DeliverWebhook(context.Background(), in.GetUserId())
 
 	notification, err := c.processUpdates(syncTypeUser, in.GetUserId(), true, in.GetUpdates())
 	if err != nil {

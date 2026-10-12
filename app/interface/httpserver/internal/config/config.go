@@ -10,6 +10,7 @@
 package config
 
 import (
+	"github.com/teamgram/teamgram-server/pkg/storage/postgres"
 	"github.com/zeromicro/go-zero/rest"
 	"github.com/zeromicro/go-zero/zrpc"
 )
@@ -17,6 +18,12 @@ import (
 type Config struct {
 	Http           rest.RestConf
 	Session        zrpc.RpcClientConf
+	UserClient     zrpc.RpcClientConf
+	ChatClient     zrpc.RpcClientConf
+	MsgClient      zrpc.RpcClientConf
+	BffClient      zrpc.RpcClientConf `json:",optional"`
+	DfsClient      zrpc.RpcClientConf `json:",optional"`
+	Postgres       postgres.Config
 	KeyFile        string
 	KeyFingerprint string
 }

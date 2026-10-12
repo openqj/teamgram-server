@@ -24,6 +24,7 @@ import (
 	"github.com/teamgram/teamgram-server/app/messenger/msg/internal/dal/dataobject"
 	"github.com/teamgram/teamgram-server/app/messenger/sync/sync"
 	"github.com/teamgram/teamgram-server/app/service/biz/dialog/dialog"
+	"github.com/teamgram/teamgram-server/app/service/biz/user/user"
 
 	"google.golang.org/protobuf/types/known/wrapperspb"
 )
@@ -320,8 +321,12 @@ func (c *InboxCore) InboxSendUserMessageToInboxV2(in *inbox.TLInboxSendUserMessa
 
 			var syncResult *mtproto.Void
 			if isBot {
-				if c.svcCtx.Dao.BotSyncClient != nil {
-					syncResult, err = c.svcCtx.Dao.BotSyncClient.SyncPushBotUpdates(c.ctx, &sync.TLSyncPushBotUpdates{
+				syncClient := c.svcCtx.Dao.BotSyncClient
+				if user.IsBotFather(inBox.UserId) {
+					syncClient = c.svcCtx.Dao.BotFatherSyncClient
+				}
+				if syncClient != nil {
+					syncResult, err = syncClient.SyncPushBotUpdates(c.ctx, &sync.TLSyncPushBotUpdates{
 						UserId:  inBox.UserId,
 						Updates: pushUpdates,
 					})

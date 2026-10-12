@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/teamgram/proto/mtproto"
+	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/persist"
 )
 
 func paidReactionPeerForProviderTest() *mtproto.InputPeer {
@@ -77,6 +78,9 @@ func TestBotGapMethodsUseSignedBusinessProvider(t *testing.T) {
 }
 
 func TestBotPaymentResultMethodsUseSignedBusinessProvider(t *testing.T) {
+	if persist.PostgresEnabled() {
+		t.Skip("PostgreSQL owns bot payment query callbacks; provider fallback is tested without the local store")
+	}
 	core := newBusinessProviderGapCore(t, "messages.setBotShippingResults", map[string]any{"predicate_name": "boolTrue"})
 	shipping, err := core.MessagesSetBotShippingResults(&mtproto.TLMessagesSetBotShippingResults{QueryId: 11})
 	if err != nil || shipping == nil || shipping.GetPredicateName() != mtproto.Predicate_boolTrue {

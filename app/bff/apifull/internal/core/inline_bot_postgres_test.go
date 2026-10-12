@@ -34,7 +34,6 @@ func TestInlineBotResultsPostgresRoundTrip(t *testing.T) {
 			_, _ = db.Exec(`DELETE FROM apifull_kv WHERE k = $1`, "inline-bot-query:992002")
 			_ = db.Close()
 		}
-		_ = persist.ClosePostgres()
 	})
 	const (
 		requesterID = int64(992001)

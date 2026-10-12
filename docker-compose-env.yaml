@@ -15,7 +15,7 @@ services:
     environment:
       KAFKA_NODE_ID: 1
       KAFKA_PROCESS_ROLES: broker,controller
-      KAFKA_CREATE_TOPICS: "Inbox-T:1:0,Sync-T:1:0,teamgram-log:1:0"
+      KAFKA_CREATE_TOPICS: "Inbox-T:1:0,Sync-T:1:0,BotFather-T:1:0,teamgram-log:1:0"
       # 外部访问监听端口为 9092，容器内部使用不同的端口 9094
       KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9094,CONTROLLER://localhost:9093,PLAINTEXT_CONTAINER://kafka:9092
       KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9094,PLAINTEXT_CONTAINER://kafka:9092

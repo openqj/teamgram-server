@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"sort"
 	"testing"
 
 	"github.com/teamgram/proto/mtproto"
@@ -30,6 +31,58 @@ type folderArchiveDialogClient struct {
 type folderTagsDialogClient struct {
 	dialogclient.DialogClient
 	result *mtproto.Bool
+}
+
+type authoritativeDialogFilterClient struct {
+	dialogclient.DialogClient
+	filters map[int32]*mtproto.DialogFilter
+	order   map[int32]int64
+	next    int64
+}
+
+func (c *authoritativeDialogFilterClient) DialogGetDialogFilters(context.Context, *dialog.TLDialogGetDialogFilters) (*dialog.Vector_DialogFilterExt, error) {
+	ids := make([]int32, 0, len(c.filters))
+	for id := range c.filters {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool { return c.order[ids[i]] > c.order[ids[j]] })
+	result := make([]*dialog.DialogFilterExt, 0, len(ids))
+	for _, id := range ids {
+		result = append(result, &dialog.DialogFilterExt{
+			Id: id, DialogFilter: c.filters[id], Order: c.order[id],
+		})
+	}
+	return &dialog.Vector_DialogFilterExt{Datas: result}, nil
+}
+
+func (c *authoritativeDialogFilterClient) DialogInsertOrUpdateDialogFilter(_ context.Context, in *dialog.TLDialogInsertOrUpdateDialogFilter) (*mtproto.Bool, error) {
+	if c.filters == nil {
+		c.filters = make(map[int32]*mtproto.DialogFilter)
+		c.order = make(map[int32]int64)
+	}
+	c.next++
+	c.filters[in.GetId()] = in.GetDialogFilter()
+	c.order[in.GetId()] = c.next
+	return mtproto.BoolTrue, nil
+}
+
+func (c *authoritativeDialogFilterClient) DialogDeleteDialogFilter(_ context.Context, in *dialog.TLDialogDeleteDialogFilter) (*mtproto.Bool, error) {
+	delete(c.filters, in.GetId())
+	delete(c.order, in.GetId())
+	return mtproto.BoolTrue, nil
+}
+
+func (c *authoritativeDialogFilterClient) DialogUpdateDialogFiltersOrder(_ context.Context, in *dialog.TLDialogUpdateDialogFiltersOrder) (*mtproto.Bool, error) {
+	for i, id := range in.GetOrder() {
+		if _, ok := c.filters[id]; ok {
+			c.order[id] = int64(len(in.GetOrder()) - i)
+		}
+	}
+	return mtproto.BoolTrue, nil
+}
+
+func (c *authoritativeDialogFilterClient) DialogGetDialogFilterTags(context.Context, *dialog.TLDialogGetDialogFilterTags) (*mtproto.Bool, error) {
+	return mtproto.BoolFalse, nil
 }
 
 func (c *folderArchiveDialogClient) DialogGetDialogById(context.Context, *dialog.TLDialogGetDialogById) (*dialog.DialogExt, error) {
@@ -127,6 +180,49 @@ func TestDialogFiltersRejectReservedIDs(t *testing.T) {
 		if result != nil || status.Convert(err).Message() != "FILTER_ID_INVALID" {
 			t.Fatalf("filter ID %d = (%v, %v), want FILTER_ID_INVALID", id, result, err)
 		}
+	}
+}
+
+func TestDialogFiltersUseDialogPostgresAuthorityWhenConfigured(t *testing.T) {
+	previous := persist.Default
+	store := &dialogFilterTestStore{}
+	persist.Use(store)
+	t.Cleanup(func() { persist.Use(previous) })
+
+	client := &authoritativeDialogFilterClient{}
+	c := &ApiFullCore{
+		MD:     &metadata.RpcMetadata{UserId: 101},
+		svcCtx: &svc.ServiceContext{Dao: &dao.Dao{DialogClient: client}},
+	}
+	for _, id := range []int32{2, 3} {
+		result, err := c.MessagesUpdateDialogFilter(&mtproto.TLMessagesUpdateDialogFilter{
+			Id: id, Filter: testDialogFilter(id),
+		})
+		if err != nil || !mtproto.FromBool(result) {
+			t.Fatalf("save filter %d = (%v, %v), want true", id, result, err)
+		}
+	}
+	if _, ok := store.values[dialogFiltersKey(101)]; ok {
+		t.Fatal("production dialog authority wrote a legacy APIFull KV filter row")
+	}
+
+	filters, err := c.MessagesGetDialogFiltersF19ED96D(nil)
+	if err != nil || len(filters.GetDatas()) != 2 || filters.GetDatas()[0].GetId() != 3 {
+		t.Fatalf("authoritative filters = (%+v, %v), want [3,2]", filters, err)
+	}
+	if result, err := c.MessagesUpdateDialogFiltersOrder(&mtproto.TLMessagesUpdateDialogFiltersOrder{Order: []int32{2, 3}}); err != nil || !mtproto.FromBool(result) {
+		t.Fatalf("reorder = (%v, %v), want true", result, err)
+	}
+	filters, err = c.MessagesGetDialogFiltersF19ED96D(nil)
+	if err != nil || len(filters.GetDatas()) != 2 || filters.GetDatas()[0].GetId() != 2 {
+		t.Fatalf("reordered authoritative filters = (%+v, %v), want [2,3]", filters, err)
+	}
+	if result, err := c.MessagesUpdateDialogFilter(&mtproto.TLMessagesUpdateDialogFilter{Id: 2}); err != nil || !mtproto.FromBool(result) {
+		t.Fatalf("delete = (%v, %v), want true", result, err)
+	}
+	filters, err = c.MessagesGetDialogFiltersF19ED96D(nil)
+	if err != nil || len(filters.GetDatas()) != 1 || filters.GetDatas()[0].GetId() != 3 {
+		t.Fatalf("filters after delete = (%+v, %v), want [3]", filters, err)
 	}
 }
 

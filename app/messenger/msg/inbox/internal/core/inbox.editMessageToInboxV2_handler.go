@@ -24,6 +24,7 @@ import (
 	"github.com/teamgram/teamgram-server/app/messenger/msg/inbox/inbox"
 	"github.com/teamgram/teamgram-server/app/messenger/msg/internal/dal/dataobject"
 	"github.com/teamgram/teamgram-server/app/messenger/sync/sync"
+	"github.com/teamgram/teamgram-server/app/service/biz/user/user"
 
 	"github.com/zeromicro/go-zero/core/jsonx"
 )
@@ -201,8 +202,12 @@ func (c *InboxCore) InboxEditMessageToInboxV2(in *inbox.TLInboxEditMessageToInbo
 			updateEditMessage)
 
 		if isBot {
-			if c.svcCtx.Dao.BotSyncClient != nil {
-				_, err = c.svcCtx.Dao.BotSyncClient.SyncPushBotUpdates(c.ctx, &sync.TLSyncPushBotUpdates{
+			syncClient := c.svcCtx.Dao.BotSyncClient
+			if user.IsBotFather(in.UserId) {
+				syncClient = c.svcCtx.Dao.BotFatherSyncClient
+			}
+			if syncClient != nil {
+				_, err = syncClient.SyncPushBotUpdates(c.ctx, &sync.TLSyncPushBotUpdates{
 					UserId:  in.UserId,
 					Updates: pushUpdates,
 				})

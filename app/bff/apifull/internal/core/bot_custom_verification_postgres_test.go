@@ -2,7 +2,7 @@ package core
 
 import (
 	"context"
-	"encoding/json"
+	"errors"
 	"os"
 	"testing"
 	"time"
@@ -15,7 +15,7 @@ import (
 	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
-func TestBotsSetCustomVerificationPostgresRoundTrip(t *testing.T) {
+func TestBotsSetCustomVerificationFailsClosedWithoutVerifierAuthority(t *testing.T) {
 	dsn := os.Getenv("APIFULL_POSTGRES_DSN")
 	if dsn == "" {
 		t.Skip("APIFULL_POSTGRES_DSN is not configured")
@@ -46,34 +46,17 @@ func TestBotsSetCustomVerificationPostgresRoundTrip(t *testing.T) {
 	}
 	request := &mtproto.TLBotsSetCustomVerification{
 		Enabled:           true,
-		Bot:               miniBotInput(botID, accessHash),
 		Peer:              mtproto.MakeTLInputPeerSelf(nil).To_InputPeer(),
 		CustomDescription: wrapperspb.String("trusted support"),
 	}
-	if result, err := c.BotsSetCustomVerification(request); err != nil || result != mtproto.BoolTrue {
-		t.Fatalf("set custom verification = (%v, %v)", result, err)
+	if result, err := c.BotsSetCustomVerification(request); result != nil || !errors.Is(err, mtproto.ErrMethodNotImpl) {
+		t.Fatalf("set custom verification without verifier authority = (%v, %v), want METHOD_NOT_IMPL", result, err)
 	}
-	var raw string
-	if err := cleanupDB.QueryRow(`SELECT v FROM apifull_kv WHERE k=$1`, key).Scan(&raw); err != nil {
-		t.Fatalf("read persisted verification: %v", err)
+	var count int
+	if err := cleanupDB.QueryRow(`SELECT COUNT(*) FROM apifull_kv WHERE k=$1`, key).Scan(&count); err != nil {
+		t.Fatalf("check rejected verification persistence: %v", err)
 	}
-	var state botCustomVerificationState
-	if err := json.Unmarshal([]byte(raw), &state); err != nil {
-		t.Fatalf("decode persisted verification: %v", err)
-	}
-	if !state.Enabled || state.Description != "trusted support" || state.UpdatedAt <= 0 {
-		t.Fatalf("persisted verification = %+v", state)
-	}
-
-	request.Enabled = false
-	request.CustomDescription = wrapperspb.String("")
-	if result, err := c.BotsSetCustomVerification(request); err != nil || result != mtproto.BoolTrue {
-		t.Fatalf("clear custom verification = (%v, %v)", result, err)
-	}
-	if err := cleanupDB.QueryRow(`SELECT v FROM apifull_kv WHERE k=$1`, key).Scan(&raw); err != nil {
-		t.Fatalf("read cleared verification: %v", err)
-	}
-	if err := json.Unmarshal([]byte(raw), &state); err != nil || state.Enabled || state.Description != "" {
-		t.Fatalf("cleared verification = %+v (decode=%v)", state, err)
+	if count != 0 {
+		t.Fatalf("rejected verification wrote %d rows", count)
 	}
 }

@@ -46,6 +46,12 @@ services:
     restart: always
     environment:
       TEAMGRAM_POSTGRES_DSN: postgresql://${POSTGRES_USER:-teamgram}:${POSTGRES_PASSWORD:-teamgram}@postgres:5432/${POSTGRES_DB:-teamgram}?sslmode=disable
+    healthcheck:
+      test: ["CMD", "/app/docker/healthcheck.sh"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
     ports:
       - "10443:10443"
       - "11443:11443"

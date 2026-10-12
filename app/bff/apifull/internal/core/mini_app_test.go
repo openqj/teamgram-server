@@ -24,7 +24,22 @@ import (
 
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/proto/mtproto/rpc/metadata"
+	"google.golang.org/protobuf/types/known/wrapperspb"
 )
+
+func TestMiniAppWebViewScopeKeyUsesStartParamValue(t *testing.T) {
+	got := miniAppWebViewScopeKey(
+		"bot:900000000001:short:demo",
+		10,
+		mtproto.MakeTLInputPeerSelf(nil).To_InputPeer(),
+		wrapperspb.String("start"),
+		"web",
+	)
+	const want = "bot:900000000001:short:demo:peer:1:10:start:start:platform:web"
+	if got != want {
+		t.Fatalf("scope key = %q, want %q", got, want)
+	}
+}
 
 func TestMiniAppRequestWebView(t *testing.T) {
 	c := &ApiFullCore{MD: &metadata.RpcMetadata{UserId: 1}}

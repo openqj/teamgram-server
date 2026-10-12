@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"testing"
 
 	"github.com/teamgram/proto/mtproto"
@@ -13,6 +14,27 @@ import (
 )
 
 const businessProviderGapTestKey = "business-provider-gap-test-signing-key-0123456789"
+
+func TestSecureBusinessProviderURLAllowsFixtureHTTPOnlyWhenConfigured(t *testing.T) {
+	fixture, err := url.Parse("http://business-provider-fixture:23190")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if secureBusinessProviderURL(fixture, false) {
+		t.Fatal("accepted fixture HTTP without the explicit fixture setting")
+	}
+	if !secureBusinessProviderURL(fixture, true) {
+		t.Fatal("rejected fixture HTTP with the explicit fixture setting")
+	}
+
+	public, err := url.Parse("https://business.example/provider")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !secureBusinessProviderURL(public, false) {
+		t.Fatal("rejected HTTPS business provider")
+	}
+}
 
 func newBusinessProviderGapCore(t *testing.T, operation string, result any) *ApiFullCore {
 	t.Helper()
@@ -52,7 +74,7 @@ func newBusinessProviderGapCore(t *testing.T, operation string, result any) *Api
 }
 
 func TestAffiliateAndBotBusinessMethodsUseSignedProvider(t *testing.T) {
-	core := newBusinessProviderGapCore(t, "bots.updateStarRefProgram", map[string]any{"bot_id": 7, "commission_permille": 125})
+	core := newBusinessProviderGapCore(t, "bots.updateStarRefProgram", map[string]any{"predicate_name": mtproto.Predicate_starRefProgram, "bot_id": 7, "commission_permille": 125})
 	program, err := core.BotsUpdateStarRefProgram(&mtproto.TLBotsUpdateStarRefProgram{
 		Bot:                &mtproto.InputUser{UserId: 7, AccessHash: 9},
 		CommissionPermille: 125,
@@ -68,6 +90,44 @@ func TestAffiliateAndBotBusinessMethodsUseSignedProvider(t *testing.T) {
 	})
 	if err != nil || data == nil || data.GetData() != `{"ok":true}` {
 		t.Fatalf("custom request provider result = (%v, %v)", data, err)
+	}
+}
+
+func TestBusinessProviderUsesStableIdempotencyKey(t *testing.T) {
+	var idempotencyKeys []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			RequestID string `json:"request_id"`
+			Operation string `json:"operation"`
+			UserID    int64  `json:"user_id"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Errorf("decode request: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		idempotencyKeys = append(idempotencyKeys, r.Header.Get("Idempotency-Key"))
+		result, _ := json.Marshal(map[string]any{"ok": true})
+		body, _ := json.Marshal(businessProviderEnvelope{RequestID: request.RequestID, Operation: request.Operation, Verified: true, UserID: request.UserID, Result: result})
+		w.Header().Set("X-Teamgram-Business-Provider-Signature", businessProviderSignature(businessProviderGapTestKey, body))
+		_, _ = w.Write(body)
+	}))
+	defer server.Close()
+	core := &ApiFullCore{
+		svcCtx: &svc.ServiceContext{Config: config.Config{
+			BusinessProviderEndpoint:   server.URL,
+			BusinessProviderSigningKey: businessProviderGapTestKey,
+		}},
+		MD: &metadata.RpcMetadata{UserId: 42},
+	}
+	for i := 0; i < 2; i++ {
+		var result map[string]any
+		if err := core.callBusinessProvider("bots.setJoinChatResults", map[string]any{"value": true}, &result); err != nil {
+			t.Fatalf("business provider call %d: %v", i, err)
+		}
+	}
+	if len(idempotencyKeys) != 2 || len(idempotencyKeys[0]) != 64 || idempotencyKeys[0] != idempotencyKeys[1] {
+		t.Fatalf("idempotency keys = %#v, want same 64-character key", idempotencyKeys)
 	}
 }
 

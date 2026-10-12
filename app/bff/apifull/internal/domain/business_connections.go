@@ -8,8 +8,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
+
+var ErrBusinessConnectionDeliveryState = errors.New("business connection delivery lease is not current")
 
 // BusinessConnectionRecord is the canonical BotBusinessConnection state
 // addressed by the bot-visible connection ID.
@@ -30,6 +33,7 @@ type BusinessConnectionRecord struct {
 type BusinessConnectionDelivery struct {
 	ID         int64
 	BotUserID  int64
+	ClaimToken string
 	Connection BusinessConnectionRecord
 }
 
@@ -258,13 +262,16 @@ func ListDueBusinessConnectionDeliveries(ctx context.Context, limit int) ([]Busi
 		if err = json.Unmarshal(raw, &payload); err != nil || payload.ConnectionID == "" || payload.OwnerUserID <= 0 || payload.BotUserID != botUserID || payload.DCID <= 0 || payload.Date <= 0 || payload.QTS <= 0 || !validBusinessConnectionRights(payload.Rights) {
 			return nil, errors.New("invalid business connection delivery payload")
 		}
-		if _, err = tx.ExecContext(ctx, `UPDATE apifull_business_connection_outbox
+		var claimToken string
+		if err = tx.QueryRowContext(ctx, `UPDATE apifull_business_connection_outbox
 			SET state='inflight', attempts=attempts+1,
+				claim_token=gen_random_uuid(),
 				next_attempt_at=CURRENT_TIMESTAMP + INTERVAL '30 seconds',
-				updated_at=CURRENT_TIMESTAMP WHERE id=$1`, id); err != nil {
+				updated_at=CURRENT_TIMESTAMP WHERE id=$1
+				RETURNING claim_token::text`, id).Scan(&claimToken); err != nil {
 			return nil, err
 		}
-		out = append(out, BusinessConnectionDelivery{ID: id, BotUserID: botUserID, Connection: BusinessConnectionRecord{
+		out = append(out, BusinessConnectionDelivery{ID: id, BotUserID: botUserID, ClaimToken: claimToken, Connection: BusinessConnectionRecord{
 			ConnectionID: payload.ConnectionID, OwnerUserID: payload.OwnerUserID,
 			BotUserID: payload.BotUserID, DCID: payload.DCID, Date: payload.Date,
 			QTS: payload.QTS, Disabled: payload.Disabled, CanReply: payload.CanReply,
@@ -280,28 +287,42 @@ func ListDueBusinessConnectionDeliveries(ctx context.Context, limit int) ([]Busi
 	return out, nil
 }
 
-func CompleteBusinessConnectionDelivery(ctx context.Context, id int64) error {
-	if db == nil || id <= 0 {
+func CompleteBusinessConnectionDelivery(ctx context.Context, id int64, claimToken string) error {
+	if db == nil || id <= 0 || strings.TrimSpace(claimToken) == "" {
 		return errors.New("invalid business connection delivery")
 	}
-	_, err := db.ExecContext(ctx, `UPDATE apifull_business_connection_outbox
+	result, err := db.ExecContext(ctx, `UPDATE apifull_business_connection_outbox
 		SET state='complete', completed_at=CURRENT_TIMESTAMP,
+			claim_token=NULL,
 			updated_at=CURRENT_TIMESTAMP, last_error=''
-		WHERE id=$1 AND state='inflight'`, id)
-	return err
+		WHERE id=$1 AND claim_token=$2::uuid AND state='inflight'`, id, claimToken)
+	if err != nil {
+		return err
+	}
+	if affected, _ := result.RowsAffected(); affected != 1 {
+		return ErrBusinessConnectionDeliveryState
+	}
+	return nil
 }
 
-func RetryBusinessConnectionDelivery(ctx context.Context, id int64, deliveryErr error) error {
-	if db == nil || id <= 0 {
+func RetryBusinessConnectionDelivery(ctx context.Context, id int64, claimToken string, deliveryErr error) error {
+	if db == nil || id <= 0 || strings.TrimSpace(claimToken) == "" {
 		return errors.New("invalid business connection delivery")
 	}
 	detail := "business connection delivery failed"
 	if deliveryErr != nil {
 		detail = deliveryErr.Error()
 	}
-	_, err := db.ExecContext(ctx, `UPDATE apifull_business_connection_outbox
+	result, err := db.ExecContext(ctx, `UPDATE apifull_business_connection_outbox
 		SET state='pending', next_attempt_at=$2, last_error=$3,
-			updated_at=CURRENT_TIMESTAMP WHERE id=$1 AND state='inflight'`,
-		id, time.Now().Add(30*time.Second), detail)
-	return err
+			claim_token=NULL, updated_at=CURRENT_TIMESTAMP
+		WHERE id=$1 AND claim_token=$4::uuid AND state='inflight'`,
+		id, time.Now().Add(30*time.Second), detail, claimToken)
+	if err != nil {
+		return err
+	}
+	if affected, _ := result.RowsAffected(); affected != 1 {
+		return ErrBusinessConnectionDeliveryState
+	}
+	return nil
 }

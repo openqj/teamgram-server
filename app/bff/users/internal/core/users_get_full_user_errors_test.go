@@ -312,7 +312,7 @@ func (s *botVerificationTestStore) Set(key, value string) error {
 	return nil
 }
 
-func TestUsersGetFullUserReadsBotCustomVerification(t *testing.T) {
+func TestUsersGetFullUserDoesNotExposeUntrustedBotCustomVerification(t *testing.T) {
 	store := &botVerificationTestStore{values: make(map[string]string)}
 	previous := apifullpersist.Default
 	apifullpersist.Default = store
@@ -334,15 +334,14 @@ func TestUsersGetFullUserReadsBotCustomVerification(t *testing.T) {
 	if err != nil || full == nil || full.GetFullUser() == nil {
 		t.Fatalf("UsersGetFullUser() = (%v, %v), want bot full user", full, err)
 	}
-	verification := full.GetFullUser().GetBotVerification()
-	if verification == nil || verification.GetBotId() != 2 || verification.GetIcon() != 0 || verification.GetDescription() != "trusted support" {
-		t.Fatalf("bot verification = %v, want bot_id=2 icon=0 description=trusted support", verification)
+	if verification := full.GetFullUser().GetBotVerification(); verification != nil {
+		t.Fatalf("untrusted bot verification = %v, want nil", verification)
 	}
 
 	store.values[key] = "{" // Corrupt state must never become a partial success.
 	if got, err := newFullUserProfilePrivacyCore(client).UsersGetFullUser(&mtproto.TLUsersGetFullUser{
 		Id: mtproto.MakeTLInputUser(&mtproto.InputUser{UserId: 2, AccessHash: 200}).To_InputUser(),
-	}); got != nil || !errors.Is(err, mtproto.ErrInternalServerError) {
-		t.Fatalf("malformed bot verification = (%v, %v), want INTERNAL_SERVER_ERROR", got, err)
+	}); got == nil || err != nil {
+		t.Fatalf("malformed legacy bot verification = (%v, %v), want ignored legacy state", got, err)
 	}
 }

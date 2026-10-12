@@ -20,6 +20,7 @@ package core
 
 import (
 	"encoding/json"
+	"strconv"
 
 	"github.com/teamgram/proto/mtproto"
 )
@@ -45,6 +46,18 @@ func (c *ApiFullCore) MessagesToggleSuggestedPostApproval(in *mtproto.TLMessages
 		return nil, mtproto.ErrMsgIdInvalid
 	}
 	var raw json.RawMessage
+	if local, loadErr := c.loadLocalBusinessResultForCaller("messages.toggleSuggestedPostApproval", businessControlPeerKey(c.MD.GetUserId(), in.GetPeer())+":msg:"+strconv.FormatInt(int64(in.GetMsgId()), 10), &raw); loadErr != nil {
+		return nil, loadErr
+	} else if local {
+		if len(raw) == 0 || string(raw) == "null" {
+			return nil, mtproto.ErrInternalServerError
+		}
+		var updates mtproto.Updates
+		if err := json.Unmarshal(raw, &updates); err != nil || updates.GetPredicateName() == "" {
+			return nil, mtproto.ErrInternalServerError
+		}
+		return &updates, nil
+	}
 	if err := c.callBusinessProvider("messages.toggleSuggestedPostApproval", map[string]any{
 		"peer": in.GetPeer(), "msg_id": in.GetMsgId(), "reject": in.GetReject(),
 		"schedule_date": in.GetScheduleDate(), "reject_comment": in.GetRejectComment(),

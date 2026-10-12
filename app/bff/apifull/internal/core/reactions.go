@@ -1061,12 +1061,6 @@ func (c *ApiFullCore) MessagesSendPaidReaction(in *mtproto.TLMessagesSendPaidRea
 	if err != nil {
 		return nil, err
 	}
-	// Keep installations without the authoritative paid-reaction service
-	// fail-closed. Once configured, validate the complete Layer 229 request
-	// before forwarding it to the provider.
-	if !c.businessProviderConfigured() {
-		return nil, mtproto.ErrMethodNotImpl
-	}
 	if in == nil || in.GetPeer() == nil || in.GetMsgId() <= 0 || in.GetCount() <= 0 {
 		return nil, mtproto.ErrInputRequestInvalid
 	}
@@ -1077,6 +1071,21 @@ func (c *ApiFullCore) MessagesSendPaidReaction(in *mtproto.TLMessagesSendPaidRea
 		return nil, err
 	}
 	result := new(mtproto.Updates)
+	scopeKey := fmt.Sprintf("%s:msg:%d:random:%d:count:%d", businessControlPeerKey(uid, in.GetPeer()), in.GetMsgId(), in.GetRandomId(), in.GetCount())
+	if local, loadErr := c.loadLocalBusinessResultForCaller("messages.sendPaidReaction", scopeKey, result); loadErr != nil {
+		return nil, loadErr
+	} else if local {
+		if err := validateUpdatesResult(result); err != nil {
+			return nil, err
+		}
+		return result, nil
+	}
+	// Keep installations without the authoritative paid-reaction service
+	// fail-closed. A local row or a signed provider is required before a
+	// payment-bearing update can be returned.
+	if !c.businessProviderConfigured() {
+		return nil, mtproto.ErrMethodNotImpl
+	}
 	if err = c.callBusinessProvider("messages.sendPaidReaction", map[string]any{
 		"peer": in.GetPeer(), "msg_id": in.GetMsgId(), "count": in.GetCount(), "random_id": in.GetRandomId(),
 		"private": in.GetPrivate_FLAGPAIDREACTIONPRIVACY(), "private_bool": in.GetPrivate_FLAGBOOL(), "private_boolean": in.GetPrivate_FLAGBOOLEAN(),

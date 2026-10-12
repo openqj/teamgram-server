@@ -76,6 +76,15 @@ type paidAuthProviderResponse struct {
 	Amount              int64  `json:"amount"`
 }
 
+func authProviderIdempotencyKey(request any) string {
+	body, err := json.Marshal(request)
+	if err != nil {
+		return ""
+	}
+	digest := sha256.Sum256(body)
+	return hex.EncodeToString(digest[:])
+}
+
 func (c *AuthorizationCore) authProviderConfigured() bool {
 	return c != nil && c.svcCtx != nil &&
 		strings.TrimSpace(c.svcCtx.Config.AuthProviderEndpoint) != "" &&
@@ -99,7 +108,7 @@ func (c *AuthorizationCore) authProvider(ctx context.Context, request authProvid
 		return result, mtproto.ErrMethodNotImpl
 	}
 	parsed, err := url.Parse(endpoint)
-	if err != nil || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || !secureAuthProviderURL(parsed) {
+	if err != nil || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || !secureAuthProviderURL(parsed, c.svcCtx.Config.AllowInsecureProviderHTTP) {
 		return result, mtproto.ErrInternalServerError
 	}
 	timeout := 5 * time.Second
@@ -113,6 +122,9 @@ func (c *AuthorizationCore) authProvider(ctx context.Context, request authProvid
 	if _, err = rand.Read(nonce[:]); err != nil {
 		return result, mtproto.ErrInternalServerError
 	}
+	idempotencyRequest := request
+	idempotencyRequest.RequestID = ""
+	idempotencyKey := authProviderIdempotencyKey(idempotencyRequest)
 	request.RequestID = hex.EncodeToString(nonce[:])
 	body, err := json.Marshal(request)
 	if err != nil {
@@ -124,6 +136,9 @@ func (c *AuthorizationCore) authProvider(ctx context.Context, request authProvid
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+c.svcCtx.Config.AuthProviderKey)
+	if idempotencyKey != "" {
+		req.Header.Set("Idempotency-Key", idempotencyKey)
+	}
 	req.Header.Set("X-Teamgram-Auth-Provider-Request-Signature", authProviderSignature(c.svcCtx.Config.AuthProviderSigningKey, body))
 	client := &http.Client{
 		Timeout: timeout,
@@ -171,7 +186,7 @@ func (c *AuthorizationCore) authPaidProvider(ctx context.Context, phoneNumber, p
 		return result, mtproto.ErrMethodNotImpl
 	}
 	parsed, err := url.Parse(endpoint)
-	if err != nil || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || !secureAuthProviderURL(parsed) {
+	if err != nil || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || !secureAuthProviderURL(parsed, c.svcCtx.Config.AllowInsecureProviderHTTP) {
 		return result, mtproto.ErrInternalServerError
 	}
 	timeout := 5 * time.Second
@@ -192,6 +207,9 @@ func (c *AuthorizationCore) authPaidProvider(ctx context.Context, phoneNumber, p
 		PhoneCodeHash: phoneCodeHash,
 		FormID:        formID,
 	}
+	idempotencyRequest := request
+	idempotencyRequest.RequestID = ""
+	idempotencyKey := authProviderIdempotencyKey(idempotencyRequest)
 	body, err := json.Marshal(request)
 	if err != nil {
 		return result, mtproto.ErrInternalServerError
@@ -202,6 +220,9 @@ func (c *AuthorizationCore) authPaidProvider(ctx context.Context, phoneNumber, p
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+key)
+	if idempotencyKey != "" {
+		req.Header.Set("Idempotency-Key", idempotencyKey)
+	}
 	req.Header.Set("X-Teamgram-Auth-Provider-Request-Signature", authProviderSignature(signingKey, body))
 	client := &http.Client{Timeout: timeout, CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}
 	resp, err := client.Do(req)
@@ -225,7 +246,7 @@ func (c *AuthorizationCore) authPaidProvider(ctx context.Context, phoneNumber, p
 	return result, nil
 }
 
-func secureAuthProviderURL(parsed *url.URL) bool {
+func secureAuthProviderURL(parsed *url.URL, allowInsecureHTTP bool) bool {
 	if parsed == nil {
 		return false
 	}
@@ -237,6 +258,9 @@ func secureAuthProviderURL(parsed *url.URL) bool {
 	}
 	host := strings.TrimSuffix(strings.ToLower(parsed.Hostname()), ".")
 	if host == "localhost" {
+		return true
+	}
+	if allowInsecureHTTP && strings.HasSuffix(host, ".test") {
 		return true
 	}
 	ip := net.ParseIP(host)

@@ -321,22 +321,50 @@ func (c *ApiFullCore) EphemeralReportMessage(in *mtproto.TLEphemeralReportMessag
 }
 
 func (c *ApiFullCore) EphemeralGetCallbackAnswer(in *mtproto.TLEphemeralGetCallbackAnswer) (*mtproto.Messages_BotCallbackAnswer, error) {
-	if _, err := c.requireUserId(); err != nil {
+	userID, err := c.requireUserId()
+	if err != nil {
 		return nil, err
 	}
-	// Preserve the fail-closed contract when the callback service is absent.
-	// Validation below only runs once a configured provider can actually answer.
-	if !c.businessProviderConfigured() {
-		return nil, mtproto.ErrMethodNotImpl
-	}
 	if in == nil || in.GetPeer() == nil {
+		// Preserve the historical fail-closed result when no callback service is
+		// configured, while still allowing a configured PostgreSQL control plane
+		// to return protocol validation errors for malformed requests.
+		if !persist.PostgresEnabled() {
+			return nil, mtproto.ErrMethodNotImpl
+		}
 		return nil, mtproto.ErrInputRequestInvalid
 	}
 	if in.GetId() <= 0 {
+		if !persist.PostgresEnabled() {
+			return nil, mtproto.ErrMethodNotImpl
+		}
 		return nil, mtproto.ErrMessageIdInvalid
 	}
-	if _, _, _, err := ephemeralPeer(in.GetPeer(), c.MD.GetUserId()); err != nil {
+	if _, _, _, err := ephemeralPeer(in.GetPeer(), userID); err != nil {
+		if !persist.PostgresEnabled() {
+			return nil, mtproto.ErrMethodNotImpl
+		}
 		return nil, err
+	}
+	// Callback answers are authorization-bearing results. Only a row published
+	// for this caller can satisfy the request; global catalogue rows are never
+	// accepted. The scope includes the canonical peer and callback data digest.
+	scopeKey := fmt.Sprintf("%s:msg:%d:%s", businessControlPeerKey(userID, in.GetPeer()), in.GetId(), businessControlHash("data", in.GetData()))
+	var local mtproto.Messages_BotCallbackAnswer
+	if found, loadErr := c.loadLocalBusinessResultForCaller("ephemeral.getCallbackAnswer", scopeKey, &local); loadErr != nil {
+		return nil, loadErr
+	} else if found {
+		if local.GetPredicateName() != mtproto.Predicate_messages_botCallbackAnswer ||
+			local.GetCacheTime() < 0 || local.GetCacheTime() > 86400 ||
+			(local.GetHasUrl() && local.GetUrl() == nil) {
+			return nil, mtproto.ErrInternalServerError
+		}
+		return mtproto.MakeTLMessagesBotCallbackAnswer(&local).To_Messages_BotCallbackAnswer(), nil
+	}
+	// Preserve the fail-closed contract when neither the local control plane nor
+	// a signed callback provider can answer the request.
+	if !c.businessProviderConfigured() {
+		return nil, mtproto.ErrMethodNotImpl
 	}
 	var result mtproto.Messages_BotCallbackAnswer
 	if err := c.callBusinessProvider("ephemeral.getCallbackAnswer", map[string]any{

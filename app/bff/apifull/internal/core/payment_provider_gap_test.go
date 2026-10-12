@@ -31,7 +31,7 @@ func TestPaymentProviderGapsFailClosed(t *testing.T) {
 			call: func() (any, error) {
 				return core.PaymentsLaunchPrepaidGiveaway(nil)
 			},
-			want: mtproto.ErrMethodNotImpl,
+			want: mtproto.ErrPeerIdInvalid,
 		},
 		{
 			name: "get Stars subscriptions",
@@ -74,120 +74,140 @@ func TestPaymentProviderGapsFailClosed(t *testing.T) {
 			call: func() (any, error) {
 				return core.PaymentsGetResaleStarGifts(nil)
 			},
+			want: mtproto.ErrInputConstructorInvalid,
 		},
 		{
 			name: "gift upgrade preview",
 			call: func() (any, error) {
 				return core.PaymentsGetStarGiftUpgradePreview(nil)
 			},
+			want: mtproto.ErrInputConstructorInvalid,
 		},
 		{
 			name: "gift upgrade",
 			call: func() (any, error) {
 				return core.PaymentsUpgradeStarGift(nil)
 			},
+			want: mtproto.ErrInputConstructorInvalid,
 		},
 		{
 			name: "gift price update",
 			call: func() (any, error) {
 				return core.PaymentsUpdateStarGiftPrice(nil)
 			},
+			want: mtproto.ErrInputConstructorInvalid,
 		},
 		{
 			name: "gift value info",
 			call: func() (any, error) {
 				return core.PaymentsGetUniqueStarGiftValueInfo(nil)
 			},
+			want: mtproto.ErrInputConstructorInvalid,
 		},
 		{
 			name: "gift send check",
 			call: func() (any, error) {
 				return core.PaymentsCheckCanSendGift(nil)
 			},
+			want: mtproto.ErrInputConstructorInvalid,
 		},
 		{
 			name: "gift auction state",
 			call: func() (any, error) {
 				return core.PaymentsGetStarGiftAuctionState(nil)
 			},
+			want: mtproto.ErrInputConstructorInvalid,
 		},
 		{
 			name: "gift auction acquired",
 			call: func() (any, error) {
 				return core.PaymentsGetStarGiftAuctionAcquiredGifts(nil)
 			},
+			want: mtproto.ErrInputConstructorInvalid,
 		},
 		{
 			name: "gift active auctions",
 			call: func() (any, error) {
 				return core.PaymentsGetStarGiftActiveAuctions(nil)
 			},
+			want: mtproto.ErrInputConstructorInvalid,
 		},
 		{
 			name: "gift offer resolve",
 			call: func() (any, error) {
 				return core.PaymentsResolveStarGiftOffer(nil)
 			},
+			want: mtproto.ErrInputConstructorInvalid,
 		},
 		{
 			name: "gift offer send",
 			call: func() (any, error) {
 				return core.PaymentsSendStarGiftOffer(nil)
 			},
+			want: mtproto.ErrInputConstructorInvalid,
 		},
 		{
 			name: "gift upgrade attributes",
 			call: func() (any, error) {
 				return core.PaymentsGetStarGiftUpgradeAttributes(nil)
 			},
+			want: mtproto.ErrInputConstructorInvalid,
 		},
 		{
 			name: "gift craft list",
 			call: func() (any, error) {
 				return core.PaymentsGetCraftStarGifts(nil)
 			},
+			want: mtproto.ErrInputConstructorInvalid,
 		},
 		{
 			name: "gift craft",
 			call: func() (any, error) {
 				return core.PaymentsCraftStarGift(nil)
 			},
+			want: mtproto.ErrInputConstructorInvalid,
 		},
 		{
 			name: "gift withdrawal",
 			call: func() (any, error) {
 				return core.PaymentsGetStarGiftWithdrawalUrl(nil)
 			},
+			want: mtproto.ErrInputConstructorInvalid,
 		},
 		{
 			name: "affiliate list",
 			call: func() (any, error) {
 				return core.PaymentsGetConnectedStarRefBots(nil)
 			},
+			want: mtproto.ErrLimitInvalid,
 		},
 		{
 			name: "affiliate get",
 			call: func() (any, error) {
 				return core.PaymentsGetConnectedStarRefBot(nil)
 			},
+			want: mtproto.ErrInputRequestInvalid,
 		},
 		{
 			name: "affiliate suggested",
 			call: func() (any, error) {
 				return core.PaymentsGetSuggestedStarRefBots(nil)
 			},
+			want: mtproto.ErrLimitInvalid,
 		},
 		{
 			name: "affiliate connect",
 			call: func() (any, error) {
 				return core.PaymentsConnectStarRefBot(nil)
 			},
+			want: mtproto.ErrInputRequestInvalid,
 		},
 		{
 			name: "affiliate edit",
 			call: func() (any, error) {
 				return core.PaymentsEditConnectedStarRefBot(nil)
 			},
+			want: mtproto.ErrInputRequestInvalid,
 		},
 	}
 
@@ -195,9 +215,6 @@ func TestPaymentProviderGapsFailClosed(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			result, err := test.call()
 			want := test.want
-			if want == nil {
-				want = mtproto.ErrMethodNotImpl
-			}
 			if !nilRPCResult(result) || !paymentRPCErrorCode(err, want) {
 				t.Fatalf("result = %#v, err = %v; want nil and %v", result, err, want)
 			}

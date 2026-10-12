@@ -134,3 +134,90 @@ restart/fault-injection session checks remain acceptance work.
 - Keep migrations additive and explicit. Do not emulate MySQL collations or
   `GET_LOCK`; use PostgreSQL constraints, row locks, or advisory locks with a
   documented key scope.
+
+## Business control plane
+
+Migration `077_apifull_business_control_plane.sql` stores explicitly published
+Layer 229 Bot, Inline and WebView results. APIFull never creates a result from
+an incoming RPC: a row must be published by an operations job, must be in the
+`published` state, and must not be expired. The API still validates the exact
+TL constructor after decoding the JSON. A caller-specific row takes precedence
+over a global row (`caller_user_id = 0`).
+
+Publish one result with the deployment helper (the result file must contain a
+canonical JSON object or array):
+
+```sh
+DATABASE_URL="$DATABASE_URL" \
+BUSINESS_OPERATION='bots.getPopularAppBots' \
+BUSINESS_SCOPE_KEY='offset::limit:20' \
+BUSINESS_RESULT_FILE=/run/teamgram/business/popular-bots.json \
+./teamgramd/deploy/postgres/publish-business-control-plane.sh
+```
+
+The scope key is part of the business contract. Current handlers use keys such
+as `bot:<id>`, `bot:<id>:id:<app_id>`, `query:<query_id>`,
+`peer:<type>:<id>:msg:<message_id>`, and operation-specific SHA-256 keys. Do
+not publish placeholder or empty constructors; missing or revoked rows remain
+fail-closed.
+
+## Provider control planes
+
+Migration `078_apifull_payment_provider_control_plane.sql` is owned by the
+signed payment provider. It records operation payload hashes, receipts and
+granted entitlements under an `(operation, user_id, request_key)` idempotency
+key. The provider must require PostgreSQL 18 and all three tables at startup;
+reusing a request key with a different payload is a conflict.
+
+Migration `079_provider_control_plane.sql` stores the explicitly provisioned
+business live sessions, Fragment collectibles, ephemeral callback answers and
+CDN objects used by the isolated provider services. Run
+`docker/production/seed-provider-fixtures.sh` only for an isolated acceptance
+environment, with every identity, response, and CDN public key supplied
+explicitly. The helper has no sample identities or response defaults; omit
+`LIVE_*` when a stories live session should remain unprovisioned.
+
+For a complete isolated stack, combine the base Compose file with the
+acceptance overlay. The overlay's `provider-fixtures` profile wires the backend
+to the three signed fixtures on the internal network and adds PG-backed
+healthchecks. It is deliberately separate from the production backend
+overlay, because fixtures are not payment, business, or CDN authorities:
+
+```sh
+export TEAMGRAM_POSTGRES_DSN='postgresql://teamgram:teamgram@postgres:5432/teamgram?sslmode=disable'
+export TEAMGRAM_PAYMENT_PROVIDER_KEY='acceptance-payment-api-key'
+export TEAMGRAM_PAYMENT_PROVIDER_SIGNING_KEY='acceptance-payment-signing-key-at-least-32-bytes'
+export TEAMGRAM_BUSINESS_PROVIDER_KEY='acceptance-business-api-key'
+export TEAMGRAM_BUSINESS_PROVIDER_SIGNING_KEY='acceptance-business-signing-key-at-least-32-bytes'
+export TEAMGRAM_CDN_PROVIDER_KEY='acceptance-cdn-api-key'
+export TEAMGRAM_CDN_PROVIDER_SIGNING_KEY='acceptance-cdn-signing-key-at-least-32-bytes'
+```
+
+The values above are deployment placeholders, not credentials to commit. Seed
+an explicit acceptance dataset before starting the fixture/backend services;
+the seed job is intentionally a manual preflight so an empty dataset cannot be
+mistaken for a healthy provider:
+
+```sh
+CALLBACK_USER_ID=42 CALLBACK_MESSAGE_ID=1 CALLBACK_DATA='probe-callback' \
+CALLBACK_ANSWER_JSON='{"predicate_name":"messages_botCallbackAnswer","cache_time":30,"alert":true,"message":"accepted"}' \
+COLLECTIBLE_USERNAME='probe_collectible' COLLECTIBLE_PURCHASE_DATE=1760000000 \
+COLLECTIBLE_CURRENCY=USD COLLECTIBLE_AMOUNT=100 \
+COLLECTIBLE_URL='https://provider.example/collectible/probe_collectible' \
+CDN_PUBLIC_KEYS_JSON='[{"predicate_name":"cdnPublicKey","dc_id":2,"public_key":"probe-public-key"}]' \
+docker compose -f docker-compose.yaml -f docker/production/provider-fixtures.acceptance.yaml \
+  --profile provider-fixtures run --rm provider-fixtures-seed
+```
+
+After the seed job exits successfully, start the fixture/backend services:
+
+```sh
+docker compose -f docker-compose.yaml -f docker/production/provider-fixtures.acceptance.yaml \
+  --profile provider-fixtures up -d
+```
+
+Add `LIVE_USER_ID`, `LIVE_RANDOM_ID`, `LIVE_REQUEST_PAYLOAD`, and
+`LIVE_UPDATES_JSON` together when a `stories.startLive` row is needed. Missing
+provider rows, expired rows, unavailable services, and an empty CDN key list
+remain errors. These fixtures are not application fallbacks or production
+payment/CDN authorities.

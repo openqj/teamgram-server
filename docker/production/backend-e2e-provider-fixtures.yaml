@@ -1,0 +1,49 @@
+# Isolated provider-fixture override for the backend Compose project.
+#
+# The canonical acceptance overlay targets the `teamgram` service from
+# teamgram-server/docker-compose.yaml. The e2e stack under
+# /Users/mac/open/tg/services/backend uses the service name `backend`, so it
+# needs this small, explicit override instead. Production deployments must not
+# include this file.
+services:
+  backend:
+    depends_on:
+      code-provider-fixture:
+        condition: service_healthy
+    environment:
+      TEAMGRAM_PROVIDER_FIXTURE_MODE: "1"
+      TEAMGRAM_CODE_SMS_PROVIDER: "${TEAMGRAM_CODE_SMS_PROVIDER:-http}"
+      TEAMGRAM_CODE_EMAIL_PROVIDER: "${TEAMGRAM_CODE_EMAIL_PROVIDER:-http}"
+      TEAMGRAM_CODE_SEND_URL: "${TEAMGRAM_CODE_SEND_URL:-http://code-provider-fixture:23193/send}"
+      TEAMGRAM_CODE_EMAIL_SEND_URL: "${TEAMGRAM_CODE_EMAIL_SEND_URL:-http://code-provider-fixture:23193/send}"
+      TEAMGRAM_CODE_KEY: "${TEAMGRAM_CODE_PROVIDER_KEY:?TEAMGRAM_CODE_PROVIDER_KEY is required}"
+      TEAMGRAM_CODE_SECRET: "${TEAMGRAM_CODE_PROVIDER_SECRET:?TEAMGRAM_CODE_PROVIDER_SECRET is required}"
+      TEAMGRAM_CODE_CHALLENGE_SECRET: "${TEAMGRAM_CODE_CHALLENGE_SECRET:?TEAMGRAM_CODE_CHALLENGE_SECRET is required}"
+      TEAMGRAM_CODE_PROVIDER_TIMEOUT_SECONDS: "${TEAMGRAM_CODE_PROVIDER_TIMEOUT_SECONDS:-5}"
+
+  code-provider-fixture:
+    image: "${TEAMGRAM_CODE_PROVIDER_IMAGE:-teamgram-code-provider-fixture:acceptance}"
+    environment:
+      CODE_PROVIDER_KEY: "${TEAMGRAM_CODE_PROVIDER_KEY:?TEAMGRAM_CODE_PROVIDER_KEY is required}"
+      CODE_PROVIDER_SECRET: "${TEAMGRAM_CODE_PROVIDER_SECRET:?TEAMGRAM_CODE_PROVIDER_SECRET is required}"
+      CODE_PROVIDER_PORT: "23193"
+    expose: ["23193"]
+    healthcheck:
+      test: ["CMD", "/code-provider", "--healthcheck"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
+    networks: [teamgram_net]
+
+# The running e2e stack owns this already-populated PostgreSQL volume. Make
+# the binding explicit because Compose otherwise derives `backend_postgres_data`
+# from the project name and can silently start an older empty schema.
+  postgres:
+    volumes:
+      - backend_e2e_postgres_data:/var/lib/postgresql
+
+volumes:
+  backend_e2e_postgres_data:
+    external: true
+    name: backend_backend_postgres_data

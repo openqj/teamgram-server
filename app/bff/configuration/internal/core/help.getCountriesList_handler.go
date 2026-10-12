@@ -25,11 +25,13 @@ import (
 // HelpGetCountriesList
 // help.getCountriesList#735787a8 lang_code:string hash:int = help.CountriesList;
 func (c *ConfigurationCore) HelpGetCountriesList(in *mtproto.TLHelpGetCountriesList) (*mtproto.Help_CountriesList, error) {
-	// No country list is stored. Hash 0 is the client's "no cache" value, so return the empty list.
-	_ = in.GetHash()
+	records, hash := phoneCountryCatalogData()
+	if requestHash := in.GetHash(); requestHash != 0 && requestHash == hash {
+		return mtproto.MakeTLHelpCountriesListNotModified(&mtproto.Help_CountriesList{}).To_Help_CountriesList(), nil
+	}
 
 	return mtproto.MakeTLHelpCountriesList(&mtproto.Help_CountriesList{
-		Countries: []*mtproto.Help_Country{},
-		Hash:      0,
+		Countries: buildPhoneCountryList(records),
+		Hash:      hash,
 	}).To_Help_CountriesList(), nil
 }

@@ -66,6 +66,11 @@ BotSyncClient:
   Brokers:
     - 127.0.0.1:9092
 
+BotFatherSyncClient:
+  Topic:   "BotFather-T"
+  Brokers:
+    - 127.0.0.1:9092
+
 Redis2:
   Host: 127.0.0.1:6379
   Type: node

@@ -20,15 +20,16 @@ import (
 
 type Config struct {
 	zrpc.RpcServerConf
-	InboxConsumer   kafka.KafkaConsumerConf
-	Postgres        postgres.Config
-	Cache           cache.CacheConf
-	KV              kv.KvConf
-	IdgenClient     zrpc.RpcClientConf
-	UserClient      zrpc.RpcClientConf
-	ChatClient      zrpc.RpcClientConf
-	DialogClient    zrpc.RpcClientConf
-	SyncClient      *kafka.KafkaProducerConf
-	BotSyncClient   *kafka.KafkaProducerConf `json:",optional"`
-	MessageSharding int                      `json:",default=1"`
+	InboxConsumer       kafka.KafkaConsumerConf
+	Postgres            postgres.Config
+	Cache               cache.CacheConf
+	KV                  kv.KvConf
+	IdgenClient         zrpc.RpcClientConf
+	UserClient          zrpc.RpcClientConf
+	ChatClient          zrpc.RpcClientConf
+	DialogClient        zrpc.RpcClientConf
+	SyncClient          *kafka.KafkaProducerConf
+	BotSyncClient       *kafka.KafkaProducerConf `json:",optional"`
+	BotFatherSyncClient *kafka.KafkaProducerConf `json:",optional"`
+	MessageSharding     int                      `json:",default=1"`
 }

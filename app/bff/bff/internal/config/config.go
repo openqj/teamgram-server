@@ -72,6 +72,7 @@ type Config struct {
 	PassportProviderKey                       string                          `json:",optional"`
 	PassportProviderSigningKey                string                          `json:",optional"`
 	PassportProviderTimeoutSeconds            int                             `json:",optional"`
+	ProviderFixtureMode                       bool                            `json:",optional"`
 	UserChannelProfilesProviderEndpoint       string                          `json:",optional"`
 	UserChannelProfilesProviderKey            string                          `json:",optional"`
 	UserChannelProfilesProviderSigningKey     string                          `json:",optional"`

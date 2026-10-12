@@ -2,6 +2,7 @@ package core
 
 import (
 	"errors"
+	"os"
 	"testing"
 	"time"
 
@@ -20,6 +21,12 @@ func TestBotPaymentCallbacksUsePostgresPendingQuery(t *testing.T) {
 		buyerID = int64(970203)
 	)
 	t.Cleanup(func() {
+		if dsn := os.Getenv("APIFULL_POSTGRES_DSN"); dsn != "" {
+			if db, err := persist.OpenPostgresDB(dsn); err == nil {
+				_, _ = db.Exec(`DELETE FROM apifull_bot_payment_query WHERE query_id = $1`, queryID)
+				_ = db.Close()
+			}
+		}
 		raw, getErr := persist.Default.Get("bot-payment-query:970201")
 		if getErr == nil && raw != "" {
 			_, _ = persist.CompareAndDelete("bot-payment-query:970201", raw)
@@ -32,6 +39,12 @@ func TestBotPaymentCallbacksUsePostgresPendingQuery(t *testing.T) {
 		t.Fatalf("create shipping query: %v", err)
 	}
 	c := &ApiFullCore{MD: &metadata.RpcMetadata{UserId: botID}}
+	if _, err := c.MessagesSetBotShippingResults(&mtproto.TLMessagesSetBotShippingResults{QueryId: queryID + 1}); !errors.Is(err, mtproto.ErrQueryIdInvalid) {
+		t.Fatalf("unknown shipping query error = %v", err)
+	}
+	if _, err := c.MessagesSetBotPrecheckoutResults(&mtproto.TLMessagesSetBotPrecheckoutResults{QueryId: queryID + 1, Success: true}); !errors.Is(err, mtproto.ErrQueryIdInvalid) {
+		t.Fatalf("unknown precheckout query error = %v", err)
+	}
 	shipping := &mtproto.TLMessagesSetBotShippingResults{
 		QueryId: queryID,
 		ShippingOptions: []*mtproto.ShippingOption{{

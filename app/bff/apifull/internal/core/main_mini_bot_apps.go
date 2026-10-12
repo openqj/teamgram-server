@@ -20,6 +20,7 @@ package core
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/url"
 	"strconv"
 	"strings"
@@ -61,9 +62,6 @@ func (c *ApiFullCore) BotsGetPopularAppBots(in *mtproto.TLBotsGetPopularAppBots)
 	if _, err := c.requireUserId(); err != nil {
 		return nil, err
 	}
-	if !c.businessProviderConfigured() {
-		return nil, mtproto.ErrMethodNotImpl
-	}
 	if in == nil {
 		return nil, mtproto.ErrInputRequestInvalid
 	}
@@ -74,6 +72,17 @@ func (c *ApiFullCore) BotsGetPopularAppBots(in *mtproto.TLBotsGetPopularAppBots)
 		return nil, mtproto.ErrLimitInvalid
 	}
 	result := new(mtproto.Bots_PopularAppBots)
+	if local, err := c.loadLocalBusinessResult("bots.getPopularAppBots", fmt.Sprintf("offset:%s:limit:%d", in.GetOffset(), in.GetLimit()), result); err != nil {
+		return nil, err
+	} else if local {
+		if result.GetPredicateName() == "" || len(result.GetUsers()) > 10000 || (result.GetNextOffset() != nil && len(result.GetNextOffset().GetValue()) > 256) {
+			return nil, mtproto.ErrInternalServerError
+		}
+		return result, nil
+	}
+	if !c.businessProviderConfigured() {
+		return nil, mtproto.ErrMethodNotImpl
+	}
 	if err := c.callBusinessProvider("bots.getPopularAppBots", map[string]any{
 		"offset": in.GetOffset(), "limit": in.GetLimit(),
 	}, result); err != nil {

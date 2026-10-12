@@ -96,6 +96,7 @@ func (s *Service) MessagesRequestAppWebView53618BCE(ctx context.Context, request
 	c.Logger.Debugf("MessagesRequestAppWebView53618BCE - request: %s", request)
 	r, err := c.MessagesRequestAppWebView53618BCE(request)
 	if err != nil {
+		c.Logger.Debugf("MessagesRequestAppWebView53618BCE - error: %v", err)
 		return nil, err
 	}
 	c.Logger.Debugf("MessagesRequestAppWebView53618BCE - reply: %s", r)

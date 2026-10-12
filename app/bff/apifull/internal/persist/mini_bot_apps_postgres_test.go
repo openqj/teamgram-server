@@ -53,6 +53,26 @@ func TestMiniBotPermissionAndWebViewRequestPostgres(t *testing.T) {
 	if ok, err := ProlongWebViewQuery(userID, 9981, 5*time.Minute); err != nil || !ok {
 		t.Fatalf("prolong query = %v, %v", ok, err)
 	}
+	if err := PutWebViewRequestIfAbsent(WebViewRequest{
+		RequestID: request.RequestID,
+		UserID:    request.UserID,
+		BotID:     request.BotID,
+		Kind:      request.Kind,
+		Payload:   request.Payload,
+		ExpiresAt: time.Now().UTC().Add(5 * time.Minute),
+	}); err != nil {
+		t.Fatalf("idempotent request retry = %v", err)
+	}
+	if err := PutWebViewRequestIfAbsent(WebViewRequest{
+		RequestID: request.RequestID,
+		UserID:    request.UserID,
+		BotID:     request.BotID + 1,
+		Kind:      request.Kind,
+		Payload:   request.Payload,
+		ExpiresAt: time.Now().UTC().Add(5 * time.Minute),
+	}); err != ErrWebViewRequestConflict {
+		t.Fatalf("conflicting request retry = %v, want %v", err, ErrWebViewRequestConflict)
+	}
 	_, _ = Default.(*postgresStore).db.Exec(`DELETE FROM apifull_mini_bot_permission WHERE user_id = $1`, userID)
 	_, _ = Default.(*postgresStore).db.Exec(`DELETE FROM apifull_webview_request WHERE user_id = $1`, userID)
 }

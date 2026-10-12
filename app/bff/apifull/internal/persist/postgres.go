@@ -23,6 +23,53 @@ type postgresStore struct {
 	db *sql.DB
 }
 
+// Standalone BFFs must refuse to start until every PostgreSQL control-plane
+// migration used by the current handlers is present. Keep this list explicit
+// so adding a required provider table cannot silently become a fail-open path.
+var requiredReadOnlyPostgresMigrations = []string{
+	"010_apifull",
+	"014_user_premium_payment_grant",
+	"065_apifull_user_emoji_status_permissions",
+	"066_apifull_premium_promo",
+	"067_apifull_sponsored_inventory",
+	"068_apifull_public_forwards",
+	"070_apifull_gift_chat_themes",
+	"071_apifull_business_connections",
+	"072_apifull_bot_payments",
+	"073_apifull_bot_payment_query_events",
+	"074_apifull_bot_payment_outbox_claim_token",
+	"075_apifull_business_connection_outbox_claim_token",
+	"076_apifull_star_referral",
+	"077_apifull_business_control_plane",
+	"078_apifull_payment_provider_control_plane",
+	"089_apifull_forum_topic_icon_color",
+}
+
+var requiredReadOnlyPostgresSchemaQueries = []string{
+	`SELECT version FROM schema_migrations LIMIT 0`,
+	`SELECT k, v FROM apifull_kv LIMIT 0`,
+	`SELECT bot_user_id, restricted, add_users FROM apifull_bot_access_settings LIMIT 0`,
+	`SELECT bot_user_id, pending_updates_count, message FROM apifull_bot_updates_status LIMIT 0`,
+	`SELECT user_id, peer_type, peer_id, message_id, read_max_id FROM apifull_discussion_read_state LIMIT 0`,
+	`SELECT owner_user_id, collectible_id, document_id FROM apifull_collectible_emoji_status LIMIT 0`,
+	`SELECT owner_user_id, bot_user_id, enabled FROM apifull_user_emoji_status_permission LIMIT 0`,
+	`SELECT id, promo FROM apifull_premium_promo LIMIT 0`,
+	`SELECT id, inventory_type, query, peer_key, payload FROM apifull_sponsored_inventory LIMIT 0`,
+	`SELECT id, source_channel_id, source_message_id, destination_peer_type, destination_peer_id, destination_message_id, message_json FROM apifull_public_forward_message LIMIT 0`,
+	`SELECT id, source_user_id, source_story_id, destination_peer_type, destination_peer_id, destination_story_id, story_json, peer_json FROM apifull_public_forward_story LIMIT 0`,
+	`SELECT gift_id FROM apifull_gift_chat_theme LIMIT 0`,
+	`SELECT connection_id, owner_user_id, bot_user_id, dc_id, qts FROM apifull_business_connection LIMIT 0`,
+	`SELECT id, bot_user_id, connection_id, qts, state, claim_token, payload FROM apifull_business_connection_outbox LIMIT 0`,
+	`SELECT query_id, bot_user_id, buyer_user_id, stage, payload, currency, amount, shipping_options, expires_at FROM apifull_bot_payment_query LIMIT 0`,
+	`SELECT id, query_id, bot_user_id, buyer_user_id, event_type, state, attempts, lease_until, claim_token, completed_at FROM apifull_bot_payment_outbox LIMIT 0`,
+	`SELECT bot_user_id, commission_permille, duration_months, end_date, active FROM apifull_star_ref_program LIMIT 0`,
+	`SELECT owner_user_id, peer_type, peer_id, bot_user_id, revoked, referral_url FROM apifull_star_ref_connection LIMIT 0`,
+	`SELECT operation, scope_key, caller_user_id, state, result, expires_at FROM apifull_business_control_plane LIMIT 0`,
+	`SELECT operation, user_id, request_key, payload_hash, response, signature_header, transaction_id FROM apifull_payment_provider_operation LIMIT 0`,
+	`SELECT operation, user_id, request_key, transaction_id, response FROM apifull_payment_provider_receipt LIMIT 0`,
+	`SELECT user_id, product, transaction_id, months, stars, state FROM apifull_payment_provider_entitlement LIMIT 0`,
+}
+
 func (s *postgresStore) Get(key string) (string, error) {
 	// Story records are stored as one JSONB document per owner. Keep a
 	// compatibility read from apifull_kv so deployments can roll forward from
@@ -424,40 +471,26 @@ func openPostgres(dsn string, createSchema bool) error {
 		// deployment migrations. Verify the shared migration ledger and KV
 		// table before accepting requests instead of silently starting against
 		// an empty database.
-		for _, query := range []string{
-			`SELECT version FROM schema_migrations LIMIT 0`,
-			`SELECT k, v FROM apifull_kv LIMIT 0`,
-			`SELECT bot_user_id, restricted, add_users FROM apifull_bot_access_settings LIMIT 0`,
-			`SELECT bot_user_id, pending_updates_count, message FROM apifull_bot_updates_status LIMIT 0`,
-			`SELECT user_id, peer_type, peer_id, message_id, read_max_id FROM apifull_discussion_read_state LIMIT 0`,
-			`SELECT owner_user_id, collectible_id, document_id FROM apifull_collectible_emoji_status LIMIT 0`,
-			`SELECT owner_user_id, bot_user_id, enabled FROM apifull_user_emoji_status_permission LIMIT 0`,
-			`SELECT id, promo FROM apifull_premium_promo LIMIT 0`,
-			`SELECT id, inventory_type, query, peer_key, payload FROM apifull_sponsored_inventory LIMIT 0`,
-			`SELECT id, source_channel_id, source_message_id, destination_peer_type, destination_peer_id, destination_message_id, message_json FROM apifull_public_forward_message LIMIT 0`,
-			`SELECT id, source_user_id, source_story_id, destination_peer_type, destination_peer_id, destination_story_id, story_json, peer_json FROM apifull_public_forward_story LIMIT 0`,
-			`SELECT gift_id FROM apifull_gift_chat_theme LIMIT 0`,
-			`SELECT connection_id, owner_user_id, bot_user_id, dc_id, qts FROM apifull_business_connection LIMIT 0`,
-			`SELECT id, bot_user_id, connection_id, qts, state, payload FROM apifull_business_connection_outbox LIMIT 0`,
-		} {
+		for _, query := range requiredReadOnlyPostgresSchemaQueries {
 			if _, err = db.Exec(query); err != nil {
 				_ = db.Close()
 				return fmt.Errorf("apifull: required PostgreSQL schema is unavailable: %w", err)
 			}
 		}
-		const requiredMigrationCount = 8
 		var appliedMigrationCount int
-		if err = db.QueryRow(`SELECT COUNT(*) FROM schema_migrations
-			WHERE version IN ('010_apifull', '014_user_premium_payment_grant',
-				'065_apifull_user_emoji_status_permissions', '066_apifull_premium_promo',
-				'067_apifull_sponsored_inventory', '068_apifull_public_forwards',
-				'070_apifull_gift_chat_themes', '071_apifull_business_connections')`).Scan(&appliedMigrationCount); err != nil {
+		placeholders := make([]string, len(requiredReadOnlyPostgresMigrations))
+		args := make([]any, len(requiredReadOnlyPostgresMigrations))
+		for i, migration := range requiredReadOnlyPostgresMigrations {
+			placeholders[i] = fmt.Sprintf("$%d", i+1)
+			args[i] = migration
+		}
+		if err = db.QueryRow(`SELECT COUNT(*) FROM schema_migrations WHERE version IN (`+strings.Join(placeholders, ",")+`)`, args...).Scan(&appliedMigrationCount); err != nil {
 			_ = db.Close()
 			return fmt.Errorf("apifull: migration journal is unavailable: %w", err)
 		}
-		if appliedMigrationCount != requiredMigrationCount {
+		if appliedMigrationCount != len(requiredReadOnlyPostgresMigrations) {
 			_ = db.Close()
-			return errors.New("apifull: PostgreSQL migrations are incomplete (010_apifull, 014_user_premium_payment_grant, 065_apifull_user_emoji_status_permissions, 066_apifull_premium_promo, 067_apifull_sponsored_inventory, 068_apifull_public_forwards, 070_apifull_gift_chat_themes, and 071_apifull_business_connections are required)")
+			return fmt.Errorf("apifull: PostgreSQL migrations are incomplete (%s are required)", strings.Join(requiredReadOnlyPostgresMigrations, ", "))
 		}
 	}
 	if createSchema {
@@ -510,6 +543,10 @@ func openPostgres(dsn string, createSchema bool) error {
 			return err
 		}
 		if err = ensureMiniBotAppSchema(db); err != nil {
+			_ = db.Close()
+			return err
+		}
+		if err = ensureStarReferralSchema(db); err != nil {
 			_ = db.Close()
 			return err
 		}
@@ -625,7 +662,7 @@ func openPostgres(dsn string, createSchema bool) error {
 			`SELECT call_id, user_id, subscribed FROM apifull_group_call_subscription LIMIT 0`,
 			`SELECT call_id, user_id, send_as FROM apifull_group_call_send_as LIMIT 0`,
 			`SELECT call_id, public_key, block, params FROM apifull_group_call_conference LIMIT 0`,
-			`SELECT peer_key, topic_id, title, position FROM apifull_forum_topic LIMIT 0`,
+			`SELECT peer_key, topic_id, title, icon_color, position FROM apifull_forum_topic LIMIT 0`,
 			`SELECT user_id, title FROM apifull_forum_user_title LIMIT 0`,
 			`SELECT channel_id, enabled, tabs, view_as_messages FROM apifull_forum_channel_settings LIMIT 0`,
 			`SELECT scope, peer_type, peer_id, boosts, blocked_boosts FROM apifull_boost_target LIMIT 0`,
@@ -649,7 +686,9 @@ func openPostgres(dsn string, createSchema bool) error {
 			`SELECT owner_user_id, bot_user_id, can_reply FROM apifull_connected_bot LIMIT 0`,
 			`SELECT owner_user_id, peer_type, peer_id FROM apifull_connected_bot_peer LIMIT 0`,
 			`SELECT connection_id, owner_user_id, bot_user_id, dc_id, qts FROM apifull_business_connection LIMIT 0`,
-			`SELECT id, bot_user_id, connection_id, qts, state, payload FROM apifull_business_connection_outbox LIMIT 0`,
+			`SELECT id, bot_user_id, connection_id, qts, state, claim_token, payload FROM apifull_business_connection_outbox LIMIT 0`,
+			`SELECT query_id, bot_user_id, buyer_user_id, stage, payload, currency, amount, shipping_options, expires_at FROM apifull_bot_payment_query LIMIT 0`,
+			`SELECT id, query_id, bot_user_id, buyer_user_id, event_type, state, attempts, lease_until, claim_token, completed_at FROM apifull_bot_payment_outbox LIMIT 0`,
 			`SELECT id, call_id, sender_user_id FROM apifull_group_call_encrypted_message LIMIT 0`,
 			`SELECT id, call_id, sender_user_id FROM apifull_group_call_message LIMIT 0`,
 			`SELECT credential_id, user_id, name FROM apifull_passkey_credential LIMIT 0`,

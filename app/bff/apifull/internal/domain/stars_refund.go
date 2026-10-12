@@ -135,7 +135,7 @@ func CommitStarsRefund(userID int64, chargeID, provider, refundTransactionID str
 	if err != nil {
 		return StarsRefund{}, err
 	}
-	if chargeUser != userID || chargeProvider == "" || transactionID != chargeID {
+	if chargeUser != userID || chargeProvider == "" || chargeProvider != provider || transactionID != chargeID {
 		return StarsRefund{}, ErrStarsChargeInvalid
 	}
 	var existing StarsRefund

@@ -66,6 +66,7 @@ func (c *ApiFullCore) callStarsSubscriptionMutationProvider(ctx context.Context,
 		return mtproto.ErrPaymentProviderInvalid
 	}
 	req.Header.Set("Content-Type", "application/json")
+	c.setPaymentProviderRequestSignature(req, body)
 	req.Header.Set("Idempotency-Key", paymentProviderIdempotencyKey(c.MD.GetUserId(), idempotencyKey))
 	if providerKey != "" {
 		req.Header.Set("Authorization", "Bearer "+providerKey)

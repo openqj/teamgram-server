@@ -151,6 +151,7 @@ func (c *ApiFullCore) PaymentsApplyGiftCode(in *mtproto.TLPaymentsApplyGiftCode)
 		return nil, mtproto.ErrPaymentProviderInvalid
 	}
 	req.Header.Set("Content-Type", "application/json")
+	c.setPaymentProviderRequestSignature(req, body)
 	req.Header.Set("Idempotency-Key", paymentProviderIdempotencyKey(uid, requestKey))
 	if providerKey != "" {
 		req.Header.Set("Authorization", "Bearer "+providerKey)

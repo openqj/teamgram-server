@@ -29,4 +29,5 @@ type Config struct {
 	PaymentProviderKey            string `json:",optional"`
 	PaymentProviderSigningKey     string `json:",optional"`
 	PaymentProviderTimeoutSeconds int    `json:",optional"`
+	AllowInsecureProviderHTTP     bool   `json:",optional"`
 }

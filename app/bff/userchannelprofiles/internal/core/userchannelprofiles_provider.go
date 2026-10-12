@@ -44,6 +44,21 @@ func userChannelProfilesProviderSignature(key string, body []byte) string {
 	return "sha256=" + hex.EncodeToString(mac.Sum(nil))
 }
 
+func birthdaySuggestionProviderIdempotencyKey(payload birthdaySuggestionProviderRequest) (string, error) {
+	input, err := json.Marshal(struct {
+		Operation string             `json:"operation"`
+		CallerID  int64              `json:"caller_id"`
+		TargetID  int64              `json:"target_id"`
+		Recipient *mtproto.InputUser `json:"recipient"`
+		Birthday  *mtproto.Birthday  `json:"birthday"`
+	}{payload.Operation, payload.CallerID, payload.TargetID, payload.Recipient, payload.Birthday})
+	if err != nil {
+		return "", err
+	}
+	digest := sha256.Sum256(input)
+	return hex.EncodeToString(digest[:]), nil
+}
+
 func verifyUserChannelProfilesProviderSignature(key, signature string, body []byte) bool {
 	signature = strings.TrimPrefix(strings.TrimSpace(signature), "sha256=")
 	provided, err := hex.DecodeString(signature)
@@ -107,11 +122,16 @@ func (c *UserChannelProfilesCore) callBirthdaySuggestionProvider(ctx context.Con
 	if err != nil {
 		return nil, mtproto.ErrInputRequestInvalid
 	}
+	idempotencyKey, err := birthdaySuggestionProviderIdempotencyKey(payload)
+	if err != nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
 		return nil, mtproto.ErrInternalServerError
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Idempotency-Key", idempotencyKey)
 	if key != "" {
 		req.Header.Set("Authorization", "Bearer "+key)
 	}

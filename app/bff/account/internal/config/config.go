@@ -41,4 +41,5 @@ type Config struct {
 	BotConnectionProviderKey            string `json:",optional"`
 	BotConnectionProviderSigningKey     string `json:",optional"`
 	BotConnectionProviderTimeoutSeconds int    `json:",optional"`
+	AllowInsecureProviderHTTP           bool   `json:",optional"`
 }

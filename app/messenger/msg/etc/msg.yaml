@@ -42,3 +42,8 @@ BotSyncClient:
   Topic:   "Sync-T"
   Brokers:
     - 127.0.0.1:9092
+
+BotFatherSyncClient:
+  Topic:   "BotFather-T"
+  Brokers:
+    - 127.0.0.1:9092

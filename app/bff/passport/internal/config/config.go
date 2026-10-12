@@ -31,6 +31,7 @@ type Config struct {
 	PassportProviderKey            string                    `json:",optional"`
 	PassportProviderSigningKey     string                    `json:",optional"`
 	PassportProviderTimeoutSeconds int                       `json:",optional"`
+	AllowInsecureProviderHTTP      bool                      `json:",optional"`
 	KV                             kv.KvConf                 `json:",optional"`
 	Code                           *conf.SmsVerifyCodeConfig `json:",optional"`
 	AuthsessionClient              zrpc.RpcClientConf

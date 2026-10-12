@@ -46,6 +46,23 @@ func validBotDataJSON(value *mtproto.DataJSON) bool {
 // PostgreSQL bot-status row; opaque bot requests remain fail closed until
 // their respective providers are wired.
 
+func (c *ApiFullCore) requireBotCaller(uid int64) error {
+	if uid <= 0 || c == nil || c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.UserClient == nil {
+		return mtproto.ErrMethodNotImpl
+	}
+	profile, err := c.svcCtx.Dao.UserGetImmutableUser(c.ctx, &userpb.TLUserGetImmutableUser{Id: uid})
+	if err != nil {
+		return err
+	}
+	if profile == nil || profile.GetUser() == nil || profile.Deleted() {
+		return mtproto.ErrUserIdInvalid
+	}
+	if profile.GetUser().GetBot() == nil {
+		return mtproto.ErrBotMethodInvalid
+	}
+	return nil
+}
+
 func (c *ApiFullCore) HelpSetBotUpdatesStatus(in *mtproto.TLHelpSetBotUpdatesStatus) (*mtproto.Bool, error) {
 	uid, err := c.requireUserId()
 	if err != nil {
@@ -84,6 +101,17 @@ func (c *ApiFullCore) BotsSendCustomRequest(in *mtproto.TLBotsSendCustomRequest)
 		return nil, mtproto.ErrInputRequestInvalid
 	}
 	result := new(mtproto.DataJSON)
+	if local, loadErr := c.loadLocalBusinessResultForCaller("bots.sendCustomRequest", businessControlHash("method:"+in.GetCustomMethod(), in.GetParams()), result); loadErr != nil {
+		return nil, loadErr
+	} else if local {
+		if err := c.requireBotCaller(c.MD.GetUserId()); err != nil {
+			return nil, err
+		}
+		if !validBotDataJSON(result) {
+			return nil, mtproto.ErrInternalServerError
+		}
+		return result, nil
+	}
 	if err := c.callBusinessProvider("bots.sendCustomRequest", map[string]any{
 		"custom_method": in.GetCustomMethod(), "params": in.GetParams(),
 	}, result); err != nil {
@@ -104,6 +132,20 @@ func (c *ApiFullCore) BotsAnswerWebhookJSONQuery(in *mtproto.TLBotsAnswerWebhook
 	}
 	var result struct {
 		Value *bool `json:"value"`
+	}
+	if local, loadErr := c.loadLocalBusinessResultForCaller("bots.answerWebhookJSONQuery", businessControlQueryKey(in.GetQueryId()), &result); loadErr != nil {
+		return nil, loadErr
+	} else if local {
+		if err := c.requireBotCaller(c.MD.GetUserId()); err != nil {
+			return nil, err
+		}
+		if result.Value == nil {
+			return nil, mtproto.ErrInternalServerError
+		}
+		if *result.Value {
+			return mtproto.BoolTrue, nil
+		}
+		return mtproto.BoolFalse, nil
 	}
 	if err := c.callBusinessProvider("bots.answerWebhookJSONQuery", map[string]any{
 		"query_id": in.GetQueryId(), "data": in.GetData(),

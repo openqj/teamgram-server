@@ -30,6 +30,7 @@ type Config struct {
 	CdnProviderKey            string `json:",optional"`
 	CdnProviderSigningKey     string `json:",optional"`
 	CdnProviderTimeoutSeconds int    `json:",optional"`
+	AllowInsecureProviderHTTP bool   `json:",optional"`
 	DfsClient                 zrpc.RpcClientConf
 	UserClient                zrpc.RpcClientConf
 	MediaClient               zrpc.RpcClientConf

@@ -40,7 +40,42 @@ func dialogFiltersKey(userId int64) string {
 	return fmt.Sprintf("dfilter:%d", userId)
 }
 
+// dialogFilterAuthority reports whether this core is running with the
+// production Dialog service boundary. The service owns the PostgreSQL
+// dialog_filters rows; the KV branch below is retained only for small unit
+// fixtures that construct an ApiFullCore without dependencies.
+func (c *ApiFullCore) dialogFilterAuthority() bool {
+	return c != nil && c.svcCtx != nil && c.svcCtx.Dao != nil
+}
+
 func (c *ApiFullCore) loadDialogFilters(userId int64) ([]*mtproto.DialogFilter, error) {
+	if c.dialogFilterAuthority() {
+		if c.svcCtx.Dao.DialogClient == nil {
+			return nil, mtproto.ErrInternalServerError
+		}
+		ext, err := c.svcCtx.Dao.DialogClient.DialogGetDialogFilters(c.ctx, &dialog.TLDialogGetDialogFilters{
+			UserId: userId,
+		})
+		if err != nil {
+			return nil, err
+		}
+		if ext == nil {
+			return nil, mtproto.ErrInternalServerError
+		}
+		filters := make([]*mtproto.DialogFilter, 0, len(ext.GetDatas()))
+		for _, item := range ext.GetDatas() {
+			if item == nil || item.GetDialogFilter() == nil || item.GetId() < 2 {
+				return nil, mtproto.ErrInternalServerError
+			}
+			filter := item.GetDialogFilter()
+			if filter.GetId() != item.GetId() {
+				return nil, mtproto.ErrInternalServerError
+			}
+			filters = append(filters, filter)
+		}
+		return filters, nil
+	}
+
 	raw, err := persist.Default.Get(dialogFiltersKey(userId))
 	if err != nil || raw == "" {
 		return []*mtproto.DialogFilter{}, err
@@ -53,6 +88,97 @@ func (c *ApiFullCore) loadDialogFilters(userId int64) ([]*mtproto.DialogFilter, 
 		list = []*mtproto.DialogFilter{}
 	}
 	return list, nil
+}
+
+func (c *ApiFullCore) persistDialogFilter(userId int64, filter *mtproto.DialogFilter) error {
+	if filter == nil || filter.GetId() < 2 {
+		return mtproto.ErrFilterIdInvalid
+	}
+	if c.dialogFilterAuthority() {
+		if c.svcCtx.Dao.DialogClient == nil {
+			return mtproto.ErrInternalServerError
+		}
+		result, err := c.svcCtx.Dao.DialogClient.DialogInsertOrUpdateDialogFilter(c.ctx, &dialog.TLDialogInsertOrUpdateDialogFilter{
+			UserId: userId, Id: filter.GetId(), DialogFilter: filter,
+		})
+		if err != nil {
+			return err
+		}
+		if result == nil || !mtproto.FromBool(result) {
+			return mtproto.ErrInternalServerError
+		}
+		return nil
+	}
+
+	list, err := c.loadDialogFilters(userId)
+	if err != nil {
+		return err
+	}
+	for i, existing := range list {
+		if existing != nil && existing.GetId() == filter.GetId() {
+			list[i] = filter
+			return saveDialogFilters(userId, list)
+		}
+	}
+	return saveDialogFilters(userId, append(list, filter))
+}
+
+func (c *ApiFullCore) deleteDialogFilter(userId int64, filterID int32) error {
+	if filterID < 2 {
+		return mtproto.ErrFilterIdInvalid
+	}
+	if c.dialogFilterAuthority() {
+		if c.svcCtx.Dao.DialogClient == nil {
+			return mtproto.ErrInternalServerError
+		}
+		result, err := c.svcCtx.Dao.DialogClient.DialogDeleteDialogFilter(c.ctx, &dialog.TLDialogDeleteDialogFilter{
+			UserId: userId, Id: filterID,
+		})
+		if err != nil {
+			return err
+		}
+		if result == nil || !mtproto.FromBool(result) {
+			return mtproto.ErrInternalServerError
+		}
+		return nil
+	}
+
+	list, err := c.loadDialogFilters(userId)
+	if err != nil {
+		return err
+	}
+	next := list[:0]
+	for _, filter := range list {
+		if filter != nil && filter.GetId() == filterID {
+			continue
+		}
+		next = append(next, filter)
+	}
+	return saveDialogFilters(userId, next)
+}
+
+func (c *ApiFullCore) persistDialogFiltersOrder(userId int64, order []int32) error {
+	if c.dialogFilterAuthority() {
+		if c.svcCtx.Dao.DialogClient == nil {
+			return mtproto.ErrInternalServerError
+		}
+		result, err := c.svcCtx.Dao.DialogClient.DialogUpdateDialogFiltersOrder(c.ctx, &dialog.TLDialogUpdateDialogFiltersOrder{
+			UserId: userId, Order: order,
+		})
+		if err != nil {
+			return err
+		}
+		if result == nil || !mtproto.FromBool(result) {
+			return mtproto.ErrInternalServerError
+		}
+		return nil
+	}
+
+	list, err := c.loadDialogFilters(userId)
+	if err != nil {
+		return err
+	}
+	return saveDialogFilters(userId, reorderDialogFilters(list, order))
 }
 
 func saveDialogFilters(userId int64, list []*mtproto.DialogFilter) error {
@@ -106,6 +232,18 @@ func reorderDialogFilters(list []*mtproto.DialogFilter, order []int32) []*mtprot
 }
 
 func (c *ApiFullCore) dialogFilterTagsEnabled(userId int64) (bool, error) {
+	if c.dialogFilterAuthority() {
+		if c.svcCtx.Dao.DialogClient == nil {
+			return false, mtproto.ErrInternalServerError
+		}
+		tags, err := c.svcCtx.Dao.DialogClient.DialogGetDialogFilterTags(c.ctx, &dialog.TLDialogGetDialogFilterTags{
+			UserId: userId,
+		})
+		if err != nil {
+			return false, err
+		}
+		return mtproto.FromBool(tags), nil
+	}
 	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.DialogClient == nil {
 		return false, nil
 	}
@@ -196,36 +334,15 @@ func (c *ApiFullCore) MessagesUpdateDialogFilter(in *mtproto.TLMessagesUpdateDia
 	if in.GetId() < 2 {
 		return nil, mtproto.ErrFilterIdInvalid
 	}
-	list, err := c.loadDialogFilters(userId)
-	if err != nil {
-		return nil, err
-	}
 	if in.GetFilter() == nil {
-		next := list[:0]
-		for _, f := range list {
-			if f == nil || f.GetId() == in.GetId() {
-				continue
-			}
-			next = append(next, f)
-		}
-		if err := saveDialogFilters(userId, next); err != nil {
+		if err := c.deleteDialogFilter(userId, in.GetId()); err != nil {
 			return nil, err
 		}
 		return mtproto.BoolTrue, nil
 	}
 	filter := in.GetFilter()
 	filter.Id = in.GetId()
-	for i := range list {
-		if list[i] != nil && list[i].GetId() == in.GetId() {
-			list[i] = filter
-			if err := saveDialogFilters(userId, list); err != nil {
-				return nil, err
-			}
-			return mtproto.BoolTrue, nil
-		}
-	}
-	list = append(list, filter)
-	if err := saveDialogFilters(userId, list); err != nil {
+	if err := c.persistDialogFilter(userId, filter); err != nil {
 		return nil, err
 	}
 	return mtproto.BoolTrue, nil
@@ -236,15 +353,11 @@ func (c *ApiFullCore) MessagesUpdateDialogFiltersOrder(in *mtproto.TLMessagesUpd
 	if err != nil {
 		return nil, err
 	}
-	list, err := c.loadDialogFilters(userId)
-	if err != nil {
-		return nil, err
-	}
 	var order []int32
 	if in != nil {
 		order = in.GetOrder()
 	}
-	if err := saveDialogFilters(userId, reorderDialogFilters(list, order)); err != nil {
+	if err := c.persistDialogFiltersOrder(userId, order); err != nil {
 		return nil, err
 	}
 	return mtproto.BoolTrue, nil
@@ -421,9 +534,11 @@ func (c *ApiFullCore) FoldersDeleteFolder(in *mtproto.TLFoldersDeleteFolder) (*m
 	if deleted == nil || !mtproto.FromBool(deleted) {
 		return nil, mtproto.ErrInternalServerError
 	}
-	filters = append(filters[:filterIndex], filters[filterIndex+1:]...)
-	if err := saveDialogFilters(userId, filters); err != nil {
-		return nil, err
+	if !c.dialogFilterAuthority() {
+		filters = append(filters[:filterIndex], filters[filterIndex+1:]...)
+		if err := saveDialogFilters(userId, filters); err != nil {
+			return nil, err
+		}
 	}
 	joined := st.Joined[:0]
 	for _, entry := range st.Joined {
@@ -890,8 +1005,10 @@ func (c *ApiFullCore) ensureChatlistFilter(userId int64, filterId int32, title s
 	if !found {
 		filters = append(filters, filter)
 	}
-	if err := saveDialogFilters(userId, filters); err != nil {
-		return nil, err
+	if !c.dialogFilterAuthority() {
+		if err := saveDialogFilters(userId, filters); err != nil {
+			return nil, err
+		}
 	}
 	return filter, nil
 }
@@ -921,6 +1038,9 @@ func (c *ApiFullCore) deleteChatlistFilter(userId int64, filterId int32) error {
 		UserId: userId, Id: filterId,
 	}); err != nil {
 		return err
+	}
+	if c.dialogFilterAuthority() {
+		return nil
 	}
 	filters = append(filters[:idx], filters[idx+1:]...)
 	return saveDialogFilters(userId, filters)

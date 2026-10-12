@@ -171,8 +171,8 @@ func clearChatLinkSlug(slug string) error {
 }
 
 func (c *ApiFullCore) AccountCreateBusinessChatLink(in *mtproto.TLAccountCreateBusinessChatLink) (*mtproto.BusinessChatLink, error) {
-	if c.MD == nil || c.MD.UserId == 0 {
-		return nil, mtproto.ErrAuthKeyUnregistered
+	if err := c.requirePremium(); err != nil {
+		return nil, err
 	}
 	if in == nil || in.GetLink() == nil {
 		return nil, mtproto.ErrInputRequestInvalid
@@ -200,8 +200,8 @@ func (c *ApiFullCore) AccountCreateBusinessChatLink(in *mtproto.TLAccountCreateB
 }
 
 func (c *ApiFullCore) AccountEditBusinessChatLink(in *mtproto.TLAccountEditBusinessChatLink) (*mtproto.BusinessChatLink, error) {
-	if c.MD == nil || c.MD.UserId == 0 {
-		return nil, mtproto.ErrAuthKeyUnregistered
+	if err := c.requirePremium(); err != nil {
+		return nil, err
 	}
 	var err error
 	slug := ""
@@ -238,8 +238,8 @@ func (c *ApiFullCore) AccountEditBusinessChatLink(in *mtproto.TLAccountEditBusin
 }
 
 func (c *ApiFullCore) AccountDeleteBusinessChatLink(in *mtproto.TLAccountDeleteBusinessChatLink) (*mtproto.Bool, error) {
-	if c.MD == nil || c.MD.UserId == 0 {
-		return nil, mtproto.ErrAuthKeyUnregistered
+	if err := c.requirePremium(); err != nil {
+		return nil, err
 	}
 	var err error
 	slug := ""
@@ -273,8 +273,8 @@ func (c *ApiFullCore) AccountDeleteBusinessChatLink(in *mtproto.TLAccountDeleteB
 }
 
 func (c *ApiFullCore) AccountGetBusinessChatLinks(in *mtproto.TLAccountGetBusinessChatLinks) (*mtproto.Account_BusinessChatLinks, error) {
-	if c.MD == nil || c.MD.UserId == 0 {
-		return nil, mtproto.ErrAuthKeyUnregistered
+	if err := c.requirePremium(); err != nil {
+		return nil, err
 	}
 	_ = in
 	list, err := loadChatLinks(c.MD.UserId)

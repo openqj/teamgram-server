@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"testing"
 
 	"github.com/teamgram/proto/mtproto"
@@ -20,6 +21,19 @@ import (
 	userpb "github.com/teamgram/teamgram-server/app/service/biz/user/user"
 	"github.com/zeromicro/go-zero/core/logx"
 )
+
+func TestAuthProviderFixtureHostRequiresExplicitMode(t *testing.T) {
+	parsed, err := url.Parse("http://identity-provider-fixture.test:23192")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if secureAuthProviderURL(parsed, false) {
+		t.Fatal("fixture host accepted without explicit fixture mode")
+	}
+	if !secureAuthProviderURL(parsed, true) {
+		t.Fatal("fixture host rejected in explicit fixture mode")
+	}
+}
 
 const authProviderTestSigningKey = "test-only-signing-key-with-at-least-32-bytes"
 
@@ -81,6 +95,9 @@ func newAuthProviderTestServer(t *testing.T, signingKey string, response func(au
 		}
 		if len(request.RequestID) != 64 {
 			t.Errorf("request id length = %d, want 64 hex chars", len(request.RequestID))
+		}
+		if got := r.Header.Get("Idempotency-Key"); len(got) != 64 {
+			t.Errorf("idempotency key length = %d, want 64", len(got))
 		}
 		responseBody, err := json.Marshal(response(request))
 		if err != nil {

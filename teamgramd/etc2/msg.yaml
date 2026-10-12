@@ -70,6 +70,11 @@ BotSyncClient:
   Brokers:
     - kafka:9092
 
+BotFatherSyncClient:
+  Topic:   "BotFather-T"
+  Brokers:
+    - kafka:9092
+
 Redis2:
   Host: redis:6379
   Type: node

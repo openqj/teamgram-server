@@ -2,7 +2,9 @@
 
 APIFull sends payment operations to `PaymentProviderEndpoint`. Stars top-up form discovery uses `operation: "get_stars_form"`; settlement uses `operation: "settle_stars"`. Both include the authenticated user and an active catalog offer. The provider must not choose a different offer or beneficiary. Form discovery returns a signed `form` with predicate `payments_paymentFormStars` and the matching `offer_id`, `stars`, `store_product`, `currency`, and `amount`; APIFull checks known catalog terms and requires a non-zero form ID.
 
-The request includes an `Idempotency-Key` derived from the user and request key. Retries for that key must return the same transaction and response body. APIFull also serializes requests for the same user and request key locally.
+Each request includes `X-Teamgram-Payment-Provider-Request-Signature: sha256=<digest>`, an HMAC-SHA256 digest of the exact JSON request body using `PaymentProviderSigningKey`. When `PaymentProviderKey` is configured, APIFull also sends `Authorization: Bearer <key>`. The request includes an `Idempotency-Key` derived from the user and request key. Retries for that key must return the same transaction and response body. APIFull also serializes requests for the same user and request key locally.
+
+The local acceptance fixture at `docker/production/payment-provider-fixture` implements signed Premium and bot-invoice form/validation/settlement responses and deterministic `get_stars_form` / `settle_stars` responses. Its Stars form mirrors the submitted active offer, and settlement responses are cached by operation plus `request_key` so a retry cannot mint a second transaction or cross product boundaries. Form and validation responses may include product metadata, but the fixture only writes provider entitlements when a signed settlement response includes a non-empty transaction ID. The fixture is test-only; it does not provide production authority for revenue, paid messages, gift codes, or giveaways. Those operations remain external provider dependencies and must fail closed when no signed provider is configured.
 
 The settlement provider response is JSON and must include:
 

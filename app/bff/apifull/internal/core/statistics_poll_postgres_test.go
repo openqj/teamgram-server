@@ -21,7 +21,6 @@ func TestStatsGetPollStatsReadsAuthorizedDurableBallots(t *testing.T) {
 	if err := persist.OpenPostgresReadOnly(dsn); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = persist.ClosePostgres() })
 	reader := &pollMessageReaderStub{boxes: map[int64]*mtproto.MessageBox{
 		userID: pollTestBox(chatID, msgID, pollTestPoll(pollID, true, false, false)),
 	}}

@@ -59,7 +59,27 @@ if grep -R -nEi '^[[:space:]]*mysql|mysql://' /app/etc2 >/dev/null 2>&1; then
   exit 1
 fi
 
-for config in authsession biz idgen media msg sync bff session; do
+# The production Compose overlay supplies the S3-compatible object store
+# through environment variables. Render those values into the legacy DFS
+# Minio config before starting services; local MinIO deployments keep the
+# checked-in defaults when S3_ENDPOINT is not set.
+if [ -n "${S3_ENDPOINT:-}" ]; then
+  s3_escape() {
+    printf '%s' "$1" | sed 's/[\\&|]/\\&/g'
+  }
+  s3_endpoint=$(s3_escape "$S3_ENDPOINT")
+  s3_access_key=$(s3_escape "${S3_ACCESS_KEY:-}")
+  s3_secret_key=$(s3_escape "${S3_SECRET_KEY:-}")
+  s3_use_ssl=$(s3_escape "${S3_USE_SSL:-false}")
+  sed -i \
+    -e "s|^  Endpoint:.*|  Endpoint: ${s3_endpoint}|" \
+    -e "s|^  AccessKeyID:.*|  AccessKeyID: ${s3_access_key}|" \
+    -e "s|^  SecretAccessKey:.*|  SecretAccessKey: ${s3_secret_key}|" \
+    -e "s|^  UseSSL:.*|  UseSSL: ${s3_use_ssl}|" \
+    /app/etc2/dfs.yaml
+fi
+
+for config in authsession biz idgen media msg sync bff httpserver session; do
   if [ ! -f "/app/etc2/${config}.yaml" ]; then
     echo "refusing to start: missing runtime config /app/etc2/${config}.yaml" >&2
     exit 1

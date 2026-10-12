@@ -15,11 +15,23 @@ import (
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/proto/mtproto/rpc/metadata"
 	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/config"
+	apifullDao "github.com/teamgram/teamgram-server/app/bff/apifull/internal/dao"
 	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/domain"
 	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/persist"
 	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/svc"
+	user_client "github.com/teamgram/teamgram-server/app/service/biz/user/client"
+	userpb "github.com/teamgram/teamgram-server/app/service/biz/user/user"
 	"google.golang.org/protobuf/types/known/wrapperspb"
 )
+
+type starsRefundUserClient struct {
+	user_client.UserClient
+	profile *mtproto.ImmutableUser
+}
+
+func (c *starsRefundUserClient) UserGetImmutableUser(_ context.Context, _ *userpb.TLUserGetImmutableUser) (*mtproto.ImmutableUser, error) {
+	return c.profile, nil
+}
 
 func TestStarsStatusUnavailableWithoutCanonicalLedger(t *testing.T) {
 	c := &ApiFullCore{MD: &metadata.RpcMetadata{UserId: 1}}
@@ -326,6 +338,26 @@ func TestStarsRefundChargeUsesVerifiedProviderAndPostgresLedger(t *testing.T) {
 	}
 }
 
+func TestStarsRefundRejectsForgedUserAccessHash(t *testing.T) {
+	const (
+		callerID   int64 = 902710
+		targetID   int64 = 902711
+		targetHash int64 = 902712
+	)
+	client := &starsRefundUserClient{profile: mtproto.MakeTLImmutableUser(&mtproto.ImmutableUser{
+		User: &mtproto.UserData{Id: targetID, AccessHash: targetHash},
+	}).To_ImmutableUser()}
+	c := &ApiFullCore{
+		ctx:    context.Background(),
+		svcCtx: &svc.ServiceContext{Dao: &apifullDao.Dao{UserClient: client}},
+		MD:     &metadata.RpcMetadata{UserId: callerID},
+	}
+	target := mtproto.MakeTLInputUser(&mtproto.InputUser{UserId: targetID, AccessHash: targetHash + 1}).To_InputUser()
+	if _, err := c.PaymentsRefundStarsCharge(&mtproto.TLPaymentsRefundStarsCharge{UserId: target, ChargeId: "charge"}); !errors.Is(err, mtproto.ErrUserIdInvalid) {
+		t.Fatalf("forged target access hash error = %v, want USER_ID_INVALID", err)
+	}
+}
+
 func TestStarsFormSettlementUsesSignedProviderAndPostgresLedger(t *testing.T) {
 	dsn := os.Getenv("APIFULL_POSTGRES_DSN")
 	if dsn == "" {
@@ -360,14 +392,12 @@ func TestStarsFormSettlementUsesSignedProviderAndPostgresLedger(t *testing.T) {
 		}
 	})
 
-	option := mtproto.MakeTLStarsTopupOption(&mtproto.StarsTopupOption{
-		Stars:        stars,
-		StoreProduct: wrapperspb.String(product),
-		Currency:     "USD",
-		Amount:       amount,
-	}).To_StarsTopupOption()
 	invoice := mtproto.MakeTLInputInvoiceStars(&mtproto.InputInvoice{
-		Option_STARSTOPUPOPTION: option,
+		Purpose: mtproto.MakeTLInputStorePaymentStarsTopup(&mtproto.InputStorePaymentPurpose{
+			Currency: "USD",
+			Amount:   amount,
+			Stars:    stars,
+		}).To_InputStorePaymentPurpose(),
 	}).To_InputInvoice()
 	request := &mtproto.TLPaymentsSendStarsForm{
 		Constructor: mtproto.TLConstructor_CRC32_payments_sendStarsForm_7998c914,

@@ -1,5 +1,9 @@
 Name: bff.passport
 ListenOn: 0.0.0.0:21380
 PostgresDSN: ${TEAMGRAM_POSTGRES_DSN}
+PassportProviderEndpoint: ${TEAMGRAM_PASSPORT_PROVIDER_ENDPOINT}
+PassportProviderKey: ${TEAMGRAM_PASSPORT_PROVIDER_KEY}
+PassportProviderSigningKey: ${TEAMGRAM_PASSPORT_PROVIDER_SIGNING_KEY}
+PassportProviderTimeoutSeconds: ${TEAMGRAM_PASSPORT_PROVIDER_TIMEOUT_SECONDS}
 # KV and Code are optional for installations that do not expose passport phone
 # verification. When absent, send/verify requests fail closed.

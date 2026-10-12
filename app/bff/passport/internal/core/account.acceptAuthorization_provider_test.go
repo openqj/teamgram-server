@@ -7,12 +7,26 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"testing"
 
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/bff/passport/internal/config"
 	"github.com/teamgram/teamgram-server/app/bff/passport/internal/svc"
 )
+
+func TestPassportProviderFixtureHostRequiresExplicitMode(t *testing.T) {
+	parsed, err := url.Parse("http://identity-provider-fixture.test:23192")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if securePassportProviderURL(parsed, false) {
+		t.Fatal("fixture host accepted without explicit fixture mode")
+	}
+	if !securePassportProviderURL(parsed, true) {
+		t.Fatal("fixture host rejected in explicit fixture mode")
+	}
+}
 
 const passportProviderTestSigningKey = "passport-provider-test-key-with-at-least-32-bytes"
 
@@ -29,6 +43,9 @@ func TestAccountAcceptAuthorizationUsesVerifiedProvider(t *testing.T) {
 		}
 		if !verifyPassportProviderSignature(passportProviderTestSigningKey, r.Header.Get("X-Teamgram-Passport-Provider-Request-Signature"), body) {
 			t.Fatal("provider request signature is invalid")
+		}
+		if got := r.Header.Get("Idempotency-Key"); len(got) != 64 {
+			t.Fatalf("provider idempotency key length = %d, want 64", len(got))
 		}
 		if err = json.Unmarshal(body, &request); err != nil {
 			t.Fatalf("decode provider request: %v", err)

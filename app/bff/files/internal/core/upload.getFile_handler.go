@@ -53,7 +53,7 @@ func (c *FilesCore) UploadGetFile(in *mtproto.TLUploadGetFile) (*mtproto.Upload_
 	if in.GetCdnSupported() && c.cdnProviderConfigured() {
 		result := new(mtproto.Upload_File)
 		if err := c.callCDNProvider("upload.getFile", map[string]any{
-			"location": location,
+			"location": canonicalCDNLocation(location),
 			"offset":   offset,
 			"limit":    limit,
 			"precise":  in.GetPrecise(),

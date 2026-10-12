@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -35,6 +36,83 @@ func cdnProviderSignature(key string, body []byte) string {
 	return "sha256=" + hex.EncodeToString(mac.Sum(nil))
 }
 
+func cdnProviderIdempotencyKey(userID int64, operation string, payload []byte) string {
+	digest := sha256.Sum256(append([]byte(operation+":"+strconv.FormatInt(userID, 10)+":"), payload...))
+	return hex.EncodeToString(digest[:])
+}
+
+// canonicalCDNLocation removes generated protobuf metadata from the provider
+// contract. The constructor is a wire decoding detail and must not change the
+// provider's stable object key when the same Telegram location is received by
+// another client or layer.
+func canonicalCDNLocation(location *mtproto.InputFileLocation) map[string]any {
+	if location == nil {
+		return nil
+	}
+	result := map[string]any{"predicate_name": location.GetPredicateName()}
+	putInt64 := func(name string, value int64) {
+		if value != 0 {
+			result[name] = value
+		}
+	}
+	putInt32 := func(name string, value int32) {
+		if value != 0 {
+			result[name] = value
+		}
+	}
+	putBytes := func(name string, value []byte) {
+		if len(value) != 0 {
+			result[name] = value
+		}
+	}
+	putString := func(name, value string) {
+		if value != "" {
+			result[name] = value
+		}
+	}
+
+	switch location.GetPredicateName() {
+	case mtproto.Predicate_inputFileLocation:
+		putInt64("volume_id", location.GetVolumeId())
+		putInt32("local_id", location.GetLocalId())
+		putInt64("secret", location.GetSecret())
+		putBytes("file_reference", location.GetFileReference())
+	case mtproto.Predicate_inputDocumentFileLocation, mtproto.Predicate_inputPhotoFileLocation:
+		putInt64("id", location.GetId())
+		putInt64("access_hash", location.GetAccessHash())
+		putBytes("file_reference", location.GetFileReference())
+		putString("thumb_size", location.GetThumbSize())
+	case mtproto.Predicate_inputEncryptedFileLocation, mtproto.Predicate_inputSecureFileLocation:
+		putInt64("id", location.GetId())
+		putInt64("access_hash", location.GetAccessHash())
+	case mtproto.Predicate_inputPeerPhotoFileLocation:
+		putInt64("photo_id", location.GetPhotoId())
+		if peer := location.GetPeer(); peer != nil {
+			result["peer"] = peer
+		}
+	case mtproto.Predicate_inputStickerSetThumb:
+		putInt32("thumb_version", location.GetThumbVersion())
+		if stickerset := location.GetStickerset(); stickerset != nil {
+			result["stickerset"] = stickerset
+		}
+	case mtproto.Predicate_inputGroupCallStream:
+		putInt64("time_ms", location.GetTimeMs())
+		putInt32("scale", location.GetScale())
+		if call := location.GetCall(); call != nil {
+			result["call"] = call
+		}
+	default:
+		// Preserve fields for newly added locations while still dropping the
+		// generated constructor. Existing provider implementations can reject
+		// unsupported predicates explicitly.
+		putInt64("id", location.GetId())
+		putInt64("access_hash", location.GetAccessHash())
+		putBytes("file_reference", location.GetFileReference())
+		putString("thumb_size", location.GetThumbSize())
+	}
+	return result
+}
+
 func verifyCDNProviderSignature(key, signature string, body []byte) bool {
 	signature = strings.TrimPrefix(strings.TrimSpace(signature), "sha256=")
 	provided, err := hex.DecodeString(signature)
@@ -46,7 +124,7 @@ func verifyCDNProviderSignature(key, signature string, body []byte) bool {
 	return hmac.Equal(provided, mac.Sum(nil))
 }
 
-func secureCDNProviderURL(parsed *url.URL) bool {
+func secureCDNProviderURL(parsed *url.URL, allowInsecureHTTP bool) bool {
 	if parsed == nil {
 		return false
 	}
@@ -55,6 +133,9 @@ func secureCDNProviderURL(parsed *url.URL) bool {
 	}
 	if !strings.EqualFold(parsed.Scheme, "http") {
 		return false
+	}
+	if allowInsecureHTTP {
+		return true
 	}
 	host := strings.TrimSuffix(strings.ToLower(parsed.Hostname()), ".")
 	if host == "localhost" {
@@ -74,7 +155,7 @@ func (c *FilesCore) callCDNProvider(operation string, payload any, result any) e
 		return mtproto.ErrCdnMethodInvalid
 	}
 	parsed, err := url.Parse(endpoint)
-	if err != nil || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || !secureCDNProviderURL(parsed) {
+	if err != nil || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || !secureCDNProviderURL(parsed, c.svcCtx.Config.AllowInsecureProviderHTTP) {
 		return mtproto.ErrCdnMethodInvalid
 	}
 	if c.svcCtx.Config.CdnProviderTimeoutSeconds < 0 || c.svcCtx.Config.CdnProviderTimeoutSeconds > 300 {
@@ -115,6 +196,9 @@ func (c *FilesCore) callCDNProvider(operation string, payload any, result any) e
 		return mtproto.ErrCdnMethodInvalid
 	}
 	req.Header.Set("Content-Type", "application/json")
+	if operation == "upload.reuploadCdnFile" {
+		req.Header.Set("Idempotency-Key", cdnProviderIdempotencyKey(userID, operation, payloadJSON))
+	}
 	if key := strings.TrimSpace(c.svcCtx.Config.CdnProviderKey); key != "" {
 		req.Header.Set("Authorization", "Bearer "+key)
 	}

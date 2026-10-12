@@ -38,8 +38,8 @@ func hoursKey(userId int64) string {
 }
 
 func (c *ApiFullCore) AccountUpdateBusinessWorkHours(in *mtproto.TLAccountUpdateBusinessWorkHours) (*mtproto.Bool, error) {
-	if c.MD == nil || c.MD.UserId == 0 {
-		return nil, mtproto.ErrAuthKeyUnregistered
+	if err := c.requirePremium(); err != nil {
+		return nil, err
 	}
 	key := hoursKey(c.MD.UserId)
 	if in == nil || in.GetBusinessWorkHours() == nil {

@@ -612,6 +612,26 @@ func UpdateChannelTitle(userID, channelID int64, title string) error {
 	return tx.Commit()
 }
 
+// UpdateChannelAbout stores the canonical channel description. The owner lock
+// keeps authorization and the APIFull write in one PostgreSQL transaction.
+func UpdateChannelAbout(userID, channelID int64, about string) error {
+	if db == nil {
+		return errors.New("domain PostgreSQL is not open")
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err = lockChannelOwner(tx, channelID, userID); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(`UPDATE apifull_channel SET about=? WHERE id=?`, about, channelID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 // UpdateChannelUsername stores the public username after the username service
 // has accepted the change. Authorization belongs to that caller.
 func UpdateChannelUsername(channelID int64, username string) error {
@@ -1209,7 +1229,10 @@ func FindActiveStarsTopupOffer(stars int64, storeProduct, currency string, amoun
 			return StarsOffer{}, false, err
 		}
 		offer.Extended = isExtended != 0
-		if offer.StoreProduct != storeProduct || offer.Currency != currency || offer.Amount != amount || (extended != nil && offer.Extended != *extended) {
+		// Layer 229 stars top-up purposes carry stars, currency, and amount but
+		// no store product. Resolve that product only when the catalog has one
+		// unambiguous match.
+		if (storeProduct != "" && offer.StoreProduct != storeProduct) || offer.Currency != currency || offer.Amount != amount || (extended != nil && offer.Extended != *extended) {
 			continue
 		}
 		if found {

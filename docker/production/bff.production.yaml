@@ -87,6 +87,12 @@ TurnPassword: ${TEAMGRAM_TURN_PASSWORD:-}
 TurnSharedSecret: ${TEAMGRAM_TURN_SHARED_SECRET:-}
 TurnCredentialTTLSeconds: ${TEAMGRAM_TURN_CREDENTIAL_TTL_SECONDS:-3600}
 
+Passkey:
+  RelyingPartyId: ${TEAMGRAM_PASSKEY_RP_ID:-}
+  RelyingPartyDisplayName: ${TEAMGRAM_PASSKEY_RP_DISPLAY_NAME:-}
+  Origins: []
+  TrustedApps: []
+
 Code:
   Name: "none"
   SendCodeUrl: ""

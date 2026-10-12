@@ -1,12 +1,15 @@
 package core
 
 import (
+	"context"
 	"errors"
 	"testing"
 
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/proto/mtproto/rpc/metadata"
+	apifullDao "github.com/teamgram/teamgram-server/app/bff/apifull/internal/dao"
 	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/persist"
+	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/svc"
 )
 
 // These methods need a bot business/provider backend that is not part of the
@@ -19,29 +22,30 @@ func TestBotProviderGapsFailClosedWithoutPersistence(t *testing.T) {
 	persist.Use(store)
 	t.Cleanup(func() { persist.Use(oldStore) })
 
-	c := &ApiFullCore{MD: &metadata.RpcMetadata{UserId: 81019001}}
+	const (
+		callerID   = int64(81019001)
+		botID      = int64(81019002)
+		accessHash = int64(81019003)
+	)
+	client := &miniBotAppsUserClient{users: map[int64]*mtproto.ImmutableUser{
+		botID: miniBotProfile(botID, accessHash, true),
+	}}
+	c := &ApiFullCore{
+		ctx:    context.Background(),
+		svcCtx: &svc.ServiceContext{Dao: &apifullDao.Dao{UserClient: client}},
+		MD:     &metadata.RpcMetadata{UserId: callerID},
+	}
+	bot := &mtproto.InputUser{PredicateName: mtproto.Predicate_inputUser, UserId: botID, AccessHash: accessHash}
 	calls := []struct {
 		name string
 		call func() error
 	}{
 		{"bot recommendations", func() error {
-			_, err := c.BotsGetBotRecommendations(nil)
-			return err
-		}},
-		{"bot custom verification", func() error {
-			_, err := c.BotsSetCustomVerification(nil)
-			return err
-		}},
-		{"bot emoji status", func() error {
-			_, err := c.BotsUpdateUserEmojiStatus(nil)
-			return err
-		}},
-		{"bot emoji permission", func() error {
-			_, err := c.BotsToggleUserEmojiStatusPermission(nil)
+			_, err := c.BotsGetBotRecommendations(&mtproto.TLBotsGetBotRecommendations{Bot: bot})
 			return err
 		}},
 		{"star referral program", func() error {
-			_, err := c.BotsUpdateStarRefProgram(nil)
+			_, err := c.BotsUpdateStarRefProgram(&mtproto.TLBotsUpdateStarRefProgram{Bot: bot})
 			return err
 		}},
 	}

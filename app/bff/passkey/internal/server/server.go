@@ -23,6 +23,7 @@ import (
 	"flag"
 	"strings"
 
+	passkeyhelper "github.com/teamgram/teamgram-server/app/bff/passkey"
 	"github.com/teamgram/teamgram-server/app/bff/passkey/internal/config"
 	"github.com/teamgram/teamgram-server/app/bff/passkey/internal/server/grpc"
 	"github.com/teamgram/teamgram-server/app/bff/passkey/internal/svc"
@@ -46,6 +47,9 @@ func New() *Server {
 func (s *Server) Initialize() error {
 	var c config.Config
 	conf.MustLoad(*configFile, &c, conf.UseEnv())
+	if err := passkeyhelper.ApplyEnvironment(&c.Provider); err != nil {
+		return err
+	}
 	if strings.TrimSpace(c.PostgresDSN) == "" {
 		return errors.New("passkey: PostgresDSN is required")
 	}

@@ -26,10 +26,9 @@ var (
 
 type BotPaymentQuery = internal.BotPaymentQuery
 
-// BotCustomVerification is the durable local state written by
-// bots.setCustomVerification. The record is scoped to one bot and peer; the
-// user service only reads the bot's self scope because users.getFullUser has
-// no chat context to select another peer scope.
+// BotCustomVerification is the legacy record shape used by negative tests and
+// migration inspection. Production bots.setCustomVerification no longer
+// writes this local KV because it is not an authoritative verifier source.
 type BotCustomVerification struct {
 	Enabled     bool   `json:"enabled"`
 	Description string `json:"description,omitempty"`
@@ -145,16 +144,14 @@ func LoadBotPaymentQuery(queryID int64) (BotPaymentQuery, bool, error) {
 	return internal.LoadBotPaymentQuery(queryID)
 }
 
-// BotCustomVerificationKey is shared by the writer and all read paths so a
-// local verification record cannot silently become write-only.
+// BotCustomVerificationKey identifies legacy records so migration checks can
+// prove that an untrusted local row is never exposed as Layer 229 data.
 func BotCustomVerificationKey(botID int64, peerType int32, peerID int64) string {
 	return fmt.Sprintf("bot-custom-verification:%d:%d:%d", botID, peerType, peerID)
 }
 
-// LoadBotCustomVerification reads a bot/peer verification record from the
-// process-wide PostgreSQL-backed store. A missing row is not an error; a
-// malformed row is returned as an error so callers never emit unverifiable
-// Layer 229 data.
+// LoadBotCustomVerification reads a legacy bot/peer record for migration
+// inspection. No production read path should use it as verifier authority.
 func LoadBotCustomVerification(botID int64, peerType int32, peerID int64) (*BotCustomVerification, bool, error) {
 	if botID <= 0 || peerID <= 0 {
 		return nil, false, fmt.Errorf("apifull: invalid bot custom verification scope")

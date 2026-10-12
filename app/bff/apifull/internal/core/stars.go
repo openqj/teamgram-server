@@ -32,6 +32,7 @@ import (
 
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/domain"
+	userpb "github.com/teamgram/teamgram-server/app/service/biz/user/user"
 	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
@@ -75,6 +76,7 @@ func (c *ApiFullCore) callStarsRevenueProvider(ctx context.Context, payload any,
 		return mtproto.ErrPaymentProviderInvalid
 	}
 	req.Header.Set("Content-Type", "application/json")
+	c.setPaymentProviderRequestSignature(req, body)
 	if providerKey != "" {
 		req.Header.Set("Authorization", "Bearer "+providerKey)
 	}
@@ -391,17 +393,9 @@ func (c *ApiFullCore) PaymentsRefundStarsCharge(in *mtproto.TLPaymentsRefundStar
 		return nil, mtproto.ErrInputConstructorInvalid
 	}
 	target := in.GetUserId()
-	var userID int64
-	switch target.GetPredicateName() {
-	case mtproto.Predicate_inputUserSelf:
-		userID = callerID
-	case mtproto.Predicate_inputUser:
-		if target.GetUserId() <= 0 || target.GetAccessHash() == 0 {
-			return nil, mtproto.ErrUserIdInvalid
-		}
-		userID = target.GetUserId()
-	default:
-		return nil, mtproto.ErrUserIdInvalid
+	userID, err := c.resolveStarsRefundUser(callerID, target)
+	if err != nil {
+		return nil, err
 	}
 	chargeID := strings.TrimSpace(in.GetChargeId())
 	charge, found, err := domain.LoadStarsCharge(userID, chargeID)
@@ -437,7 +431,7 @@ func (c *ApiFullCore) PaymentsRefundStarsCharge(in *mtproto.TLPaymentsRefundStar
 		Provider       string `json:"provider"`
 		TransactionID  string `json:"transaction_id"`
 		Stars          int64  `json:"stars"`
-	}{"refund_stars_charge", callerID, userID, target.GetAccessHash(), chargeID, charge.Provider, charge.TransactionID, charge.Stars}
+	}{"refund_stars_charge", callerID, userID, in.GetUserId().GetAccessHash(), chargeID, charge.Provider, charge.TransactionID, charge.Stars}
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return nil, mtproto.ErrInternalServerError
@@ -447,6 +441,7 @@ func (c *ApiFullCore) PaymentsRefundStarsCharge(in *mtproto.TLPaymentsRefundStar
 		return nil, mtproto.ErrPaymentProviderInvalid
 	}
 	req.Header.Set("Content-Type", "application/json")
+	c.setPaymentProviderRequestSignature(req, body)
 	req.Header.Set("Idempotency-Key", paymentProviderIdempotencyKey(callerID, "refund:"+charge.Provider+":"+chargeID))
 	if providerKey != "" {
 		req.Header.Set("Authorization", "Bearer "+providerKey)
@@ -476,6 +471,37 @@ func (c *ApiFullCore) PaymentsRefundStarsCharge(in *mtproto.TLPaymentsRefundStar
 		return nil, starsDomainError(err)
 	}
 	return mtproto.MakeEmptyUpdates(), nil
+}
+
+// resolveStarsRefundUser enforces the access hash carried by an InputUser
+// before the local ledger is queried. Refunds may target another account (for
+// example, a bot refunding a buyer), so accepting any non-zero hash would let
+// a caller address arbitrary users by ID.
+func (c *ApiFullCore) resolveStarsRefundUser(callerID int64, target *mtproto.InputUser) (int64, error) {
+	if target == nil {
+		return 0, mtproto.ErrUserIdInvalid
+	}
+	switch target.GetPredicateName() {
+	case mtproto.Predicate_inputUserSelf:
+		return callerID, nil
+	case mtproto.Predicate_inputUser:
+		if target.GetUserId() <= 0 || target.GetAccessHash() == 0 {
+			return 0, mtproto.ErrUserIdInvalid
+		}
+		if c == nil || c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.UserClient == nil {
+			return 0, mtproto.ErrMethodNotImpl
+		}
+		profile, err := c.svcCtx.Dao.UserGetImmutableUser(c.requestContext(), &userpb.TLUserGetImmutableUser{Id: target.GetUserId()})
+		if err != nil {
+			return 0, err
+		}
+		if profile == nil || profile.GetUser() == nil || profile.Deleted() || profile.GetUser().GetAccessHash() != target.GetAccessHash() {
+			return 0, mtproto.ErrUserIdInvalid
+		}
+		return target.GetUserId(), nil
+	default:
+		return 0, mtproto.ErrUserIdInvalid
+	}
 }
 
 func (c *ApiFullCore) PaymentsGetStarsRevenueStats(in *mtproto.TLPaymentsGetStarsRevenueStats) (*mtproto.Payments_StarsRevenueStats, error) {

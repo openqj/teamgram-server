@@ -17,7 +17,17 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 
 FROM --platform=linux/arm64 ubuntu:24.04
 
-RUN apt-get update \
+ARG UBUNTU_MIRROR_IP=91.189.91.104
+
+# Docker Desktop may not forward DNS for ports.ubuntu.com into BuildKit. Use
+# the build-time mirror address for APT while keeping the source path and
+# package signatures unchanged. build-r29.sh resolves and supplies the
+# current address; the default keeps a direct Dockerfile build usable.
+RUN case "$UBUNTU_MIRROR_IP" in \
+       ''|*[!0-9.]*) echo "invalid UBUNTU_MIRROR_IP" >&2; exit 1 ;; \
+     esac \
+    && sed -i "s#http://ports.ubuntu.com#http://${UBUNTU_MIRROR_IP}#g" /etc/apt/sources.list.d/ubuntu.sources \
+    && apt-get update -o Acquire::Retries=3 \
     && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
        ca-certificates ffmpeg psmisc \
     && rm -rf /var/lib/apt/lists/*
@@ -26,7 +36,9 @@ WORKDIR /app
 COPY --from=builder /app/teamgram-server/teamgramd/bin/ /app/bin/
 COPY --from=builder /app/teamgram-server/teamgramd/etc2/ /app/etc2/
 COPY --from=builder /app/teamgram-server/teamgramd/docker/entrypoint.sh /app/docker/entrypoint.sh
+COPY --from=builder /app/teamgram-server/teamgramd/docker/healthcheck.sh /app/docker/healthcheck.sh
 RUN chmod +x /app/docker/entrypoint.sh
+RUN chmod +x /app/docker/healthcheck.sh
 
 ENTRYPOINT ["/app/docker/entrypoint.sh"]
 

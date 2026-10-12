@@ -23,6 +23,12 @@ import (
 
 const paymentProviderTestSigningKey = "provider-signing-test-key"
 
+func TestBotPaymentQueryNotFoundMapsToQueryIDInvalid(t *testing.T) {
+	if err := botPaymentQueryError(persist.ErrBotPaymentQueryNotFound); !errors.Is(err, mtproto.ErrQueryIdInvalid) {
+		t.Fatalf("unknown bot payment query error = %v, want QUERY_ID_INVALID", err)
+	}
+}
+
 func premiumSelfSubscriptionInvoiceForTest(slug string) *mtproto.InputInvoice {
 	purpose := mtproto.MakeTLInputStorePaymentPremiumSubscription(&mtproto.InputStorePaymentPurpose{}).To_InputStorePaymentPurpose()
 	return mtproto.MakeTLInputInvoiceSlug(&mtproto.InputInvoice{Slug: slug, Purpose: purpose}).To_InputInvoice()
@@ -356,6 +362,60 @@ func TestPaymentsExportInvoiceUsesVerifiedProviderURL(t *testing.T) {
 	}
 	if err = got.Encode(mtproto.NewEncodeBuf(512), 229); err != nil {
 		t.Fatalf("exported invoice did not encode: %v", err)
+	}
+}
+
+func TestBotPaymentQueryIDCanonicalizesEmptyRequestedInfo(t *testing.T) {
+	canonicalEmpty := &mtproto.PaymentRequestedInfo{}
+	mtproto.MakeTLPaymentRequestedInfo(canonicalEmpty).To_PaymentRequestedInfo()
+
+	withoutInfo := botPaymentQueryID(901001, 901002, nil, 77, "", nil, []byte("payload"))
+	withEmptyInfo := botPaymentQueryID(901001, 901002, nil, 77, "", canonicalEmpty, []byte("payload"))
+	if withoutInfo == 0 || withoutInfo != withEmptyInfo {
+		t.Fatalf("empty requested info changed query id: nil=%d empty=%d", withoutInfo, withEmptyInfo)
+	}
+}
+
+func TestBotShippingOptionTotalAllowsEmptyOptionWithoutShipping(t *testing.T) {
+	amount, err := botShippingOptionTotal([]byte(`[]`), "")
+	if err != nil || amount != 0 {
+		t.Fatalf("empty shipping option = (%d, %v), want (0, nil)", amount, err)
+	}
+}
+
+func TestBotPaymentFingerprintBindsShippingAndTip(t *testing.T) {
+	in := &mtproto.TLPaymentsSendPaymentForm{
+		FormId:  901003,
+		Invoice: &mtproto.InputInvoice{PredicateName: mtproto.Predicate_inputInvoiceMessage},
+	}
+	value := botPaymentContext{
+		QueryID:        901004,
+		BuyerUserID:    901005,
+		BotUserID:      901006,
+		MsgID:          78,
+		InvoicePayload: []byte("payload"),
+		Provider:       "provider-a",
+		ProviderData:   "provider-data",
+	}
+	baseFingerprint := botPaymentFingerprint(in, value.QueryID, value)
+	baseKey := botPaymentRequestKey(value.BuyerUserID, value.QueryID, baseFingerprint)
+	if baseFingerprint == "" || baseKey == "" {
+		t.Fatal("base bot payment fingerprint or request key is empty")
+	}
+
+	value.ShippingOptionID = "express"
+	shippingFingerprint := botPaymentFingerprint(in, value.QueryID, value)
+	shippingKey := botPaymentRequestKey(value.BuyerUserID, value.QueryID, shippingFingerprint)
+	if shippingFingerprint == baseFingerprint || shippingKey == baseKey {
+		t.Fatalf("shipping option was not bound to idempotency identity: base=(%q,%q) shipping=(%q,%q)", baseFingerprint, baseKey, shippingFingerprint, shippingKey)
+	}
+
+	value.ShippingOptionID = ""
+	value.TipAmount = 125
+	tipFingerprint := botPaymentFingerprint(in, value.QueryID, value)
+	tipKey := botPaymentRequestKey(value.BuyerUserID, value.QueryID, tipFingerprint)
+	if tipFingerprint == baseFingerprint || tipKey == baseKey {
+		t.Fatalf("tip amount was not bound to idempotency identity: base=(%q,%q) tip=(%q,%q)", baseFingerprint, baseKey, tipFingerprint, tipKey)
 	}
 }
 

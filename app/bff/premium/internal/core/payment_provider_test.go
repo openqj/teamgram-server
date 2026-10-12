@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -111,6 +112,36 @@ func TestPremiumProviderAssignmentAndPromoResults(t *testing.T) {
 	got, err := promoCore.HelpGetPremiumPromo(&mtproto.TLHelpGetPremiumPromo{})
 	if err != nil || got == nil || got.GetPredicateName() != mtproto.Predicate_help_premiumPromo || got.GetPeriodOptions()[0].GetPredicateName() != mtproto.Predicate_premiumSubscriptionOption {
 		t.Fatalf("premium promo = (%v, %v)", got, err)
+	}
+}
+
+func TestNormalizePremiumPromoLayer229Canonical(t *testing.T) {
+	promo := &mtproto.Help_PremiumPromo{
+		StatusText: "Premium",
+		PeriodOptions: []*mtproto.PremiumSubscriptionOption{{
+			Months:   1,
+			Currency: "USD",
+			Amount:   499,
+		}},
+	}
+	if !normalizePremiumPromo(promo) {
+		t.Fatal("normalizePremiumPromo rejected a canonical Layer 229 promo")
+	}
+	if promo.GetPredicateName() != mtproto.Predicate_help_premiumPromo ||
+		promo.GetConstructor() != mtproto.TLConstructor_CRC32_help_premiumPromo_5334759c {
+		t.Fatalf("promo identity = (%q, %x)", promo.GetPredicateName(), uint32(promo.GetConstructor()))
+	}
+	option := promo.GetPeriodOptions()[0]
+	if option.GetPredicateName() != mtproto.Predicate_premiumSubscriptionOption ||
+		option.GetConstructor() != mtproto.TLConstructor_CRC32_premiumSubscriptionOption_5f2d1df2 {
+		t.Fatalf("option identity = (%q, %x)", option.GetPredicateName(), uint32(option.GetConstructor()))
+	}
+	encoded := mtproto.NewEncodeBuf(1 << 10)
+	if err := promo.Encode(encoded, 229); err != nil {
+		t.Fatalf("encode canonical Layer 229 promo: %v", err)
+	}
+	if got := binary.LittleEndian.Uint32(encoded.GetBuf()[:4]); got != uint32(mtproto.TLConstructor_CRC32_help_premiumPromo_5334759c) {
+		t.Fatalf("encoded promo constructor = %x", got)
 	}
 }
 

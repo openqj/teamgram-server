@@ -24,7 +24,9 @@ services:
     environment:
       DATABASE_URL: "postgresql://${POSTGRES_USER:?POSTGRES_USER is required}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@postgres:5432/${POSTGRES_DB:?POSTGRES_DB is required}?sslmode=disable"
     volumes:
-      - ../../teamgramd/deploy:/workspace/teamgramd/deploy:ro
+      # Paths resolve from the root compose file; set TEAMGRAM_DEPLOY_DIR to
+      # ../../teamgramd/deploy only when running this overlay standalone.
+      - ${TEAMGRAM_DEPLOY_DIR:-./teamgramd/deploy}:/workspace/teamgramd/deploy:ro
     entrypoint: ["/bin/bash", "-euc"]
     command: ["/workspace/teamgramd/deploy/postgres/apply.sh"]
     restart: "no"
@@ -45,12 +47,20 @@ services:
     environment: !override
       TEAMGRAM_POSTGRES_DSN: "${TEAMGRAM_POSTGRES_DSN:?TEAMGRAM_POSTGRES_DSN is required}"
       TEAMGRAM_APIFULL_SCHEMA_READONLY: "true"
+      S3_ENDPOINT: "${S3_ENDPOINT:-seaweedfs:8333}"
+      S3_ACCESS_KEY: "${S3_ACCESS_KEY:-seaweedfs}"
+      S3_SECRET_KEY: "${S3_SECRET_KEY:-seaweedfs-secret}"
+      S3_USE_SSL: "${S3_USE_SSL:-false}"
       TEAMGRAM_TURN_HOST: "${TEAMGRAM_TURN_HOST:-}"
       TEAMGRAM_TURN_PORT: "${TEAMGRAM_TURN_PORT:-3478}"
       TEAMGRAM_TURN_USERNAME: "${TEAMGRAM_TURN_USERNAME:-}"
       TEAMGRAM_TURN_PASSWORD: "${TEAMGRAM_TURN_PASSWORD:-}"
       TEAMGRAM_TURN_SHARED_SECRET: "${TEAMGRAM_TURN_SHARED_SECRET:-}"
       TEAMGRAM_TURN_CREDENTIAL_TTL_SECONDS: "${TEAMGRAM_TURN_CREDENTIAL_TTL_SECONDS:-3600}"
+      TEAMGRAM_PASSKEY_RP_ID: "${TEAMGRAM_PASSKEY_RP_ID:-}"
+      TEAMGRAM_PASSKEY_RP_DISPLAY_NAME: "${TEAMGRAM_PASSKEY_RP_DISPLAY_NAME:-}"
+      TEAMGRAM_PASSKEY_ORIGINS: "${TEAMGRAM_PASSKEY_ORIGINS:-}"
+      TEAMGRAM_PASSKEY_TRUSTED_APPS: "${TEAMGRAM_PASSKEY_TRUSTED_APPS:-}"
       TEAMGRAM_PAYMENT_PROVIDER_ENDPOINT: "${TEAMGRAM_PAYMENT_PROVIDER_ENDPOINT:-}"
       TEAMGRAM_PAYMENT_PROVIDER_KEY: "${TEAMGRAM_PAYMENT_PROVIDER_KEY:-}"
       TEAMGRAM_PAYMENT_PROVIDER_SIGNING_KEY: "${TEAMGRAM_PAYMENT_PROVIDER_SIGNING_KEY:-}"
@@ -109,6 +119,12 @@ services:
       TEAMGRAM_GROUP_CALL_MEDIA_SIGNING_KEY: "${TEAMGRAM_GROUP_CALL_MEDIA_SIGNING_KEY:-}"
       TEAMGRAM_GROUP_CALL_MEDIA_RTMP_HOST: "${TEAMGRAM_GROUP_CALL_MEDIA_RTMP_HOST:-}"
       TEAMGRAM_GROUP_CALL_MEDIA_TIMEOUT_SECONDS: "${TEAMGRAM_GROUP_CALL_MEDIA_TIMEOUT_SECONDS:-5}"
+    healthcheck:
+      test: ["CMD", "/app/docker/healthcheck.sh"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
 
   # If this overlay is applied to a legacy Compose project, remove its MySQL
   # service instead of leaving a second production database running.

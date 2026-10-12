@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -39,6 +40,13 @@ func businessProviderSignature(key string, body []byte) string {
 	return "sha256=" + hex.EncodeToString(mac.Sum(nil))
 }
 
+func businessProviderIdempotencyKey(userID int64, operation string, payload []byte) string {
+	input := []byte(strconv.FormatInt(userID, 10) + "\x00" + operation + "\x00")
+	input = append(input, payload...)
+	digest := sha256.Sum256(input)
+	return hex.EncodeToString(digest[:])
+}
+
 func verifyBusinessProviderSignature(key, signature string, body []byte) bool {
 	signature = strings.TrimPrefix(strings.TrimSpace(signature), "sha256=")
 	provided, err := hex.DecodeString(signature)
@@ -50,7 +58,7 @@ func verifyBusinessProviderSignature(key, signature string, body []byte) bool {
 	return hmac.Equal(provided, mac.Sum(nil))
 }
 
-func secureBusinessProviderURL(parsed *url.URL) bool {
+func secureBusinessProviderURL(parsed *url.URL, allowInsecureHTTP bool) bool {
 	if parsed == nil {
 		return false
 	}
@@ -59,6 +67,9 @@ func secureBusinessProviderURL(parsed *url.URL) bool {
 	}
 	if !strings.EqualFold(parsed.Scheme, "http") {
 		return false
+	}
+	if allowInsecureHTTP {
+		return true
 	}
 	host := strings.TrimSuffix(strings.ToLower(parsed.Hostname()), ".")
 	if host == "localhost" {
@@ -83,7 +94,7 @@ func (c *ApiFullCore) callBusinessProvider(operation string, payload any, result
 		return mtproto.ErrMethodNotImpl
 	}
 	parsed, err := url.Parse(endpoint)
-	if err != nil || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || !secureBusinessProviderURL(parsed) {
+	if err != nil || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || !secureBusinessProviderURL(parsed, c.svcCtx.Config.AllowInsecureProviderHTTP) {
 		return mtproto.ErrInternalServerError
 	}
 	if c.svcCtx.Config.BusinessProviderTimeoutSeconds < 0 || c.svcCtx.Config.BusinessProviderTimeoutSeconds > 300 {
@@ -120,6 +131,7 @@ func (c *ApiFullCore) callBusinessProvider(operation string, payload any, result
 		return mtproto.ErrInternalServerError
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Idempotency-Key", businessProviderIdempotencyKey(c.MD.GetUserId(), operation, payloadJSON))
 	if key != "" {
 		req.Header.Set("Authorization", "Bearer "+key)
 	}

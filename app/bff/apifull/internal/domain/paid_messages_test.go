@@ -41,3 +41,35 @@ func TestUpdatePaidMessagesPricePostgresRoundTrip(t *testing.T) {
 		t.Fatalf("stale access hash error=%v, want ErrInvalidChannelAccessHash", err)
 	}
 }
+
+func TestUpdateChannelAboutPostgresRoundTrip(t *testing.T) {
+	requireMigrationDB(t)
+	channelID := time.Now().UnixNano()
+	creatorID := channelID + 1
+	if err := SaveChannel(Channel{
+		ID: channelID, AccessHash: channelID + 2, Creator: creatorID,
+		Title: "about-test", About: "before", Broadcast: true,
+	}); err != nil {
+		t.Fatalf("create channel: %v", err)
+	}
+	t.Cleanup(func() {
+		if _, err := db.Exec(`DELETE FROM apifull_channel WHERE id=$1`, channelID); err != nil {
+			t.Errorf("cleanup channel: %v", err)
+		}
+	})
+
+	if err := UpdateChannelAbout(creatorID, channelID, "after"); err != nil {
+		t.Fatalf("update channel about: %v", err)
+	}
+	loaded, ok, err := LoadChannel(channelID)
+	if err != nil || !ok || loaded.About != "after" {
+		t.Fatalf("readback about: channel=%+v ok=%v err=%v", loaded, ok, err)
+	}
+	if err = UpdateChannelAbout(creatorID+1, channelID, "unauthorized"); !errors.Is(err, ErrNotCreator) {
+		t.Fatalf("non-creator update error=%v, want ErrNotCreator", err)
+	}
+	loaded, ok, err = LoadChannel(channelID)
+	if err != nil || !ok || loaded.About != "after" {
+		t.Fatalf("unauthorized update changed about: channel=%+v ok=%v err=%v", loaded, ok, err)
+	}
+}

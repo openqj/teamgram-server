@@ -25,6 +25,7 @@ func TestUsersSuggestBirthdayUsesVerifiedProvider(t *testing.T) {
 	recipient := mtproto.MakeTLInputUser(&mtproto.InputUser{UserId: targetID, AccessHash: 123}).To_InputUser()
 	birthday := mtproto.MakeTLBirthday(&mtproto.Birthday{Day: 12, Month: 3, Year: wrapperspb.Int32(1990)}).To_Birthday()
 	var request birthdaySuggestionProviderRequest
+	var idempotencyKeys []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
@@ -36,6 +37,7 @@ func TestUsersSuggestBirthdayUsesVerifiedProvider(t *testing.T) {
 		if err = json.Unmarshal(body, &request); err != nil {
 			t.Fatalf("decode provider request: %v", err)
 		}
+		idempotencyKeys = append(idempotencyKeys, r.Header.Get("Idempotency-Key"))
 		result := mtproto.MakeTLUpdates(&mtproto.Updates{Date: 100, Users: []*mtproto.User{}, Chats: []*mtproto.Chat{}, Updates: []*mtproto.Update{}}).To_Updates()
 		responseBody, _ := json.Marshal(birthdaySuggestionProviderResponse{
 			RequestID: request.RequestID, Operation: request.Operation, Verified: true,
@@ -60,6 +62,12 @@ func TestUsersSuggestBirthdayUsesVerifiedProvider(t *testing.T) {
 	}
 	if request.Operation != "users.suggestBirthday" || request.CallerID != callerID || request.TargetID != targetID || request.Recipient == nil || request.Recipient.GetUserId() != targetID || request.Birthday == nil || request.Birthday.GetDay() != 12 || request.Birthday.GetMonth() != 3 || request.Birthday.GetYear().GetValue() != 1990 {
 		t.Fatalf("provider request = %+v", request)
+	}
+	if _, err = c.UsersSuggestBirthday(&mtproto.TLUsersSuggestBirthday{Id: recipient, Birthday: birthday}); err != nil {
+		t.Fatalf("repeat suggest birthday = %v", err)
+	}
+	if len(idempotencyKeys) != 2 || len(idempotencyKeys[0]) != 64 || idempotencyKeys[0] != idempotencyKeys[1] {
+		t.Fatalf("idempotency keys = %#v, want same 64-character key", idempotencyKeys)
 	}
 	if err = got.Encode(mtproto.NewEncodeBuf(256), 229); err != nil {
 		t.Fatalf("updates did not encode: %v", err)

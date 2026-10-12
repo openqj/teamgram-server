@@ -103,7 +103,24 @@ func applyTurnEnvironment(c *config.Config) error {
 	return nil
 }
 
+func applyPasskeyEnvironment(c *config.Config) error {
+	if c == nil {
+		return errors.New("passkey configuration is nil")
+	}
+	return passkeyhelper.ApplyEnvironment(&c.Passkey)
+}
+
 func applyProviderEnvironment(c *config.Config) error {
+	if value, ok := os.LookupEnv("TEAMGRAM_PROVIDER_FIXTURE_MODE"); ok {
+		switch strings.ToLower(strings.TrimSpace(value)) {
+		case "1", "true", "yes":
+			c.ProviderFixtureMode = true
+		case "", "0", "false", "no":
+			c.ProviderFixtureMode = false
+		default:
+			return errors.New("TEAMGRAM_PROVIDER_FIXTURE_MODE must be a boolean")
+		}
+	}
 	for _, override := range []struct {
 		name   string
 		target *string
@@ -413,6 +430,9 @@ func (s *Server) Initialize() error {
 	if err := applyTurnEnvironment(&c); err != nil {
 		return err
 	}
+	if err := applyPasskeyEnvironment(&c); err != nil {
+		return err
+	}
 	if err := applyProviderEnvironment(&c); err != nil {
 		return err
 	}
@@ -482,6 +502,7 @@ func (s *Server) Initialize() error {
 					AuthProviderKey:            c.AuthProviderKey,
 					AuthProviderSigningKey:     c.AuthProviderSigningKey,
 					AuthProviderTimeoutSeconds: c.AuthProviderTimeoutSeconds,
+					AllowInsecureProviderHTTP:  c.ProviderFixtureMode,
 					UserClient:                 c.BizServiceClient,
 					AuthsessionClient:          c.AuthSessionClient,
 					ChatClient:                 c.BizServiceClient,
@@ -504,6 +525,7 @@ func (s *Server) Initialize() error {
 				PaymentProviderKey:            c.PaymentProviderKey,
 				PaymentProviderSigningKey:     c.PaymentProviderSigningKey,
 				PaymentProviderTimeoutSeconds: c.PaymentProviderTimeoutSeconds,
+				AllowInsecureProviderHTTP:     c.ProviderFixtureMode,
 			}))
 
 		// chatinvites_helper
@@ -546,6 +568,7 @@ func (s *Server) Initialize() error {
 				CdnProviderKey:            c.CdnProviderKey,
 				CdnProviderSigningKey:     c.CdnProviderSigningKey,
 				CdnProviderTimeoutSeconds: c.CdnProviderTimeoutSeconds,
+				AllowInsecureProviderHTTP: c.ProviderFixtureMode,
 				DfsClient:                 c.DfsClient,
 				UserClient:                c.BizServiceClient,
 				MediaClient:               c.MediaClient,
@@ -561,6 +584,7 @@ func (s *Server) Initialize() error {
 				PassportProviderKey:            c.PassportProviderKey,
 				PassportProviderSigningKey:     c.PassportProviderSigningKey,
 				PassportProviderTimeoutSeconds: c.PassportProviderTimeoutSeconds,
+				AllowInsecureProviderHTTP:      c.ProviderFixtureMode,
 				AuthsessionClient:              c.AuthSessionClient,
 				UserClient:                     c.BizServiceClient,
 			}))
@@ -705,6 +729,7 @@ func (s *Server) Initialize() error {
 					BotConnectionProviderKey:            c.BotConnectionProviderKey,
 					BotConnectionProviderSigningKey:     c.BotConnectionProviderSigningKey,
 					BotConnectionProviderTimeoutSeconds: c.BotConnectionProviderTimeoutSeconds,
+					AllowInsecureProviderHTTP:           c.ProviderFixtureMode,
 				},
 				nil,
 				nil))
@@ -794,6 +819,7 @@ func (s *Server) Initialize() error {
 			PaymentProviderKey:             c.PaymentProviderKey,
 			PaymentProviderSigningKey:      c.PaymentProviderSigningKey,
 			PaymentProviderTimeoutSeconds:  c.PaymentProviderTimeoutSeconds,
+			AllowInsecureProviderHTTP:      c.ProviderFixtureMode,
 			AIProviderEndpoint:             c.AIProviderEndpoint,
 			AIProviderKey:                  c.AIProviderKey,
 			AIProviderSigningKey:           c.AIProviderSigningKey,

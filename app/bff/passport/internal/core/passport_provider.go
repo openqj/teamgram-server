@@ -42,6 +42,16 @@ type passportAuthorizationProviderResponse struct {
 	Result    *bool  `json:"result"`
 }
 
+func passportProviderIdempotencyKey(request passportAuthorizationProviderRequest) string {
+	request.RequestID = ""
+	body, err := json.Marshal(request)
+	if err != nil {
+		return ""
+	}
+	digest := sha256.Sum256(body)
+	return hex.EncodeToString(digest[:])
+}
+
 func passportProviderSignature(key string, body []byte) string {
 	mac := hmac.New(sha256.New, []byte(key))
 	_, _ = mac.Write(body)
@@ -59,7 +69,7 @@ func verifyPassportProviderSignature(key, signature string, body []byte) bool {
 	return hmac.Equal(provided, mac.Sum(nil))
 }
 
-func securePassportProviderURL(parsed *url.URL) bool {
+func securePassportProviderURL(parsed *url.URL, allowInsecureHTTP bool) bool {
 	if parsed == nil {
 		return false
 	}
@@ -71,6 +81,9 @@ func securePassportProviderURL(parsed *url.URL) bool {
 	}
 	host := strings.TrimSuffix(strings.ToLower(parsed.Hostname()), ".")
 	if host == "localhost" {
+		return true
+	}
+	if allowInsecureHTTP && strings.HasSuffix(host, ".test") {
 		return true
 	}
 	ip := net.ParseIP(host)
@@ -92,7 +105,7 @@ func (c *PassportCore) callPassportAuthorizationProvider(ctx context.Context, pa
 		return result, mtproto.ErrMethodNotImpl
 	}
 	parsed, err := url.Parse(endpoint)
-	if err != nil || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || !securePassportProviderURL(parsed) {
+	if err != nil || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || !securePassportProviderURL(parsed, c.svcCtx.Config.AllowInsecureProviderHTTP) {
 		return result, mtproto.ErrInternalServerError
 	}
 	if c.svcCtx.Config.PassportProviderTimeoutSeconds < 0 || c.svcCtx.Config.PassportProviderTimeoutSeconds > 300 {
@@ -106,8 +119,10 @@ func (c *PassportCore) callPassportAuthorizationProvider(ctx context.Context, pa
 	if _, err = rand.Read(nonce[:]); err != nil {
 		return result, mtproto.ErrInternalServerError
 	}
-	payload.RequestID = hex.EncodeToString(nonce[:])
 	payload.Operation = "account.acceptAuthorization"
+	idempotencyRequest := payload
+	idempotencyKey := passportProviderIdempotencyKey(idempotencyRequest)
+	payload.RequestID = hex.EncodeToString(nonce[:])
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return result, mtproto.ErrInputRequestInvalid
@@ -119,6 +134,9 @@ func (c *PassportCore) callPassportAuthorizationProvider(ctx context.Context, pa
 	req.Header.Set("Content-Type", "application/json")
 	if key != "" {
 		req.Header.Set("Authorization", "Bearer "+key)
+	}
+	if idempotencyKey != "" {
+		req.Header.Set("Idempotency-Key", idempotencyKey)
 	}
 	req.Header.Set("X-Teamgram-Passport-Provider-Request-Signature", passportProviderSignature(signingKey, body))
 	client := &http.Client{Timeout: timeout, CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}

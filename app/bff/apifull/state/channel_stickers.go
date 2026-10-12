@@ -15,6 +15,7 @@ var (
 	ErrInvalidChannelAccessHash = domain.ErrInvalidChannelAccessHash
 	ErrChannelConversionInvalid = domain.ErrChannelConversionInvalid
 	ErrChannelAdminRequired     = domain.ErrChannelAdminRequired
+	ErrNotCreator               = domain.ErrNotCreator
 )
 
 func OpenPostgresReadOnly(dsn string) error {
@@ -83,4 +84,10 @@ func SetChannelEmojiStickerSet(ctx context.Context, actorID, channelID int64, in
 
 func LoadChannelEmojiStickerSet(channelID int64) (int64, bool, error) {
 	return domain.LoadChannelEmojiStickerSet(channelID)
+}
+
+// UpdateChannelAbout persists a channel description through APIFull's
+// canonical PostgreSQL domain.
+func UpdateChannelAbout(userID, channelID int64, about string) error {
+	return domain.UpdateChannelAbout(userID, channelID, about)
 }

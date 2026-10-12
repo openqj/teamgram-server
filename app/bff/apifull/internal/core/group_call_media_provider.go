@@ -70,7 +70,7 @@ func (c *ApiFullCore) newGroupCallMediaProvider() (*groupCallMediaProvider, erro
 		return nil, mtproto.ErrMethodNotImpl
 	}
 	parsed, err := url.Parse(strings.TrimSpace(cfg.GroupCallMediaEndpoint))
-	if err != nil || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || !securePaymentProviderURL(parsed) {
+	if err != nil || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || !securePaymentProviderURL(parsed, false) {
 		return nil, mtproto.ErrInternalServerError
 	}
 	timeout := 5 * time.Second
@@ -254,9 +254,9 @@ func (c *ApiFullCore) getGroupCallStreamRtmpUrl(in *mtproto.TLPhoneGetGroupCallS
 		return nil, mtproto.ErrMethodNotImpl
 	}
 	revoke := mtproto.FromBool(in.GetRevoke())
-	idempotencyKey := ""
-	if !revoke {
-		idempotencyKey = fmt.Sprintf("group-call-rtmp:%d:%d", call.ID, uid)
+	idempotencyKey := fmt.Sprintf("group-call-rtmp:%d:%d", call.ID, uid)
+	if revoke {
+		idempotencyKey = fmt.Sprintf("group-call-rtmp-revoke:%d:%d", call.ID, uid)
 	}
 	result, err := requestGroupCallMedia(c.secretContext(), provider, groupCallMediaRequest{
 		Operation: "get_rtmp_url",

@@ -5,9 +5,13 @@ import (
 
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/proto/mtproto/rpc/metadata"
+	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/persist"
 )
 
 func TestAffiliateAndGiveawayMethodsFailClosedWithoutProvider(t *testing.T) {
+	if persist.PostgresEnabled() {
+		t.Skip("PostgreSQL referral authority is enabled; provider-only fallback is not under test")
+	}
 	c := &ApiFullCore{MD: &metadata.RpcMetadata{UserId: 81009}}
 	calls := []struct {
 		name   string

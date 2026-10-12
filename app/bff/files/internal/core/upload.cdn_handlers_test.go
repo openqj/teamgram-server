@@ -119,6 +119,7 @@ func TestHelpGetCdnConfigFailsClosedWithoutProvider(t *testing.T) {
 
 func TestCDNProviderReturnsVerifiedResults(t *testing.T) {
 	const key = "cdn-provider-test-signing-key-0123456789"
+	var reuploadIdempotencyKey string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			RequestID string `json:"request_id"`
@@ -134,6 +135,9 @@ func TestCDNProviderReturnsVerifiedResults(t *testing.T) {
 		case "upload.getCdnFile":
 			result = map[string]any{"predicate_name": "upload_cdnFile", "bytes": "AQI="}
 		case "upload.getCdnFileHashes", "upload.reuploadCdnFile":
+			if req.Operation == "upload.reuploadCdnFile" {
+				reuploadIdempotencyKey = r.Header.Get("Idempotency-Key")
+			}
 			result = map[string]any{"datas": []any{map[string]any{
 				"predicate_name": "fileHash",
 				"offset_INT64":   0,
@@ -141,7 +145,9 @@ func TestCDNProviderReturnsVerifiedResults(t *testing.T) {
 				"hash":           "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
 			}}}
 		case "help.getCdnConfig":
-			result = map[string]any{"predicate_name": "cdnConfig", "public_keys": []any{}}
+			result = map[string]any{"predicate_name": "cdnConfig", "public_keys": []any{map[string]any{
+				"predicate_name": "cdnPublicKey", "dc_id": 2, "public_key": "cdn-test-public-key",
+			}}}
 		default:
 			http.Error(w, "unknown operation", http.StatusBadRequest)
 			return
@@ -169,6 +175,9 @@ func TestCDNProviderReturnsVerifiedResults(t *testing.T) {
 	reuploaded, err := core.UploadReuploadCdnFile(&mtproto.TLUploadReuploadCdnFile{FileToken: []byte{1}, RequestToken: []byte{2}})
 	if err != nil || reuploaded == nil || len(reuploaded.GetDatas()) != 1 {
 		t.Fatalf("cdn reupload hashes = (%v, %v)", reuploaded, err)
+	}
+	if len(reuploadIdempotencyKey) != 64 {
+		t.Fatalf("cdn reupload idempotency key = %q, want 64-character key", reuploadIdempotencyKey)
 	}
 	cdn, err := core.HelpGetCdnConfig(&mtproto.TLHelpGetCdnConfig{})
 	if err != nil || cdn == nil || cdn.GetPredicateName() == "" {
@@ -228,5 +237,20 @@ func TestUploadGetFileUsesVerifiedCDNRedirect(t *testing.T) {
 	file, err := core.UploadGetFile(&mtproto.TLUploadGetFile{CdnSupported: true, Location: location, Limit: 2})
 	if err != nil || file == nil || file.GetPredicateName() != mtproto.Predicate_upload_fileCdnRedirect || string(file.GetFileToken()) != string([]byte{1, 2}) {
 		t.Fatalf("cdn redirect = (%v, %v)", file, err)
+	}
+}
+
+func TestCanonicalCDNLocationOmitsWireConstructor(t *testing.T) {
+	location := mtproto.MakeTLInputDocumentFileLocation(&mtproto.InputFileLocation{
+		Constructor: mtproto.TLConstructor_CRC32_inputDocumentFileLocation,
+		Id:          42,
+		AccessHash:  99,
+	}).To_InputFileLocation()
+	got := canonicalCDNLocation(location)
+	if got["predicate_name"] != mtproto.Predicate_inputDocumentFileLocation || got["id"] != int64(42) || got["access_hash"] != int64(99) {
+		t.Fatalf("canonical location = %#v", got)
+	}
+	if _, found := got["constructor"]; found {
+		t.Fatalf("canonical location leaked constructor: %#v", got)
 	}
 }

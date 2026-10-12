@@ -1,0 +1,2 @@
+ALTER TABLE apifull_forum_topic
+    ADD COLUMN IF NOT EXISTS icon_color INTEGER NOT NULL DEFAULT 0;

@@ -21,9 +21,6 @@ func (c *UserCore) UserSetBotInfo(in *user.BotRegistrySetBotInfoRequest) (*mtpro
 	if c.MD == nil || c.MD.GetUserId() <= 0 {
 		return nil, mtproto.ErrAuthKeyUnregistered
 	}
-	if c.MD.GetUserId() != in.GetBotId() {
-		return nil, mtproto.ErrUserIdInvalid
-	}
 	if in.GetName() != nil && (strings.TrimSpace(in.GetName().GetValue()) == "" || !validBotProfileText(in.GetName().GetValue(), 64, false)) {
 		return nil, mtproto.ErrInputRequestInvalid
 	}
@@ -45,6 +42,9 @@ func (c *UserCore) UserSetBotInfo(in *user.BotRegistrySetBotInfoRequest) (*mtpro
 	}
 	if bot == nil || bot.BotId != in.GetBotId() {
 		return nil, mtproto.ErrBotInvalid
+	}
+	if c.MD.GetUserId() != in.GetBotId() && bot.CreatorUserId != c.MD.GetUserId() {
+		return nil, mtproto.ErrForbiddenUserBotInvalid
 	}
 	userDO, err := c.svcCtx.Dao.Postgres.Store.Users.SelectByIDOn(c.ctx, tx, in.GetBotId())
 	if err != nil {

@@ -19,30 +19,58 @@
 package core
 
 import (
-	"encoding/json"
-	"strings"
-	"time"
+	"fmt"
 
 	"github.com/teamgram/proto/mtproto"
+	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/domain"
 	apifullpersist "github.com/teamgram/teamgram-server/app/bff/apifull/persist"
+	chatpb "github.com/teamgram/teamgram-server/app/service/biz/chat/chat"
+	userpb "github.com/teamgram/teamgram-server/app/service/biz/user/user"
+	"google.golang.org/grpc/status"
 )
 
 // RPCBotVerificationIconsServer: Layer 229 methods previously returned ERR_ENTERPRISE_IS_BLOCKED.
+
+const customVerificationDescriptionLimit = 70
+
+var errBotVerifierForbidden = status.Error(mtproto.ErrForbidden, "BOT_VERIFIER_FORBIDDEN")
 
 func (c *ApiFullCore) BotsSetCustomVerification(in *mtproto.TLBotsSetCustomVerification) (*mtproto.Bool, error) {
 	callerID, err := c.requireUserId()
 	if err != nil {
 		return nil, err
 	}
-	if in == nil || in.GetBot() == nil || in.GetPeer() == nil {
+	if in == nil || in.GetPeer() == nil {
 		return nil, mtproto.ErrInputRequestInvalid
 	}
-	botID, err := c.verifyMiniBot(in.GetBot())
+	botID, err := c.resolveCustomVerificationBot(callerID, in.GetBot())
 	if err != nil {
 		return nil, err
 	}
-	if botID != callerID {
-		return nil, mtproto.ErrUserIdInvalid
+	peerType, peerID, err := c.resolveCustomVerificationPeer(callerID, in.GetPeer())
+	if err != nil {
+		return nil, err
+	}
+	description := ""
+	if value := in.GetCustomDescription(); value != nil {
+		description = value.GetValue()
+		if len([]byte(description)) > customVerificationDescriptionLimit {
+			return nil, mtproto.ErrInputRequestInvalid
+		}
+	}
+	var localResult struct {
+		Value *bool `json:"value"`
+	}
+	if local, loadErr := c.loadLocalBusinessResultForCaller("bots.setCustomVerification", fmt.Sprintf("bot:%d:peer:%d:%d", botID, peerType, peerID), &localResult); loadErr != nil {
+		return nil, loadErr
+	} else if local {
+		if localResult.Value == nil {
+			return nil, mtproto.ErrInternalServerError
+		}
+		if *localResult.Value {
+			return mtproto.BoolTrue, nil
+		}
+		return mtproto.BoolFalse, nil
 	}
 	if c.businessProviderConfigured() {
 		var result struct {
@@ -61,34 +89,103 @@ func (c *ApiFullCore) BotsSetCustomVerification(in *mtproto.TLBotsSetCustomVerif
 		}
 		return mtproto.BoolFalse, nil
 	}
-	peerType, peerID, err := customVerificationPeer(callerID, in.GetPeer())
-	if err != nil {
-		return nil, err
-	}
-	description := ""
-	if value := in.GetCustomDescription(); value != nil {
-		description = strings.TrimSpace(value.GetValue())
-		if len(description) > 512 {
-			return nil, mtproto.ErrInputRequestInvalid
-		}
-	}
-	state := botCustomVerificationState{Enabled: in.GetEnabled(), Description: description, UpdatedAt: time.Now().Unix()}
-	encoded, err := json.Marshal(state)
-	if err != nil {
-		return nil, mtproto.ErrInternalServerError
-	}
-	if err = apifullpersist.Update(customVerificationKey(botID, peerType, peerID), func(string) (string, error) {
-		return string(encoded), nil
-	}); err != nil {
-		return nil, err
-	}
-	return mtproto.BoolTrue, nil
+	// A botVerifierSettings record is the authority that supplies the icon,
+	// organization and custom-description permission. The current User service
+	// does not expose that authority yet, so never persist a local success.
+	return nil, mtproto.ErrMethodNotImpl
 }
 
-type botCustomVerificationState struct {
-	Enabled     bool   `json:"enabled"`
-	Description string `json:"description,omitempty"`
-	UpdatedAt   int64  `json:"updated_at"`
+func (c *ApiFullCore) resolveCustomVerificationBot(callerID int64, input *mtproto.InputUser) (int64, error) {
+	if c == nil || c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.UserClient == nil {
+		return 0, mtproto.ErrMethodNotImpl
+	}
+	caller, err := c.svcCtx.Dao.UserGetImmutableUser(c.ctx, &userpb.TLUserGetImmutableUser{Id: callerID})
+	if err != nil {
+		return 0, err
+	}
+	if caller == nil || caller.GetUser() == nil || caller.Deleted() {
+		return 0, mtproto.ErrUserIdInvalid
+	}
+	callerIsBot := caller.GetUser().GetBot() != nil
+	if input == nil {
+		if !callerIsBot {
+			return 0, mtproto.ErrBotInvalid
+		}
+		return callerID, nil
+	}
+	if callerIsBot {
+		// The TL contract requires bot callers to omit the optional bot field.
+		return 0, mtproto.ErrBotInvalid
+	}
+	botID, err := c.verifyMiniBot(input)
+	if err != nil {
+		return 0, err
+	}
+	bot, err := c.svcCtx.Dao.UserGetImmutableUser(c.ctx, &userpb.TLUserGetImmutableUser{Id: botID})
+	if err != nil {
+		return 0, err
+	}
+	if bot == nil || bot.GetUser() == nil || bot.GetUser().GetBot() == nil || bot.Deleted() {
+		return 0, mtproto.ErrBotInvalid
+	}
+	if bot.GetUser().GetBot().GetCreator() != callerID {
+		return 0, errBotVerifierForbidden
+	}
+	return botID, nil
+}
+
+func (c *ApiFullCore) resolveCustomVerificationPeer(selfID int64, peer *mtproto.InputPeer) (int32, int64, error) {
+	switch peer.GetPredicateName() {
+	case mtproto.Predicate_inputPeerSelf, mtproto.Predicate_inputPeerUser, mtproto.Predicate_inputPeerChat, mtproto.Predicate_inputPeerChannel:
+		// These constructors carry enough canonical identity for the authority
+		// lookups below. Username and FromMessage peers need a resolver/context
+		// that this mutation does not have.
+	default:
+		return 0, 0, mtproto.ErrPeerIdInvalid
+	}
+	peerType, peerID, err := customVerificationPeer(selfID, peer)
+	if err != nil {
+		return 0, 0, err
+	}
+	switch peerType {
+	case mtproto.PEER_SELF:
+		return peerType, peerID, nil
+	case mtproto.PEER_USER:
+		if c == nil || c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.UserClient == nil {
+			return 0, 0, mtproto.ErrMethodNotImpl
+		}
+		profile, getErr := c.svcCtx.Dao.UserGetImmutableUser(c.ctx, &userpb.TLUserGetImmutableUser{Id: peerID})
+		if getErr != nil {
+			return 0, 0, getErr
+		}
+		if profile == nil || profile.GetUser() == nil || profile.Deleted() || profile.GetUser().GetAccessHash() != peer.GetAccessHash() {
+			return 0, 0, mtproto.ErrUserIdInvalid
+		}
+		return peerType, peerID, nil
+	case mtproto.PEER_CHAT:
+		if c == nil || c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.ChatClient == nil {
+			return 0, 0, mtproto.ErrMethodNotImpl
+		}
+		chat, getErr := c.svcCtx.Dao.ChatGetMutableChat(c.ctx, &chatpb.TLChatGetMutableChat{ChatId: peerID})
+		if getErr != nil {
+			return 0, 0, getErr
+		}
+		if chat == nil || chat.GetChat() == nil || chat.GetChat().GetId() != peerID {
+			return 0, 0, mtproto.ErrPeerIdInvalid
+		}
+		return peerType, peerID, nil
+	case mtproto.PEER_CHANNEL:
+		channel, found, getErr := domain.LoadChannel(peerID)
+		if getErr != nil {
+			return 0, 0, getErr
+		}
+		if !found || channel.AccessHash != peer.GetAccessHash() {
+			return 0, 0, mtproto.ErrChannelInvalid
+		}
+		return peerType, peerID, nil
+	default:
+		return 0, 0, mtproto.ErrPeerIdInvalid
+	}
 }
 
 func customVerificationKey(botID int64, peerType int32, peerID int64) string {
@@ -135,6 +232,14 @@ func (c *ApiFullCore) BotsGetBotRecommendations(in *mtproto.TLBotsGetBotRecommen
 		return nil, err
 	}
 	result := new(mtproto.Users_Users)
+	if local, loadErr := c.loadLocalBusinessResult("bots.getBotRecommendations", fmt.Sprintf("bot:%d", botID), result); loadErr != nil {
+		return nil, loadErr
+	} else if local {
+		if result == nil || len(result.GetUsers()) > 10000 {
+			return nil, mtproto.ErrInternalServerError
+		}
+		return result, nil
+	}
 	if err = c.callBusinessProvider("bots.getBotRecommendations", map[string]any{
 		"caller_user_id": uid, "bot_id": botID,
 	}, result); err != nil {

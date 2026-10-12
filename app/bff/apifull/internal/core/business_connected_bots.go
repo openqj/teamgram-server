@@ -132,8 +132,8 @@ func businessRecipientsFromInput(in *mtproto.InputBusinessRecipients) *mtproto.B
 }
 
 func (c *ApiFullCore) AccountUpdateConnectedBot(in *mtproto.TLAccountUpdateConnectedBot) (*mtproto.Updates, error) {
-	if c.MD == nil || c.MD.UserId == 0 {
-		return nil, mtproto.ErrAuthKeyUnregistered
+	if err := c.requirePremium(); err != nil {
+		return nil, err
 	}
 	var deleted, canReply bool
 	var botId int64
@@ -235,8 +235,8 @@ func (c *ApiFullCore) AccountUpdateConnectedBot(in *mtproto.TLAccountUpdateConne
 }
 
 func (c *ApiFullCore) AccountGetConnectedBots(in *mtproto.TLAccountGetConnectedBots) (*mtproto.Account_ConnectedBots, error) {
-	if c.MD == nil || c.MD.UserId == 0 {
-		return nil, mtproto.ErrAuthKeyUnregistered
+	if err := c.requirePremium(); err != nil {
+		return nil, err
 	}
 	_ = in
 	if domain.Ready() {
@@ -350,8 +350,8 @@ func businessConnectionUpdates(record domain.BusinessConnectionRecord) (*mtproto
 }
 
 func (c *ApiFullCore) AccountToggleConnectedBotPaused(in *mtproto.TLAccountToggleConnectedBotPaused) (*mtproto.Bool, error) {
-	if c.MD == nil || c.MD.UserId == 0 {
-		return nil, mtproto.ErrAuthKeyUnregistered
+	if err := c.requirePremium(); err != nil {
+		return nil, err
 	}
 	paused := false
 	var peerUser, peerChat, peerChannel int64
@@ -389,8 +389,8 @@ func (c *ApiFullCore) AccountToggleConnectedBotPaused(in *mtproto.TLAccountToggl
 }
 
 func (c *ApiFullCore) AccountDisablePeerConnectedBot(in *mtproto.TLAccountDisablePeerConnectedBot) (*mtproto.Bool, error) {
-	if c.MD == nil || c.MD.UserId == 0 {
-		return nil, mtproto.ErrAuthKeyUnregistered
+	if err := c.requirePremium(); err != nil {
+		return nil, err
 	}
 	var peerUser, peerChat, peerChannel int64
 	if in != nil {

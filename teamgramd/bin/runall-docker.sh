@@ -36,6 +36,8 @@ start_service sync ./sync -f=../etc2/sync.yaml
 start_service bff ./bff -f=../etc2/bff.yaml
 sleep 4
 
+start_service httpserver ./httpserver -f=../etc2/httpserver.yaml
+
 start_service session ./session -f=../etc2/session.yaml
 
 start_service gnetway ./gnetway -f=../etc2/gnetway.yaml

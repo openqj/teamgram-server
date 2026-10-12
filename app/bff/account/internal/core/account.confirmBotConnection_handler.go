@@ -17,7 +17,10 @@
 
 package core
 
-import "github.com/teamgram/proto/mtproto"
+import (
+	"github.com/teamgram/proto/mtproto"
+	userpb "github.com/teamgram/teamgram-server/app/service/biz/user/user"
+)
 
 // AccountConfirmBotConnection
 // account.confirmBotConnection#67ed1f68 bot_id:InputUser = Bool;
@@ -30,6 +33,23 @@ func (c *AccountCore) AccountConfirmBotConnection(in *mtproto.TLAccountConfirmBo
 	}
 	botID := confirmBotUserId(in.GetBotId(), c.MD.UserId)
 	if botID <= 0 || in.GetBotId().GetPredicateName() == mtproto.Predicate_inputUserEmpty {
+		return nil, mtproto.ErrUserIdInvalid
+	}
+	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.UserClient == nil {
+		return nil, mtproto.ErrMethodNotImpl
+	}
+	bot, err := c.svcCtx.Dao.UserGetImmutableUser(c.ctx, &userpb.TLUserGetImmutableUser{Id: botID})
+	if err != nil {
+		return nil, err
+	}
+	if bot == nil || bot.GetUser() == nil || bot.Deleted() || bot.GetUser().GetId() != botID {
+		return nil, mtproto.ErrUserIdInvalid
+	}
+	if !bot.IsBot() {
+		return nil, mtproto.ErrBotInvalid
+	}
+	if in.GetBotId().GetPredicateName() == mtproto.Predicate_inputUser &&
+		(in.GetBotId().GetAccessHash() == 0 || bot.GetUser().GetAccessHash() != in.GetBotId().GetAccessHash()) {
 		return nil, mtproto.ErrUserIdInvalid
 	}
 	var result botConnectionProviderResult

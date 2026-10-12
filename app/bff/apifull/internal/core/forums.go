@@ -162,7 +162,7 @@ func (c *ApiFullCore) MessagesCreateForumTopic(in *mtproto.TLMessagesCreateForum
 	if err != nil {
 		return nil, err
 	}
-	if err := forumPut(key, uid, in.GetTitle()); err != nil {
+	if err := forumPut(key, uid, in.GetTitle(), in.GetIconColor(), in.GetIconEmojiId()); err != nil {
 		return nil, err
 	}
 	return mtproto.MakeEmptyUpdates(), nil
@@ -247,7 +247,7 @@ func (c *ApiFullCore) ChannelsCreateForumTopic(in *mtproto.TLChannelsCreateForum
 	if err != nil {
 		return nil, err
 	}
-	if err := forumPut(key, uid, in.GetTitle()); err != nil {
+	if err := forumPut(key, uid, in.GetTitle(), in.GetIconColor(), in.GetIconEmojiId()); err != nil {
 		return nil, err
 	}
 	return mtproto.MakeEmptyUpdates(), nil
@@ -510,6 +510,7 @@ func forumTopicFromDomain(peer *mtproto.Peer, v domain.ForumTopic, userID int64)
 	return mtproto.MakeTLForumTopic(&mtproto.ForumTopic{
 		Id:          v.ID,
 		Title:       v.Title,
+		IconColor:   v.IconColor,
 		My:          creatorID == userID,
 		Closed:      v.Closed,
 		Pinned:      v.Pinned,
@@ -524,8 +525,16 @@ func forumTopicFromDomain(peer *mtproto.Peer, v domain.ForumTopic, userID int64)
 	}).To_ForumTopic()
 }
 
-func forumPut(key string, userID int64, title string) error {
-	return domain.CreateForumTopic(key, userID, title)
+func forumPut(key string, userID int64, title string, iconColor *wrapperspb.Int32Value, iconEmojiID *wrapperspb.Int64Value) error {
+	var color int32
+	if iconColor != nil {
+		color = iconColor.GetValue()
+	}
+	var emojiID int64
+	if iconEmojiID != nil {
+		emojiID = iconEmojiID.GetValue()
+	}
+	return domain.CreateForumTopicWithStyle(key, userID, title, color, emojiID)
 }
 
 func forumList(key string, userID int64, q string, limit int32, ids []int32, byID bool) ([]*mtproto.ForumTopic, error) {

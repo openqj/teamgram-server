@@ -48,3 +48,24 @@ func TestPostgresStarsRefundIsAtomicAndIdempotent(t *testing.T) {
 		t.Fatalf("unknown charge error = %v, want ErrStarsChargeNotFound", err)
 	}
 }
+
+func TestPostgresStarsRefundRejectsProviderMismatch(t *testing.T) {
+	userID := paymentPostgresFixture(t)
+	key := fmt.Sprintf("stars-refund-provider-%d", userID)
+	chargeID := fmt.Sprintf("stars-charge-provider-%d", userID)
+	if _, err := BeginPaymentRequest(userID, key, "stars-provider", "provider-fingerprint", "USD", 199, 0, 0); err != nil {
+		t.Fatalf("begin Stars payment: %v", err)
+	}
+	if _, _, err := SettleStarsPaymentRequest(userID, key, "provider-fingerprint", chargeID, "USD", "Stars top-up", 199, 25, []byte(`{"provider":"verified"}`)); err != nil {
+		t.Fatalf("settle Stars payment: %v", err)
+	}
+	if _, err := CommitStarsRefund(userID, chargeID, "forged-provider", "refund-provider-mismatch", 25, []byte(`{"refund":true}`)); !errors.Is(err, ErrStarsChargeInvalid) {
+		t.Fatalf("provider mismatch error = %v, want ErrStarsChargeInvalid", err)
+	}
+	if balance, err := StarsBalance(userID); err != nil || balance != 25 {
+		t.Fatalf("balance after rejected refund = %d err=%v, want 25", balance, err)
+	}
+	if _, found, err := LoadStarsRefund(userID, chargeID); err != nil || found {
+		t.Fatalf("refund row after rejected refund = found=%v err=%v, want absent", found, err)
+	}
+}

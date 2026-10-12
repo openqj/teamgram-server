@@ -77,6 +77,7 @@ func quickReplyDeliveryCore(userID int64, reader messageclient.MessageClient, se
 	return &ApiFullCore{
 		ctx: ctx,
 		svcCtx: &svc.ServiceContext{Dao: &dao.Dao{
+			UserClient:             &premiumAccessUserClient{profiles: map[int64]*mtproto.ImmutableUser{userID: premiumAccessProfile(userID, true)}},
 			PollMessageReader:      reader,
 			ScheduledMessageSender: sender,
 		}},
@@ -86,7 +87,7 @@ func quickReplyDeliveryCore(userID int64, reader messageclient.MessageClient, se
 }
 
 func TestQuickReplyRoundtrip(t *testing.T) {
-	c := &ApiFullCore{MD: &metadata.RpcMetadata{UserId: 1}}
+	c := premiumAccessCore(1, true)
 	ok, err := c.MessagesEditQuickReplyShortcut(&mtproto.TLMessagesEditQuickReplyShortcut{
 		ShortcutId: 7,
 		Shortcut:   "prod-qr",
@@ -173,7 +174,7 @@ func TestQuickReplyCheckAndReorderPersist(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = saveQuickReplies(userID, nil) })
-	c := &ApiFullCore{MD: &metadata.RpcMetadata{UserId: userID}}
+	c := premiumAccessCore(userID, true)
 
 	if available, err := c.MessagesCheckQuickReplyShortcut(&mtproto.TLMessagesCheckQuickReplyShortcut{Shortcut: "first"}); err != nil || mtproto.FromBool(available) {
 		t.Fatalf("existing shortcut check = (%v, %v), want false", available, err)

@@ -33,8 +33,8 @@ func greetKey(userId int64) string {
 }
 
 func (c *ApiFullCore) AccountUpdateBusinessGreetingMessage(in *mtproto.TLAccountUpdateBusinessGreetingMessage) (*mtproto.Bool, error) {
-	if c.MD == nil || c.MD.UserId == 0 {
-		return nil, mtproto.ErrAuthKeyUnregistered
+	if err := c.requirePremium(); err != nil {
+		return nil, err
 	}
 	key := greetKey(c.MD.UserId)
 	if in == nil || in.GetMessage() == nil {
@@ -76,8 +76,8 @@ func awayKey(userId int64) string {
 }
 
 func (c *ApiFullCore) AccountUpdateBusinessAwayMessage(in *mtproto.TLAccountUpdateBusinessAwayMessage) (*mtproto.Bool, error) {
-	if c.MD == nil || c.MD.UserId == 0 {
-		return nil, mtproto.ErrAuthKeyUnregistered
+	if err := c.requirePremium(); err != nil {
+		return nil, err
 	}
 	key := awayKey(c.MD.UserId)
 	if in == nil || in.GetMessage() == nil {

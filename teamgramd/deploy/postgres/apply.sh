@@ -69,10 +69,24 @@ trap cleanup_wrapper EXIT
 for migration in "${migrations[@]}"; do
   version=$(basename "$migration" .sql)
   checksum=$(sha256_file "$migration")
+  legacy_checksum_condition='FALSE'
+  if [[ "$version" == "072_apifull_bot_payments" && "$checksum" == "99cd90064e2f7249ad3babf9c37f0afe23da3708ae4172c588c8c6865607f22b" ]]; then
+    # One pre-release 072 created the same bot-payment tables but recorded a
+    # different checksum before 073/074 were applied. Accept that exact
+    # journal entry only when both tables are already present; arbitrary
+    # checksum drift remains fatal.
+    legacy_checksum_condition="version = '072_apifull_bot_payments' AND checksum = '73d0b0e5a44571c5b31f4bbb65cda44df9708ad2dd9a5af518c6806afe5034f9' AND to_regclass('public.apifull_bot_payment_query') IS NOT NULL AND to_regclass('public.apifull_bot_payment_outbox') IS NOT NULL"
+  fi
+  if [[ "$version" == "080_biz_botfather" && "$checksum" == "dd23f0e8c05695ed8d97e85ff15f65488f708af90c703aa83186ebbde79134f7" ]]; then
+    # 080 was applied once while BotFather still used the low test-user id.
+    # Accept only that known journal entry when the BotFather schema exists;
+    # 083 performs the idempotent move to the reserved service id.
+    legacy_checksum_condition="version = '080_biz_botfather' AND checksum = '65e96f6f793727d3bbbf61771eb0a9293599f162a696f0c9f5f75cd809a95819' AND to_regclass('public.botfather_sessions') IS NOT NULL"
+  fi
   {
     printf '%s\n' 'BEGIN;'
     printf '%s\n' "SELECT pg_advisory_xact_lock(hashtextextended('teamgram-schema-migrations', 0));"
-    printf '%s\n' "DO \$\$ BEGIN IF EXISTS (SELECT 1 FROM schema_migrations WHERE version = '$version' AND checksum <> '$checksum') THEN RAISE EXCEPTION 'migration checksum mismatch'; END IF; END \$\$;"
+    printf '%s\n' "DO \$\$ BEGIN IF EXISTS (SELECT 1 FROM schema_migrations WHERE version = '$version' AND checksum <> '$checksum' AND NOT ($legacy_checksum_condition)) THEN RAISE EXCEPTION 'migration checksum mismatch'; END IF; END \$\$;"
     printf '%s\n' "SELECT NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version = '$version') AS should_apply;"
     printf '%s\n' '\gset'
     printf '%s\n' '\if :should_apply'

@@ -1,12 +1,19 @@
 # Layer 229 API 功能验收
 
+## 2026-10-12：Dialog filter PostgreSQL authority 接线
+
+- `messages.getDialogFilters`、`messages.updateDialogFilter` 和 `messages.updateDialogFiltersOrder` 在生产 `DialogClient` 存在时不再把 `dialog_filter` 镜像写入 APIFull KV：读取、插入/替换、删除和排序统一经过 Dialog service 的 PostgreSQL `dialog_filters` DAO。返回值仍使用 Layer 229 原生 `DialogFilter` / `Vector<DialogFilter>` 构造器，并拒绝缺失、空或 ID 不一致的 provider 响应。
+- 新增 `TestDialogFiltersUseDialogPostgresAuthorityWhenConfigured`，覆盖创建、排序、删除、owner-scoped 读回，以及 legacy APIFull KV 未被写入；`TestDialogFiltersPostgresRoundTrip` 在 PostgreSQL 18.6 隔离库覆盖 Dialog DAO 的插入、排序、删除和读回。无 service context 的轻量 fixture 分支只用于单元测试。
+- 本轮没有宣称 live Layer 229 PostgreSQL session、重启恢复或生产流量验收；`messages.getSuggestedDialogFilters` 的推荐目录仍是独立的静态/目录问题。
+
 ## 2026-10-12：Sponsored preference consumer 接通
 
 - `account.toggleSponsoredMessages` 的 PostgreSQL 18 caller preference 现在由 `messages.getSponsoredMessages` 在 provider/inventory 访问前读取；禁用时返回规范 `messages.sponsoredMessagesEmpty`，缺省仍保持 enabled，损坏 preference 或 inventory fail-closed。新增开关消费者定向测试；广告 provisioning、provider/event consumer、实时会话和生产流量仍未验收，生产状态不提升。
 
-## 2026-10-12：Bot custom verification 本地读回闭环
+## 2026-10-12：Bot custom verification 权威来源复核
 
-- `bots.setCustomVerification` 写入的 PostgreSQL-backed bot/peer 状态现在由共享持久化 API 读取；`users.getFullUser` 对 bot 的 self scope 输出规范 `BotVerification(bot_id, icon, description)`，损坏记录 fail-closed。新增用户详情定向回环测试；chat-scoped message authorization、外部签名 provider、实时会话和生产流量仍未验收，因此生产状态继续为 `BLOCKED_BY_IMPLEMENTATION_GAP`。
+- `bots.setCustomVerification` 现在严格执行 Layer 229 的 caller flags、bot owner/access hash、peer access hash 和 70 字节描述限制；配置签名 `BusinessProvider` 时保留 provider 路径。没有 `botVerifierSettings` 权威 producer 时返回 `METHOD_NOT_IMPL`，不再写入未经授权的 APIFull KV。
+- `users.getFullUser` 不再读取旧的 bot/peer KV，也不凭 `icon=0` 合成 `BotVerification`；遗留记录和损坏记录均不会被暴露。真正解除该阻塞仍需要 User service 的 verifier settings schema/RPC、peer-scoped persistence、用户/聊天/频道读取、权限和 update fan-out，以及签名 provider 或等价权威服务。
 
 ## 2026-10-11：赞助 inventory 与真实阻塞复核
 
@@ -2298,6 +2305,14 @@
 - 探针通过 `channels.deleteChannel` 删除临时频道，并仅删除预检为空且由本探针写入的两个论坛 KV 键。频道关联 10 表及论坛 KV 残留均为 0。
 - `channels.toggleViewForumAsMessages` 从隔离库-only 提升为 `PARTIAL_ISOLATED_SESSION_E2E`。这只验证服务端持久化和 creator path，不代表客户端视图行为、非 owner 权限、原生论坛存储或重启持久性已验收。
 
+## 2026-10-13：频道设置 PostgreSQL 生产补验
+
+- 重新运行 `docker/production/probe-channel-location-roundtrip.ts`、`probe-channel-signatures-roundtrip.ts` 和 `probe-channel-forum-view-roundtrip.ts`，统一使用生产用户 `5` 经 DC2 WebSocket -> gateway -> session -> BFF -> APIFull/PostgreSQL。
+- `channels.editLocation#58e63f6d` 设置坐标/地址后经 `channels.getFullChannel` 和 `apifull_channel` 回读，`InputGeoPointEmpty` 清除后返回 `ChannelLocationEmpty`，坐标和地址均为 NULL；临时频道删除后频道、成员、消息、事件和管理日志行数均为 0。
+- `channels.toggleSignatures` 启用和禁用签名/作者资料后，`channels.getChannels` 与 `apifull_channel` 均读回 `1/1`、`0/0`；删除后 10 类频道关联表均为 0。
+- `channels.toggleForum` 与 `channels.toggleViewForumAsMessages` 均返回预期 `Updates`；论坛状态从专用 PostgreSQL 表 `apifull_forum_channel_settings` 回读，`UpdateChannelViewForumAsMessages` 的 true/false 更新均出现；`channels.deleteChannel` 自身完成后论坛 topic/settings 与频道关联表均为 0。论坛探针不再误读通用 KV，也不再手工删除这些行。
+- 台账中上述四项保留 `PARTIAL_ISOLATED_SESSION_E2E`：本轮覆盖 creator path 和持久化回读，未覆盖非 owner 权限、客户端视图、原生频道 provider 或重启恢复。
+
 ## 2026-10-07 r28：联系人 token 导出生产验收
 
 - 新增 `docker/production/probe-contact-token-export-production.ts`，使用生产用户 `136907714` 经 DC2 WebSocket -> gateway -> session -> APIFull/User service/MySQL 调用 `contacts.exportContactToken`。GramJS 缺少请求构造器，探针按 Layer 229 constructor `0xf8654027` 在内存编码；服务返回 `ExportedContactToken`，token 长度 32，expiry 为 86,400 秒，MySQL KV 中的 owner 和 expiry 与响应一致。
@@ -2599,3 +2614,153 @@
 
 - `messages.sendInlineBotResult` 的 text/media-auto 分支已有 PostgreSQL inline query/result 状态和 `msg.sendMessageV2` durable producer。`TestInlineBotResultsPostgresRoundTrip` 覆盖查询创建、Bot 发布、请求方回读和消息服务请求绑定；媒体 result 变体及真实跨客户端 session 仍按 Telegram 语义失败关闭。
 - 该方法从 `BLOCKED_BY_IMPLEMENTATION_GAP` 调整为 `PARTIAL_ISOLATED_DB_ONLY`，只反映已验证的隔离数据库/producer 边界，不代表完整 inline 业务或生产验收完成。
+
+## 2026-10-12：account/auth 9 项真实阻塞复核
+
+- 本次复核时从 `LAYER229_METHOD_LEDGER.csv` 重新计算得到 813 个唯一方法、`BLOCKED_BY_IMPLEMENTATION_GAP=67`。其中 account/auth 的 9 项仍为：`auth.importWebTokenAuthorization`、`auth.checkPaidAuth`、`auth.finishPasskeyLogin`、`account.acceptAuthorization`、`account.getPaidMessagesRevenue`、`account.toggleNoPaidMessagesException`、`account.getUniqueGiftChatThemes`、`account.registerPasskey` 和 `account.confirmBotConnection`。
+- `auth.importWebTokenAuthorization` 需要签名 AuthProvider 验证 web token；`auth.checkPaidAuth` 需要 provider 拥有付费登录表单、phone-code hash 和收款确认；`account.acceptAuthorization` 需要 Passport provider 解密/验证 credentials；`account.getPaidMessagesRevenue` 需要 Stars/payment revenue ledger；`account.confirmBotConnection` 现在先通过 PostgreSQL-backed User service 校验 bot 存在、未删除、IsBot 和 access_hash，再需要权威 bot verifier 与 durable confirmation registry。仓库没有可替代这些外部权威来源的 User/AuthSession/pgx 数据，未降低阻塞状态。
+- `auth.finishPasskeyLogin` 与 `account.registerPasskey` 已有 PostgreSQL 18 ceremony/credential DAO、WebAuthn 验签、挑战一次消费和 authenticator counter 保护，但生产 RP/origin/trusted-app 配置及真实认证器仍缺；隔离 fixture 不计入生产验收。`account.getUniqueGiftChatThemes` 只读取明确 provider/operations 发布的 PostgreSQL projection，当前没有权威 gift inventory/feed。
+- `account.toggleNoPaidMessagesException` 的无 `parent_peer`、无退款和无强制付费分支已通过 User PostgreSQL 隐私 authority；包含父消息、退款或 `require_payment` 的同一 Layer 229 方法仍依赖签名 Stars provider，因此整项不能标为生产完成。没有把局部成功误报为全方法闭合。
+- 定向测试通过（未运行全量编译/全仓测试）：authorization provider/check-paid、passkey provider/finish、Passport acceptAuthorization、APIFull paid-message/theme、account bot-connection core。缺 provider、未签名响应、未配置 RP 或不可信输入均保持 canonical fail-closed 错误；本轮没有修改台账状态或伪造 provider/业务数据。
+
+## 2026-10-12：其余 58 项真实 provider 阻塞复核
+
+- 重新按当前台账核对后，67 项阻塞中另有 payments 27 项、bots 9 项、messages 14 项、upload CDN 3 项，以及 `ephemeral.getCallbackAnswer`、`fragment.getCollectibleInfo`、`help.getCdnConfig`、`phone.getCallConfig`、`stories.startLive` 各 1 项；加上前节 account/auth 9 项共 67 项。没有把历史记录中的 93 项继续当作当前数量。
+- payments 缺少真实支付/收据 verifier、Stars referral ledger、giveaway settlement、Star Gift upgrade/resale/auction/withdrawal/craft 权威库存；bots/messages 缺少 Bot App、callback、WebView、webhook、推荐和 canonical update 投递 producer；CDN 缺少 token 签发、回源、AES/hash/reupload 和公钥服务；Fragment、Live、ephemeral callback、TURN call config 均缺少可验收的外部控制面或权威状态 producer。
+- 现有签名 provider 边界、输入校验和 PostgreSQL 状态机的 focused tests 均保持 fail-closed；本地 payment fixture 只用于契约测试，不能作为生产 provider。没有用空目录、回显 receipt、固定余额或合成 `Updates` 解除这些阻塞。
+- 隔离 PostgreSQL 18.6 replay 实际通过 072–075，`schema_migrations` 为 73 条唯一记录，最新版本 `075_apifull_business_connection_outbox_claim_token`；本轮未运行全量编译或全仓测试。
+- 台账构造器校验发现并修正 `account.createBusinessChatLink` 的一处记录错误（`8851e68` → Layer 229 的 `8851e68e`）；修正后 813 个方法名称和 constructor ID 与 `../telegram-api/methods.json` 全部一致。
+
+## 2026-10-12：Bot payment query producer and delivery closure
+
+- 复核确认 `messages.setBotShippingResults` / `messages.setBotPrecheckoutResults` 已有完整的本地 producer 边界：`payments.validateRequestedInfo` 在签名 payment provider 验证成功后，把 bot invoice context 与 shipping query 写入 PostgreSQL 18，并在同一事务创建 outbox；`payments.sendPaymentForm` 通过 `AdvanceBotPaymentQueryAndDelivery` 推进 precheckout 并再次写入 outbox。
+- APIFull `StartWorkers` 启动 `RunBotPaymentReconciler`。reconciler 对 outbox claim lease、重试和 token 进行持久化处理，构造 canonical `updateBotShippingQuery` / `updateBotPrecheckoutQuery`，通过 `SyncPushBotUpdates` 投递给 bot 用户；回调状态转移与投递意图使用 PostgreSQL 行锁和幂等约束保护。新增 `TestBotPaymentOutboxBuildsCanonicalQueryUpdates`，连同 PostgreSQL persistence/callback tests 验证 payload、身份、阶段、lease/retry 和 Layer 229 构造器字段。
+- 这两项的 `audit_status` 保持 `PARTIAL_COMPONENT_VERIFIED`，生产列仍为 `BLOCKED_BY_IMPLEMENTATION_GAP`：真实签名 payment provider、bot 运行时消费回调的 Layer 229 session、跨进程重启和生产流量验收尚未具备。该本地 producer 不被当作 provider 或完整生产验收。
+
+## 2026-10-12：PostgreSQL runtime process health gate
+
+- 根镜像与 r29 生产镜像现在都包含 `teamgramd/docker/healthcheck.sh`，逐一检查 `idgen/status/authsession/dfs/media/biz/msg/sync/bff/session/gnetway`；根 Compose 与 r29 production overlay 的 backend/teamgram 服务均接入该健康检查。
+- 两套 Compose `config --quiet`、迁移 portability check、相关 shell `bash -n` 和 `git diff --check` 通过；当前运行的 backend 容器用等价 `pgrep -x` 检查 11 个进程全部存活。该门禁只证明容器内预期服务进程存活，不替代 PostgreSQL 重启恢复、真实 provider 或 Layer 229 全链路验收；本轮未运行全量编译。
+
+## 2026-10-12：支付真实阻塞收口
+
+- Stars 退款现在要求退款 provider 与原始 charge provider 完全一致；非 self `InputUser` 退款先通过 User 服务校验 access hash，伪造 charge/provider 不会写入退款行或扣减余额。PostgreSQL 定向回归覆盖 provider mismatch、access-hash refusal 和幂等边界。
+- 本地 payment-provider fixture 补齐 `settle_bot_invoice` 的 bot/user/form/request/fingerprint/currency/amount 绑定、签名响应和 `operation + request_key` 幂等缓存；bot invoice form、requested-info 和 Stars form/settlement 也有 Layer 229 结构校验。fixture 只用于契约验收，不能替代生产支付、收据、权益或退款 provider。
+- fixture、APIFull payment/core、Stars refund/domain、bot-payment/persist 和 Dialog PostgreSQL 定向测试通过；未运行全量编译、全仓测试或全量镜像构建。台账仍为 813 个唯一方法，`BLOCKED_BY_IMPLEMENTATION_GAP=67`，生产验收仍不是 813/813。
+
+## 2026-10-12：控制面迁移与 provider 启动硬阻塞修复
+
+- 控制面 migration 前缀已统一为 `077_apifull_business_control_plane`、`078_apifull_payment_provider_control_plane` 和 `079_provider_control_plane`；重复版本前缀不再阻断 `apply.sh`。PostgreSQL 18.6 临时空库首轮 replay 提交 77 个唯一版本，二次 replay 全部按 checksum 跳过，并确认业务、支付、Live/Fragment/ephemeral/CDN 控制面表存在；临时库已删除。
+- payment-provider fixture 的未定义 `businessResponse` 编译阻塞已修复。该 fixture 现在要求 PostgreSQL 18 DSN、完整 operation/receipt/entitlement schema 和至少 32 字节签名 key；Premium settlement 在规范化 operation 后通过 PostgreSQL control-plane 幂等重试验证。业务 provider 请求在任何状态读取前返回 `501`，不会用固定空目录、回显 receipt 或合成 `Updates` 冒充业务结果；独立 business/CDN fixture 继续只读取或写入各自显式控制面。
+- `seed-provider-fixtures.sh` 在临时 PostgreSQL 18.6 数据库成功写入 collectible、callback 和 CDN object rows，过期、摘要和加密字段约束均通过查询验证。三类 fixture、APIFull core/persist、Files、Passkey、Passport 定向测试，migration portability、shell syntax、Compose config 和 `git diff --check` 均通过。
+- 这些控制面和 fixture 只提供可追踪的隔离验收边界，仍不等于真实支付/收据、认证器、Bot/Inline、CDN 公钥/TURN/Live provider 或生产 Layer 229 session。`LAYER229_METHOD_LEDGER.csv` 保持 813 个唯一方法和 `BLOCKED_BY_IMPLEMENTATION_GAP=67`，没有提升生产验收状态；本轮未运行全量编译、全仓测试或全量镜像构建。
+
+## 2026-10-12：真实阻塞窄收口
+
+- Star referral 的 PostgreSQL projection 在连接、建议目录或单条连接缺失时不再返回合成空成功，统一保持 canonical fail-closed 错误；已补未 provisioned 回归覆盖。
+- `help.getCdnConfig` 现在要求 `cdnConfig`、至少一个有效 `cdnPublicKey`、正数 DC 和非空公钥；`079_provider_control_plane.sql` 与 seed helper 同时拒绝空公钥数组。business/CDN/payment fixture 均要求 PostgreSQL 18、签名 key、auth key 和 schema，提供 `/healthz`/`--healthcheck`，`stories.startLive` 只读取显式 provisioned session。
+- 最终窄验证通过：三类 provider fixture、APIFull control/payment/referral、Files CDN、Passkey/Passport/Authorization 定向测试；两轮 000–079 migration replay、seed 写入/约束查询、migration portability、shell syntax、两套 Compose `config --quiet` 与 `git diff --check` 均通过。未运行全量编译、全仓测试或全量镜像构建。
+
+## 2026-10-12：WebView durable request 与 provider migration gate
+
+- `messages.requestAppWebView` 在 PostgreSQL 18 路径现在会校验 `InputBotApp`、Bot access hash、provider/control-plane 返回的 HTTPS `webViewResultUrl`，并把 provider 返回的 caller、bot、URL 和 query ID 写入现有 `apifull_webview_request`。`PutWebViewRequestIfAbsent` 对重试保持幂等，复用 request ID 时如果 owner、bot、kind 或 payload 不同则拒绝；因此 `messages.prolongWebView` 可在进程重启后按 query ID 找回请求。Layer 229 的 flagged `query_id` 是可选字段，缺省时保留合法返回且不生成 synthetic query ID；固定必带 query ID 构造器仍严格拒绝缺失值。
+- APIFull PostgreSQL 只读启动门禁现在要求 `078_apifull_payment_provider_control_plane` 迁移及三张 provider control-plane 表存在，并把该迁移纳入完整迁移计数。business、CDN、payment 三个隔离 provider fixture 启动时还必须在 PostgreSQL 18 的 `schema_migrations` 中看到有效的 `078`、`079` checksum/applied_at，随后才检查各自 provider 表；缺迁移或目录损坏会 fail startup。
+- Star referral 的 PostgreSQL 列表、单条查询和建议目录在没有任何 provisioned program/connection 时保持 canonical fail-closed，但合法 offset 末页不因当前页为空而被错误拒绝。相关 WebView、控制面、Bot payment、referral 和三类 fixture 窄测试通过，`gofmt` 与 `git diff --check` 通过；本轮未运行全量编译、全仓测试或全量镜像构建。
+- 以上改动只提升了 durable/isolated component 证据，未改变 `LAYER229_METHOD_LEDGER.csv` 的生产状态。真实 Bot App registry、消息投递 provider、支付/认证/CDN/Live authority、跨进程 Layer 229 session 和生产流量证据仍缺失，当前仍为 813 个唯一方法、`BLOCKED_BY_IMPLEMENTATION_GAP=67`，不宣称 813/813 完成。
+
+## 2026-10-12：验收汇总器与 Premium/Business/Web UI 证据回写
+
+- 新增只读入口 `python3 teamgram-server/tools/layer229_acceptance_report.py --strict`。它解析 CSV 与 `telegram-api/methods.json`，校验列宽、813 行、方法/constructor 唯一性、missing/extra/mismatch，并按 audit/production 状态和阻塞 namespace 输出汇总；`--focus premium --focus business --focus web-ui` 可重复打印三组方法的证据，`--json` 供 CI/发布门禁消费。脚本不调用 provider、不写数据库，也不会把组件测试提升为生产通过。
+- 2026-10-12 `backend-backend-1` `r32-membership` 的 user5/user6 双账号 DC2 WebSocket 探针证据已回写：`help.getPremiumPromo`、`payments.canPurchaseStore`、`payments.getPaymentForm`、`payments.validateRequestedInfo` 和 `payments.sendPaymentForm` 均走 session -> BFF -> APIFull/PostgreSQL 与本地 payment fixture；send/replay 验证了 request、receipt、grant、entitlement outbox 和 settlement 的单次/幂等行为，随后清理 fixture 和会员状态。它们从“仅组件/阻塞”提升为 `PARTIAL_SESSION_VERIFIED` / `PARTIAL_ISOLATED_SESSION_E2E`，仍明确标注外部 provider、退款、重启和生产 entitlement 未验收。
+- 同一 r32 双账号探针覆盖 Business profile 五项写入/清理、`account.setMainProfileTab` 读回、Business chat link 的创建/owner 列表/跨账号解析/编辑/删除，以及 Quick Reply 创建、占用检查、排序和删除。台账证据使用 user5/user6 与 probe 文件名，保留 PostgreSQL 重启、下游 recipient delivery 和完整 UserFull hydration 的缺口；无 Premium 的 user6 门禁返回 `PREMIUM_ACCOUNT_REQUIRED`。
+- `telegram-tt-master` 隔离 Web UI Playwright 套件 `7/7` 通过：Bot `/start`、Main Mini App、频道创建/发消息/资料检查/删除、频道通知设置 reload、联系人新增/删除、群聊消息、私聊发送/编辑和 GramJS runtime。对应 `messages.startBot` 与 `messages.requestMainWebView` 从隔离数据库证据提升为 `PARTIAL_SESSION_VERIFIED` / `PARTIAL_ISOLATED_SESSION_E2E`；频道、消息、通知、联系人和群聊行已回写 `channel-settings-web.spec.ts`、`contact-web.spec.ts`、`isolated-web.spec.ts` 的真实 WebSocket 证据。该套件使用 fixture 状态并在前后清理，不覆盖非 UI RPC、外部 provider、进程重启或全量 813 方法。
+- 汇总器在本 checkpoint 输出：813/813 方法集合匹配；生产证据为 `PARTIAL_ISOLATED_SESSION_E2E=313`、`PARTIAL_ISOLATED_DB_ONLY=254`、`PARTIAL_COMPONENT_ONLY=164`、`BLOCKED_BY_IMPLEMENTATION_GAP=63`、`TRANSPORT_ONLY=11`、`ISOLATED_COMPONENT_ONLY=6`、`ISOLATED_DB_ONLY=2`。63 个阻塞按 namespace 输出下一步：account 6、auth 3、bots 9、messages 14、payments 23、upload 3，以及 ephemeral/fragment/help/phone/stories 各 1；这些仍需要权威 provider、跨会话 update、重启/故障恢复和真实生产流量验收，完整 Layer 229 生产验收仍为 0/813。
+
+## 2026-10-12：身份 provider 三项真实 session 验收
+
+- 使用显式配置的 `identity-provider-fixture`（Bearer API key + HMAC-SHA256，`.test` HTTP alias 仅在 `TEAMGRAM_PROVIDER_FIXTURE_MODE=1` 下允许）启动 backend，并通过 `docker/production/probe-identity-providers.ts` 从 user2 的永久 auth key 建立 DC2 TCPObfuscated -> gateway -> session 链路。
+- 同一探针完成 `account.confirmBotConnection`（bot900000000001/access hash910000000001）、`account.acceptAuthorization`（SecureCredentialsEncrypted）和未绑定 MemorySession 的 `auth.importWebTokenAuthorization`；三项均收到规范 Bool/`auth.Authorization`，web-token 返回 user2，且 PostgreSQL `auth_users` 出现新的活动绑定记录。
+- GramJS 的缩减 TL schema 没有运行时生成 Passport/BotConnection 三个构造器，探针补充了只读 raw TL request serializer；constructor IDs、参数顺序和 vector/string 编码仍来自 API Layer 229 定义。
+- 台账将这三项提升为 `PARTIAL_SESSION_VERIFIED` / `PARTIAL_ISOLATED_SESSION_E2E`。这只证明隔离 fixture、真实 session、签名 provider 和 authsession 绑定边界；真实外部身份/Passport/Bot authority、跨进程重启/重放、生产凭据和 durable confirmation registry 仍是发布门槛。当前 813 个方法计数为 `PARTIAL_ISOLATED_SESSION_E2E=316`、`PARTIAL_ISOLATED_DB_ONLY=254`、`PARTIAL_COMPONENT_ONLY=164`、`BLOCKED_BY_IMPLEMENTATION_GAP=60`、`TRANSPORT_ONLY=11`、`ISOLATED_COMPONENT_ONLY=6`、`ISOLATED_DB_ONLY=2`。
+
+## 2026-10-13：Bot/WebView focus 与 provider-gap 当前口径
+
+- `python3 teamgram-server/tools/layer229_acceptance_report.py --strict` 继续确认台账为 813 行、813 个唯一方法和 813 个 constructor ID，并与 `telegram-api/methods.json` 完全匹配。当前生产状态为 `PARTIAL_ISOLATED_SESSION_E2E=316`、`PARTIAL_ISOLATED_DB_ONLY=254`、`PARTIAL_COMPONENT_ONLY=164`、`BLOCKED_BY_IMPLEMENTATION_GAP=60`、`TRANSPORT_ONLY=11`、`ISOLATED_COMPONENT_ONLY=6`、`ISOLATED_DB_ONLY=2`；完整 Layer 229 生产验收仍为 `0/813`。
+- 汇总器新增 `--focus bot-webview`，固定列出 32 项 Bot、Inline、callback、webhook、Mini App/WebView、requested-peer 和 Bot payment update producer 方法，逐项输出当前状态和证据。该 focus 将 `messages.startBot`、`messages.requestMainWebView` 的隔离 Web UI 证据与仍缺 provider/session 的方法放在同一张可复核清单中，不把局部 UI 成功扩展为全量 Bot 链路通过。
+- JSON 输出新增 `provider_gap_summary`，范围明确为 `production_acceptance_status == BLOCKED_BY_IMPLEMENTATION_GAP`。当前四个可重叠维度为：`signed_provider_boundary=57`、`postgresql_or_component_only=60`、`missing_real_provider=31`、`missing_session_update_delivery_restart_evidence=49`。这些数字是证据维度而非互斥状态；它们只从 CSV 的现有文本和状态分类，不调用 provider、不写数据库，也不改变生产验收列。
+- 当前阻塞 namespace 仍为 `account=4`、`auth=2`、`bots=9`、`messages=14`、`payments=23`、`upload=3`，以及 `ephemeral`、`fragment`、`help`、`phone`、`stories` 各 1 项。下一步仍须先部署对应权威 provider/control plane，再用真实双账号或 bot session 验证 canonical update 投递、重启/故障恢复和生产流量；隔离 fixture、PostgreSQL round-trip 或 provider stub 不得单独解除阻塞。
+
+## 2026-10-13：provider fixture 真实 session 复验与多账号身份隔离
+
+- 使用 PostgreSQL 18 中已登记的永久 auth key，通过 DC2 TCPObfuscated -> gateway -> session -> BFF 完成身份 provider 探针：`account.confirmBotConnection`、`account.acceptAuthorization` 和 `auth.importWebTokenAuthorization` 均返回规范 Bool/`auth.Authorization`；web-token 绑定用户为 `900000000001`。探针没有打印或持久化 auth key。
+- Business provider 探针使用 user10 完成 `fragment.getCollectibleInfo`、`ephemeral.getCallbackAnswer` 和 `stories.startLive`，分别返回 `fragment.CollectibleInfo`、`messages.BotCallbackAnswer` 和 `Updates`。CDN 探针完成 `help.getCdnConfig`、`upload.getFile`、`upload.getCdnFile`、`upload.getCdnFileHashes`、`upload.reuploadCdnFile`，验证了 redirect token、AES key/IV、chunk、hash 和 reupload 的规范结构。两组证据来自显式 PostgreSQL 控制面 fixture，仍不等价于外部生产 provider。
+- Bot/Mini App GramJS 探针完成 `messages.getBotCallbackAnswer`、`messages.sendWebViewData`、`messages.getBotApp`、`messages.requestAppWebView`、`messages.sendBotRequestedPeer`、`messages.sendPaidReaction`、`messages.toggleSuggestedPostApproval`、`auth.importBotAuthorization`、`messages.sendWebViewResultMessage` 和 `messages.setBotCallbackAnswer`；返回类型化 WebView/Updates/authorization/Boolean，控制面临时行清理为 0。完整 Bot provider、跨进程更新恢复和生产消息投递仍未闭合。
+- Premium 购买探针分别使用 user5 和 user6 完成 `help.getPremiumPromo`、`payments.canPurchaseStore`、`payments.getPaymentForm`、`payments.validateRequestedInfo`、`payments.sendPaymentForm` 及同请求 replay。当前数据库核对到两个账号各一笔 settled ledger、granted `premium_subscription` entitlement、complete entitlement outbox 和唯一 receipt；user10 的既有验收行保持隔离。该证据证明本地签名 payment fixture 的多账号/幂等边界，不覆盖真实支付、退款、重启恢复或生产权益 provider。
+- `080_biz_botfather.sql` 不再使用低位 `users.id=6`，改用预留 service ID `900000000010`，以避免覆盖 isolated test account `isolated_test_06`；当前数据库已在单事务中迁移 BotFather 的 user/username/bot/session 关联并恢复 user6，`schema_migrations` checksum 与文件一致。该修复确保后续多账号验收不会因 service account 与测试账号复用身份而产生假阳性。
+- 本轮 `layer229_acceptance_report.py --strict --focus premium --focus business --focus web-ui --focus bot-webview` 仍报告 813/813 方法集合匹配、`BLOCKED_BY_IMPLEMENTATION_GAP=60`。这些阻塞项继续按真实 provider、canonical update 投递、跨进程重启/故障恢复和生产流量四类门禁推进，未因隔离 fixture 结果被错误降级。
+
+## 2026-10-13：CDN 五项真实会话验收
+
+- `probe-cdn-provider.ts` 在当前 `teamgram-server-latest:20261013-e2e4` 上使用 user10 的永久 auth key，通过 DC2 TCPObfuscated -> gateway -> session -> Files BFF -> CDN provider fixture 完成 `help.getCdnConfig`、`upload.getFile(cdn_supported=true)`、`upload.getCdnFile`、`upload.getCdnFileHashes` 和 `upload.reuploadCdnFile`。
+- 结果均为规范 Layer 229 构造器：`help.cdnConfig` 返回 1 个 DC2 public key，`upload.fileCdnRedirect` 返回 32-byte token、32-byte AES key、16-byte IV 和 1 个 hash，`upload.cdnFile` 返回 28-byte 内容，两个 hash 方法各返回 1 个 typed `FileHash`。对应五个 `/mtproto.RPCFiles/*` 日志均为 error=nil，PostgreSQL CDN 对象行仍为未过期状态。
+- 这组证据把四个 CDN provider 方法从 `BLOCKED_BY_IMPLEMENTATION_GAP` 降为 `PARTIAL_ISOLATED_SESSION_E2E`；它只证明显式 PostgreSQL fixture 的真实会话边界。外部 CDN authority、密钥轮换、跨进程重启/故障恢复和生产流量仍是发布门槛，`upload.getFile` 的普通 DFS 路径不因此变更。
+
+## 2026-10-13：Bot 与 Mini App provider 九项真实会话验收
+
+- `probe-webview-bot-business.ts` 在同一 `e2e4` 服务和 user10/bot900000000001 双会话上完成 `messages.getBotCallbackAnswer`、`messages.setBotCallbackAnswer`、`messages.sendWebViewResultMessage`、`messages.sendWebViewData`、`messages.sendBotRequestedPeer`、`messages.getBotApp`、`messages.requestAppWebView`、`messages.sendPaidReaction` 和 `messages.toggleSuggestedPostApproval`。用户会话返回 `messages.BotCallbackAnswer`、`messages.BotApp`、`WebViewResultUrl` 和 typed `Updates`；Bot 会话先通过 `auth.importBotAuthorization`，再返回 `WebViewMessageSent` 与 `Boolean`。
+- `messages.requestAppWebView` 同时在 PostgreSQL `apifull_webview_request` 读到 1 条 caller/bot 绑定行；探针 finally 清理控制面和请求行后计数均为 0。所有结果均经 DC2 TCPObfuscated -> gateway -> session -> APIFull，未出现 RPC 错误。
+- 这组证据把上述九个方法从 `BLOCKED_BY_IMPLEMENTATION_GAP` 降为 `PARTIAL_ISOLATED_SESSION_E2E`。真实 Bot App/callback/paid-content authority、canonical recipient update 投递、跨进程重启/故障恢复和生产流量仍是发布门槛。
+
+## 2026-10-13：Business provider 三项真实会话验收
+
+- `probe-business-provider-operations.ts` 在同一 `e2e4` 服务上使用 user10 的永久 auth key，通过 DC2 TCPObfuscated -> gateway -> session -> APIFull/provider fixture 完成 `fragment.getCollectibleInfo`、`ephemeral.getCallbackAnswer` 和 `stories.startLive`。
+- 三项分别返回规范 `fragment.CollectibleInfo`、`messages.BotCallbackAnswer` 和 `Updates(date=1760000000,seq=0)`；探针没有写入未标记的业务数据。该证据把三项从 `BLOCKED_BY_IMPLEMENTATION_GAP` 降为 `PARTIAL_ISOLATED_SESSION_E2E`，但不覆盖 Fragment/callback/live 的外部 authority、参与者或收件人更新投递、重启恢复和生产流量。
+
+## 2026-10-13：商店 receipt assignment 双入口验收
+
+- 新增 `probe-premium-store-assignments.ts`，使用 user10 通过 DC2 TCPObfuscated -> gateway -> session -> Premium BFF -> payment provider fixture 调用 `payments.assignAppStoreTransaction` 和 `payments.assignPlayMarketTransaction`，两条请求均得到规范 `Updates`，并以同一请求对象 replay 得到相同结果。由于裁剪版 GramJS 未生成这两个 request class，探针使用 API Layer 229 constructor ID 和字段顺序的 raw serializer。
+- 探针在 finally 中按启动时间、用户和 operation 清理两条 tagged provider operation；本次运行前后未触碰 Premium settlement、receipt 或 entitlement 表。两项从 `BLOCKED_BY_IMPLEMENTATION_GAP` 降为 `PARTIAL_ISOLATED_SESSION_E2E`，真实 Apple/Google receipt verifier、entitlement 授予/撤销、重启恢复和生产流量仍是发布门槛。
+
+## 2026-10-13：TURN call config 隔离 session 验收
+
+- 当前 e2e 后端接入已运行的 coturn fixture（`192.168.0.132:3478`，容器内 relay `172.26.0.50`），先用 `turnutils_uclient` 完成 allocation、channel bind 和 20/20 数据包往返，丢包率为 0%。
+- `docker/production/probe-phone-call-config.ts` 使用 user5 永久 auth key 通过 DC2 TCPObfuscated -> gateway -> session -> APIFull 调用 `phone.getCallConfig`，返回 `DataJSON`，包含非 loopback relay、合法端口、非空凭据、`audio_frame_size=60` 和 `jitter=[2,10]`。缺失/loopback relay 的 fail-closed focused tests 仍保留。
+- 该证据将 `phone.getCallConfig` 从 `BLOCKED_BY_IMPLEMENTATION_GAP` 调整为 `PARTIAL_ISOLATED_SESSION_E2E`，只覆盖隔离 coturn 与真实 session 边界；外部 TURN credentials、动态 TTL/轮换、多用户 WebRTC/media negotiation、重启恢复和生产流量仍是发布门槛。
+
+## 2026-10-13：Star referral 五项真实会话验收
+
+- 新增 `docker/production/probe-star-referral-operations.ts`。探针使用预留 BotFather service bot `900000000010`、user10 的永久 auth key，通过 DC2 TCPObfuscated -> gateway -> session -> APIFull/PostgreSQL；为本次运行事务性 provision active referral program，然后完成 `payments.getSuggestedStarRefBots`、`payments.connectStarRefBot`、`payments.getConnectedStarRefBots`、`payments.getConnectedStarRefBot` 和 `payments.editConnectedStarRefBot`。
+- 由于裁剪版 GramJS 运行时未导出这五个 request class，探针按 Layer 229 constructor ID、flags、InputPeer/InputUser 和 string/int 字段顺序使用 raw serializer；返回分别验证为 `payments.SuggestedStarRefBots` 与 `payments.ConnectedStarRefBots`，并读回 `revoked=true`。finally 删除 referral connection/program，运行后两类行均为 0。
+- 台账将这五项从 `BLOCKED_BY_IMPLEMENTATION_GAP` 调整为 `PARTIAL_ISOLATED_SESSION_E2E`，audit 状态为 `PARTIAL_SESSION_VERIFIED`。证据只覆盖本地 PostgreSQL projection、bot hydration、真实 Layer 229 session 和清理；外部 referral/recommendation authority、settlement、recipient update、重启/故障恢复和生产流量仍未验收。
+
+## 2026-10-13：Stars send form 隔离会话验收
+
+- 新增 `docker/production/probe-send-stars-form.ts`。探针使用 user10 的永久 auth key，通过 DC2 TCPObfuscated -> gateway -> session -> APIFull/payment fixture/PostgreSQL，事务性 provision 一条 top-up catalog row，调用 `payments.getStarsTopupOptions`、`payments.getPaymentForm`、`payments.sendStarsForm`，并 replay 同一个 request。
+- 本次返回 `StarsTopupOption`、`payments.PaymentFormStars`、两次 `payments.PaymentResult`；PostgreSQL 观察到一笔 settled request 和一笔 `settle_stars` provider operation，Stars balance 增加 101。finally 精确删除 request/receipt/ledger/provider operation/receipt/entitlement、Stars idempotency row、catalog row，并恢复原始 balance，运行后相关临时行均为 0。
+- 台账将 `payments.sendStarsForm` 从 `BLOCKED_BY_IMPLEMENTATION_GAP` 调整为 `PARTIAL_ISOLATED_SESSION_E2E`，audit 状态为 `PARTIAL_SESSION_VERIFIED`。证据仍只覆盖隔离签名 fixture、目录和本地 Stars ledger；真实 payment/receipt authority、退款/对账、重启/故障恢复和生产流量尚未验收。
+
+## 2026-10-13：Bot、Inline、Mini App 与支付回调 14 项真实会话验收
+
+- `docker/production/probe-bot-message-gap.ts` 使用 PostgreSQL 中已登记的 user `5` 与 bot `900000000001` 永久 auth key，通过 DC2 `TCPObfuscated -> gateway -> session -> APIFull` 完成 14 个 Layer 229 请求。用户会话返回 `Boolean`（`bots.checkDownloadFileParams`）、`users.Users`（`bots.getBotRecommendations`）、`bots.PopularAppBots`、`DataJSON`（`bots.invokeWebViewCustomMethod`）、`WebViewResultUrl`（`messages.requestChatJoinWebView`）、`Boolean`（`messages.editInlineBotMessage`）和 `InputBotInlineMessageID`（`messages.setBotGuestChatResult`）。
+- Bot 会话返回 `DataJSON`（`bots.sendCustomRequest`）、`Boolean`（`bots.answerWebhookJSONQuery`、`bots.setCustomVerification`、`bots.setJoinChatResults`）、`StarRefProgram`（`bots.updateStarRefProgram`），并通过同一真实 session 完成 `messages.setBotShippingResults` 与 `messages.setBotPrecheckoutResults` 的 `Boolean` 回调。`bots.updateStarRefProgram` 在当前 PostgreSQL 部署走本地 referral projection；探针同时 provisioned provider fallback row，确认 fallback 边界具备可重放 fixture，但本次没有调用该 provider。
+- 探针每次运行自行写入 12 条带精确 payload SHA-256 的 business-provider rows，过期时间为 10 分钟，finally 按 `(operation,user_id,fingerprint)` 删除，结果为 `operations=12, cleanup=12`。支付部分自行写入 `shipping_pending` 与 `precheckout_pending` 两条 query，回调完成后 `queriesDeleted=2`，`apifull_bot_payment_outbox` 残留为 `0`。这避免了依赖手工续租或遗留控制面数据；auth key 只在本地 shell/探针进程中读取，没有打印或写入仓库。
+- 台账中上述 14 项从 `BLOCKED_BY_IMPLEMENTATION_GAP` 调整为 `PARTIAL_SESSION_VERIFIED` / `PARTIAL_ISOLATED_SESSION_E2E`。证据覆盖隔离 provider fixture、PostgreSQL callback 状态、真实双身份 session、Layer 229 构造器和清理；外部 Bot/WebView/affiliate/payment authority、canonical recipient/update 投递、完整 invoice/支付 settlement、跨进程重启与恢复、真实生产流量仍未验收。
+
+## 2026-10-13：Star Gift、拍卖与预付赠品 15 项真实会话验收
+
+- `docker/production/probe-star-gift-payment-operations.ts` 使用 user10 的永久 auth key，通过 DC2 `TCPObfuscated -> gateway -> session -> APIFull/business provider/PostgreSQL` 完成 `payments.launchPrepaidGiveaway`、`payments.getStarGiftUpgradePreview`、`payments.upgradeStarGift`、`payments.getStarGiftWithdrawalUrl`、`payments.getResaleStarGifts`、`payments.updateStarGiftPrice`、`payments.checkCanSendGift`、`payments.getStarGiftAuctionState`、`payments.getStarGiftAuctionAcquiredGifts`、`payments.getStarGiftActiveAuctions`、`payments.resolveStarGiftOffer`、`payments.sendStarGiftOffer`、`payments.getStarGiftUpgradeAttributes`、`payments.getCraftStarGifts` 和 `payments.craftStarGift`。
+- 探针按 `operation + user_id + payload SHA-256` 精确 provision 15 条带 `constructor` 字段的 signed provider rows；输出为 `methods=15, seeded=15, cleaned=15, remaining=0`，没有留下业务 provider 数据。所有调用均通过真实 Layer 229 session，并先用 `getMe` 校验 auth key 对应 user10。
+- 返回构造器覆盖 `Updates`（赠品发布、升级、调价、报价和 craft 操作）、`payments.StarGiftUpgradePreview`、`payments.StarGiftWithdrawalUrl`、`payments.ResaleStarGifts`、`payments.CheckCanSendGiftResultOk`、`payments.StarGiftAuctionState`、`payments.StarGiftAuctionAcquiredGifts`、`payments.StarGiftActiveAuctionsNotModified`、`payments.StarGiftUpgradeAttributes` 和 `payments.SavedStarGifts`；探针对每个结果执行 typed Layer 229 构造器检查。
+- 台账中的 15 项现记录为 `PARTIAL_SESSION_VERIFIED` / `PARTIAL_ISOLATED_SESSION_E2E`。证据只覆盖隔离 signed provider fixture、PostgreSQL operation matching、真实单账号 session、结果构造器和清理；真实礼物库存/所有权、Stars 扣款与结算、退款、拍卖权威、赠品分发、重启恢复和生产流量仍未验收。
+
+## 2026-10-13：唯一礼物聊天主题 provider projection 验收
+
+- business provider fixture 新增只读 `account.getUniqueGiftChatThemes` projection：读取 PostgreSQL `apifull_gift_chat_theme` 发布表，计算稳定 hash，支持 Layer 229 offset/hash/not-modified 语义，并返回 canonical `account.chatThemes` / `chatThemeUniqueGift` / `starGift` 构造器。启动前强制检查 migration 070 和主题表，未发布的普通礼物不会被推断为主题。
+- `docker/production/probe-unique-gift-chat-themes.ts` 使用 user10 的永久 auth key，通过 DC2 `TCPObfuscated -> gateway -> session -> APIFull/business provider/PostgreSQL` seeded one published gift and returned `account.ChatThemes` with `ChatThemeUniqueGift`, `StarGift`, `DocumentEmpty` and a non-zero hash; finally deleted the seeded gift and theme row.
+- 台账将 `account.getUniqueGiftChatThemes` 提升为 `PARTIAL_SESSION_VERIFIED` / `PARTIAL_ISOLATED_SESSION_E2E`。证据覆盖隔离 provider projection、PostgreSQL 发布边界、真实 Layer 229 session 和清理；权威 gift inventory/media、重启/故障恢复和生产流量仍未验收。
+
+## 2026-10-13：Paid-message 与 paid-auth provider 隔离 session 验收
+
+- `probe-paid-message-provider.ts` 使用 user5 的永久 auth key，经 DC2 `TCPObfuscated -> gateway -> session -> APIFull -> payment-provider-fixture/PostgreSQL` 调用 `account.getPaidMessagesRevenue` 和 `account.toggleNoPaidMessagesException`。前者返回规范 `account.PaidMessagesRevenue`，`stars_amount=37`，同请求 replay 返回一致结果；后者返回规范 `Boolean`。探针观察到两条带 caller 绑定的 provider operation，finally 清理后 `remaining=0`。
+- `probe-auth-paid.ts` 使用真实 Layer 229 session 经 Authorization BFF -> signed identity-provider-fixture 调用 `auth.checkPaidAuth`，返回规范 `auth.SentCodePaymentRequired`，商品为 `telegram-premium-monthly`，`premiumDays=30`，`currency=USD`，`amount=499`。fixture dispatch、HMAC、request/identity binding 和恶意响应拒绝由 focused tests 覆盖。
+- 台账中三项从 `PARTIAL_COMPONENT_VERIFIED` 提升为 `PARTIAL_SESSION_VERIFIED` / `PARTIAL_ISOLATED_SESSION_E2E`，但完整生产验收仍为 `0/813`。这些证据只证明显式 PostgreSQL 控制面 fixture、签名响应、真实 session、构造器和清理；不等价于真实 payment/paid-content ledger、Stars settlement、退款、外部认证 authority、完整付费登录/消息流程、重启恢复或生产流量验收。`account.registerPasskey` 与 `auth.finishPasskeyLogin` 仍缺真实 RP/origin、认证器 attestation/assertion 和生产 authsession 成功链路。

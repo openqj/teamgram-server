@@ -55,7 +55,7 @@ func verifyBotConnectionProviderSignature(key, signature string, body []byte) bo
 	return hmac.Equal(provided, h.Sum(nil))
 }
 
-func secureBotConnectionProviderURL(parsed *url.URL) bool {
+func secureBotConnectionProviderURL(parsed *url.URL, allowInsecureHTTP bool) bool {
 	if parsed == nil {
 		return false
 	}
@@ -67,6 +67,9 @@ func secureBotConnectionProviderURL(parsed *url.URL) bool {
 	}
 	host := strings.TrimSuffix(strings.ToLower(parsed.Hostname()), ".")
 	if host == "localhost" {
+		return true
+	}
+	if allowInsecureHTTP && strings.HasSuffix(host, ".test") {
 		return true
 	}
 	ip := net.ParseIP(host)
@@ -84,7 +87,7 @@ func (c *AccountCore) callBotConnectionProvider(operation string, payload any, r
 	key := strings.TrimSpace(c.svcCtx.Config.BotConnectionProviderKey)
 	signingKey := strings.TrimSpace(c.svcCtx.Config.BotConnectionProviderSigningKey)
 	parsed, err := url.Parse(endpoint)
-	if err != nil || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || !secureBotConnectionProviderURL(parsed) {
+	if err != nil || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || !secureBotConnectionProviderURL(parsed, c.svcCtx.Config.AllowInsecureProviderHTTP) {
 		return mtproto.ErrInternalServerError
 	}
 	if c.svcCtx.Config.BotConnectionProviderTimeoutSeconds < 0 || c.svcCtx.Config.BotConnectionProviderTimeoutSeconds > 300 {

@@ -1,0 +1,199 @@
+# Isolated Layer 229 acceptance providers.
+#
+# This file is an overlay for docker-compose.yaml. It is intentionally not
+# included by backend-deploy-r29-prod.yaml: these fixtures are deployable test
+# authorities only and must never stand in for a real payment, business, CDN,
+# authorization, Passport, or bot-connection provider in production.
+services:
+  teamgram:
+    profiles: [provider-fixtures]
+    depends_on:
+      postgres-migrate:
+        condition: service_completed_successfully
+      payment-provider-fixture:
+        condition: service_healthy
+      business-provider-fixture:
+        condition: service_healthy
+      cdn-provider-fixture:
+        condition: service_healthy
+      identity-provider-fixture:
+        condition: service_healthy
+      code-provider-fixture:
+        condition: service_healthy
+      provider-fixtures-seed:
+        condition: service_completed_successfully
+    environment:
+      TEAMGRAM_POSTGRES_DSN: "${TEAMGRAM_POSTGRES_DSN:?TEAMGRAM_POSTGRES_DSN is required}"
+      TEAMGRAM_PAYMENT_PROVIDER_ENDPOINT: "${TEAMGRAM_PAYMENT_PROVIDER_ENDPOINT:-http://payment-provider-fixture:18080}"
+      TEAMGRAM_PAYMENT_PROVIDER_KEY: "${TEAMGRAM_PAYMENT_PROVIDER_KEY:-}"
+      TEAMGRAM_PAYMENT_PROVIDER_SIGNING_KEY: "${TEAMGRAM_PAYMENT_PROVIDER_SIGNING_KEY:-}"
+      TEAMGRAM_PAYMENT_PROVIDER_TIMEOUT_SECONDS: "${TEAMGRAM_PAYMENT_PROVIDER_TIMEOUT_SECONDS:-5}"
+      TEAMGRAM_BUSINESS_PROVIDER_ENDPOINT: "${TEAMGRAM_BUSINESS_PROVIDER_ENDPOINT:-http://business-provider-fixture:23190}"
+      TEAMGRAM_BUSINESS_PROVIDER_KEY: "${TEAMGRAM_BUSINESS_PROVIDER_KEY:-}"
+      TEAMGRAM_BUSINESS_PROVIDER_SIGNING_KEY: "${TEAMGRAM_BUSINESS_PROVIDER_SIGNING_KEY:-}"
+      TEAMGRAM_BUSINESS_PROVIDER_TIMEOUT_SECONDS: "${TEAMGRAM_BUSINESS_PROVIDER_TIMEOUT_SECONDS:-5}"
+      TEAMGRAM_CDN_PROVIDER_ENDPOINT: "${TEAMGRAM_CDN_PROVIDER_ENDPOINT:-http://cdn-provider-fixture:23191}"
+      TEAMGRAM_CDN_PROVIDER_KEY: "${TEAMGRAM_CDN_PROVIDER_KEY:-}"
+      TEAMGRAM_CDN_PROVIDER_SIGNING_KEY: "${TEAMGRAM_CDN_PROVIDER_SIGNING_KEY:-}"
+      TEAMGRAM_CDN_PROVIDER_TIMEOUT_SECONDS: "${TEAMGRAM_CDN_PROVIDER_TIMEOUT_SECONDS:-5}"
+      TEAMGRAM_PROVIDER_FIXTURE_MODE: "1"
+      TEAMGRAM_AUTH_PROVIDER_ENDPOINT: "${TEAMGRAM_AUTH_PROVIDER_ENDPOINT:-http://identity-provider-fixture.test:23192}"
+      TEAMGRAM_AUTH_PROVIDER_KEY: "${TEAMGRAM_IDENTITY_PROVIDER_KEY:?TEAMGRAM_IDENTITY_PROVIDER_KEY is required}"
+      TEAMGRAM_AUTH_PROVIDER_SIGNING_KEY: "${TEAMGRAM_IDENTITY_PROVIDER_SIGNING_KEY:?TEAMGRAM_IDENTITY_PROVIDER_SIGNING_KEY is required}"
+      TEAMGRAM_AUTH_PROVIDER_TIMEOUT_SECONDS: "${TEAMGRAM_AUTH_PROVIDER_TIMEOUT_SECONDS:-5}"
+      TEAMGRAM_PASSPORT_PROVIDER_ENDPOINT: "${TEAMGRAM_PASSPORT_PROVIDER_ENDPOINT:-http://identity-provider-fixture.test:23192}"
+      TEAMGRAM_PASSPORT_PROVIDER_KEY: "${TEAMGRAM_IDENTITY_PROVIDER_KEY:?TEAMGRAM_IDENTITY_PROVIDER_KEY is required}"
+      TEAMGRAM_PASSPORT_PROVIDER_SIGNING_KEY: "${TEAMGRAM_IDENTITY_PROVIDER_SIGNING_KEY:?TEAMGRAM_IDENTITY_PROVIDER_SIGNING_KEY is required}"
+      TEAMGRAM_PASSPORT_PROVIDER_TIMEOUT_SECONDS: "${TEAMGRAM_PASSPORT_PROVIDER_TIMEOUT_SECONDS:-5}"
+      TEAMGRAM_BOT_CONNECTION_PROVIDER_ENDPOINT: "${TEAMGRAM_BOT_CONNECTION_PROVIDER_ENDPOINT:-http://identity-provider-fixture.test:23192}"
+      TEAMGRAM_BOT_CONNECTION_PROVIDER_KEY: "${TEAMGRAM_IDENTITY_PROVIDER_KEY:?TEAMGRAM_IDENTITY_PROVIDER_KEY is required}"
+      TEAMGRAM_BOT_CONNECTION_PROVIDER_SIGNING_KEY: "${TEAMGRAM_IDENTITY_PROVIDER_SIGNING_KEY:?TEAMGRAM_IDENTITY_PROVIDER_SIGNING_KEY is required}"
+      TEAMGRAM_BOT_CONNECTION_PROVIDER_TIMEOUT_SECONDS: "${TEAMGRAM_BOT_CONNECTION_PROVIDER_TIMEOUT_SECONDS:-5}"
+      TEAMGRAM_CODE_SMS_PROVIDER: "${TEAMGRAM_CODE_SMS_PROVIDER:-http}"
+      TEAMGRAM_CODE_EMAIL_PROVIDER: "${TEAMGRAM_CODE_EMAIL_PROVIDER:-http}"
+      TEAMGRAM_CODE_SEND_URL: "${TEAMGRAM_CODE_SEND_URL:-http://code-provider-fixture:23193/send}"
+      TEAMGRAM_CODE_EMAIL_SEND_URL: "${TEAMGRAM_CODE_EMAIL_SEND_URL:-http://code-provider-fixture:23193/send}"
+      TEAMGRAM_CODE_KEY: "${TEAMGRAM_CODE_PROVIDER_KEY:?TEAMGRAM_CODE_PROVIDER_KEY is required}"
+      TEAMGRAM_CODE_SECRET: "${TEAMGRAM_CODE_PROVIDER_SECRET:?TEAMGRAM_CODE_PROVIDER_SECRET is required}"
+      TEAMGRAM_CODE_CHALLENGE_SECRET: "${TEAMGRAM_CODE_CHALLENGE_SECRET:?TEAMGRAM_CODE_CHALLENGE_SECRET is required}"
+      TEAMGRAM_CODE_PROVIDER_TIMEOUT_SECONDS: "${TEAMGRAM_CODE_PROVIDER_TIMEOUT_SECONDS:-5}"
+
+  identity-provider-fixture:
+    profiles: [provider-fixtures]
+    build:
+      context: .
+      dockerfile: docker/production/identity-provider-fixture/Dockerfile
+    environment:
+      TEAMGRAM_IDENTITY_PROVIDER_KEY: "${TEAMGRAM_IDENTITY_PROVIDER_KEY:?TEAMGRAM_IDENTITY_PROVIDER_KEY is required}"
+      TEAMGRAM_IDENTITY_PROVIDER_SIGNING_KEY: "${TEAMGRAM_IDENTITY_PROVIDER_SIGNING_KEY:?TEAMGRAM_IDENTITY_PROVIDER_SIGNING_KEY is required}"
+      IDENTITY_PROVIDER_WEB_TOKENS: "${IDENTITY_PROVIDER_WEB_TOKENS:?IDENTITY_PROVIDER_WEB_TOKENS is required}"
+      IDENTITY_PROVIDER_BOT_IDS: "${IDENTITY_PROVIDER_BOT_IDS:?IDENTITY_PROVIDER_BOT_IDS is required}"
+      IDENTITY_PROVIDER_PORT: "23192"
+    expose: ["23192"]
+    healthcheck:
+      test: ["CMD", "/identity-provider", "--healthcheck"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
+    networks:
+      teamgram_net:
+        aliases:
+          - identity-provider-fixture.test
+
+  code-provider-fixture:
+    profiles: [provider-fixtures]
+    build:
+      context: .
+      dockerfile: docker/production/code-provider-fixture/Dockerfile
+    environment:
+      CODE_PROVIDER_KEY: "${TEAMGRAM_CODE_PROVIDER_KEY:?TEAMGRAM_CODE_PROVIDER_KEY is required}"
+      CODE_PROVIDER_SECRET: "${TEAMGRAM_CODE_PROVIDER_SECRET:?TEAMGRAM_CODE_PROVIDER_SECRET is required}"
+      CODE_PROVIDER_PORT: "23193"
+    expose: ["23193"]
+    healthcheck:
+      test: ["CMD", "/code-provider", "--healthcheck"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
+    networks: [teamgram_net]
+
+  payment-provider-fixture:
+    profiles: [provider-fixtures]
+    build:
+      context: .
+      dockerfile: docker/production/payment-provider-fixture/Dockerfile
+    depends_on:
+      postgres-migrate:
+        condition: service_completed_successfully
+    environment:
+      TEAMGRAM_POSTGRES_DSN: "${TEAMGRAM_POSTGRES_DSN:?TEAMGRAM_POSTGRES_DSN is required}"
+      PAYMENT_PROVIDER_KEY: "${TEAMGRAM_PAYMENT_PROVIDER_KEY:?TEAMGRAM_PAYMENT_PROVIDER_KEY is required}"
+      PAYMENT_PROVIDER_SIGNING_KEY: "${TEAMGRAM_PAYMENT_PROVIDER_SIGNING_KEY:?TEAMGRAM_PAYMENT_PROVIDER_SIGNING_KEY is required}"
+      PAYMENT_PROVIDER_PORT: "18080"
+    expose: ["18080"]
+    healthcheck:
+      test: ["CMD", "/payment-provider", "--healthcheck"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
+    networks: [teamgram_net]
+
+  business-provider-fixture:
+    profiles: [provider-fixtures]
+    build:
+      context: .
+      dockerfile: docker/production/business-provider-fixture/Dockerfile
+    depends_on:
+      postgres-migrate:
+        condition: service_completed_successfully
+    environment:
+      TEAMGRAM_POSTGRES_DSN: "${TEAMGRAM_POSTGRES_DSN:?TEAMGRAM_POSTGRES_DSN is required}"
+      TEAMGRAM_BUSINESS_PROVIDER_KEY: "${TEAMGRAM_BUSINESS_PROVIDER_KEY:?TEAMGRAM_BUSINESS_PROVIDER_KEY is required}"
+      TEAMGRAM_BUSINESS_PROVIDER_SIGNING_KEY: "${TEAMGRAM_BUSINESS_PROVIDER_SIGNING_KEY:?TEAMGRAM_BUSINESS_PROVIDER_SIGNING_KEY is required}"
+      TEAMGRAM_BUSINESS_PROVIDER_TIMEOUT_SECONDS: "${TEAMGRAM_BUSINESS_PROVIDER_TIMEOUT_SECONDS:-5}"
+      PORT: "23190"
+    expose: ["23190"]
+    healthcheck:
+      test: ["CMD", "/business-provider", "--healthcheck"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
+    networks: [teamgram_net]
+
+  cdn-provider-fixture:
+    profiles: [provider-fixtures]
+    build:
+      context: .
+      dockerfile: docker/production/cdn-provider-fixture/Dockerfile
+    depends_on:
+      postgres-migrate:
+        condition: service_completed_successfully
+    environment:
+      TEAMGRAM_POSTGRES_DSN: "${TEAMGRAM_POSTGRES_DSN:?TEAMGRAM_POSTGRES_DSN is required}"
+      TEAMGRAM_CDN_PROVIDER_KEY: "${TEAMGRAM_CDN_PROVIDER_KEY:?TEAMGRAM_CDN_PROVIDER_KEY is required}"
+      TEAMGRAM_CDN_PROVIDER_SIGNING_KEY: "${TEAMGRAM_CDN_PROVIDER_SIGNING_KEY:?TEAMGRAM_CDN_PROVIDER_SIGNING_KEY is required}"
+      TEAMGRAM_CDN_PROVIDER_TIMEOUT_SECONDS: "${TEAMGRAM_CDN_PROVIDER_TIMEOUT_SECONDS:-5}"
+      PORT: "23191"
+    expose: ["23191"]
+    healthcheck:
+      test: ["CMD", "/cdn-provider", "--healthcheck"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
+    networks: [teamgram_net]
+
+  provider-fixtures-seed:
+    profiles: [provider-fixtures]
+    image: postgres:18
+    depends_on:
+      postgres-migrate:
+        condition: service_completed_successfully
+    environment:
+      DATABASE_URL: "${TEAMGRAM_POSTGRES_DSN:?TEAMGRAM_POSTGRES_DSN is required}"
+      CALLBACK_USER_ID: "${CALLBACK_USER_ID:-}"
+      CALLBACK_MESSAGE_ID: "${CALLBACK_MESSAGE_ID:-}"
+      CALLBACK_DATA: "${CALLBACK_DATA:-}"
+      CALLBACK_ANSWER_JSON: "${CALLBACK_ANSWER_JSON:-}"
+      COLLECTIBLE_USERNAME: "${COLLECTIBLE_USERNAME:-}"
+      COLLECTIBLE_PURCHASE_DATE: "${COLLECTIBLE_PURCHASE_DATE:-}"
+      COLLECTIBLE_CURRENCY: "${COLLECTIBLE_CURRENCY:-}"
+      COLLECTIBLE_AMOUNT: "${COLLECTIBLE_AMOUNT:-}"
+      COLLECTIBLE_CRYPTO_CURRENCY: "${COLLECTIBLE_CRYPTO_CURRENCY:-}"
+      COLLECTIBLE_CRYPTO_AMOUNT: "${COLLECTIBLE_CRYPTO_AMOUNT:-0}"
+      COLLECTIBLE_URL: "${COLLECTIBLE_URL:-}"
+      CDN_PUBLIC_KEYS_JSON: "${CDN_PUBLIC_KEYS_JSON:-}"
+      LIVE_USER_ID: "${LIVE_USER_ID:-}"
+      LIVE_RANDOM_ID: "${LIVE_RANDOM_ID:-}"
+      LIVE_REQUEST_PAYLOAD: "${LIVE_REQUEST_PAYLOAD:-}"
+      LIVE_UPDATES_JSON: "${LIVE_UPDATES_JSON:-}"
+    volumes:
+      - ./docker/production/seed-provider-fixtures.sh:/workspace/seed-provider-fixtures.sh:ro
+    entrypoint: ["/bin/bash", "-euc"]
+    command: ["/workspace/seed-provider-fixtures.sh"]
+    restart: "no"
+    networks: [teamgram_net]

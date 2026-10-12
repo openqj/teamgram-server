@@ -36,6 +36,7 @@ type Config struct {
 	AuthProviderKey            string `json:",optional"`
 	AuthProviderSigningKey     string `json:",optional"`
 	AuthProviderTimeoutSeconds int    `json:",optional"`
+	AllowInsecureProviderHTTP  bool   `json:",optional"`
 	UserClient                 zrpc.RpcClientConf
 	AuthsessionClient          zrpc.RpcClientConf
 	ChatClient                 zrpc.RpcClientConf

@@ -4,12 +4,11 @@ import (
 	"testing"
 
 	"github.com/teamgram/proto/mtproto"
-	"github.com/teamgram/proto/mtproto/rpc/metadata"
 	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/persist"
 )
 
 func TestBizRestAwayMessage(t *testing.T) {
-	c := &ApiFullCore{MD: &metadata.RpcMetadata{UserId: 1}}
+	c := premiumAccessCore(1, true)
 	ok, err := c.AccountUpdateBusinessAwayMessage(&mtproto.TLAccountUpdateBusinessAwayMessage{
 		Message: &mtproto.InputBusinessAwayMessage{ShortcutId: 3, OfflineOnly: true},
 	})
@@ -22,7 +21,7 @@ func TestBizRestAwayMessage(t *testing.T) {
 }
 
 func TestBusinessGreetingPostgres(t *testing.T) {
-	c := &ApiFullCore{MD: &metadata.RpcMetadata{UserId: 15}}
+	c := premiumAccessCore(15, true)
 	ok, err := c.AccountUpdateBusinessGreetingMessage(&mtproto.TLAccountUpdateBusinessGreetingMessage{
 		Message: &mtproto.InputBusinessGreetingMessage{
 			PredicateName:  "hello-postgres",
@@ -43,7 +42,7 @@ func TestBusinessGreetingPostgres(t *testing.T) {
 }
 
 func TestBusinessLocationClear(t *testing.T) {
-	c := &ApiFullCore{MD: &metadata.RpcMetadata{UserId: 16}}
+	c := premiumAccessCore(16, true)
 	if _, err := c.AccountUpdateBusinessLocation(&mtproto.TLAccountUpdateBusinessLocation{
 		Address: mtproto.MakeFlagsString("temporary"),
 	}); err != nil {

@@ -24,20 +24,14 @@ function postgres(query: string): string {
   ], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
 }
 
-function postgresWrite(query: string): void {
-  execFileSync('docker', [
-    'exec', 'teamgram-postgres', 'psql', '-v', 'ON_ERROR_STOP=1', '-At', '-q', '-F', '\t', '-U', 'teamgram', '-d', 'teamgram', '-c', query,
-  ], { stdio: ['ignore', 'ignore', 'ignore'] });
-}
-
 function loadAuthKey(): string {
   const body = postgres(`
     SELECT encode(k.body, 'base64')
     FROM auth_users u
     JOIN auth_keys k USING (auth_key_id)
     JOIN auth_key_infos i USING (auth_key_id)
-    WHERE u.user_id=${userId} AND u.state=0 AND u.deleted=0
-      AND k.deleted=0 AND i.deleted=0 AND i.auth_key_type=0
+    WHERE u.user_id=${userId} AND u.state=0 AND NOT u.deleted
+      AND NOT k.deleted AND NOT i.deleted AND i.auth_key_type=0
     ORDER BY u.date_active DESC, u.id DESC
     LIMIT 1
   `);
@@ -62,14 +56,12 @@ function channelRows(channelId: bigint): Record<string, number> {
   return Object.fromEntries(Object.entries(checks).map(([name, query]) => [name, Number(postgres(query))]));
 }
 
-function settingsKey(channelId: bigint): string {
-  return `forum:channel:${channelId}:settings`;
-}
-
 function readSettings(channelId: bigint): { enabled: boolean; tabs: boolean; viewAsMessages: boolean } {
-  const raw = postgres(`SELECT v FROM apifull_kv WHERE k='${settingsKey(channelId)}'`);
+  const raw = postgres(`SELECT enabled,tabs,view_as_messages
+    FROM apifull_forum_channel_settings WHERE channel_id=${channelId}`);
   if (!raw) throw new Error('temporary forum settings row is absent');
-  return JSON.parse(raw);
+  const [enabled, tabs, viewAsMessages] = raw.split('\t').map((value) => value === 't' || value === 'true');
+  return { enabled, tabs, viewAsMessages };
 }
 
 function updateClasses(value: any): string[] {
@@ -146,10 +138,9 @@ async function main() {
     channelId = BigInt(String(channel.id));
     accessHash = BigInt(String(channel.accessHash));
     const inputChannel = new Api.InputChannel({ channelId, accessHash });
-    const key = settingsKey(channelId);
     const topicKey = `forum:channel:${channelId}`;
-    if (Number(postgres(`SELECT COUNT(*) FROM apifull_kv WHERE k IN ('${topicKey}', '${key}')`)) !== 0) {
-      throw new Error('temporary forum settings key already exists; refusing to overwrite it');
+    if (Number(postgres(`SELECT COUNT(*) FROM apifull_forum_channel_settings WHERE channel_id=${channelId}`)) !== 0) {
+      throw new Error('temporary forum settings row already exists; refusing to overwrite it');
     }
     forumKeyOwned = true;
 
@@ -235,10 +226,8 @@ async function main() {
     }
     if (forumKeyOwned) {
       try {
-        const key = settingsKey(channelId);
-        const topicKey = `forum:channel:${channelId}`;
-        postgresWrite(`DELETE FROM apifull_kv WHERE k IN ('${topicKey}', '${key}')`);
-        evidence.forumKvRowsAfterCleanup = Number(postgres(`SELECT COUNT(*) FROM apifull_kv WHERE k IN ('${topicKey}', '${key}')`));
+        evidence.forumTopicRowsAfterCleanup = Number(postgres(`SELECT COUNT(*) FROM apifull_forum_topic WHERE peer_key='channel:${channelId}'`));
+        evidence.forumSettingsRowsAfterCleanup = Number(postgres(`SELECT COUNT(*) FROM apifull_forum_channel_settings WHERE channel_id=${channelId}`));
       } catch (error) {
         cleanupError ??= error;
       }
@@ -251,7 +240,7 @@ async function main() {
   const remaining = channelRows(channelId);
   evidence.channelRowsAfterDelete = remaining;
   if (Object.values(remaining).some((count) => count !== 0)
-    || (forumKeyOwned && evidence.forumKvRowsAfterCleanup !== 0)) {
+    || (forumKeyOwned && (evidence.forumTopicRowsAfterCleanup !== 0 || evidence.forumSettingsRowsAfterCleanup !== 0))) {
     throw new Error(`temporary forum probe cleanup left production rows: ${JSON.stringify(evidence)}`);
   }
   if (cleanupError) throw cleanupError;

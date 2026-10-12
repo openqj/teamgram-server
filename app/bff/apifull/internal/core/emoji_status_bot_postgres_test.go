@@ -23,8 +23,6 @@ func TestBotEmojiStatusPermissionAndUpdatePostgres(t *testing.T) {
 	if err := persist.OpenPostgresReadOnly(dsn); err != nil {
 		t.Skipf("PostgreSQL schema unavailable: %v", err)
 	}
-	t.Cleanup(func() { _ = persist.ClosePostgres() })
-
 	ownerID := time.Now().UnixNano()
 	botID := ownerID + 1
 	ownerHash := ownerID + 10

@@ -48,7 +48,7 @@ func (s *businessChatLinkTestStore) Set(key, value string) error {
 }
 
 func TestBusinessGreetingSetGet(t *testing.T) {
-	c := &ApiFullCore{MD: &metadata.RpcMetadata{UserId: 1}}
+	c := premiumAccessCore(1, true)
 	ok, err := c.AccountUpdateBusinessGreetingMessage(&mtproto.TLAccountUpdateBusinessGreetingMessage{
 		Message: &mtproto.InputBusinessGreetingMessage{
 			ShortcutId:     42,
@@ -77,7 +77,7 @@ func TestBusinessChatLinkLifecycle(t *testing.T) {
 	t.Cleanup(func() { persist.Use(previous) })
 
 	const ownerID int64 = 81024001
-	owner := &ApiFullCore{MD: &metadata.RpcMetadata{UserId: ownerID}}
+	owner := premiumAccessCore(ownerID, true)
 	visitor := &ApiFullCore{MD: &metadata.RpcMetadata{UserId: ownerID + 1}}
 
 	created, err := owner.AccountCreateBusinessChatLink(&mtproto.TLAccountCreateBusinessChatLink{

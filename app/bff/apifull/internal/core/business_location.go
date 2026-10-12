@@ -33,8 +33,8 @@ func locationKey(userId int64) string {
 }
 
 func (c *ApiFullCore) AccountUpdateBusinessLocation(in *mtproto.TLAccountUpdateBusinessLocation) (*mtproto.Bool, error) {
-	if c.MD == nil || c.MD.UserId == 0 {
-		return nil, mtproto.ErrAuthKeyUnregistered
+	if err := c.requirePremium(); err != nil {
+		return nil, err
 	}
 	key := locationKey(c.MD.UserId)
 	if in == nil || (in.GetGeoPoint() == nil && in.GetAddress() == nil) {

@@ -33,8 +33,8 @@ func introKey(userId int64) string {
 }
 
 func (c *ApiFullCore) AccountUpdateBusinessIntro(in *mtproto.TLAccountUpdateBusinessIntro) (*mtproto.Bool, error) {
-	if c.MD == nil || c.MD.UserId == 0 {
-		return nil, mtproto.ErrAuthKeyUnregistered
+	if err := c.requirePremium(); err != nil {
+		return nil, err
 	}
 	key := introKey(c.MD.UserId)
 	if in == nil || in.GetIntro() == nil {

@@ -24,6 +24,25 @@ func TestWebViewProviderRejectsNonCanonicalUpdates(t *testing.T) {
 	}
 }
 
+func TestWebViewResultOptionalQueryIDPreservesLayer229Semantics(t *testing.T) {
+	optional := &mtproto.WebViewResult{
+		PredicateName: mtproto.Predicate_webViewResultUrl,
+		Url:           "https://mini.example/app",
+	}
+	if queryID, present, err := webViewResultQueryID(optional); err != nil || present || queryID != 0 {
+		t.Fatalf("optional query id = (%d, %v, %v), want absent without error", queryID, present, err)
+	}
+
+	fixed := &mtproto.WebViewResult{
+		PredicateName: mtproto.Predicate_webViewResultUrl,
+		Constructor:   mtproto.TLConstructor_CRC32_webViewResultUrl_c14557c,
+		Url:           "https://mini.example/app",
+	}
+	if queryID, present, err := webViewResultQueryID(fixed); queryID != 0 || present || !errors.Is(err, mtproto.ErrInternalServerError) {
+		t.Fatalf("fixed query id = (%d, %v, %v), want internal error", queryID, present, err)
+	}
+}
+
 func TestWebViewProviderRejectsMalformedBotBeforeProvider(t *testing.T) {
 	core := newBusinessProviderGapCore(t, "messages.sendWebViewData", map[string]any{
 		"predicate_name": "updates", "date": 1,

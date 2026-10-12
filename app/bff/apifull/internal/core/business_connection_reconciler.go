@@ -50,7 +50,7 @@ func RunBusinessConnectionReconciler(ctx context.Context, svcCtx *svc.ServiceCon
 func deliverBusinessConnection(ctx context.Context, svcCtx *svc.ServiceContext, delivery domain.BusinessConnectionDelivery) error {
 	updates, err := businessConnectionUpdates(delivery.Connection)
 	if err != nil {
-		_ = domain.RetryBusinessConnectionDelivery(ctx, delivery.ID, err)
+		_ = domain.RetryBusinessConnectionDelivery(ctx, delivery.ID, delivery.ClaimToken, err)
 		return err
 	}
 	callCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
@@ -63,10 +63,10 @@ func deliverBusinessConnection(ctx context.Context, svcCtx *svc.ServiceContext, 
 		pushErr = errors.New("sync bot update returned no result")
 	}
 	if pushErr != nil {
-		if retryErr := domain.RetryBusinessConnectionDelivery(ctx, delivery.ID, pushErr); retryErr != nil {
+		if retryErr := domain.RetryBusinessConnectionDelivery(ctx, delivery.ID, delivery.ClaimToken, pushErr); retryErr != nil {
 			return errors.Join(pushErr, retryErr)
 		}
 		return pushErr
 	}
-	return domain.CompleteBusinessConnectionDelivery(ctx, delivery.ID)
+	return domain.CompleteBusinessConnectionDelivery(ctx, delivery.ID, delivery.ClaimToken)
 }

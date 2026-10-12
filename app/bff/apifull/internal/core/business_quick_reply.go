@@ -194,8 +194,8 @@ func (c *ApiFullCore) hydrateQuickReplyMessages(userID int64, ids []int32) ([]*m
 }
 
 func (c *ApiFullCore) MessagesGetQuickReplies(in *mtproto.TLMessagesGetQuickReplies) (*mtproto.Messages_QuickReplies, error) {
-	if c.MD == nil || c.MD.UserId == 0 {
-		return nil, mtproto.ErrAuthKeyUnregistered
+	if err := c.requirePremium(); err != nil {
+		return nil, err
 	}
 	_ = in
 	quickReplyMu.Lock()
@@ -232,8 +232,8 @@ func (c *ApiFullCore) MessagesGetQuickReplies(in *mtproto.TLMessagesGetQuickRepl
 }
 
 func (c *ApiFullCore) MessagesReorderQuickReplies(in *mtproto.TLMessagesReorderQuickReplies) (*mtproto.Bool, error) {
-	if c.MD == nil || c.MD.UserId == 0 {
-		return nil, mtproto.ErrAuthKeyUnregistered
+	if err := c.requirePremium(); err != nil {
+		return nil, err
 	}
 	quickReplyMu.Lock()
 	defer quickReplyMu.Unlock()
@@ -273,8 +273,8 @@ func (c *ApiFullCore) MessagesReorderQuickReplies(in *mtproto.TLMessagesReorderQ
 }
 
 func (c *ApiFullCore) MessagesCheckQuickReplyShortcut(in *mtproto.TLMessagesCheckQuickReplyShortcut) (*mtproto.Bool, error) {
-	if c.MD == nil || c.MD.UserId == 0 {
-		return nil, mtproto.ErrAuthKeyUnregistered
+	if err := c.requirePremium(); err != nil {
+		return nil, err
 	}
 	name := ""
 	if in != nil {
@@ -295,8 +295,8 @@ func (c *ApiFullCore) MessagesCheckQuickReplyShortcut(in *mtproto.TLMessagesChec
 }
 
 func (c *ApiFullCore) MessagesEditQuickReplyShortcut(in *mtproto.TLMessagesEditQuickReplyShortcut) (*mtproto.Bool, error) {
-	if c.MD == nil || c.MD.UserId == 0 {
-		return nil, mtproto.ErrAuthKeyUnregistered
+	if err := c.requirePremium(); err != nil {
+		return nil, err
 	}
 	if in == nil || in.GetShortcut() == "" {
 		return nil, mtproto.ErrInputRequestInvalid
@@ -329,8 +329,8 @@ func (c *ApiFullCore) MessagesEditQuickReplyShortcut(in *mtproto.TLMessagesEditQ
 }
 
 func (c *ApiFullCore) MessagesDeleteQuickReplyShortcut(in *mtproto.TLMessagesDeleteQuickReplyShortcut) (*mtproto.Bool, error) {
-	if c.MD == nil || c.MD.UserId == 0 {
-		return nil, mtproto.ErrAuthKeyUnregistered
+	if err := c.requirePremium(); err != nil {
+		return nil, err
 	}
 	if in == nil {
 		return nil, mtproto.ErrInputRequestInvalid
@@ -367,8 +367,8 @@ func (c *ApiFullCore) MessagesDeleteQuickReplyShortcut(in *mtproto.TLMessagesDel
 }
 
 func (c *ApiFullCore) MessagesGetQuickReplyMessages(in *mtproto.TLMessagesGetQuickReplyMessages) (*mtproto.Messages_Messages, error) {
-	if c.MD == nil || c.MD.UserId == 0 {
-		return nil, mtproto.ErrAuthKeyUnregistered
+	if err := c.requirePremium(); err != nil {
+		return nil, err
 	}
 	if in == nil {
 		return nil, mtproto.ErrInputRequestInvalid

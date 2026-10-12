@@ -83,18 +83,19 @@ func (s *Server) Initialize() error {
 	}()
 
 	s.mq, s.closeInbox = inbox_helper.NewWithContext(inbox_helper.Config{
-		RpcServerConf:   c.RpcServerConf,
-		InboxConsumer:   c.InboxConsumer,
-		Postgres:        c.Postgres,
-		Cache:           c.Cache,
-		KV:              c.KV,
-		IdgenClient:     c.IdgenClient,
-		UserClient:      c.BizServiceClient,
-		ChatClient:      c.BizServiceClient,
-		SyncClient:      c.SyncClient,
-		BotSyncClient:   c.BotSyncClient,
-		DialogClient:    c.BizServiceClient,
-		MessageSharding: c.MessageSharding,
+		RpcServerConf:       c.RpcServerConf,
+		InboxConsumer:       c.InboxConsumer,
+		Postgres:            c.Postgres,
+		Cache:               c.Cache,
+		KV:                  c.KV,
+		IdgenClient:         c.IdgenClient,
+		UserClient:          c.BizServiceClient,
+		ChatClient:          c.BizServiceClient,
+		SyncClient:          c.SyncClient,
+		BotSyncClient:       c.BotSyncClient,
+		BotFatherSyncClient: c.BotFatherSyncClient,
+		DialogClient:        c.BizServiceClient,
+		MessageSharding:     c.MessageSharding,
 	})
 
 	go func() {

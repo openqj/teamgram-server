@@ -22,6 +22,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/url"
 	"strconv"
 	"strings"
@@ -188,6 +189,20 @@ func miniWebViewPayload(kind, rawURL, platform string, queryID int64, request an
 	return string(b), nil
 }
 
+func miniWebViewStablePayload(kind, rawURL string, queryID int64, request any) (string, error) {
+	payload := map[string]any{
+		"kind":     kind,
+		"url":      rawURL,
+		"query_id": strconv.FormatInt(queryID, 10),
+		"request":  request,
+	}
+	b, err := json.Marshal(payload)
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
+}
+
 func validateWebViewMessageSent(result *mtproto.WebViewMessageSent) error {
 	if result == nil || result.GetPredicateName() != mtproto.Predicate_webViewMessageSent {
 		return mtproto.ErrInternalServerError
@@ -245,6 +260,14 @@ func validateInputBotApp(app *mtproto.InputBotApp) error {
 	return nil
 }
 
+func miniAppWebViewScopeKey(appKey string, callerID int64, peer *mtproto.InputPeer, startParam *wrapperspb.StringValue, platform string) string {
+	start := ""
+	if startParam != nil {
+		start = startParam.GetValue()
+	}
+	return fmt.Sprintf("%s:%s:start:%s:platform:%s", appKey, businessControlPeerKey(callerID, peer), start, platform)
+}
+
 func validateWebViewResult(result *mtproto.WebViewResult) error {
 	if result == nil || result.GetPredicateName() != mtproto.Predicate_webViewResultUrl || strings.TrimSpace(result.GetUrl()) == "" {
 		return mtproto.ErrInternalServerError
@@ -259,6 +282,53 @@ func validateWebViewResult(result *mtproto.WebViewResult) error {
 		return mtproto.ErrInternalServerError
 	}
 	return nil
+}
+
+func webViewResultQueryID(result *mtproto.WebViewResult) (int64, bool, error) {
+	if result == nil {
+		return 0, false, mtproto.ErrInternalServerError
+	}
+	if value := result.GetQueryId_FLAGINT64(); value != nil {
+		if value.GetValue() <= 0 {
+			return 0, false, mtproto.ErrInternalServerError
+		}
+		return value.GetValue(), true, nil
+	}
+	if result.GetConstructor() == mtproto.TLConstructor_CRC32_webViewResultUrl_c14557c {
+		if result.GetQueryId_INT64() <= 0 {
+			return 0, false, mtproto.ErrInternalServerError
+		}
+		return result.GetQueryId_INT64(), true, nil
+	}
+	if result.GetQueryId_INT64() > 0 {
+		return result.GetQueryId_INT64(), true, nil
+	}
+	return 0, false, nil
+}
+
+// persistAppWebViewResult records the provider's verified URL and query ID in
+// the same PostgreSQL table used by requestWebView. This makes prolong and
+// restart recovery use the exact owner/bot binding returned by the provider.
+func persistAppWebViewResult(uid, botID int64, result *mtproto.WebViewResult, request any) error {
+	queryID, present, err := webViewResultQueryID(result)
+	if err != nil {
+		return err
+	}
+	if !present {
+		return nil
+	}
+	payload, err := miniWebViewStablePayload("requestAppWebView", result.GetUrl(), queryID, request)
+	if err != nil {
+		return mtproto.ErrInternalServerError
+	}
+	return persist.PutWebViewRequestIfAbsent(persist.WebViewRequest{
+		RequestID: fmt.Sprintf("provider:%d:%d", uid, queryID),
+		UserID:    uid,
+		BotID:     botID,
+		Kind:      "requestAppWebView",
+		Payload:   payload,
+		ExpiresAt: time.Now().UTC().Add(5 * time.Minute),
+	})
 }
 
 func (c *ApiFullCore) requestMiniWebView(uid int64, bot *mtproto.InputUser, rawURL, kind, platform string, fullsize, fullscreen bool, request any) (*mtproto.WebViewResult, error) {
@@ -398,8 +468,19 @@ func (c *ApiFullCore) MessagesSendWebViewResultMessage(in *mtproto.TLMessagesSen
 		return nil, err
 	}
 	result := new(mtproto.WebViewMessageSent)
+	if local, loadErr := c.loadLocalBusinessResultForCaller("messages.sendWebViewResultMessage", "bot-query:"+in.GetBotQueryId(), result); loadErr != nil {
+		return nil, loadErr
+	} else if local {
+		if err := c.requireBotCaller(c.MD.GetUserId()); err != nil {
+			return nil, err
+		}
+		if err := validateWebViewMessageSent(result); err != nil {
+			return nil, err
+		}
+		return result, nil
+	}
 	if err := c.callBusinessProvider("messages.sendWebViewResultMessage", map[string]any{
-		"bot_query_id": in.GetBotQueryId(), "result": in.GetResult(),
+		"scope_key": "bot-query:" + in.GetBotQueryId(), "bot_query_id": in.GetBotQueryId(), "result": in.GetResult(),
 	}, result); err != nil {
 		return nil, err
 	}
@@ -420,8 +501,20 @@ func (c *ApiFullCore) MessagesSendWebViewData(in *mtproto.TLMessagesSendWebViewD
 		return nil, err
 	}
 	result := new(mtproto.Updates)
+	scopeKey := fmt.Sprintf("bot:%d:random:%d", in.GetBot().GetUserId(), in.GetRandomId())
+	if local, loadErr := c.loadLocalBusinessResultForCaller("messages.sendWebViewData", scopeKey, result); loadErr != nil {
+		return nil, loadErr
+	} else if local {
+		if _, err := c.verifyMiniBot(in.GetBot()); err != nil {
+			return nil, err
+		}
+		if err := validateUpdatesResult(result); err != nil {
+			return nil, err
+		}
+		return result, nil
+	}
 	if err := c.callBusinessProvider("messages.sendWebViewData", map[string]any{
-		"bot": in.GetBot(), "random_id": in.GetRandomId(), "button_text": in.GetButtonText(), "data": in.GetData(),
+		"scope_key": scopeKey, "bot": in.GetBot(), "random_id": in.GetRandomId(), "button_text": in.GetButtonText(), "data": in.GetData(),
 	}, result); err != nil {
 		return nil, err
 	}
@@ -432,7 +525,8 @@ func (c *ApiFullCore) MessagesSendWebViewData(in *mtproto.TLMessagesSendWebViewD
 }
 
 func (c *ApiFullCore) MessagesGetBotApp(in *mtproto.TLMessagesGetBotApp) (*mtproto.Messages_BotApp, error) {
-	if _, err := c.requireUserId(); err != nil {
+	callerID, err := c.requireUserId()
+	if err != nil {
 		return nil, err
 	}
 	if in == nil || in.GetApp() == nil {
@@ -442,8 +536,24 @@ func (c *ApiFullCore) MessagesGetBotApp(in *mtproto.TLMessagesGetBotApp) (*mtpro
 		return nil, err
 	}
 	result := new(mtproto.Messages_BotApp)
+	app := in.GetApp()
+	appKey := fmt.Sprintf("bot:%d:id:%d", app.GetBotId().GetUserId(), app.GetId())
+	if app.GetPredicateName() == mtproto.Predicate_inputBotAppShortName {
+		appKey = fmt.Sprintf("bot:%d:short:%s", app.GetBotId().GetUserId(), app.GetShortName())
+	}
+	if local, loadErr := c.loadLocalBusinessResult("messages.getBotApp", appKey, result); loadErr != nil {
+		return nil, loadErr
+	} else if local {
+		if _, err := c.verifyMiniBot(app.GetBotId()); err != nil {
+			return nil, err
+		}
+		if result.GetPredicateName() != mtproto.Predicate_messages_botApp || result.GetApp() == nil || result.GetApp().GetId() <= 0 || result.GetApp().GetAccessHash() == 0 {
+			return nil, mtproto.ErrInternalServerError
+		}
+		return result, nil
+	}
 	if err := c.callBusinessProvider("messages.getBotApp", map[string]any{
-		"app": in.GetApp(), "hash": in.GetHash(),
+		"scope_key": appKey, "app": in.GetApp(), "hash": in.GetHash(), "caller_user_id": callerID,
 	}, result); err != nil {
 		return nil, err
 	}
@@ -454,20 +564,60 @@ func (c *ApiFullCore) MessagesGetBotApp(in *mtproto.TLMessagesGetBotApp) (*mtpro
 }
 
 func (c *ApiFullCore) MessagesRequestAppWebView53618BCE(in *mtproto.TLMessagesRequestAppWebView53618BCE) (*mtproto.WebViewResult, error) {
-	if _, err := c.requireUserId(); err != nil {
+	callerID, err := c.requireUserId()
+	if err != nil {
 		return nil, err
 	}
 	if in == nil || in.GetPeer() == nil || in.GetApp() == nil {
 		return nil, mtproto.ErrInputRequestInvalid
 	}
+	if !persist.PostgresEnabled() {
+		return nil, mtproto.ErrMethodNotImpl
+	}
+	if err := validateInputBotApp(in.GetApp()); err != nil {
+		return nil, err
+	}
 	result := new(mtproto.WebViewResult)
+	app := in.GetApp()
+	botID := app.GetBotId().GetUserId()
+	appKey := fmt.Sprintf("bot:%d:id:%d", app.GetBotId().GetUserId(), app.GetId())
+	if app.GetPredicateName() == mtproto.Predicate_inputBotAppShortName {
+		appKey = fmt.Sprintf("bot:%d:short:%s", app.GetBotId().GetUserId(), app.GetShortName())
+	}
+	scopeKey := miniAppWebViewScopeKey(appKey, callerID, in.GetPeer(), in.GetStartParam(), in.GetPlatform())
+	if local, loadErr := c.loadLocalBusinessResultForCaller("messages.requestAppWebView", scopeKey, result); loadErr != nil {
+		return nil, loadErr
+	} else if local {
+		if err := validateWebViewResult(result); err != nil {
+			return nil, err
+		}
+		if verifiedBotID, err := c.verifyMiniBot(app.GetBotId()); err != nil || verifiedBotID != botID {
+			if err != nil {
+				return nil, err
+			}
+			return nil, mtproto.ErrUserIdInvalid
+		}
+		if err := persistAppWebViewResult(callerID, botID, result, in); err != nil {
+			return nil, err
+		}
+		return result, nil
+	}
 	if err := c.callBusinessProvider("messages.requestAppWebView", map[string]any{
-		"write_allowed": in.GetWriteAllowed(), "compact": in.GetCompact(), "fullscreen": in.GetFullscreen(),
+		"scope_key": scopeKey, "write_allowed": in.GetWriteAllowed(), "compact": in.GetCompact(), "fullscreen": in.GetFullscreen(),
 		"peer": in.GetPeer(), "app": in.GetApp(), "start_param": in.GetStartParam(), "theme_params": in.GetThemeParams(), "platform": in.GetPlatform(),
 	}, result); err != nil {
 		return nil, err
 	}
 	if err := validateWebViewResult(result); err != nil {
+		return nil, err
+	}
+	if verifiedBotID, err := c.verifyMiniBot(app.GetBotId()); err != nil || verifiedBotID != botID {
+		if err != nil {
+			return nil, err
+		}
+		return nil, mtproto.ErrUserIdInvalid
+	}
+	if err := persistAppWebViewResult(callerID, botID, result, in); err != nil {
 		return nil, err
 	}
 	return result, nil
@@ -481,8 +631,16 @@ func (c *ApiFullCore) MessagesRequestChatJoinWebView(in *mtproto.TLMessagesReque
 		return nil, mtproto.ErrQueryIdEmpty
 	}
 	result := new(mtproto.WebViewResult)
+	if local, loadErr := c.loadLocalBusinessResultForCaller("messages.requestChatJoinWebView", businessControlQueryKey(in.GetQueryId()), result); loadErr != nil {
+		return nil, loadErr
+	} else if local {
+		if err := validateWebViewResult(result); err != nil {
+			return nil, err
+		}
+		return result, nil
+	}
 	if err := c.callBusinessProvider("messages.requestChatJoinWebView", map[string]any{
-		"query_id": in.GetQueryId(), "theme_params": in.GetThemeParams(), "platform": in.GetPlatform(),
+		"scope_key": businessControlQueryKey(in.GetQueryId()), "query_id": in.GetQueryId(), "theme_params": in.GetThemeParams(), "platform": in.GetPlatform(),
 	}, result); err != nil {
 		return nil, err
 	}
@@ -548,8 +706,19 @@ func (c *ApiFullCore) BotsInvokeWebViewCustomMethod(in *mtproto.TLBotsInvokeWebV
 		return nil, mtproto.ErrInputRequestInvalid
 	}
 	result := new(mtproto.DataJSON)
+	if local, loadErr := c.loadLocalBusinessResultForCaller("bots.invokeWebViewCustomMethod", businessControlHash("bot:"+strconv.FormatInt(in.GetBot().GetUserId(), 10)+":method:"+in.GetCustomMethod(), in.GetParams()), result); loadErr != nil {
+		return nil, loadErr
+	} else if local {
+		if _, err := c.verifyMiniBot(in.GetBot()); err != nil {
+			return nil, err
+		}
+		if !validBotDataJSON(result) {
+			return nil, mtproto.ErrInternalServerError
+		}
+		return result, nil
+	}
 	if err := c.callBusinessProvider("bots.invokeWebViewCustomMethod", map[string]any{
-		"bot": in.GetBot(), "custom_method": in.GetCustomMethod(), "params": in.GetParams(),
+		"scope_key": businessControlHash("bot:"+strconv.FormatInt(in.GetBot().GetUserId(), 10)+":method:"+in.GetCustomMethod(), in.GetParams()), "bot": in.GetBot(), "custom_method": in.GetCustomMethod(), "params": in.GetParams(),
 	}, result); err != nil {
 		return nil, err
 	}
@@ -568,6 +737,20 @@ func (c *ApiFullCore) BotsCheckDownloadFileParams(in *mtproto.TLBotsCheckDownloa
 	}
 	var result struct {
 		Value *bool `json:"value"`
+	}
+	if local, loadErr := c.loadLocalBusinessResultForCaller("bots.checkDownloadFileParams", businessControlHash("bot:"+strconv.FormatInt(in.GetBot().GetUserId(), 10)+":file:"+in.GetFileName(), in.GetUrl()), &result); loadErr != nil {
+		return nil, loadErr
+	} else if local {
+		if _, err := c.verifyMiniBot(in.GetBot()); err != nil {
+			return nil, err
+		}
+		if result.Value == nil {
+			return nil, mtproto.ErrInternalServerError
+		}
+		if *result.Value {
+			return mtproto.BoolTrue, nil
+		}
+		return mtproto.BoolFalse, nil
 	}
 	if err := c.callBusinessProvider("bots.checkDownloadFileParams", map[string]any{
 		"bot": in.GetBot(), "file_name": in.GetFileName(), "url": in.GetUrl(),

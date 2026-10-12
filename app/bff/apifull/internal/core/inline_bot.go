@@ -32,6 +32,7 @@ import (
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/domain"
 	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/persist"
+	"github.com/teamgram/teamgram-server/app/bff/paymentinvoice"
 	msgpb "github.com/teamgram/teamgram-server/app/messenger/msg/msg/msg"
 	userpb "github.com/teamgram/teamgram-server/app/service/biz/user/user"
 	"google.golang.org/protobuf/types/known/wrapperspb"
@@ -249,11 +250,19 @@ func (c *ApiFullCore) MessagesSetInlineBotResults(in *mtproto.TLMessagesSetInlin
 				return nil, err
 			}
 		}
-		if result.GetPhoto() != nil || result.GetDocument() != nil {
-			// InputPhoto/InputDocument and InputRichMessage require their
-			// canonical media providers before they can be exposed as output
-			// constructors. Do not silently drop those fields.
-			return nil, mtproto.ErrMethodNotImpl
+		switch result.GetPredicateName() {
+		case mtproto.Predicate_inputBotInlineResultPhoto:
+			if result.GetPhoto() == nil {
+				return nil, mtproto.ErrInputRequestInvalid
+			}
+		case mtproto.Predicate_inputBotInlineResultDocument:
+			if result.GetDocument() == nil {
+				return nil, mtproto.ErrInputRequestInvalid
+			}
+		case mtproto.Predicate_inputBotInlineResultGame:
+			if strings.TrimSpace(result.GetShortName()) == "" {
+				return nil, mtproto.ErrInputRequestInvalid
+			}
 		}
 		raw, marshalErr := json.Marshal(result)
 		if marshalErr != nil {
@@ -318,24 +327,12 @@ func (c *ApiFullCore) MessagesSendInlineBotResult(in *mtproto.TLMessagesSendInli
 	if selected == nil {
 		return nil, mtproto.ErrResultIdInvalid
 	}
-	if selected.GetPhoto() != nil || selected.GetDocument() != nil || selected.GetSendMessage() == nil {
-		return nil, mtproto.ErrMethodNotImpl
+	if selected.GetSendMessage() == nil {
+		return nil, mtproto.ErrInputRequestInvalid
 	}
 	send := selected.GetSendMessage()
 	if err = validateInlineMessagePredicate(send.GetPredicateName()); err != nil {
 		return nil, err
-	}
-	// The message service owns media hydration and inline callback state. This
-	// boundary currently supports only text/media-auto result messages; media
-	// and rich-message constructors stay fail-closed until their providers are
-	// available there.
-	if send.GetPredicateName() != "" &&
-		send.GetPredicateName() != mtproto.Predicate_inputBotInlineMessageText &&
-		send.GetPredicateName() != mtproto.Predicate_inputBotInlineMessageMediaAuto {
-		return nil, mtproto.ErrMethodNotImpl
-	}
-	if strings.TrimSpace(send.GetMessage()) == "" {
-		return nil, mtproto.ErrMessageEmpty
 	}
 	peer := mtproto.FromInputPeer2(uid, in.GetPeer())
 	if peer == nil || !peer.IsUserOrChatOrChannel() {
@@ -359,6 +356,15 @@ func (c *ApiFullCore) MessagesSendInlineBotResult(in *mtproto.TLMessagesSendInli
 		ReplyMarkup: send.GetReplyMarkup(),
 		Entities:    send.GetEntities(),
 	}).To_Message()
+	media, richMessage, mediaErr := inlineInputToMessageMedia(selected, send)
+	if mediaErr != nil {
+		return nil, mediaErr
+	}
+	out.Media = media
+	out.RichMessage = richMessage
+	if strings.TrimSpace(send.GetMessage()) == "" && media == nil && richMessage == nil {
+		return nil, mtproto.ErrMessageEmpty
+	}
 	if in.GetReplyToMsgId() != nil {
 		replyID := in.GetReplyToMsgId().GetValue()
 		if replyID <= 0 {
@@ -396,7 +402,7 @@ func (c *ApiFullCore) MessagesEditInlineBotMessage(in *mtproto.TLMessagesEditInl
 	if _, err := c.requireUserId(); err != nil {
 		return nil, err
 	}
-	if in == nil || in.GetId() == nil || (in.GetMessage() == nil && in.GetMedia() == nil && in.GetRichMessage() == nil) {
+	if in == nil || in.GetId() == nil || (in.GetMessage() == nil && in.GetMedia() == nil && in.GetRichMessage() == nil && in.GetReplyMarkup() == nil) {
 		return nil, mtproto.ErrInputRequestInvalid
 	}
 	if err := validateInputBotInlineMessageIDInput(in.GetId()); err != nil {
@@ -404,6 +410,22 @@ func (c *ApiFullCore) MessagesEditInlineBotMessage(in *mtproto.TLMessagesEditInl
 	}
 	var result struct {
 		Value *bool `json:"value"`
+	}
+	inlineID := in.GetId()
+	inlineKey := fmt.Sprintf("inline:%d:%d:%d:%d", inlineID.GetDcId(), inlineID.GetId_INT64(), inlineID.GetId_INT32(), inlineID.GetAccessHash())
+	if local, loadErr := c.loadLocalBusinessResultForCaller("messages.editInlineBotMessage", inlineKey, &result); loadErr != nil {
+		return nil, loadErr
+	} else if local {
+		if err := c.requireBotCaller(c.MD.GetUserId()); err != nil {
+			return nil, err
+		}
+		if result.Value == nil {
+			return nil, mtproto.ErrInternalServerError
+		}
+		if *result.Value {
+			return mtproto.BoolTrue, nil
+		}
+		return mtproto.BoolFalse, nil
 	}
 	if err := c.callBusinessProvider("messages.editInlineBotMessage", map[string]any{
 		"no_webpage": in.GetNoWebpage(), "invert_media": in.GetInvertMedia(), "id": in.GetId(), "message": in.GetMessage(), "media": in.GetMedia(), "reply_markup": in.GetReplyMarkup(), "entities": in.GetEntities(), "rich_message": in.GetRichMessage(),
@@ -427,6 +449,18 @@ func (c *ApiFullCore) MessagesGetBotCallbackAnswer(in *mtproto.TLMessagesGetBotC
 		return nil, mtproto.ErrInputRequestInvalid
 	}
 	result := new(mtproto.Messages_BotCallbackAnswer)
+	scopeKey := fmt.Sprintf("%s:msg:%d:%s", businessControlPeerKey(c.MD.GetUserId(), in.GetPeer()), in.GetMsgId(), businessControlHash("data", in.GetData()))
+	if local, loadErr := c.loadLocalBusinessResultForCaller("messages.getBotCallbackAnswer", scopeKey, result); loadErr != nil {
+		return nil, loadErr
+	} else if local {
+		if err := c.validateInlineQueryPeer(c.MD.GetUserId(), in.GetPeer()); err != nil {
+			return nil, err
+		}
+		if result.GetPredicateName() != mtproto.Predicate_messages_botCallbackAnswer || result.GetCacheTime() < 0 {
+			return nil, mtproto.ErrInternalServerError
+		}
+		return result, nil
+	}
 	if err := c.callBusinessProvider("messages.getBotCallbackAnswer", map[string]any{
 		"game": in.GetGame(), "peer": in.GetPeer(), "msg_id": in.GetMsgId(), "data": in.GetData(), "password": in.GetPassword(),
 	}, result); err != nil {
@@ -447,6 +481,20 @@ func (c *ApiFullCore) MessagesSetBotCallbackAnswer(in *mtproto.TLMessagesSetBotC
 	}
 	var result struct {
 		Value *bool `json:"value"`
+	}
+	if local, loadErr := c.loadLocalBusinessResultForCaller("messages.setBotCallbackAnswer", businessControlQueryKey(in.GetQueryId()), &result); loadErr != nil {
+		return nil, loadErr
+	} else if local {
+		if err := c.requireBotCaller(c.MD.GetUserId()); err != nil {
+			return nil, err
+		}
+		if result.Value == nil {
+			return nil, mtproto.ErrInternalServerError
+		}
+		if *result.Value {
+			return mtproto.BoolTrue, nil
+		}
+		return mtproto.BoolFalse, nil
 	}
 	if err := c.callBusinessProvider("messages.setBotCallbackAnswer", map[string]any{
 		"alert": in.GetAlert(), "query_id": in.GetQueryId(), "message": in.GetMessage(), "url": in.GetUrl(), "cache_time": in.GetCacheTime(),
@@ -470,8 +518,40 @@ func (c *ApiFullCore) MessagesSendBotRequestedPeer(in *mtproto.TLMessagesSendBot
 		return nil, mtproto.ErrInputRequestInvalid
 	}
 	result := new(mtproto.Updates)
+	msgID := in.GetMsgId_INT32()
+	if msgID == 0 && in.GetMsgId_FLAGINT32() != nil {
+		msgID = in.GetMsgId_FLAGINT32().GetValue()
+	}
+	scopeKey := ""
+	if value := in.GetWebappReqId(); value != nil {
+		scopeKey = strings.TrimSpace(value.GetValue())
+	}
+	if scopeKey == "" {
+		scopeKey = fmt.Sprintf("%s:msg:%d:button:%d", businessControlPeerKey(c.MD.GetUserId(), in.GetPeer()), msgID, in.GetButtonId())
+	}
+	if local, loadErr := c.loadLocalBusinessResultForCaller("messages.sendBotRequestedPeer", scopeKey, result); loadErr != nil {
+		return nil, loadErr
+	} else if local {
+		if err := c.validateInlineQueryPeer(c.MD.GetUserId(), in.GetPeer()); err != nil {
+			return nil, err
+		}
+		for _, peer := range in.GetRequestedPeers() {
+			if err := c.validateInlineQueryPeer(c.MD.GetUserId(), peer); err != nil {
+				return nil, err
+			}
+		}
+		if in.GetRequestedPeer() != nil {
+			if err := c.validateInlineQueryPeer(c.MD.GetUserId(), in.GetRequestedPeer()); err != nil {
+				return nil, err
+			}
+		}
+		if err := validateUpdatesResult(result); err != nil {
+			return nil, err
+		}
+		return result, nil
+	}
 	if err := c.callBusinessProvider("messages.sendBotRequestedPeer", map[string]any{
-		"peer": in.GetPeer(), "msg_id_flag": in.GetMsgId_FLAGINT32(), "webapp_req_id": in.GetWebappReqId(), "button_id": in.GetButtonId(), "requested_peers": in.GetRequestedPeers(), "msg_id": in.GetMsgId_INT32(), "requested_peer": in.GetRequestedPeer(),
+		"scope_key": scopeKey, "peer": in.GetPeer(), "msg_id_flag": in.GetMsgId_FLAGINT32(), "webapp_req_id": in.GetWebappReqId(), "button_id": in.GetButtonId(), "requested_peers": in.GetRequestedPeers(), "msg_id": msgID, "requested_peer": in.GetRequestedPeer(),
 	}, result); err != nil {
 		return nil, err
 	}
@@ -489,6 +569,17 @@ func (c *ApiFullCore) MessagesSetBotGuestChatResult(in *mtproto.TLMessagesSetBot
 		return nil, mtproto.ErrInputRequestInvalid
 	}
 	result := new(mtproto.InputBotInlineMessageID)
+	if local, loadErr := c.loadLocalBusinessResultForCaller("messages.setBotGuestChatResult", businessControlQueryKey(in.GetQueryId()), result); loadErr != nil {
+		return nil, loadErr
+	} else if local {
+		if err := c.requireBotCaller(c.MD.GetUserId()); err != nil {
+			return nil, err
+		}
+		if err := validateInputBotInlineMessageID(result); err != nil {
+			return nil, err
+		}
+		return result, nil
+	}
 	if err := c.callBusinessProvider("messages.setBotGuestChatResult", map[string]any{
 		"query_id": in.GetQueryId(), "result": in.GetResult(),
 	}, result); err != nil {
@@ -569,8 +660,14 @@ func inputInlineResultToOutput(input *mtproto.InputBotInlineResult) (*mtproto.Bo
 	if err := validateInlineResultPredicate(input.GetPredicateName()); err != nil {
 		return nil, err
 	}
-	if input.GetPhoto() != nil || input.GetDocument() != nil {
-		return nil, mtproto.ErrMethodNotImpl
+	if input.GetPredicateName() == mtproto.Predicate_inputBotInlineResultPhoto && input.GetPhoto() == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if input.GetPredicateName() == mtproto.Predicate_inputBotInlineResultDocument && input.GetDocument() == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if input.GetPredicateName() == mtproto.Predicate_inputBotInlineResultGame && strings.TrimSpace(input.GetShortName()) == "" {
+		return nil, mtproto.ErrInputRequestInvalid
 	}
 	if input.GetSendMessage() != nil {
 		if err := validateInlineMessagePredicate(input.GetSendMessage().GetPredicateName()); err != nil {
@@ -594,7 +691,15 @@ func inputInlineResultToOutput(input *mtproto.InputBotInlineResult) (*mtproto.Bo
 	if input.GetSendMessage() != nil {
 		result.SendMessage = inputInlineMessageToOutput(input.GetSendMessage())
 	}
-	return result, nil
+	if input.GetPhoto() != nil {
+		result.Photo = inputPhotoToOutput(input.GetPhoto())
+		return mtproto.MakeTLBotInlineMediaResult(result).To_BotInlineResult(), nil
+	}
+	if input.GetDocument() != nil {
+		result.Document = inputDocumentToOutput(input.GetDocument())
+		return mtproto.MakeTLBotInlineMediaResult(result).To_BotInlineResult(), nil
+	}
+	return mtproto.MakeTLBotInlineResult(result).To_BotInlineResult(), nil
 }
 
 func validateInlineResultPredicate(predicate string) error {
@@ -604,7 +709,7 @@ func validateInlineResultPredicate(predicate string) error {
 	case mtproto.Predicate_inputBotInlineResultPhoto,
 		mtproto.Predicate_inputBotInlineResultDocument,
 		mtproto.Predicate_inputBotInlineResultGame:
-		return mtproto.ErrMethodNotImpl
+		return nil
 	default:
 		return mtproto.ErrInputConstructorInvalid
 	}
@@ -622,7 +727,7 @@ func validateInlineMessagePredicate(predicate string) error {
 	case mtproto.Predicate_inputBotInlineMessageGame,
 		mtproto.Predicate_inputBotInlineMessageMediaInvoice,
 		mtproto.Predicate_inputBotInlineMessageRichMessage:
-		return mtproto.ErrMethodNotImpl
+		return nil
 	default:
 		return mtproto.ErrInputConstructorInvalid
 	}
@@ -645,17 +750,8 @@ func inputInlineMessageToOutput(input *mtproto.InputBotInlineMessage) *mtproto.B
 	if input == nil {
 		return nil
 	}
-	name := input.GetPredicateName()
-	if strings.HasPrefix(name, "input") {
-		name = strings.TrimPrefix(name, "input")
-		if name != "" {
-			name = strings.ToLower(name[:1]) + name[1:]
-		}
-	}
-	if name == "" {
-		name = mtproto.Predicate_botInlineMessageText
-	}
-	return &mtproto.BotInlineMessage{
+	name := inlineOutputMessagePredicate(input.GetPredicateName())
+	result := &mtproto.BotInlineMessage{
 		PredicateName:               name,
 		InvertMedia:                 input.GetInvertMedia(),
 		Message:                     input.GetMessage(),
@@ -680,6 +776,164 @@ func inputInlineMessageToOutput(input *mtproto.InputBotInlineMessage) *mtproto.B
 		ForceSmallMedia:             input.GetForceSmallMedia(),
 		Url:                         input.GetUrl(),
 	}
+	if input.GetPhoto() != nil {
+		result.Photo = inputWebDocumentToOutput(input.GetPhoto())
+	}
+	if invoice := input.GetInvoice(); invoice != nil {
+		result.ShippingAddressRequested = invoice.GetShippingAddressRequested()
+		result.Test = invoice.GetTest()
+		result.Currency = invoice.GetCurrency()
+		result.TotalAmount = inlineInvoiceTotal(invoice)
+	}
+	if input.GetRichMessage() != nil {
+		result.RichMessage = inputRichMessageToOutput(input.GetRichMessage())
+	}
+	if name == mtproto.Predicate_botInlineMessageMediaInvoice {
+		return mtproto.MakeTLBotInlineMessageMediaInvoice(result).To_BotInlineMessage()
+	}
+	if name == mtproto.Predicate_botInlineMessageRichMessage {
+		return mtproto.MakeTLBotInlineMessageRichMessage(result).To_BotInlineMessage()
+	}
+	if name == mtproto.Predicate_botInlineMessageMediaWebPage {
+		return mtproto.MakeTLBotInlineMessageMediaWebPage(result).To_BotInlineMessage()
+	}
+	if name == mtproto.Predicate_botInlineMessageMediaGeo {
+		return mtproto.MakeTLBotInlineMessageMediaGeo(result).To_BotInlineMessage()
+	}
+	if name == mtproto.Predicate_botInlineMessageMediaVenue {
+		return mtproto.MakeTLBotInlineMessageMediaVenue(result).To_BotInlineMessage()
+	}
+	if name == mtproto.Predicate_botInlineMessageMediaContact {
+		return mtproto.MakeTLBotInlineMessageMediaContact(result).To_BotInlineMessage()
+	}
+	if name == mtproto.Predicate_botInlineMessageText {
+		return mtproto.MakeTLBotInlineMessageText(result).To_BotInlineMessage()
+	}
+	return mtproto.MakeTLBotInlineMessageMediaAuto(result).To_BotInlineMessage()
+}
+
+func inlineOutputMessagePredicate(predicate string) string {
+	switch predicate {
+	case mtproto.Predicate_inputBotInlineMessageMediaAuto:
+		return mtproto.Predicate_botInlineMessageMediaAuto
+	case mtproto.Predicate_inputBotInlineMessageText:
+		return mtproto.Predicate_botInlineMessageText
+	case mtproto.Predicate_inputBotInlineMessageMediaGeo:
+		return mtproto.Predicate_botInlineMessageMediaGeo
+	case mtproto.Predicate_inputBotInlineMessageMediaVenue:
+		return mtproto.Predicate_botInlineMessageMediaVenue
+	case mtproto.Predicate_inputBotInlineMessageMediaContact:
+		return mtproto.Predicate_botInlineMessageMediaContact
+	case mtproto.Predicate_inputBotInlineMessageMediaInvoice:
+		return mtproto.Predicate_botInlineMessageMediaInvoice
+	case mtproto.Predicate_inputBotInlineMessageMediaWebPage:
+		return mtproto.Predicate_botInlineMessageMediaWebPage
+	case mtproto.Predicate_inputBotInlineMessageRichMessage:
+		return mtproto.Predicate_botInlineMessageRichMessage
+	case mtproto.Predicate_inputBotInlineMessageGame:
+		return mtproto.Predicate_botInlineMessageMediaAuto
+	default:
+		return mtproto.Predicate_botInlineMessageText
+	}
+}
+
+func inputPhotoToOutput(input *mtproto.InputPhoto) *mtproto.Photo {
+	if input == nil {
+		return nil
+	}
+	return mtproto.MakeTLPhoto(&mtproto.Photo{Id: input.GetId(), AccessHash: input.GetAccessHash(), FileReference: input.GetFileReference()}).To_Photo()
+}
+
+func inputDocumentToOutput(input *mtproto.InputDocument) *mtproto.Document {
+	if input == nil {
+		return nil
+	}
+	return mtproto.MakeTLDocument(&mtproto.Document{Id: input.GetId(), AccessHash: input.GetAccessHash(), FileReference: input.GetFileReference()}).To_Document()
+}
+
+func inputRichMessageToOutput(input *mtproto.InputRichMessage) *mtproto.RichMessage {
+	if input == nil {
+		return nil
+	}
+	photos := make([]*mtproto.Photo, 0, len(input.GetPhotos()))
+	for _, photo := range input.GetPhotos() {
+		if converted := inputPhotoToOutput(photo); converted != nil {
+			photos = append(photos, converted)
+		}
+	}
+	documents := make([]*mtproto.Document, 0, len(input.GetDocuments()))
+	for _, document := range input.GetDocuments() {
+		if converted := inputDocumentToOutput(document); converted != nil {
+			documents = append(documents, converted)
+		}
+	}
+	return mtproto.MakeTLRichMessage(&mtproto.RichMessage{
+		Blocks: blocksOrEmpty(input.GetBlocks()), Photos: photos, Documents: documents, Rtl: input.GetRtl(),
+	}).To_RichMessage()
+}
+
+func blocksOrEmpty(blocks []*mtproto.PageBlock) []*mtproto.PageBlock {
+	if blocks == nil {
+		return []*mtproto.PageBlock{}
+	}
+	return blocks
+}
+
+func inlineInvoiceTotal(invoice *mtproto.Invoice) int64 {
+	var total int64
+	if invoice == nil {
+		return 0
+	}
+	for _, price := range invoice.GetPrices() {
+		if price != nil {
+			total += price.GetAmount()
+		}
+	}
+	return total
+}
+
+func inlineInputToMessageMedia(result *mtproto.InputBotInlineResult, message *mtproto.InputBotInlineMessage) (*mtproto.MessageMedia, *mtproto.RichMessage, error) {
+	if result == nil || message == nil {
+		return nil, nil, mtproto.ErrInputRequestInvalid
+	}
+	switch result.GetPredicateName() {
+	case mtproto.Predicate_inputBotInlineResultPhoto:
+		if result.GetPhoto() == nil {
+			return nil, nil, mtproto.ErrInputRequestInvalid
+		}
+		return mtproto.MakeTLMessageMediaPhoto(&mtproto.MessageMedia{Photo_FLAGPHOTO: inputPhotoToOutput(result.GetPhoto())}).To_MessageMedia(), nil, nil
+	case mtproto.Predicate_inputBotInlineResultDocument:
+		if result.GetDocument() == nil {
+			return nil, nil, mtproto.ErrInputRequestInvalid
+		}
+		return mtproto.MakeTLMessageMediaDocument(&mtproto.MessageMedia{Document: inputDocumentToOutput(result.GetDocument())}).To_MessageMedia(), nil, nil
+	case mtproto.Predicate_inputBotInlineResultGame:
+		if strings.TrimSpace(result.GetShortName()) == "" {
+			return nil, nil, mtproto.ErrInputRequestInvalid
+		}
+		return mtproto.MakeTLMessageMediaGame(&mtproto.MessageMedia{Game: &mtproto.Game{ShortName: result.GetShortName()}}).To_MessageMedia(), nil, nil
+	}
+	if message.GetPredicateName() == mtproto.Predicate_inputBotInlineMessageMediaInvoice {
+		media := &mtproto.InputMedia{
+			Title: message.GetTitle(), Description: message.GetDescription(), Photo: message.GetPhoto(), Invoice: message.GetInvoice(),
+			Payload_BYTES: message.GetPayload(), Provider_STRING: message.GetProvider(), ProviderData: message.GetProviderData(),
+		}
+		if media.GetInvoice() == nil {
+			return nil, nil, mtproto.ErrInputRequestInvalid
+		}
+		if media.GetProviderData() == nil {
+			media.ProviderData = mtproto.MakeTLDataJSON(&mtproto.DataJSON{Data: "{}"}).To_DataJSON()
+		}
+		if message.GetUrl() != "" {
+			media.StartParam = wrapperspb.String(message.GetUrl())
+		}
+		invoiceMedia, err := paymentinvoice.FromInputMedia(mtproto.MakeTLInputMediaInvoice(media).To_InputMedia())
+		return invoiceMedia, nil, err
+	}
+	if message.GetPredicateName() == mtproto.Predicate_inputBotInlineMessageRichMessage {
+		return nil, inputRichMessageToOutput(message.GetRichMessage()), nil
+	}
+	return nil, nil, nil
 }
 
 func inputGeoPointToOutput(input *mtproto.InputGeoPoint) *mtproto.GeoPoint {

@@ -30,15 +30,16 @@ import (
 type Config struct {
 	zrpc.RpcServerConf
 	// Postgres is the authoritative persistence store.
-	Postgres         postgres.Config
-	InboxConsumer    kafka.KafkaConsumerConf
-	Cache            cache.CacheConf
-	KV               kv.KvConf
-	IdgenClient      zrpc.RpcClientConf
-	BizServiceClient zrpc.RpcClientConf
-	InboxClient      *kafka.KafkaProducerConf
-	SyncClient       *kafka.KafkaProducerConf
-	BotSyncClient    *kafka.KafkaProducerConf `json:",optional"`
-	MessageSharding  int                      `json:",default=1"`
-	Redis2           redis.RedisConf
+	Postgres            postgres.Config
+	InboxConsumer       kafka.KafkaConsumerConf
+	Cache               cache.CacheConf
+	KV                  kv.KvConf
+	IdgenClient         zrpc.RpcClientConf
+	BizServiceClient    zrpc.RpcClientConf
+	InboxClient         *kafka.KafkaProducerConf
+	SyncClient          *kafka.KafkaProducerConf
+	BotSyncClient       *kafka.KafkaProducerConf `json:",optional"`
+	BotFatherSyncClient *kafka.KafkaProducerConf `json:",optional"`
+	MessageSharding     int                      `json:",default=1"`
+	Redis2              redis.RedisConf
 }

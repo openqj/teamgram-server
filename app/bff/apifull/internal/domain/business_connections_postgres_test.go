@@ -2,6 +2,7 @@ package domain
 
 import (
 	"context"
+	"errors"
 	"os"
 	"testing"
 )
@@ -31,10 +32,10 @@ func TestBusinessConnectionRegistryAndOutboxRoundTrip(t *testing.T) {
 		t.Fatalf("load business connection: found=%v err=%v record=%+v", found, err, loaded)
 	}
 	deliveries, err := ListDueBusinessConnectionDeliveries(context.Background(), 10)
-	if err != nil || len(deliveries) != 1 || deliveries[0].Connection.QTS != record.QTS {
+	if err != nil || len(deliveries) != 1 || deliveries[0].Connection.QTS != record.QTS || deliveries[0].ClaimToken == "" {
 		t.Fatalf("list due business connection: deliveries=%+v err=%v", deliveries, err)
 	}
-	if err := CompleteBusinessConnectionDelivery(context.Background(), deliveries[0].ID); err != nil {
+	if err := CompleteBusinessConnectionDelivery(context.Background(), deliveries[0].ID, deliveries[0].ClaimToken); err != nil {
 		t.Fatalf("complete delivery: %v", err)
 	}
 	if due, err := ListDueBusinessConnectionDeliveries(context.Background(), 10); err != nil || len(due) != 0 {
@@ -48,5 +49,30 @@ func TestBusinessConnectionRegistryAndOutboxRoundTrip(t *testing.T) {
 	deliveries, err = ListDueBusinessConnectionDeliveries(context.Background(), 10)
 	if err != nil || len(deliveries) != 1 || !deliveries[0].Connection.Disabled {
 		t.Fatalf("disabled update delivery: deliveries=%+v err=%v", deliveries, err)
+	}
+	firstClaim := deliveries[0]
+	if _, err := db.Exec(`UPDATE apifull_business_connection_outbox
+		SET next_attempt_at=CURRENT_TIMESTAMP - INTERVAL '1 second' WHERE id=$1`, firstClaim.ID); err != nil {
+		t.Fatal(err)
+	}
+	secondClaims, err := ListDueBusinessConnectionDeliveries(context.Background(), 10)
+	if err != nil || len(secondClaims) != 1 || secondClaims[0].ClaimToken == firstClaim.ClaimToken {
+		t.Fatalf("reclaimed business connection delivery: deliveries=%+v err=%v", secondClaims, err)
+	}
+	if err := CompleteBusinessConnectionDelivery(context.Background(), firstClaim.ID, firstClaim.ClaimToken); !errors.Is(err, ErrBusinessConnectionDeliveryState) {
+		t.Fatalf("stale lease completion error = %v", err)
+	}
+	if err := RetryBusinessConnectionDelivery(context.Background(), firstClaim.ID, firstClaim.ClaimToken, errors.New("stale worker")); !errors.Is(err, ErrBusinessConnectionDeliveryState) {
+		t.Fatalf("stale lease retry error = %v", err)
+	}
+	var state string
+	if err := db.QueryRow(`SELECT state FROM apifull_business_connection_outbox WHERE id=$1`, firstClaim.ID).Scan(&state); err != nil {
+		t.Fatal(err)
+	}
+	if state != "inflight" {
+		t.Fatalf("stale worker changed current lease state to %q", state)
+	}
+	if err := CompleteBusinessConnectionDelivery(context.Background(), secondClaims[0].ID, secondClaims[0].ClaimToken); err != nil {
+		t.Fatalf("complete reclaimed delivery: %v", err)
 	}
 }

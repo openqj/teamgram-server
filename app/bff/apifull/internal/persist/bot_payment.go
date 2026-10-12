@@ -36,6 +36,9 @@ type BotPaymentQuery struct {
 	BotUserID          int64           `json:"bot_user_id"`
 	BuyerUserID        int64           `json:"buyer_user_id"`
 	Stage              string          `json:"stage"`
+	Payload            []byte          `json:"payload,omitempty"`
+	Currency           string          `json:"currency,omitempty"`
+	Amount             int64           `json:"amount,omitempty"`
 	ShippingError      string          `json:"shipping_error,omitempty"`
 	ShippingOptions    json.RawMessage `json:"shipping_options,omitempty"`
 	PrecheckoutSuccess *bool           `json:"precheckout_success,omitempty"`
@@ -62,8 +65,29 @@ func validBotPaymentStage(stage string) bool {
 // same identity are idempotent; a query ID cannot be rebound to another bot or
 // buyer. The caller controls the stage transition into precheckout.
 func CreateBotPaymentQuery(query BotPaymentQuery) error {
+	return createBotPaymentQuery(query, "")
+}
+
+// CreateBotPaymentQueryAndDelivery atomically creates a shipping query and its
+// durable shipping_query delivery intent. It requires the PostgreSQL path so
+// a process restart cannot lose the initial bot update.
+func CreateBotPaymentQueryAndDelivery(query BotPaymentQuery) error {
+	return createBotPaymentQuery(query, BotPaymentOutboxEventShippingQuery)
+}
+
+func createBotPaymentQuery(query BotPaymentQuery, deliveryEvent string) error {
 	if query.QueryID <= 0 || query.BotUserID <= 0 || query.BuyerUserID <= 0 || !validBotPaymentStage(query.Stage) {
 		return ErrBotPaymentQueryConflict
+	}
+	if deliveryEvent != "" && !validBotPaymentDeliveryEvent(deliveryEvent, query.Stage) {
+		return ErrBotPaymentQueryState
+	}
+	if len(query.Payload) > 0 {
+		var compact bytes.Buffer
+		if err := json.Compact(&compact, query.Payload); err != nil {
+			return ErrBotPaymentQueryConflict
+		}
+		query.Payload = compact.Bytes()
 	}
 	if query.ExpiresAt <= 0 {
 		query.ExpiresAt = time.Now().UTC().Add(5 * time.Minute).Unix()
@@ -77,6 +101,12 @@ func CreateBotPaymentQuery(query BotPaymentQuery) error {
 	}
 	if !json.Valid(query.ShippingOptions) {
 		return ErrBotPaymentQueryConflict
+	}
+	if store, ok := botPaymentPostgresStore(); ok {
+		return createBotPaymentQueryPostgres(store, query, deliveryEvent)
+	}
+	if deliveryEvent != "" {
+		return ErrBotPaymentOutboxRequiresPostgres
 	}
 	encoded, err := json.Marshal(query)
 	if err != nil {
@@ -98,12 +128,28 @@ func CreateBotPaymentQuery(query BotPaymentQuery) error {
 }
 
 // AdvanceBotPaymentQuery moves a shipping query to the precheckout stage
-// after the payment flow has consumed the shipping answer. It is kept
-// separate from the callback so payment settlement can perform its own
-// transactional checks before asking the bot to approve precheckout.
-func AdvanceBotPaymentQuery(queryID, botUserID int64, stage string) error {
+// after the payment flow has consumed the shipping answer. An optional
+// canonical context replaces Payload in the same transaction, allowing the
+// payment flow to persist the selected shipping option and requested info
+// before the precheckout callback is delivered. The context is retained by
+// the callback outbox for restart-safe delivery.
+func AdvanceBotPaymentQuery(queryID, botUserID int64, stage string, contextJSON ...[]byte) error {
 	if queryID <= 0 || botUserID <= 0 || stage != BotPaymentStagePrecheckoutPending {
 		return ErrBotPaymentQueryState
+	}
+	var payload []byte
+	if len(contextJSON) > 1 {
+		return ErrBotPaymentQueryState
+	}
+	if len(contextJSON) == 1 && len(contextJSON[0]) > 0 {
+		var compact bytes.Buffer
+		if err := json.Compact(&compact, contextJSON[0]); err != nil {
+			return ErrBotPaymentQueryState
+		}
+		payload = compact.Bytes()
+	}
+	if store, ok := botPaymentPostgresStore(); ok {
+		return advanceBotPaymentQueryPostgres(store, queryID, botUserID, stage, payload, "", 0, false)
 	}
 	return Update(botPaymentQueryKey(queryID), func(raw string) (string, error) {
 		query, err := decodeBotPaymentQuery(raw)
@@ -117,15 +163,48 @@ func AdvanceBotPaymentQuery(queryID, botUserID int64, stage string) error {
 			return "", ErrBotPaymentQueryExpired
 		}
 		if query.Stage == BotPaymentStagePrecheckoutPending || query.Stage == BotPaymentStagePrecheckoutAnswered {
+			if len(payload) > 0 && !jsonEqual(query.Payload, payload) {
+				return "", ErrBotPaymentQueryState
+			}
 			return raw, nil
 		}
 		if query.Stage != BotPaymentStageShippingAnswered {
 			return "", ErrBotPaymentQueryState
 		}
+		if len(payload) > 0 {
+			query.Payload = append(query.Payload[:0], payload...)
+		}
 		query.Stage = stage
 		query.UpdatedAt = time.Now().UTC().Unix()
 		return encodeBotPaymentQuery(query)
 	})
+}
+
+// AdvanceBotPaymentQueryWithContext advances a shipping query and atomically
+// records the complete precheckout context plus its precheckout_query delivery
+// intent. Payload must be canonical JSON containing the invoice, requested
+// information, shipping address and selected option.
+func AdvanceBotPaymentQueryWithContext(queryID, botUserID int64, payload []byte, currency string, amount int64) error {
+	if queryID <= 0 || botUserID <= 0 || amount < 0 || len(payload) == 0 {
+		return ErrBotPaymentQueryState
+	}
+	var compact bytes.Buffer
+	if err := json.Compact(&compact, payload); err != nil {
+		return ErrBotPaymentQueryState
+	}
+	store, ok := botPaymentPostgresStore()
+	if !ok {
+		return ErrBotPaymentOutboxRequiresPostgres
+	}
+	return advanceBotPaymentQueryPostgres(store, queryID, botUserID, BotPaymentStagePrecheckoutPending,
+		compact.Bytes(), strings.TrimSpace(currency), amount, true)
+}
+
+// AdvanceBotPaymentQueryAndDelivery is the explicit name used by payment
+// producers when they need the stage transition and precheckout delivery
+// intent to commit together.
+func AdvanceBotPaymentQueryAndDelivery(queryID, botUserID int64, payload []byte, currency string, amount int64) error {
+	return AdvanceBotPaymentQueryWithContext(queryID, botUserID, payload, currency, amount)
 }
 
 // SetBotShippingResults atomically records a bot's shipping response. A
@@ -145,6 +224,9 @@ func SetBotShippingResults(botUserID, queryID int64, errorText string, options [
 		return ErrBotPaymentQueryState
 	}
 	options = compact.Bytes()
+	if store, ok := botPaymentPostgresStore(); ok {
+		return setBotShippingResultsPostgres(store, botUserID, queryID, errorText, options)
+	}
 	return Update(botPaymentQueryKey(queryID), func(raw string) (string, error) {
 		query, err := decodeBotPaymentQuery(raw)
 		if err != nil {
@@ -178,6 +260,9 @@ func SetBotPrecheckoutResults(botUserID, queryID int64, success bool, errorText 
 	if botUserID <= 0 || queryID <= 0 {
 		return ErrBotPaymentQueryNotFound
 	}
+	if store, ok := botPaymentPostgresStore(); ok {
+		return setBotPrecheckoutResultsPostgres(store, botUserID, queryID, success, errorText)
+	}
 	return Update(botPaymentQueryKey(queryID), func(raw string) (string, error) {
 		query, err := decodeBotPaymentQuery(raw)
 		if err != nil {
@@ -209,6 +294,9 @@ func SetBotPrecheckoutResults(botUserID, queryID int64, success bool, errorText 
 func LoadBotPaymentQuery(queryID int64) (BotPaymentQuery, bool, error) {
 	if queryID <= 0 {
 		return BotPaymentQuery{}, false, ErrBotPaymentQueryNotFound
+	}
+	if store, ok := botPaymentPostgresStore(); ok {
+		return loadBotPaymentQueryPostgres(store, queryID)
 	}
 	raw, err := Default.Get(botPaymentQueryKey(queryID))
 	if err != nil {

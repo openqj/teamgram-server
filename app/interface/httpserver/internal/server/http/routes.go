@@ -26,6 +26,35 @@ func RegisterHandlers(engine *rest.Server, serverCtx *svc.ServiceContext) {
 	engine.AddRoutes(
 		[]rest.Route{
 			{
+				Method:  http.MethodGet,
+				Path:    "/file/:token/:kind/:file_name",
+				Handler: botAPIFileHandler(serverCtx),
+			},
+			{
+				Method:  http.MethodGet,
+				Path:    "/bot/:token/:method",
+				Handler: botAPIHandler(serverCtx),
+			},
+			{
+				// Telegram's canonical Bot API URL joins the "bot" prefix and
+				// token (for example, /bot123:ABC/getMe). Keep the slash form
+				// above for existing deployments and accept the canonical form
+				// through a two-segment dynamic route.
+				Method:  http.MethodGet,
+				Path:    "/:token/:method",
+				Handler: botAPIHandler(serverCtx),
+			},
+			{
+				Method:  http.MethodPost,
+				Path:    "/bot/:token/:method",
+				Handler: botAPIHandler(serverCtx),
+			},
+			{
+				Method:  http.MethodPost,
+				Path:    "/:token/:method",
+				Handler: botAPIHandler(serverCtx),
+			},
+			{
 				Method:  http.MethodPost,
 				Path:    "/api",
 				Handler: apiw1(serverCtx),
