@@ -177,7 +177,9 @@ func credentialResponsePayload(in *mtproto.InputPasskeyCredential, registration 
 			"signature":         encode(response.GetSignature()),
 		}
 		if response.GetUserHandle() != "" {
-			loginResponse["userHandle"] = response.GetUserHandle()
+			// Layer 229 carries user_handle as the decoded UTF-8 handle, while
+			// the WebAuthn JSON response encodes it as base64url.
+			loginResponse["userHandle"] = encode([]byte(response.GetUserHandle()))
 		}
 		payload["response"] = loginResponse
 	}

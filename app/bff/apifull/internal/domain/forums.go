@@ -38,6 +38,45 @@ func CreateForumTopic(peerKey string, userID int64, title string) error {
 	return CreateForumTopicWithStyle(peerKey, userID, title, 0, 0)
 }
 
+// EnsureGeneralForumTopic materializes Telegram's reserved topic id 1 for a
+// channel forum. The row is created lazily so existing forums receive the
+// same general-topic semantics without a data rewrite.
+func EnsureGeneralForumTopic(peerKey string, userID int64) error {
+	if db == nil {
+		return errors.New("domain PostgreSQL is not open")
+	}
+	if peerKey == "" || userID <= 0 {
+		return mtproto.ErrInputRequestInvalid
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err = forumPeerLock(tx, peerKey); err != nil {
+		return err
+	}
+	var exists bool
+	if err = tx.QueryRow(`SELECT EXISTS(SELECT 1 FROM apifull_forum_topic WHERE peer_key=$1 AND topic_id=1)`, peerKey).Scan(&exists); err != nil {
+		return err
+	}
+	if exists {
+		return tx.Commit()
+	}
+	if _, err = tx.Exec(`INSERT INTO apifull_forum_topic
+		(peer_key, topic_id, title, creator_user_id, icon_color, topic_date, top_message, position)
+		VALUES ($1, 1, 'General', $2, 0, $3, 1, 0)`, peerKey, userID, int32(time.Now().Unix())); err != nil {
+		return err
+	}
+	// Explicitly inserting id 1 must advance the identity sequence when this
+	// is the first row, otherwise the next user-created topic would collide.
+	if _, err = tx.Exec(`SELECT setval(pg_get_serial_sequence('apifull_forum_topic', 'topic_id'),
+		GREATEST(COALESCE((SELECT MAX(topic_id) FROM apifull_forum_topic), 1), 1), true)`); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 func CreateForumTopicWithStyle(peerKey string, userID int64, title string, iconColor int32, iconEmojiID int64) error {
 	if db == nil {
 		return errors.New("domain PostgreSQL is not open")

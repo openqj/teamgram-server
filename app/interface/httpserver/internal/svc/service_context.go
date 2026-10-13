@@ -28,24 +28,28 @@ import (
 type ServiceContext struct {
 	Config config.Config
 	*dao.Dao
-	BotAPIStore        *store.Store
-	UserClient         user_client.UserClient
-	BotRegistryClient  user_client.BotRegistryClient
-	ChatClient         chat_client.ChatClient
-	MsgClient          msg_client.MsgClient
-	InlineBotClient    mtproto.RPCInlineBotClient
-	ChatInvitesClient  mtproto.RPCChatInvitesClient
-	ForumsClient       mtproto.RPCForumsClient
-	DialogsClient      mtproto.RPCDialogsClient
-	GamesClient        mtproto.RPCGamesClient
-	BusinessBotsClient mtproto.RPCBusinessConnectedBotsClient
-	MiniBotAppsClient  mtproto.RPCMiniBotAppsClient
-	PaymentsClient     mtproto.RPCPaymentsClient
-	MessagesClient     mtproto.RPCMessagesClient
-	ReactionsClient    mtproto.RPCReactionsClient
-	ChatsClient        mtproto.RPCChatsClient
-	ChannelsClient     mtproto.RPCChannelsClient
-	DfsClient          dfs_client.DfsClient
+	BotAPIStore               *store.Store
+	UserClient                user_client.UserClient
+	BotRegistryClient         user_client.BotRegistryClient
+	ChatClient                chat_client.ChatClient
+	MsgClient                 msg_client.MsgClient
+	InlineBotClient           mtproto.RPCInlineBotClient
+	UserChannelProfilesClient mtproto.RPCUserChannelProfilesClient
+	BotAdminRightClient       mtproto.RPCBotAdminRightClient
+	ChatInvitesClient         mtproto.RPCChatInvitesClient
+	ForumsClient              mtproto.RPCForumsClient
+	DialogsClient             mtproto.RPCDialogsClient
+	GamesClient               mtproto.RPCGamesClient
+	BusinessBotsClient        mtproto.RPCBusinessConnectedBotsClient
+	MiniBotAppsClient         mtproto.RPCMiniBotAppsClient
+	PaymentsClient            mtproto.RPCPaymentsClient
+	StarsClient               mtproto.RPCStarsClient
+	StarSubscriptionsClient   mtproto.RPCStarSubscriptionsClient
+	MessagesClient            mtproto.RPCMessagesClient
+	ReactionsClient           mtproto.RPCReactionsClient
+	ChatsClient               mtproto.RPCChatsClient
+	ChannelsClient            mtproto.RPCChannelsClient
+	DfsClient                 dfs_client.DfsClient
 }
 
 func NewServiceContext(c config.Config) (*ServiceContext, error) {
@@ -68,6 +72,8 @@ func NewServiceContext(c config.Config) (*ServiceContext, error) {
 	if c.BffClient.Etcd.Key != "" || len(c.BffClient.Endpoints) > 0 {
 		bffConn := rpcx.GetCachedRpcClient(c.BffClient).Conn()
 		service.InlineBotClient = mtproto.NewRPCInlineBotClient(bffConn)
+		service.UserChannelProfilesClient = mtproto.NewRPCUserChannelProfilesClient(bffConn)
+		service.BotAdminRightClient = mtproto.NewRPCBotAdminRightClient(bffConn)
 		service.ChatInvitesClient = mtproto.NewRPCChatInvitesClient(bffConn)
 		service.ForumsClient = mtproto.NewRPCForumsClient(bffConn)
 		service.DialogsClient = mtproto.NewRPCDialogsClient(bffConn)
@@ -75,6 +81,8 @@ func NewServiceContext(c config.Config) (*ServiceContext, error) {
 		service.BusinessBotsClient = mtproto.NewRPCBusinessConnectedBotsClient(bffConn)
 		service.MiniBotAppsClient = mtproto.NewRPCMiniBotAppsClient(bffConn)
 		service.PaymentsClient = mtproto.NewRPCPaymentsClient(bffConn)
+		service.StarsClient = mtproto.NewRPCStarsClient(bffConn)
+		service.StarSubscriptionsClient = mtproto.NewRPCStarSubscriptionsClient(bffConn)
 		service.MessagesClient = mtproto.NewRPCMessagesClient(bffConn)
 		service.ReactionsClient = mtproto.NewRPCReactionsClient(bffConn)
 		service.ChatsClient = mtproto.NewRPCChatsClient(bffConn)

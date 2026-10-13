@@ -14,20 +14,35 @@ import (
 // input and output TL constructors intentionally have different nested media
 // types; the API layer validates and converts those values at the boundary.
 type InlineBotQuery struct {
-	QueryID     int64             `json:"query_id"`
-	BotID       int64             `json:"bot_id"`
-	RequesterID int64             `json:"requester_id"`
-	PeerKey     string            `json:"peer_key"`
-	Query       string            `json:"query"`
-	Offset      string            `json:"offset"`
-	Gallery     bool              `json:"gallery"`
-	Private     bool              `json:"private"`
-	CacheTime   int32             `json:"cache_time"`
-	NextOffset  string            `json:"next_offset,omitempty"`
-	Results     []json.RawMessage `json:"results"`
-	Ready       bool              `json:"ready"`
-	ExpiresAt   int64             `json:"expires_at"`
-	UpdatedAt   int64             `json:"updated_at"`
+	QueryID       int64              `json:"query_id"`
+	BotID         int64              `json:"bot_id"`
+	RequesterID   int64              `json:"requester_id"`
+	PeerKey       string             `json:"peer_key"`
+	Query         string             `json:"query"`
+	Offset        string             `json:"offset"`
+	Gallery       bool               `json:"gallery"`
+	Private       bool               `json:"private"`
+	CacheTime     int32              `json:"cache_time"`
+	NextOffset    string             `json:"next_offset,omitempty"`
+	SwitchPM      *InlineBotSwitchPM `json:"switch_pm,omitempty"`
+	SwitchWebview *InlineBotWebView  `json:"switch_webview,omitempty"`
+	Results       []json.RawMessage  `json:"results"`
+	Ready         bool               `json:"ready"`
+	ExpiresAt     int64              `json:"expires_at"`
+	UpdatedAt     int64              `json:"updated_at"`
+}
+
+// InlineBotSwitchPM and InlineBotWebView are the JSON-safe subset of the
+// corresponding MTProto constructors kept with a durable inline query. The
+// generated protobuf values contain runtime state that should not be stored.
+type InlineBotSwitchPM struct {
+	Text       string `json:"text"`
+	StartParam string `json:"start_param"`
+}
+
+type InlineBotWebView struct {
+	Text string `json:"text"`
+	URL  string `json:"url"`
 }
 
 var (
@@ -81,6 +96,12 @@ func CreateInlineBotQuery(query InlineBotQuery) error {
 // query. A second identical submission is idempotent; a conflicting retry is
 // rejected so a bot cannot silently replace a response another worker saw.
 func SetInlineBotResults(botID, queryID int64, gallery, private bool, cacheTime int32, nextOffset string, results []json.RawMessage) error {
+	return SetInlineBotResultsWithSwitches(botID, queryID, gallery, private, cacheTime, nextOffset, nil, nil, results)
+}
+
+// SetInlineBotResultsWithSwitches publishes the full inline result envelope,
+// including the optional switch-to-private-chat and Mini App buttons.
+func SetInlineBotResultsWithSwitches(botID, queryID int64, gallery, private bool, cacheTime int32, nextOffset string, switchPM *InlineBotSwitchPM, switchWebview *InlineBotWebView, results []json.RawMessage) error {
 	if botID <= 0 || queryID <= 0 || cacheTime < 0 || len(results) > 50 {
 		return errors.New("apifull: invalid inline bot results")
 	}
@@ -106,7 +127,8 @@ func SetInlineBotResults(botID, queryID int64, gallery, private bool, cacheTime 
 			}
 			if item.Ready {
 				if item.Gallery == gallery && item.Private == private && item.CacheTime == cacheTime &&
-					item.NextOffset == nextOffset && jsonEqualSlices(item.Results, results) {
+					item.NextOffset == nextOffset && inlineSwitchesEqual(item.SwitchPM, switchPM) &&
+					inlineWebviewsEqual(item.SwitchWebview, switchWebview) && jsonEqualSlices(item.Results, results) {
 					return encodeInlineQueries(items)
 				}
 				return "", ErrInlineQueryConflict
@@ -115,6 +137,8 @@ func SetInlineBotResults(botID, queryID int64, gallery, private bool, cacheTime 
 			item.Private = private
 			item.CacheTime = cacheTime
 			item.NextOffset = nextOffset
+			item.SwitchPM = cloneInlineSwitchPM(switchPM)
+			item.SwitchWebview = cloneInlineBotWebView(switchWebview)
 			item.Results = cloneRawMessages(results)
 			item.Ready = true
 			item.UpdatedAt = now
@@ -141,16 +165,41 @@ func SetInlineBotResultsForBot(botID, queryID int64, gallery, private bool, cach
 	return SetInlineBotResults(botID, queryID, gallery, private, cacheTime, nextOffset, results)
 }
 
+func SetInlineBotResultsForBotWithSwitches(botID, queryID int64, gallery, private bool, cacheTime int32, nextOffset string, switchPM *InlineBotSwitchPM, switchWebview *InlineBotWebView, results []json.RawMessage) error {
+	return SetInlineBotResultsWithSwitches(botID, queryID, gallery, private, cacheTime, nextOffset, switchPM, switchWebview, results)
+}
+
 // SetInlineBotResultsByQuery updates the query identified by the Telegram
 // query_id. The setInlineBotResults request is sent by the bot and does not
 // carry the bot ID, so callers must not use the authenticated user ID as a
 // storage partition key.
 func SetInlineBotResultsByQuery(queryID int64, gallery, private bool, cacheTime int32, nextOffset string, results []json.RawMessage) error {
+	return SetInlineBotResultsByQueryWithSwitches(queryID, gallery, private, cacheTime, nextOffset, nil, nil, results)
+}
+
+// SetInlineBotResultsByQueryForBotWithSwitches is the ownership-aware form of
+// setInlineBotResults. The TL request carries only query_id, so the caller's
+// authenticated bot must be checked against the bot that created the query
+// before any result envelope is committed.
+func SetInlineBotResultsByQueryForBotWithSwitches(botID, queryID int64, gallery, private bool, cacheTime int32, nextOffset string, switchPM *InlineBotSwitchPM, switchWebview *InlineBotWebView, results []json.RawMessage) error {
+	if botID <= 0 {
+		return errors.New("apifull: invalid inline bot owner")
+	}
+	return setInlineBotResultsByQuery(botID, queryID, gallery, private, cacheTime, nextOffset, switchPM, switchWebview, results)
+}
+
+// SetInlineBotResultsByQueryWithSwitches updates the query identified by the
+// Telegram query_id and retains the complete response envelope.
+func SetInlineBotResultsByQueryWithSwitches(queryID int64, gallery, private bool, cacheTime int32, nextOffset string, switchPM *InlineBotSwitchPM, switchWebview *InlineBotWebView, results []json.RawMessage) error {
+	return setInlineBotResultsByQuery(0, queryID, gallery, private, cacheTime, nextOffset, switchPM, switchWebview, results)
+}
+
+func setInlineBotResultsByQuery(expectedBotID, queryID int64, gallery, private bool, cacheTime int32, nextOffset string, switchPM *InlineBotSwitchPM, switchWebview *InlineBotWebView, results []json.RawMessage) error {
 	if queryID <= 0 || cacheTime < 0 || len(results) > 50 {
 		return errors.New("apifull: invalid inline bot results")
 	}
 	if store, ok := Default.(*postgresStore); ok {
-		return store.setInlineBotResultsByQuery(queryID, gallery, private, cacheTime, nextOffset, results)
+		return store.setInlineBotResultsByQuery(expectedBotID, queryID, gallery, private, cacheTime, nextOffset, switchPM, switchWebview, results)
 	}
 	if store, ok := Default.(*mem); ok {
 		store.mu.Lock()
@@ -163,7 +212,7 @@ func SetInlineBotResultsByQuery(queryID int64, gallery, private bool, cacheTime 
 			if err != nil {
 				return err
 			}
-			if err := applyInlineBotResults(items, queryID, gallery, private, cacheTime, nextOffset, results); err != nil {
+			if err := applyInlineBotResultsForBot(items, expectedBotID, queryID, gallery, private, cacheTime, nextOffset, switchPM, switchWebview, results); err != nil {
 				if errors.Is(err, ErrInlineQueryNotFound) {
 					continue
 				}
@@ -181,7 +230,7 @@ func SetInlineBotResultsByQuery(queryID int64, gallery, private bool, cacheTime 
 	return ErrInlineQueryNotFound
 }
 
-func (s *postgresStore) setInlineBotResultsByQuery(queryID int64, gallery, private bool, cacheTime int32, nextOffset string, results []json.RawMessage) error {
+func (s *postgresStore) setInlineBotResultsByQuery(expectedBotID, queryID int64, gallery, private bool, cacheTime int32, nextOffset string, switchPM *InlineBotSwitchPM, switchWebview *InlineBotWebView, results []json.RawMessage) error {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
@@ -212,7 +261,7 @@ func (s *postgresStore) setInlineBotResultsByQuery(queryID int64, gallery, priva
 		if err != nil {
 			return err
 		}
-		if err := applyInlineBotResults(items, queryID, gallery, private, cacheTime, nextOffset, results); err != nil {
+		if err := applyInlineBotResultsForBot(items, expectedBotID, queryID, gallery, private, cacheTime, nextOffset, switchPM, switchWebview, results); err != nil {
 			if errors.Is(err, ErrInlineQueryNotFound) {
 				continue
 			}
@@ -236,19 +285,27 @@ func (s *postgresStore) setInlineBotResultsByQuery(queryID int64, gallery, priva
 	return tx.Commit()
 }
 
-func applyInlineBotResults(items []InlineBotQuery, queryID int64, gallery, private bool, cacheTime int32, nextOffset string, results []json.RawMessage) error {
+func applyInlineBotResults(items []InlineBotQuery, queryID int64, gallery, private bool, cacheTime int32, nextOffset string, switchPM *InlineBotSwitchPM, switchWebview *InlineBotWebView, results []json.RawMessage) error {
+	return applyInlineBotResultsForBot(items, 0, queryID, gallery, private, cacheTime, nextOffset, switchPM, switchWebview, results)
+}
+
+func applyInlineBotResultsForBot(items []InlineBotQuery, expectedBotID, queryID int64, gallery, private bool, cacheTime int32, nextOffset string, switchPM *InlineBotSwitchPM, switchWebview *InlineBotWebView, results []json.RawMessage) error {
 	now := time.Now().UTC().Unix()
 	for i := range items {
 		item := &items[i]
 		if item.QueryID != queryID {
 			continue
 		}
+		if expectedBotID > 0 && item.BotID != expectedBotID {
+			return ErrInlineQueryConflict
+		}
 		if item.ExpiresAt <= now {
 			return ErrInlineQueryNotFound
 		}
 		if item.Ready {
 			if item.Gallery == gallery && item.Private == private && item.CacheTime == cacheTime &&
-				item.NextOffset == nextOffset && jsonEqualSlices(item.Results, results) {
+				item.NextOffset == nextOffset && inlineSwitchesEqual(item.SwitchPM, switchPM) &&
+				inlineWebviewsEqual(item.SwitchWebview, switchWebview) && jsonEqualSlices(item.Results, results) {
 				return nil
 			}
 			return ErrInlineQueryConflict
@@ -257,6 +314,8 @@ func applyInlineBotResults(items []InlineBotQuery, queryID int64, gallery, priva
 		item.Private = private
 		item.CacheTime = cacheTime
 		item.NextOffset = nextOffset
+		item.SwitchPM = cloneInlineSwitchPM(switchPM)
+		item.SwitchWebview = cloneInlineBotWebView(switchWebview)
 		item.Results = cloneRawMessages(results)
 		item.Ready = true
 		item.UpdatedAt = now
@@ -271,6 +330,36 @@ func applyInlineBotResults(items []InlineBotQuery, queryID int64, gallery, priva
 		return nil
 	}
 	return ErrInlineQueryNotFound
+}
+
+func cloneInlineSwitchPM(value *InlineBotSwitchPM) *InlineBotSwitchPM {
+	if value == nil {
+		return nil
+	}
+	copy := *value
+	return &copy
+}
+
+func cloneInlineBotWebView(value *InlineBotWebView) *InlineBotWebView {
+	if value == nil {
+		return nil
+	}
+	copy := *value
+	return &copy
+}
+
+func inlineSwitchesEqual(left, right *InlineBotSwitchPM) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return left.Text == right.Text && left.StartParam == right.StartParam
+}
+
+func inlineWebviewsEqual(left, right *InlineBotWebView) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return left.Text == right.Text && left.URL == right.URL
 }
 
 // FindInlineBotQuery returns the newest pending or ready result for a request.

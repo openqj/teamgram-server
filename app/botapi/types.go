@@ -64,6 +64,22 @@ type Chat struct {
 	BackgroundCustomEmoji string   `json:"background_custom_emoji_id,omitempty"`
 }
 
+// ChatPhoto is the Bot API representation of a chat avatar. MTProto exposes
+// the small and large variants either as one Photo constructor or as a
+// ChatPhoto reference, so both Bot API file ids intentionally point at the
+// same canonical photo id when only the reference is available.
+type ChatPhoto struct {
+	SmallFileID       string `json:"small_file_id"`
+	SmallFileUniqueID string `json:"small_file_unique_id"`
+	BigFileID         string `json:"big_file_id"`
+	BigFileUniqueID   string `json:"big_file_unique_id"`
+}
+
+type UserProfilePhotos struct {
+	TotalCount int           `json:"total_count"`
+	Photos     [][]PhotoSize `json:"photos"`
+}
+
 type WebAppInfo struct {
 	URL string `json:"url"`
 }
@@ -311,6 +327,52 @@ type Invoice struct {
 	TotalAmount    int64  `json:"total_amount"`
 }
 
+// SuccessfulPayment is emitted on the service message delivered after a
+// provider confirms an invoice payment.
+type SuccessfulPayment struct {
+	Currency                   string     `json:"currency"`
+	TotalAmount                int64      `json:"total_amount"`
+	InvoicePayload             string     `json:"invoice_payload"`
+	ShippingOptionID           string     `json:"shipping_option_id,omitempty"`
+	OrderInfo                  *OrderInfo `json:"order_info,omitempty"`
+	TelegramPaymentChargeID    string     `json:"telegram_payment_charge_id"`
+	ProviderPaymentChargeID    string     `json:"provider_payment_charge_id"`
+	SubscriptionExpirationDate int64      `json:"subscription_expiration_date,omitempty"`
+	IsRecurring                bool       `json:"is_recurring,omitempty"`
+	IsFirstRecurring           bool       `json:"is_first_recurring,omitempty"`
+}
+
+// StarAmount is the Bot API representation of a Telegram Stars balance or
+// transaction amount. Nanostars are kept separately because the Bot API uses
+// the field only when a fractional Star value is present.
+type StarAmount struct {
+	Amount         int64 `json:"amount"`
+	NanostarAmount int   `json:"nanostar_amount,omitempty"`
+}
+
+// TransactionPartner is the common Bot API envelope for a Stars transaction
+// counterparty. The Layer 229 ledger may omit a counterparty, so both fields
+// remain optional when the server does not have that entity in the result.
+type TransactionPartner struct {
+	Type string `json:"type"`
+	User *User  `json:"user,omitempty"`
+	Chat *Chat  `json:"chat,omitempty"`
+}
+
+type StarTransaction struct {
+	ID             string              `json:"id"`
+	Amount         int64               `json:"amount"`
+	NanostarAmount int                 `json:"nanostar_amount,omitempty"`
+	Date           int64               `json:"date"`
+	Source         *TransactionPartner `json:"source,omitempty"`
+	Receiver       *TransactionPartner `json:"receiver,omitempty"`
+}
+
+type StarTransactions struct {
+	Transactions []StarTransaction `json:"transactions"`
+	NextOffset   string            `json:"next_offset,omitempty"`
+}
+
 type BusinessConnection struct {
 	ID         string             `json:"id"`
 	User       *User              `json:"user"`
@@ -416,6 +478,8 @@ type Message struct {
 	Dice                 *Dice                `json:"dice,omitempty"`
 	Game                 *Game                `json:"game,omitempty"`
 	Invoice              *Invoice             `json:"invoice,omitempty"`
+	SuccessfulPayment    *SuccessfulPayment   `json:"successful_payment,omitempty"`
+	BusinessConnectionID string               `json:"business_connection_id,omitempty"`
 	RichMessage          *mtproto.RichMessage `json:"rich_message,omitempty"`
 }
 
@@ -425,6 +489,26 @@ type InlineQuery struct {
 	ChatType string `json:"chat_type"`
 	Query    string `json:"query"`
 	Offset   string `json:"offset"`
+}
+
+// ChosenInlineResult is emitted after a user selects one of the bot's inline
+// results. The MTProto update carries the selected result id and, when the
+// result was sent as an inline message, its opaque message identifier.
+type ChosenInlineResult struct {
+	ResultID        string    `json:"result_id"`
+	From            *User     `json:"from"`
+	Location        *Location `json:"location,omitempty"`
+	InlineMessageID string    `json:"inline_message_id,omitempty"`
+	Query           string    `json:"query"`
+}
+
+// InlineQueryResultsButton is the optional button shown above inline results.
+// Telegram accepts either a Mini App button or a deep-link parameter that
+// switches the user to the bot's private chat.
+type InlineQueryResultsButton struct {
+	Text           string      `json:"text"`
+	WebApp         *WebAppInfo `json:"web_app,omitempty"`
+	StartParameter string      `json:"start_parameter,omitempty"`
 }
 
 type CallbackQuery struct {
@@ -455,17 +539,27 @@ type SentWebAppMessage struct {
 }
 
 type Update struct {
-	UpdateID           int64               `json:"update_id"`
-	Message            *Message            `json:"message,omitempty"`
-	EditedMessage      *Message            `json:"edited_message,omitempty"`
-	ChannelPost        *Message            `json:"channel_post,omitempty"`
-	EditedChannelPost  *Message            `json:"edited_channel_post,omitempty"`
-	InlineQuery        *InlineQuery        `json:"inline_query,omitempty"`
-	CallbackQuery      *CallbackQuery      `json:"callback_query,omitempty"`
-	WebAppQuery        *WebAppQuery        `json:"web_app_query,omitempty"`
-	ShippingQuery      *ShippingQuery      `json:"shipping_query,omitempty"`
-	PreCheckoutQuery   *PreCheckoutQuery   `json:"pre_checkout_query,omitempty"`
-	BusinessConnection *BusinessConnection `json:"business_connection,omitempty"`
+	UpdateID                int64                    `json:"update_id"`
+	Message                 *Message                 `json:"message,omitempty"`
+	EditedMessage           *Message                 `json:"edited_message,omitempty"`
+	ChannelPost             *Message                 `json:"channel_post,omitempty"`
+	EditedChannelPost       *Message                 `json:"edited_channel_post,omitempty"`
+	InlineQuery             *InlineQuery             `json:"inline_query,omitempty"`
+	ChosenInlineResult      *ChosenInlineResult      `json:"chosen_inline_result,omitempty"`
+	CallbackQuery           *CallbackQuery           `json:"callback_query,omitempty"`
+	WebAppQuery             *WebAppQuery             `json:"web_app_query,omitempty"`
+	ShippingQuery           *ShippingQuery           `json:"shipping_query,omitempty"`
+	PreCheckoutQuery        *PreCheckoutQuery        `json:"pre_checkout_query,omitempty"`
+	BusinessConnection      *BusinessConnection      `json:"business_connection,omitempty"`
+	BusinessMessage         *Message                 `json:"business_message,omitempty"`
+	EditedBusinessMessage   *Message                 `json:"edited_business_message,omitempty"`
+	DeletedBusinessMessages *BusinessMessagesDeleted `json:"deleted_business_messages,omitempty"`
+}
+
+type BusinessMessagesDeleted struct {
+	BusinessConnectionID string `json:"business_connection_id"`
+	Chat                 *Chat  `json:"chat"`
+	MessageIDs           []int  `json:"message_ids"`
 }
 
 type ChatPermissions struct {
@@ -483,6 +577,25 @@ type ChatPermissions struct {
 	CanInviteUsers        bool `json:"can_invite_users,omitempty"`
 	CanPinMessages        bool `json:"can_pin_messages,omitempty"`
 	CanManageTopics       bool `json:"can_manage_topics,omitempty"`
+}
+
+type ChatAdministratorRights struct {
+	IsAnonymous             bool `json:"is_anonymous"`
+	CanManageChat           bool `json:"can_manage_chat"`
+	CanDeleteMessages       bool `json:"can_delete_messages"`
+	CanManageVideoChats     bool `json:"can_manage_video_chats"`
+	CanRestrictMembers      bool `json:"can_restrict_members"`
+	CanPromoteMembers       bool `json:"can_promote_members"`
+	CanChangeInfo           bool `json:"can_change_info"`
+	CanInviteUsers          bool `json:"can_invite_users"`
+	CanPostMessages         bool `json:"can_post_messages"`
+	CanEditMessages         bool `json:"can_edit_messages"`
+	CanPinMessages          bool `json:"can_pin_messages"`
+	CanManageTopics         bool `json:"can_manage_topics"`
+	CanPostStories          bool `json:"can_post_stories"`
+	CanEditStories          bool `json:"can_edit_stories"`
+	CanDeleteStories        bool `json:"can_delete_stories"`
+	CanManageDirectMessages bool `json:"can_manage_direct_messages"`
 }
 
 // ChatInviteLink is the Bot API representation of an exported MTProto invite.
@@ -741,6 +854,15 @@ func ChatMemberFromChannelParticipant(in *mtproto.ChannelParticipant, users []*m
 		member.CanBeEdited = in.GetCanEdit()
 		member.CanManageChat = true
 		applyChatAdminRights(member, in.GetAdminRights())
+	case mtproto.Predicate_channelParticipantSelf:
+		// A caller's own channel participant is encoded as Self even when the
+		// caller is an administrator. Bot API callers still need the effective
+		// administrator status and rights for getChatMember/admins.
+		if in.GetAdminRights() != nil {
+			member.Status = "administrator"
+			member.CanManageChat = true
+			applyChatAdminRights(member, in.GetAdminRights())
+		}
 	case mtproto.Predicate_channelParticipantBanned:
 		rights := in.GetBannedRights()
 		member.UntilDate = int64(rightsUntilDate(rights))
@@ -933,7 +1055,16 @@ func ChatFromImmutableChat(in *mtproto.ImmutableChat, chatType string) *Chat {
 	} else if chatType == "supergroup" {
 		id = -1000000000000 - id
 	}
-	return &Chat{ID: id, Type: chatType, Title: in.GetTitle(), IsForum: false}
+	chat := &Chat{ID: id, Type: chatType, Title: in.GetTitle(), IsForum: false, Photo: ChatPhotoFromPhoto(in.GetPhoto())}
+	chat.Description = in.GetAbout()
+	chat.Permissions = ChatPermissionsFromBannedRights(in.GetDefaultBannedRights())
+	if invite := in.GetExportedInvite(); invite != nil {
+		chat.InviteLink = invite.GetLink()
+	}
+	if in.GetTtlPeriod() > 0 {
+		chat.MessageAutoDeleteTime = int(in.GetTtlPeriod())
+	}
+	return chat
 }
 
 // ChatFromMTProtoChat converts a full MTProto chat/channel constructor to the
@@ -959,6 +1090,72 @@ func ChatFromMTProtoChat(in *mtproto.Chat) *Chat {
 		IsForum:            in.GetForum(),
 		JoinToSendMessages: in.GetJoinToSend(),
 		JoinByRequest:      in.GetJoinRequest(),
+		Photo:              ChatPhotoFromMTProto(in.GetPhoto()),
+	}
+}
+
+func ChatPhotoFromPhoto(photo *mtproto.Photo) *ChatPhoto {
+	if photo == nil || photo.GetId() <= 0 {
+		return nil
+	}
+	fileID := fileID("photo", photo.GetId(), photo.GetAccessHash())
+	uniqueID := strconv.FormatInt(photo.GetId(), 10)
+	return &ChatPhoto{SmallFileID: fileID, SmallFileUniqueID: uniqueID, BigFileID: fileID, BigFileUniqueID: uniqueID}
+}
+
+func ChatPhotoFromMTProto(photo *mtproto.ChatPhoto) *ChatPhoto {
+	if photo == nil || photo.GetPhotoId() <= 0 || photo.GetPredicateName() == mtproto.Predicate_chatPhotoEmpty {
+		return nil
+	}
+	fileID := fileID("photo", photo.GetPhotoId(), 0)
+	uniqueID := strconv.FormatInt(photo.GetPhotoId(), 10)
+	return &ChatPhoto{SmallFileID: fileID, SmallFileUniqueID: uniqueID, BigFileID: fileID, BigFileUniqueID: uniqueID}
+}
+
+func ChatPhotoFromUserProfilePhoto(photo *mtproto.UserProfilePhoto) *ChatPhoto {
+	if photo == nil || photo.GetPhotoId() <= 0 || photo.GetPredicateName() == mtproto.Predicate_userProfilePhotoEmpty {
+		return nil
+	}
+	fileID := fileID("photo", photo.GetPhotoId(), 0)
+	uniqueID := strconv.FormatInt(photo.GetPhotoId(), 10)
+	return &ChatPhoto{SmallFileID: fileID, SmallFileUniqueID: uniqueID, BigFileID: fileID, BigFileUniqueID: uniqueID}
+}
+
+func UserProfilePhotosFromMTProto(photos *mtproto.Photos_Photos) *UserProfilePhotos {
+	if photos == nil {
+		return &UserProfilePhotos{Photos: [][]PhotoSize{}}
+	}
+	result := &UserProfilePhotos{TotalCount: int(photos.GetCount()), Photos: make([][]PhotoSize, 0, len(photos.GetPhotos()))}
+	for _, photo := range photos.GetPhotos() {
+		if sizes := photoSizesFromMTProto(photo); len(sizes) > 0 {
+			result.Photos = append(result.Photos, sizes)
+		}
+	}
+	if result.TotalCount == 0 {
+		result.TotalCount = len(result.Photos)
+	}
+	return result
+}
+
+func ChatPermissionsFromBannedRights(rights *mtproto.ChatBannedRights) *ChatPermissions {
+	if rights == nil {
+		return nil
+	}
+	return &ChatPermissions{
+		CanSendMessages:       !rights.GetSendMessages(),
+		CanSendAudios:         !rights.GetSendAudios(),
+		CanSendDocuments:      !rights.GetSendDocs(),
+		CanSendPhotos:         !rights.GetSendPhotos(),
+		CanSendVideos:         !rights.GetSendVideos(),
+		CanSendVideoNotes:     !rights.GetSendRoundvideos(),
+		CanSendVoiceNotes:     !rights.GetSendVoices(),
+		CanSendPolls:          !rights.GetSendPolls(),
+		CanSendOtherMessages:  !rights.GetSendStickers() && !rights.GetSendGifs() && !rights.GetSendGames() && !rights.GetSendInline(),
+		CanAddWebPagePreviews: !rights.GetEmbedLinks(),
+		CanChangeInfo:         !rights.GetChangeInfo(),
+		CanInviteUsers:        !rights.GetInviteUsers(),
+		CanPinMessages:        !rights.GetPinMessages(),
+		CanManageTopics:       !rights.GetManageTopics(),
 	}
 }
 
@@ -1016,7 +1213,31 @@ func MessageFromMTProto(in *mtproto.Message, users []*mtproto.User, chats []*mtp
 	message.ReplyMarkup = replyMarkupFromMTProto(in.GetReplyMarkup())
 	message.RichMessage = in.GetRichMessage()
 	applyMedia(message, in.GetMedia())
+	message.SuccessfulPayment = successfulPaymentFromMessageAction(in.GetAction())
 	return message
+}
+
+func successfulPaymentFromMessageAction(action *mtproto.MessageAction) *SuccessfulPayment {
+	if action == nil || (action.GetPredicateName() != mtproto.Predicate_messageActionPaymentSentMe && action.GetPredicateName() != mtproto.Predicate_messageActionPaymentSent) {
+		return nil
+	}
+	result := &SuccessfulPayment{
+		Currency:         action.GetCurrency_STRING(),
+		TotalAmount:      action.GetTotalAmount(),
+		InvoicePayload:   string(action.GetPayload()),
+		ShippingOptionID: stringValue(action.GetShippingOptionId()),
+		OrderInfo:        orderInfoFromMTProto(action.GetInfo()),
+		IsRecurring:      action.GetRecurringUsed(),
+		IsFirstRecurring: action.GetRecurringInit(),
+	}
+	if charge := action.GetCharge(); charge != nil {
+		result.TelegramPaymentChargeID = charge.GetId()
+		result.ProviderPaymentChargeID = charge.GetProviderChargeId()
+	}
+	if expiration := action.GetSubscriptionUntilDate(); expiration != nil {
+		result.SubscriptionExpirationDate = int64(expiration.GetValue())
+	}
+	return result
 }
 
 func UpdateFromMTProto(in *mtproto.Update, users []*mtproto.User, chats []*mtproto.Chat) (*Update, bool) {
@@ -1040,6 +1261,14 @@ func UpdateFromMTProto(in *mtproto.Update, users []*mtproto.User, chats []*mtpro
 			ChatType: inlineChatType(in.GetPeerType()),
 			Query:    in.GetQuery(),
 			Offset:   in.GetOffset(),
+		}
+	case mtproto.Predicate_updateBotInlineSend:
+		result.ChosenInlineResult = &ChosenInlineResult{
+			ResultID:        in.GetId_STRING(),
+			From:            userByID(in.GetUserId(), users),
+			Location:        locationFromGeoPoint(in.GetGeo()),
+			InlineMessageID: inputBotInlineMessageIDString(in.GetMsgId_FLAGINPUTBOTINLINEMESSAGEID()),
+			Query:           in.GetQuery(),
 		}
 	case mtproto.Predicate_updateBotCallbackQuery:
 		result.CallbackQuery = &CallbackQuery{
@@ -1092,10 +1321,106 @@ func UpdateFromMTProto(in *mtproto.Update, users []*mtproto.User, chats []*mtpro
 			IsEnabled:  !connection.GetDisabled(),
 			Rights:     businessBotRightsFromMTProto(connection.GetRights()),
 		}
+	case mtproto.Predicate_updateBotNewBusinessMessage:
+		result.BusinessMessage = businessMessageFromMTProto(in, users, chats)
+	case mtproto.Predicate_updateBotEditBusinessMessage:
+		result.EditedBusinessMessage = businessMessageFromMTProto(in, users, chats)
+	case mtproto.Predicate_updateBotDeleteBusinessMessage:
+		result.DeletedBusinessMessages = &BusinessMessagesDeleted{
+			BusinessConnectionID: in.GetConnectionId(),
+			Chat:                 ChatFromPeer(in.GetPeer_PEER(), users, chats),
+			MessageIDs:           int32SliceToInt(in.GetIds()),
+		}
+	case mtproto.Predicate_updateBusinessBotCallbackQuery:
+		result.CallbackQuery = &CallbackQuery{
+			ID:            fmt.Sprintf("%d", in.GetQueryId_INT64()),
+			From:          userByID(in.GetUserId(), users),
+			Message:       businessCallbackMessage(in, users, chats),
+			ChatInstance:  fmt.Sprintf("%d", in.GetChatInstance()),
+			Data:          string(in.GetData_FLAGBYTES()),
+			GameShortName: stringValue(in.GetGameShortName()),
+		}
 	default:
 		return nil, false
 	}
 	return result, true
+}
+
+func locationFromGeoPoint(in *mtproto.GeoPoint) *Location {
+	if in == nil {
+		return nil
+	}
+	location := &Location{Longitude: in.GetLong(), Latitude: in.GetLat()}
+	if accuracy := in.GetAccuracyRadius(); accuracy != nil && accuracy.GetValue() > 0 {
+		location.HorizontalAccuracy = float64(accuracy.GetValue())
+	}
+	return location
+}
+
+func inputBotInlineMessageIDString(in *mtproto.InputBotInlineMessageID) string {
+	if in == nil || in.GetDcId() <= 0 || in.GetAccessHash() == 0 {
+		return ""
+	}
+	if in.GetPredicateName() == mtproto.Predicate_inputBotInlineMessageID64 || in.GetOwnerId() != 0 {
+		return fmt.Sprintf("%d:%d:%d:%d", in.GetDcId(), in.GetOwnerId(), in.GetId_INT32(), in.GetAccessHash())
+	}
+	return fmt.Sprintf("%d:%d:%d", in.GetDcId(), in.GetId_INT64(), in.GetAccessHash())
+}
+
+var validAllowedUpdateTypes = map[string]struct{}{
+	"message": {}, "edited_message": {}, "channel_post": {}, "edited_channel_post": {},
+	"business_connection": {}, "business_message": {}, "edited_business_message": {}, "deleted_business_messages": {},
+	"inline_query": {}, "chosen_inline_result": {}, "callback_query": {}, "shipping_query": {}, "pre_checkout_query": {},
+	"purchased_paid_media": {}, "poll": {}, "poll_answer": {}, "my_chat_member": {}, "chat_member": {}, "chat_join_request": {},
+	"message_reaction": {}, "message_reaction_count": {}, "chat_boost": {}, "removed_chat_boost": {},
+}
+
+// IsValidAllowedUpdateType reports whether name is a Telegram Bot API
+// allowed_updates value. Some valid values are not emitted by this server yet,
+// but accepting them preserves the wire contract and simply yields no such
+// update until the corresponding MTProto adapter is available.
+func IsValidAllowedUpdateType(name string) bool {
+	_, ok := validAllowedUpdateTypes[strings.TrimSpace(name)]
+	return ok
+}
+
+func businessMessageFromMTProto(in *mtproto.Update, users []*mtproto.User, chats []*mtproto.Chat) *Message {
+	if in == nil || in.GetMessage_MESSAGE() == nil {
+		return nil
+	}
+	message := MessageFromMTProto(in.GetMessage_MESSAGE(), users, chats)
+	if message != nil {
+		message.BusinessConnectionID = in.GetConnectionId()
+		if reply := in.GetReplyToMessage(); reply != nil {
+			message.ReplyToMessage = MessageFromMTProto(reply, users, chats)
+		}
+	}
+	return message
+}
+
+func businessCallbackMessage(in *mtproto.Update, users []*mtproto.User, chats []*mtproto.Chat) *Message {
+	if in == nil {
+		return nil
+	}
+	if in.GetMessage_MESSAGE() == nil {
+		return callbackMessage(in, users, chats)
+	}
+	message := MessageFromMTProto(in.GetMessage_MESSAGE(), users, chats)
+	if message != nil {
+		message.BusinessConnectionID = in.GetConnectionId()
+		if reply := in.GetReplyToMessage(); reply != nil {
+			message.ReplyToMessage = MessageFromMTProto(reply, users, chats)
+		}
+	}
+	return message
+}
+
+func int32SliceToInt(values []int32) []int {
+	result := make([]int, 0, len(values))
+	for _, value := range values {
+		result = append(result, int(value))
+	}
+	return result
 }
 
 func businessBotRightsFromMTProto(in *mtproto.BusinessBotRights) *BusinessBotRights {
@@ -1310,13 +1635,19 @@ func applyMedia(message *Message, media *mtproto.MessageMedia) {
 		}
 	case mtproto.Predicate_messageMediaVenue:
 		if geo := media.GetGeo(); geo != nil {
-			message.Venue = &Venue{
-				Location:       &Location{Longitude: geo.GetLong(), Latitude: geo.GetLat(), HorizontalAccuracy: float64(wrapperInt32(geo.GetAccuracyRadius()))},
-				Title:          media.GetTitle(),
-				Address:        media.GetAddress(),
-				FoursquareID:   media.GetVenueId(),
-				FoursquareType: media.GetVenueType(),
+			venue := &Venue{
+				Location: &Location{Longitude: geo.GetLong(), Latitude: geo.GetLat(), HorizontalAccuracy: float64(wrapperInt32(geo.GetAccuracyRadius()))},
+				Title:    media.GetTitle(),
+				Address:  media.GetAddress(),
 			}
+			if strings.EqualFold(media.GetProvider(), "google") {
+				venue.GooglePlaceID = media.GetVenueId()
+				venue.GooglePlaceType = media.GetVenueType()
+			} else {
+				venue.FoursquareID = media.GetVenueId()
+				venue.FoursquareType = media.GetVenueType()
+			}
+			message.Venue = venue
 		}
 	case mtproto.Predicate_messageMediaContact:
 		message.Contact = &Contact{

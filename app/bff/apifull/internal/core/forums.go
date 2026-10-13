@@ -311,6 +311,11 @@ func (c *ApiFullCore) ChannelsEditForumTopic(in *mtproto.TLChannelsEditForumTopi
 	if err != nil {
 		return nil, err
 	}
+	if in.GetTopicId() == 1 {
+		if err := domain.EnsureGeneralForumTopic(key, uid); err != nil {
+			return nil, err
+		}
+	}
 	if err := forumEditTopic(key, in.GetTopicId(), in.GetTitle(), in.GetIconEmojiId(), in.GetClosed(), in.GetHidden()); err != nil {
 		return nil, err
 	}

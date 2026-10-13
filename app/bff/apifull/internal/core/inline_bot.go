@@ -19,15 +19,23 @@
 package core
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math"
+	"mime"
+	"net"
+	"net/http"
+	"net/url"
+	"path"
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/domain"
@@ -35,6 +43,7 @@ import (
 	"github.com/teamgram/teamgram-server/app/bff/paymentinvoice"
 	msgpb "github.com/teamgram/teamgram-server/app/messenger/msg/msg/msg"
 	userpb "github.com/teamgram/teamgram-server/app/service/biz/user/user"
+	dfspb "github.com/teamgram/teamgram-server/app/service/dfs/dfs"
 	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
@@ -102,13 +111,33 @@ func (c *ApiFullCore) MessagesGetInlineBotResults(in *mtproto.TLMessagesGetInlin
 	if query.NextOffset != "" {
 		nextOffset = wrapperspb.String(query.NextOffset)
 	}
+	var switchPM *mtproto.InlineBotSwitchPM
+	if query.SwitchPM != nil {
+		switchPM = mtproto.MakeTLInlineBotSwitchPM(&mtproto.InlineBotSwitchPM{
+			Text: query.SwitchPM.Text, StartParam: query.SwitchPM.StartParam,
+		}).To_InlineBotSwitchPM()
+	}
+	var switchWebview *mtproto.InlineBotWebView
+	if query.SwitchWebview != nil {
+		switchWebview = mtproto.MakeTLInlineBotWebView(&mtproto.InlineBotWebView{
+			Text: query.SwitchWebview.Text, Url: query.SwitchWebview.URL,
+		}).To_InlineBotWebView()
+	}
+	users := []*mtproto.User{}
+	if c.svcCtx != nil && c.svcCtx.Dao != nil && c.svcCtx.Dao.UserClient != nil {
+		if profile, profileErr := c.svcCtx.Dao.UserGetImmutableUser(c.ctx, &userpb.TLUserGetImmutableUser{Id: botID}); profileErr == nil && profile != nil && profile.GetUser() != nil && !profile.Deleted() {
+			users = append(users, profile.ToUser(uid))
+		}
+	}
 	return mtproto.MakeTLMessagesBotResults(&mtproto.Messages_BotResults{
-		Gallery:    query.Gallery,
-		QueryId:    query.QueryID,
-		NextOffset: nextOffset,
-		Results:    results,
-		CacheTime:  query.CacheTime,
-		Users:      []*mtproto.User{},
+		Gallery:       query.Gallery,
+		QueryId:       query.QueryID,
+		NextOffset:    nextOffset,
+		SwitchPm:      switchPM,
+		SwitchWebview: switchWebview,
+		Results:       results,
+		CacheTime:     query.CacheTime,
+		Users:         users,
 	}).To_Messages_BotResults(), nil
 }
 
@@ -238,8 +267,17 @@ func (c *ApiFullCore) MessagesSetInlineBotResults(in *mtproto.TLMessagesSetInlin
 		return nil, err
 	}
 	encoded := make([]json.RawMessage, 0, len(in.GetResults()))
+	seenResultIDs := make(map[string]struct{}, len(in.GetResults()))
 	for _, result := range in.GetResults() {
-		if result == nil || strings.TrimSpace(result.GetId()) == "" || strings.TrimSpace(result.GetType()) == "" {
+		resultID := strings.TrimSpace(result.GetId())
+		if result == nil || resultID == "" || len(resultID) > 64 || strings.TrimSpace(result.GetType()) == "" {
+			return nil, mtproto.ErrInputRequestInvalid
+		}
+		if _, exists := seenResultIDs[resultID]; exists {
+			return nil, mtproto.ErrInputRequestInvalid
+		}
+		seenResultIDs[resultID] = struct{}{}
+		if !validInlineResultType(result.GetType()) {
 			return nil, mtproto.ErrInputRequestInvalid
 		}
 		if err = validateInlineResultPredicate(result.GetPredicateName()); err != nil {
@@ -273,11 +311,25 @@ func (c *ApiFullCore) MessagesSetInlineBotResults(in *mtproto.TLMessagesSetInlin
 	nextOffset := ""
 	if in.GetNextOffset() != nil {
 		nextOffset = in.GetNextOffset().GetValue()
+		if len(nextOffset) > 64 {
+			return nil, mtproto.ErrInputRequestInvalid
+		}
+	}
+	if err = validateInlineResultSwitches(in.GetSwitchPm(), in.GetSwitchWebview()); err != nil {
+		return nil, err
 	}
 	// setInlineBotResults carries only query_id. Resolve the pending query
-	// atomically across bot partitions instead of treating the authenticated
-	// caller as the bot identity.
-	if err = persist.SetInlineBotResultsByQuery(in.GetQueryId(), in.GetGallery(), in.GetPrivate(), in.GetCacheTime(), nextOffset, encoded); err != nil {
+	// atomically across bot partitions, while requiring the authenticated bot
+	// to match the bot that created the query.
+	var switchPM *persist.InlineBotSwitchPM
+	if value := in.GetSwitchPm(); value != nil {
+		switchPM = &persist.InlineBotSwitchPM{Text: value.GetText(), StartParam: value.GetStartParam()}
+	}
+	var switchWebview *persist.InlineBotWebView
+	if value := in.GetSwitchWebview(); value != nil {
+		switchWebview = &persist.InlineBotWebView{Text: value.GetText(), URL: value.GetUrl()}
+	}
+	if err = persist.SetInlineBotResultsByQueryForBotWithSwitches(uid, in.GetQueryId(), in.GetGallery(), in.GetPrivate(), in.GetCacheTime(), nextOffset, switchPM, switchWebview, encoded); err != nil {
 		if errors.Is(err, persist.ErrInlineQueryNotFound) {
 			return nil, mtproto.ErrQueryIdInvalid
 		}
@@ -356,7 +408,7 @@ func (c *ApiFullCore) MessagesSendInlineBotResult(in *mtproto.TLMessagesSendInli
 		ReplyMarkup: send.GetReplyMarkup(),
 		Entities:    send.GetEntities(),
 	}).To_Message()
-	media, richMessage, mediaErr := inlineInputToMessageMedia(selected, send)
+	media, richMessage, mediaErr := c.inlineInputToMessageMedia(selected, send)
 	if mediaErr != nil {
 		return nil, mediaErr
 	}
@@ -660,6 +712,9 @@ func inputInlineResultToOutput(input *mtproto.InputBotInlineResult) (*mtproto.Bo
 	if err := validateInlineResultPredicate(input.GetPredicateName()); err != nil {
 		return nil, err
 	}
+	if !validInlineResultType(input.GetType()) {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
 	if input.GetPredicateName() == mtproto.Predicate_inputBotInlineResultPhoto && input.GetPhoto() == nil {
 		return nil, mtproto.ErrInputRequestInvalid
 	}
@@ -700,6 +755,49 @@ func inputInlineResultToOutput(input *mtproto.InputBotInlineResult) (*mtproto.Bo
 		return mtproto.MakeTLBotInlineMediaResult(result).To_BotInlineResult(), nil
 	}
 	return mtproto.MakeTLBotInlineResult(result).To_BotInlineResult(), nil
+}
+
+func validInlineResultType(value string) bool {
+	switch strings.TrimSpace(value) {
+	case "article", "photo", "gif", "mpeg4_gif", "video", "audio", "voice", "document",
+		"location", "venue", "contact", "game", "invoice", "sticker":
+		return true
+	default:
+		return false
+	}
+}
+
+func validateInlineResultSwitches(switchPM *mtproto.InlineBotSwitchPM, switchWebview *mtproto.InlineBotWebView) error {
+	if switchPM != nil {
+		if utf8.RuneCountInString(strings.TrimSpace(switchPM.GetText())) == 0 || utf8.RuneCountInString(switchPM.GetText()) > 64 || !validInlineStartParameter(switchPM.GetStartParam()) {
+			return mtproto.ErrInputRequestInvalid
+		}
+	}
+	if switchWebview != nil {
+		if utf8.RuneCountInString(strings.TrimSpace(switchWebview.GetText())) == 0 || utf8.RuneCountInString(switchWebview.GetText()) > 64 {
+			return mtproto.ErrInputRequestInvalid
+		}
+		parsed, err := url.ParseRequestURI(strings.TrimSpace(switchWebview.GetUrl()))
+		if err != nil || parsed.Host == "" || !strings.EqualFold(parsed.Scheme, "https") {
+			return mtproto.ErrInputRequestInvalid
+		}
+	}
+	if switchPM != nil && switchWebview != nil {
+		return mtproto.ErrInputRequestInvalid
+	}
+	return nil
+}
+
+func validInlineStartParameter(value string) bool {
+	if len(value) == 0 || len(value) > 64 {
+		return false
+	}
+	for _, char := range value {
+		if (char < 'a' || char > 'z') && (char < 'A' || char > 'Z') && (char < '0' || char > '9') && char != '_' && char != '-' {
+			return false
+		}
+	}
+	return true
 }
 
 func validateInlineResultPredicate(predicate string) error {
@@ -892,7 +990,7 @@ func inlineInvoiceTotal(invoice *mtproto.Invoice) int64 {
 	return total
 }
 
-func inlineInputToMessageMedia(result *mtproto.InputBotInlineResult, message *mtproto.InputBotInlineMessage) (*mtproto.MessageMedia, *mtproto.RichMessage, error) {
+func (c *ApiFullCore) inlineInputToMessageMedia(result *mtproto.InputBotInlineResult, message *mtproto.InputBotInlineMessage) (*mtproto.MessageMedia, *mtproto.RichMessage, error) {
 	if result == nil || message == nil {
 		return nil, nil, mtproto.ErrInputRequestInvalid
 	}
@@ -912,6 +1010,39 @@ func inlineInputToMessageMedia(result *mtproto.InputBotInlineResult, message *mt
 			return nil, nil, mtproto.ErrInputRequestInvalid
 		}
 		return mtproto.MakeTLMessageMediaGame(&mtproto.MessageMedia{Game: &mtproto.Game{ShortName: result.GetShortName()}}).To_MessageMedia(), nil, nil
+	}
+	switch message.GetPredicateName() {
+	case mtproto.Predicate_inputBotInlineMessageMediaGeo:
+		geo, err := inlineInputGeoToMessageMedia(message)
+		if err != nil {
+			return nil, nil, err
+		}
+		return geo, nil, nil
+	case mtproto.Predicate_inputBotInlineMessageMediaVenue:
+		geo, err := inlineMessageGeoPoint(message.GetGeoPoint())
+		if err != nil || strings.TrimSpace(message.GetTitle()) == "" || strings.TrimSpace(message.GetAddress()) == "" {
+			return nil, nil, mtproto.ErrInputRequestInvalid
+		}
+		return mtproto.MakeTLMessageMediaVenue(&mtproto.MessageMedia{
+			Geo:       geo,
+			Title:     message.GetTitle(),
+			Address:   message.GetAddress(),
+			Provider:  message.GetProvider(),
+			VenueId:   message.GetVenueId(),
+			VenueType: message.GetVenueType(),
+		}).To_MessageMedia(), nil, nil
+	case mtproto.Predicate_inputBotInlineMessageMediaContact:
+		if strings.TrimSpace(message.GetPhoneNumber()) == "" || strings.TrimSpace(message.GetFirstName()) == "" {
+			return nil, nil, mtproto.ErrInputRequestInvalid
+		}
+		return mtproto.MakeTLMessageMediaContact(&mtproto.MessageMedia{
+			PhoneNumber: message.GetPhoneNumber(),
+			FirstName:   message.GetFirstName(),
+			LastName:    message.GetLastName(),
+			Vcard:       message.GetVcard(),
+		}).To_MessageMedia(), nil, nil
+	case mtproto.Predicate_inputBotInlineMessageMediaWebPage:
+		return nil, nil, mtproto.ErrMethodNotImpl
 	}
 	if message.GetPredicateName() == mtproto.Predicate_inputBotInlineMessageMediaInvoice {
 		media := &mtproto.InputMedia{
@@ -933,7 +1064,279 @@ func inlineInputToMessageMedia(result *mtproto.InputBotInlineResult, message *mt
 	if message.GetPredicateName() == mtproto.Predicate_inputBotInlineMessageRichMessage {
 		return nil, inputRichMessageToOutput(message.GetRichMessage()), nil
 	}
+	if content := result.GetContent(); content != nil {
+		return c.inlineRemoteMedia(result.GetType(), content)
+	}
+	// A result without a media constructor is a text-only inline message.
+	// Returning nil here is intentional; the caller still rejects a message
+	// that has neither text nor media.
 	return nil, nil, nil
+}
+
+const (
+	inlineRemoteMediaMaxBytes = 20 << 20
+	inlineRemoteMediaPartSize = 512 << 10
+)
+
+func (c *ApiFullCore) inlineRemoteMedia(resultType string, content *mtproto.InputWebDocument) (*mtproto.MessageMedia, *mtproto.RichMessage, error) {
+	if content == nil || strings.TrimSpace(content.GetUrl()) == "" {
+		return nil, nil, mtproto.ErrInputRequestInvalid
+	}
+	remoteURL, err := parseInlineRemoteURL(content.GetUrl())
+	if err != nil {
+		return nil, nil, mtproto.ErrMediaInvalid
+	}
+	data, responseType, name, err := fetchInlineRemoteMedia(c.ctx, remoteURL)
+	if err != nil {
+		return nil, nil, err
+	}
+	mimeType := responseType
+	if mimeType == "" {
+		mimeType = strings.TrimSpace(content.GetMimeType())
+	}
+	if parsed, _, parseErr := mime.ParseMediaType(mimeType); parseErr == nil {
+		mimeType = parsed
+	}
+	if mimeType == "" {
+		mimeType = "application/octet-stream"
+	}
+	if resultType == "photo" {
+		if !strings.HasPrefix(strings.ToLower(mimeType), "image/") {
+			return nil, nil, mtproto.ErrMediaInvalid
+		}
+		photo, uploadErr := c.uploadInlinePhoto(data, name)
+		if uploadErr != nil {
+			return nil, nil, uploadErr
+		}
+		if photo == nil || photo.GetId() <= 0 {
+			return nil, nil, mtproto.ErrMediaInvalid
+		}
+		return mtproto.MakeTLMessageMediaPhoto(&mtproto.MessageMedia{Photo_FLAGPHOTO: photo}).To_MessageMedia(), nil, nil
+	}
+	attributes := content.GetAttributes()
+	media := mtproto.MakeTLInputMediaUploadedDocument(&mtproto.InputMedia{
+		MimeType:   mimeType,
+		Attributes: attributes,
+		ForceFile:  resultType == "document",
+	}).To_InputMedia()
+	document, uploadErr := c.uploadInlineDocument(data, name, media)
+	if uploadErr != nil {
+		return nil, nil, uploadErr
+	}
+	if document == nil || document.GetId() <= 0 {
+		return nil, nil, mtproto.ErrMediaInvalid
+	}
+	return mtproto.MakeTLMessageMediaDocument(&mtproto.MessageMedia{Document: document}).To_MessageMedia(), nil, nil
+}
+
+func parseInlineRemoteURL(raw string) (*url.URL, error) {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || parsed.Host == "" || parsed.User != nil || parsed.Fragment != "" {
+		return nil, errors.New("inline remote URL is invalid")
+	}
+	if !strings.EqualFold(parsed.Scheme, "http") && !strings.EqualFold(parsed.Scheme, "https") {
+		return nil, errors.New("inline remote URL scheme is invalid")
+	}
+	if err = rejectPrivateInlineHost(parsed.Hostname()); err != nil {
+		return nil, err
+	}
+	return parsed, nil
+}
+
+func rejectPrivateInlineHost(host string) error {
+	if strings.TrimSpace(host) == "" {
+		return errors.New("inline remote host is empty")
+	}
+	ips, err := net.LookupIP(host)
+	if err != nil || len(ips) == 0 {
+		return errors.New("inline remote host cannot be resolved")
+	}
+	for _, ip := range ips {
+		if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() || ip.IsMulticast() {
+			return errors.New("inline remote host is not public")
+		}
+	}
+	return nil
+}
+
+func fetchInlineRemoteMedia(parent context.Context, remoteURL *url.URL) ([]byte, string, string, error) {
+	if remoteURL == nil {
+		return nil, "", "", mtproto.ErrMediaInvalid
+	}
+	requestContext, cancel := context.WithTimeout(parent, 15*time.Second)
+	defer cancel()
+	transport := &http.Transport{
+		// Inline URLs are supplied by third-party bots. Do not route them
+		// through an ambient proxy, which could bypass the private-address
+		// check in DialContext.
+		Proxy: nil,
+		DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
+			host, port, splitErr := net.SplitHostPort(address)
+			if splitErr != nil {
+				return nil, splitErr
+			}
+			if err := rejectPrivateInlineHost(host); err != nil {
+				return nil, err
+			}
+			ips, err := net.LookupIP(host)
+			if err != nil || len(ips) == 0 {
+				return nil, errors.New("inline remote host cannot be resolved")
+			}
+			return (&net.Dialer{Timeout: 10 * time.Second}).DialContext(ctx, network, net.JoinHostPort(ips[0].String(), port))
+		},
+	}
+	client := &http.Client{
+		Transport: transport,
+		CheckRedirect: func(req *http.Request, _ []*http.Request) error {
+			if len(req.URL.String()) > 2048 {
+				return errors.New("inline remote redirect is too long")
+			}
+			return rejectInlineRemoteRedirect(req.URL)
+		},
+	}
+	request, err := http.NewRequestWithContext(requestContext, http.MethodGet, remoteURL.String(), nil)
+	if err != nil {
+		return nil, "", "", mtproto.ErrMediaInvalid
+	}
+	request.Header.Set("Accept", "image/*,audio/*,video/*,application/octet-stream;q=0.8")
+	response, err := client.Do(request)
+	if err != nil {
+		return nil, "", "", mtproto.ErrMediaInvalid
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return nil, "", "", mtproto.ErrMediaInvalid
+	}
+	if response.ContentLength > inlineRemoteMediaMaxBytes {
+		return nil, "", "", mtproto.ErrFilePartsInvalid
+	}
+	data, err := io.ReadAll(io.LimitReader(response.Body, inlineRemoteMediaMaxBytes+1))
+	if err != nil || len(data) == 0 {
+		return nil, "", "", mtproto.ErrMediaInvalid
+	}
+	if len(data) > inlineRemoteMediaMaxBytes {
+		return nil, "", "", mtproto.ErrFilePartsInvalid
+	}
+	name := path.Base(response.Request.URL.Path)
+	if name == "." || name == "/" || name == "" {
+		name = "inline-media"
+	}
+	return data, response.Header.Get("Content-Type"), name, nil
+}
+
+func rejectInlineRemoteRedirect(target *url.URL) error {
+	if target == nil || target.User != nil || (!strings.EqualFold(target.Scheme, "http") && !strings.EqualFold(target.Scheme, "https")) {
+		return errors.New("inline remote redirect is invalid")
+	}
+	return rejectPrivateInlineHost(target.Hostname())
+}
+
+func (c *ApiFullCore) uploadInlinePhoto(data []byte, name string) (*mtproto.Photo, error) {
+	d := c.apifullDao()
+	uid := c.MD.GetUserId()
+	if d == nil || d.DfsClient == nil || uid <= 0 {
+		return nil, mtproto.ErrMethodNotImpl
+	}
+	input, err := c.writeInlineRemoteFile(data, name)
+	if err != nil {
+		return nil, err
+	}
+	return d.DfsUploadPhotoFileV2(callContext(c), &dfspb.TLDfsUploadPhotoFileV2{Creator: uid, File: input})
+}
+
+func (c *ApiFullCore) uploadInlineDocument(data []byte, name string, media *mtproto.InputMedia) (*mtproto.Document, error) {
+	d := c.apifullDao()
+	uid := c.MD.GetUserId()
+	if d == nil || d.DfsClient == nil || uid <= 0 || media == nil {
+		return nil, mtproto.ErrMethodNotImpl
+	}
+	input, err := c.writeInlineRemoteFile(data, name)
+	if err != nil {
+		return nil, err
+	}
+	media.File = input
+	return d.DfsUploadDocumentFileV2(callContext(c), &dfspb.TLDfsUploadDocumentFileV2{Creator: uid, Media: media})
+}
+
+func (c *ApiFullCore) writeInlineRemoteFile(data []byte, name string) (*mtproto.InputFile, error) {
+	d := c.apifullDao()
+	uid := c.MD.GetUserId()
+	if d == nil || d.DfsClient == nil || uid <= 0 || len(data) == 0 || len(data) > inlineRemoteMediaMaxBytes {
+		return nil, mtproto.ErrMediaInvalid
+	}
+	parts := (len(data) + inlineRemoteMediaPartSize - 1) / inlineRemoteMediaPartSize
+	if parts <= 0 || parts > 3000 {
+		return nil, mtproto.ErrFilePartsInvalid
+	}
+	fileID, err := newInlineQueryID()
+	if err != nil {
+		return nil, mtproto.ErrInternalServerError
+	}
+	for part := 0; part < parts; part++ {
+		start := part * inlineRemoteMediaPartSize
+		end := start + inlineRemoteMediaPartSize
+		if end > len(data) {
+			end = len(data)
+		}
+		ok, writeErr := d.DfsWriteFilePartData(callContext(c), &dfspb.TLDfsWriteFilePartData{
+			Creator: uid, FileId: fileID, FilePart: int32(part), Bytes: data[start:end],
+			Big: len(data) > 10<<20, FileTotalParts: wrapperspb.Int32(int32(parts)),
+		})
+		if writeErr != nil || !mtproto.FromBool(ok) {
+			if writeErr != nil {
+				return nil, writeErr
+			}
+			return nil, mtproto.ErrMediaInvalid
+		}
+	}
+	input := &mtproto.InputFile{Id_INT64: fileID, Parts: int32(parts), Name: name}
+	if len(data) > 10<<20 {
+		return mtproto.MakeTLInputFileBig(input).To_InputFile(), nil
+	}
+	return mtproto.MakeTLInputFile(input).To_InputFile(), nil
+}
+
+func inlineInputGeoToMessageMedia(message *mtproto.InputBotInlineMessage) (*mtproto.MessageMedia, error) {
+	geo, err := inlineMessageGeoPoint(message.GetGeoPoint())
+	if err != nil {
+		return nil, err
+	}
+	heading := message.GetHeading()
+	if heading != nil && (heading.GetValue() < 1 || heading.GetValue() > 360) {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	proximity := message.GetProximityNotificationRadius()
+	if proximity != nil && proximity.GetValue() <= 0 {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	period := message.GetPeriod()
+	if period != nil && period.GetValue() < 0 {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if period != nil && period.GetValue() > 0 {
+		return mtproto.MakeTLMessageMediaGeoLive(&mtproto.MessageMedia{
+			Geo:                         geo,
+			Period:                      period.GetValue(),
+			Heading:                     heading,
+			ProximityNotificationRadius: proximity,
+		}).To_MessageMedia(), nil
+	}
+	if heading != nil || proximity != nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	return mtproto.MakeTLMessageMediaGeo(&mtproto.MessageMedia{Geo: geo}).To_MessageMedia(), nil
+}
+
+func inlineMessageGeoPoint(input *mtproto.InputGeoPoint) (*mtproto.GeoPoint, error) {
+	if input == nil || math.IsNaN(input.GetLat()) || math.IsNaN(input.GetLong()) ||
+		math.IsInf(input.GetLat(), 0) || math.IsInf(input.GetLong(), 0) ||
+		input.GetLat() < -90 || input.GetLat() > 90 || input.GetLong() < -180 || input.GetLong() > 180 {
+		return nil, mtproto.ErrGeoPointInvalid
+	}
+	if accuracy := input.GetAccuracyRadius(); accuracy != nil && accuracy.GetValue() < 0 {
+		return nil, mtproto.ErrGeoPointInvalid
+	}
+	return inputGeoPointToOutput(input), nil
 }
 
 func inputGeoPointToOutput(input *mtproto.InputGeoPoint) *mtproto.GeoPoint {

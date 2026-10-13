@@ -131,14 +131,14 @@ func secureCDNProviderURL(parsed *url.URL, allowInsecureHTTP bool) bool {
 	if strings.EqualFold(parsed.Scheme, "https") {
 		return true
 	}
-	if !strings.EqualFold(parsed.Scheme, "http") {
+	// CDN responses contain bearer-like file tokens and encryption material. An
+	// HTTP endpoint is therefore only valid for the explicitly enabled fixture
+	// environment; production configuration must always use HTTPS.
+	if !allowInsecureHTTP || !strings.EqualFold(parsed.Scheme, "http") {
 		return false
 	}
-	if allowInsecureHTTP {
-		return true
-	}
 	host := strings.TrimSuffix(strings.ToLower(parsed.Hostname()), ".")
-	if host == "localhost" {
+	if host == "localhost" || host == "cdn-provider-fixture" || strings.HasSuffix(host, ".test") {
 		return true
 	}
 	ip := net.ParseIP(host)

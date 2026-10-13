@@ -17,7 +17,7 @@ secret empty therefore keeps the backend's fail-closed
 docker build \
   -t teamgram-code-provider-fixture:acceptance \
   -f /Users/mac/open/test/teamgram-server/docker/production/code-provider-fixture/Dockerfile \
-  /Users/mac/open/test/teamgram-server
+  /Users/mac/open/test/teamgram-server/docker/production/code-provider-fixture
 ```
 
 ## E2E Compose settings

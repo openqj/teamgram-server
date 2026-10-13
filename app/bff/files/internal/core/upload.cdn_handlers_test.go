@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"testing"
 
 	"github.com/teamgram/proto/mtproto"
@@ -162,7 +163,7 @@ func TestCDNProviderReturnsVerifiedResults(t *testing.T) {
 		ctx:    context.Background(),
 		MD:     &metadata.RpcMetadata{},
 		Logger: logx.WithContext(context.Background()),
-		svcCtx: &svc.ServiceContext{Config: config.Config{CdnProviderEndpoint: server.URL, CdnProviderSigningKey: key, CdnProviderTimeoutSeconds: 2}},
+		svcCtx: &svc.ServiceContext{Config: config.Config{CdnProviderEndpoint: server.URL, CdnProviderSigningKey: key, CdnProviderTimeoutSeconds: 2, AllowInsecureProviderHTTP: true}},
 	}
 	file, err := core.UploadGetCdnFile(&mtproto.TLUploadGetCdnFile{FileToken: []byte{1}, Limit: 2})
 	if err != nil || file == nil || string(file.GetBytes()) != string([]byte{1, 2}) {
@@ -232,11 +233,41 @@ func TestUploadGetFileUsesVerifiedCDNRedirect(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 	core := newGetFileCore()
-	core.svcCtx.Config = config.Config{CdnProviderEndpoint: server.URL, CdnProviderSigningKey: key, CdnProviderTimeoutSeconds: 2}
+	core.svcCtx.Config = config.Config{CdnProviderEndpoint: server.URL, CdnProviderSigningKey: key, CdnProviderTimeoutSeconds: 2, AllowInsecureProviderHTTP: true}
 	location := mtproto.MakeTLInputDocumentFileLocation(&mtproto.InputFileLocation{Id: 9}).To_InputFileLocation()
 	file, err := core.UploadGetFile(&mtproto.TLUploadGetFile{CdnSupported: true, Location: location, Limit: 2})
 	if err != nil || file == nil || file.GetPredicateName() != mtproto.Predicate_upload_fileCdnRedirect || string(file.GetFileToken()) != string([]byte{1, 2}) {
 		t.Fatalf("cdn redirect = (%v, %v)", file, err)
+	}
+}
+
+func TestSecureCDNProviderURLRequiresFixtureModeForHTTP(t *testing.T) {
+	tests := []struct {
+		name       string
+		endpoint   string
+		fixture    bool
+		wantSecure bool
+	}{
+		{name: "https production", endpoint: "https://cdn.example.com/v1", wantSecure: true},
+		{name: "public HTTP production", endpoint: "http://cdn.example.com/v1", wantSecure: false},
+		{name: "public HTTP fixture", endpoint: "http://cdn.example.com/v1", fixture: true, wantSecure: false},
+		{name: "loopback HTTP production", endpoint: "http://127.0.0.1:23191", wantSecure: false},
+		{name: "loopback HTTP fixture", endpoint: "http://127.0.0.1:23191", fixture: true, wantSecure: true},
+		{name: "compose fixture production", endpoint: "http://cdn-provider-fixture:23191", wantSecure: false},
+		{name: "compose fixture enabled", endpoint: "http://cdn-provider-fixture:23191", fixture: true, wantSecure: true},
+		{name: "named fixture domain", endpoint: "http://cdn-provider-fixture.test:23191", fixture: true, wantSecure: true},
+		{name: "fixture suffix spoof", endpoint: "http://cdn-provider-fixture.attacker.test.evil:23191", fixture: true, wantSecure: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			parsed, err := url.Parse(tt.endpoint)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := secureCDNProviderURL(parsed, tt.fixture); got != tt.wantSecure {
+				t.Fatalf("secureCDNProviderURL(%q, %v) = %v, want %v", tt.endpoint, tt.fixture, got, tt.wantSecure)
+			}
+		})
 	}
 }
 

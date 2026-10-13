@@ -153,7 +153,7 @@ func UpdateChannelInvite(channelID int64, link, replacementLink string, update C
 	}
 
 	if update.Revoked {
-		if _, err = tx.Exec(`UPDATE chat_invites SET revoked=1 WHERE chat_id=? AND link=?`, channelID, link); err != nil {
+		if _, err = tx.Exec(`UPDATE chat_invites SET revoked=TRUE WHERE chat_id=? AND link=?`, channelID, link); err != nil {
 			return nil, err
 		}
 		invite.Revoked = true
@@ -269,7 +269,7 @@ func ListChannelInviteImporters(channelID int64, link string, requested bool, qu
 		args = append(args, link)
 	}
 	if query != "" {
-		statement += ` AND u.deleted=0 AND (u.username LIKE ? OR u.first_name LIKE ? OR u.last_name LIKE ?)`
+		statement += ` AND u.deleted=FALSE AND (u.username LIKE ? OR u.first_name LIKE ? OR u.last_name LIKE ?)`
 		args = append(args, query+"%", "%"+query+"%", "%"+query+"%")
 	}
 	statement += ` ORDER BY p.date2 DESC, p.id DESC`
@@ -341,7 +341,7 @@ func ResolveChannelInviteRequest(channelID, userID, approverID int64, link strin
 	}
 
 	args := []any{channelID, userID}
-	where := ` WHERE chat_id=? AND user_id=? AND requested=1`
+	where := ` WHERE chat_id=? AND user_id=? AND requested=TRUE`
 	if link != "" {
 		where += ` AND link=?`
 		args = append(args, link)
@@ -378,7 +378,7 @@ func ResolveChannelInviteRequest(channelID, userID, approverID int64, link strin
 		if _, err = tx.Exec(`INSERT INTO apifull_channel_member (channel_id, user_id, invited_by_user_id, joined_at) VALUES (?,?,?,?)`, channelID, userID, approverID, now); err != nil {
 			return err
 		}
-		_, err = tx.Exec(`UPDATE chat_invite_participants SET requested=0, approved_by=?`+where, append([]any{approverID}, args...)...)
+		_, err = tx.Exec(`UPDATE chat_invite_participants SET requested=FALSE, approved_by=?`+where, append([]any{approverID}, args...)...)
 	} else {
 		_, err = tx.Exec(`DELETE FROM chat_invite_participants`+where, args...)
 	}
@@ -483,7 +483,7 @@ func ImportChannelInvite(hash string, userID, now int64) (ChannelInviteImport, e
 	if invite.UsageLimit > 0 {
 		var usage int32
 		if err = tx.QueryRow(`SELECT COUNT(*) FROM chat_invite_participants
-			WHERE chat_id=? AND link=? AND requested=0`, invite.ChannelID, invite.Link).Scan(&usage); err != nil {
+			WHERE chat_id=? AND link=? AND requested=FALSE`, invite.ChannelID, invite.Link).Scan(&usage); err != nil {
 			return ChannelInviteImport{}, err
 		}
 		if usage >= invite.UsageLimit {
@@ -494,7 +494,7 @@ func ImportChannelInvite(hash string, userID, now int64) (ChannelInviteImport, e
 	if invite.RequestNeeded {
 		var requested int
 		err = tx.QueryRow(`SELECT 1 FROM chat_invite_participants
-			WHERE chat_id=? AND link=? AND user_id=? AND requested=1 LIMIT 1 FOR UPDATE`,
+			WHERE chat_id=? AND link=? AND user_id=? AND requested=TRUE LIMIT 1 FOR UPDATE`,
 			invite.ChannelID, invite.Link, userID).Scan(&requested)
 		if errors.Is(err, sql.ErrNoRows) {
 			if _, err = tx.Exec(`INSERT INTO chat_invite_participants
@@ -612,7 +612,7 @@ func validateChannelInvite(invite ChannelInvite, channel Channel, now int64) err
 	if invite.UsageLimit > 0 {
 		var usage int32
 		if err := db.QueryRow(`SELECT COUNT(*) FROM chat_invite_participants
-			WHERE chat_id=? AND link=? AND requested=0`, invite.ChannelID, invite.Link).Scan(&usage); err != nil {
+			WHERE chat_id=? AND link=? AND requested=FALSE`, invite.ChannelID, invite.Link).Scan(&usage); err != nil {
 			return err
 		}
 		if usage >= invite.UsageLimit {
@@ -636,7 +636,7 @@ func validateChannelInviteTx(tx *sql.Tx, invite ChannelInvite, channel Channel, 
 	if invite.UsageLimit > 0 {
 		var usage int32
 		if err := tx.QueryRow(`SELECT COUNT(*) FROM chat_invite_participants
-			WHERE chat_id=? AND link=? AND requested=0`, invite.ChannelID, invite.Link).Scan(&usage); err != nil {
+			WHERE chat_id=? AND link=? AND requested=FALSE`, invite.ChannelID, invite.Link).Scan(&usage); err != nil {
 			return err
 		}
 		if usage >= invite.UsageLimit {

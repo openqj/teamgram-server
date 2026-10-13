@@ -43,11 +43,23 @@ func (c *MessagesCore) MessagesEditMessage(in *mtproto.TLMessagesEditMessage) (*
 		return nil, mtproto.ErrPeerIdInvalid
 	}
 	var (
-		peer         = mtproto.FromInputPeer2(c.MD.UserId, in.Peer)
+		actingUserID = c.MD.UserId
+		peer         *mtproto.PeerUtil
 		editMessages *message.Vector_MessageBox
 		dstMessage   *mtproto.MessageBox
 		err          error
 	)
+	scope, business := c.businessScope()
+	if business {
+		if err = c.requireBusinessRight(scope.CanReply); err != nil {
+			return nil, err
+		}
+		actingUserID = scope.OwnerID
+	}
+	peer = mtproto.FromInputPeer2(actingUserID, in.Peer)
+	if peer == nil {
+		return nil, mtproto.ErrPeerIdInvalid
+	}
 
 	switch peer.PeerType {
 	case mtproto.PEER_SELF, mtproto.PEER_USER, mtproto.PEER_CHAT:
@@ -60,7 +72,7 @@ func (c *MessagesCore) MessagesEditMessage(in *mtproto.TLMessagesEditMessage) (*
 			//}
 		}
 		editMessages, err = c.svcCtx.MessageClient.MessageGetUserMessageList(c.ctx, &message.TLMessageGetUserMessageList{
-			UserId: c.MD.UserId,
+			UserId: actingUserID,
 			IdList: []int32{in.Id},
 		})
 		if err != nil {
@@ -82,7 +94,7 @@ func (c *MessagesCore) MessagesEditMessage(in *mtproto.TLMessagesEditMessage) (*
 		return nil, err
 	}
 
-	if len(editMessages.GetDatas()) != 1 {
+	if editMessages == nil || len(editMessages.GetDatas()) != 1 || editMessages.GetDatas()[0] == nil {
 		err = mtproto.ErrMessageEmpty
 		c.Logger.Errorf("messages.editMessage - emptyMessage(%d)", in.Id)
 		return nil, err
@@ -90,7 +102,7 @@ func (c *MessagesCore) MessagesEditMessage(in *mtproto.TLMessagesEditMessage) (*
 
 	// TODO(@benqi): check
 	// editMessage := editMessages[0]
-	if editMessages.Datas[0].SenderUserId != c.MD.UserId {
+	if editMessages.Datas[0].SenderUserId != actingUserID {
 		err = mtproto.ErrMessageAuthorRequired
 		c.Logger.Errorf("messages.editMessage - emptyMessage(%d)", in.Id)
 		return nil, err
@@ -145,7 +157,7 @@ func (c *MessagesCore) MessagesEditMessage(in *mtproto.TLMessagesEditMessage) (*
 	}
 
 	rUpdates, err := c.svcCtx.Dao.MsgClient.MsgEditMessageV2(c.ctx, &msgpb.TLMsgEditMessageV2{
-		UserId:    c.MD.UserId,
+		UserId:    actingUserID,
 		AuthKeyId: c.MD.PermAuthKeyId,
 		PeerType:  peer.PeerType,
 		PeerId:    peer.PeerId,

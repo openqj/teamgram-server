@@ -23,6 +23,8 @@ import (
 
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/persist"
+	messagepb "github.com/teamgram/teamgram-server/app/service/biz/message/message"
+	userpb "github.com/teamgram/teamgram-server/app/service/biz/user/user"
 )
 
 // RPCGamesServer: Layer 229 methods previously returned ERR_ENTERPRISE_IS_BLOCKED.
@@ -78,7 +80,7 @@ func putGameScore(prefix, key string, userID int64, score int32, force bool) err
 	return nil
 }
 
-func listGameScores(prefix, key string) (*mtproto.Messages_HighScores, error) {
+func (c *ApiFullCore) listGameScores(prefix, key string) (*mtproto.Messages_HighScores, error) {
 	board, err := loadGameScores(prefix, key)
 	if err != nil {
 		return nil, err
@@ -91,12 +93,97 @@ func listGameScores(prefix, key string) (*mtproto.Messages_HighScores, error) {
 			UserId: p.UserID,
 			Score:  p.Score,
 		}).To_HighScore())
-		users = append(users, mtproto.MakeTLUser(&mtproto.User{Id: p.UserID}).To_User())
+		user := mtproto.MakeTLUser(&mtproto.User{Id: p.UserID}).To_User()
+		if c != nil && c.svcCtx != nil && c.svcCtx.Dao != nil && c.svcCtx.Dao.UserClient != nil {
+			if profile, profileErr := c.svcCtx.Dao.UserGetImmutableUser(c.secretContext(), &userpb.TLUserGetImmutableUser{Id: p.UserID}); profileErr == nil && profile != nil && profile.GetUser() != nil && !profile.Deleted() {
+				user = profile.ToUser(c.MD.GetUserId())
+			}
+		}
+		users = append(users, user)
 	}
 	return mtproto.MakeTLMessagesHighScores(&mtproto.Messages_HighScores{
 		Scores: scores,
 		Users:  users,
 	}).To_Messages_HighScores(), nil
+}
+
+func (c *ApiFullCore) validateGamePlayer(input *mtproto.InputUser, authID int64) (int64, error) {
+	if input == nil || input.GetUserId() == 0 || input.GetPredicateName() == mtproto.Predicate_inputUserSelf {
+		return authID, nil
+	}
+	if input.GetUserId() < 0 {
+		return 0, mtproto.ErrUserIdInvalid
+	}
+	if input.GetAccessHash() == 0 {
+		if c == nil || c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.UserClient == nil {
+			if !persist.PostgresEnabled() {
+				return input.GetUserId(), nil
+			}
+			return 0, mtproto.ErrUserIdInvalid
+		}
+		return 0, mtproto.ErrUserIdInvalid
+	}
+	if c == nil || c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.UserClient == nil {
+		if persist.PostgresEnabled() {
+			return 0, mtproto.ErrMethodNotImpl
+		}
+		return input.GetUserId(), nil
+	}
+	profile, err := c.svcCtx.Dao.UserGetImmutableUser(c.secretContext(), &userpb.TLUserGetImmutableUser{Id: input.GetUserId()})
+	if err != nil {
+		return 0, err
+	}
+	if profile == nil || profile.GetUser() == nil || profile.Deleted() || profile.GetUser().GetAccessHash() != input.GetAccessHash() {
+		return 0, mtproto.ErrUserIdInvalid
+	}
+	return input.GetUserId(), nil
+}
+
+// validateGameMessage binds a score update to the actual game message. The
+// isolated in-memory fixture has no message reader, so it keeps the legacy
+// score-only behavior; production PostgreSQL traffic fails closed until the
+// authoritative message service can confirm the game and sending bot.
+func (c *ApiFullCore) validateGameMessage(authID int64, peerInput *mtproto.InputPeer, messageID int32) error {
+	if peerInput == nil || messageID <= 0 {
+		return mtproto.ErrGameBotInvalid
+	}
+	peer := mtproto.FromInputPeer2(authID, peerInput)
+	if peer == nil || !peer.IsUserOrChatOrChannel() || peer.PeerId <= 0 {
+		return mtproto.ErrPeerIdInvalid
+	}
+	d := c.apifullDao()
+	if d == nil || d.PollMessageReader == nil {
+		if persist.PostgresEnabled() {
+			return mtproto.ErrMethodNotImpl
+		}
+		return nil
+	}
+	box, err := d.MessageGetUserMessage(c.secretContext(), &messagepb.TLMessageGetUserMessage{UserId: authID, Id: messageID})
+	if err != nil {
+		return err
+	}
+	if box == nil || box.GetMessage() == nil || box.GetMessage().GetMedia() == nil || box.GetMessage().GetMedia().GetGame() == nil ||
+		box.GetSenderUserId() != authID || box.GetMessageId() != messageID {
+		return mtproto.ErrGameBotInvalid
+	}
+	peerType, peerID := peer.PeerType, peer.PeerId
+	if peer.IsSelfUser(authID) {
+		peerType, peerID = mtproto.PEER_USER, authID
+	}
+	if box.GetPeerType() != peerType || box.GetPeerId() != peerID {
+		return mtproto.ErrGameBotInvalid
+	}
+	return nil
+}
+
+func validateInlineGameID(id *mtproto.InputBotInlineMessageID) error {
+	if id == nil || id.GetDcId() <= 0 || id.GetAccessHash() == 0 {
+		return mtproto.ErrGameBotInvalid
+	}
+	if id.GetId_INT64() <= 0 && id.GetId_INT32() <= 0 {
+		return mtproto.ErrGameBotInvalid
+	}
+	return nil
 }
 
 func emptyUpdates() *mtproto.Updates {
@@ -112,10 +199,17 @@ func (c *ApiFullCore) MessagesSetGameScore(in *mtproto.TLMessagesSetGameScore) (
 	if err != nil {
 		return nil, err
 	}
-	if in == nil {
-		return nil, mtproto.ErrScoreInvalid
+	if in == nil || in.GetPeer() == nil || in.GetId() <= 0 {
+		return nil, mtproto.ErrGameBotInvalid
 	}
-	if err = putGameScore(gameScorePrefix, gamePeerKey(in.GetPeer(), in.GetId()), gamePlayerID(in.GetUserId(), userID), in.GetScore(), in.GetForce()); err != nil {
+	if err = c.validateGameMessage(userID, in.GetPeer(), in.GetId()); err != nil {
+		return nil, err
+	}
+	playerID, playerErr := c.validateGamePlayer(in.GetUserId(), userID)
+	if playerErr != nil {
+		return nil, playerErr
+	}
+	if err = putGameScore(gameScorePrefix, gamePeerKey(in.GetPeer(), in.GetId()), playerID, in.GetScore(), in.GetForce()); err != nil {
 		return nil, err
 	}
 	return emptyUpdates(), nil
@@ -127,32 +221,50 @@ func (c *ApiFullCore) MessagesSetInlineGameScore(in *mtproto.TLMessagesSetInline
 		return nil, err
 	}
 	if in == nil {
-		return nil, mtproto.ErrScoreInvalid
+		return nil, mtproto.ErrGameBotInvalid
 	}
-	if err = putGameScore(inlineGameScorePrefix, inlineGameKey(in.GetId()), gamePlayerID(in.GetUserId(), userID), in.GetScore(), in.GetForce()); err != nil {
+	if err = validateInlineGameID(in.GetId()); err != nil {
+		return nil, err
+	}
+	playerID, playerErr := c.validateGamePlayer(in.GetUserId(), userID)
+	if playerErr != nil {
+		return nil, playerErr
+	}
+	if err = putGameScore(inlineGameScorePrefix, inlineGameKey(in.GetId()), playerID, in.GetScore(), in.GetForce()); err != nil {
 		return nil, err
 	}
 	return mtproto.BoolTrue, nil
 }
 
 func (c *ApiFullCore) MessagesGetGameHighScores(in *mtproto.TLMessagesGetGameHighScores) (*mtproto.Messages_HighScores, error) {
-	if _, err := c.requireUserId(); err != nil {
+	userID, err := c.requireUserId()
+	if err != nil {
 		return nil, err
 	}
-	if in == nil {
-		return listGameScores(gameScorePrefix, gamePeerKey(nil, 0))
+	if in == nil || in.GetPeer() == nil || in.GetId() <= 0 {
+		return nil, mtproto.ErrGameBotInvalid
 	}
-	return listGameScores(gameScorePrefix, gamePeerKey(in.GetPeer(), in.GetId()))
+	if err = c.validateGameMessage(userID, in.GetPeer(), in.GetId()); err != nil {
+		return nil, err
+	}
+	if _, err = c.validateGamePlayer(in.GetUserId(), userID); err != nil {
+		return nil, err
+	}
+	return c.listGameScores(gameScorePrefix, gamePeerKey(in.GetPeer(), in.GetId()))
 }
 
 func (c *ApiFullCore) MessagesGetInlineGameHighScores(in *mtproto.TLMessagesGetInlineGameHighScores) (*mtproto.Messages_HighScores, error) {
-	if _, err := c.requireUserId(); err != nil {
+	userID, err := c.requireUserId()
+	if err != nil {
 		return nil, err
 	}
-	if in == nil {
-		return listGameScores(inlineGameScorePrefix, inlineGameKey(nil))
+	if in == nil || validateInlineGameID(in.GetId()) != nil {
+		return nil, mtproto.ErrGameBotInvalid
 	}
-	return listGameScores(inlineGameScorePrefix, inlineGameKey(in.GetId()))
+	if _, err = c.validateGamePlayer(in.GetUserId(), userID); err != nil {
+		return nil, err
+	}
+	return c.listGameScores(inlineGameScorePrefix, inlineGameKey(in.GetId()))
 }
 
 func (c *ApiFullCore) MessagesGetEmojiGameInfo(in *mtproto.TLMessagesGetEmojiGameInfo) (*mtproto.Messages_EmojiGameInfo, error) {

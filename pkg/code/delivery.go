@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 
@@ -103,7 +104,22 @@ func secureProviderURL(parsed *url.URL) bool {
 	if !strings.EqualFold(parsed.Scheme, "http") {
 		return false
 	}
-	return strings.EqualFold(parsed.Scheme, "http") && loopbackProviderURL(parsed)
+	if loopbackProviderURL(parsed) {
+		return true
+	}
+	// The isolated acceptance stack reaches its provider over Docker DNS. Keep
+	// this opt-in to the explicit fixture mode so production HTTP endpoints
+	// remain fail-closed unless they use HTTPS or loopback.
+	return strings.EqualFold(strings.TrimSpace(os.Getenv("TEAMGRAM_PROVIDER_FIXTURE_MODE")), "1") &&
+		fixtureProviderURL(parsed)
+}
+
+func fixtureProviderURL(parsed *url.URL) bool {
+	if parsed == nil {
+		return false
+	}
+	host := strings.TrimSuffix(strings.ToLower(parsed.Hostname()), ".")
+	return host == "code-provider-fixture"
 }
 
 func loopbackProviderURL(parsed *url.URL) bool {

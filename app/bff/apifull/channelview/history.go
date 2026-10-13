@@ -813,10 +813,10 @@ func Pin(sender, channelID int64, id int32, unpin bool) (*mtproto.Updates, error
 	}).To_Updates(), nil
 }
 
-// UnpinAll removes all creator-pinned channel messages and returns the
+// UnpinAll removes pin-authorized channel messages and returns the
 // affected-history cursor used by messages.unpinAllMessages.
-func UnpinAll(sender, channelID int64) (*mtproto.Messages_AffectedHistory, error) {
-	ids, pts, err := domain.ClearChannelMessagePins(channelID, sender)
+func UnpinAll(sender, channelID int64, topMsgID ...int32) (*mtproto.Messages_AffectedHistory, error) {
+	ids, pts, err := domain.ClearChannelMessagePins(channelID, sender, topMsgID...)
 	if err != nil {
 		return nil, mapDomain(err)
 	}

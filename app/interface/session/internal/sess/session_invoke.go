@@ -26,9 +26,11 @@ import (
 
 	"github.com/teamgram/proto/mtproto"
 	rpcmetadata "github.com/teamgram/proto/mtproto/rpc/metadata"
+	"github.com/teamgram/teamgram-server/pkg/rpc/businessctx"
 
 	"github.com/zeromicro/go-zero/core/contextx"
 	"github.com/zeromicro/go-zero/core/logx"
+	"google.golang.org/grpc/status"
 )
 
 func (c *session) onInvokeWithLayer(ctx context.Context, gatewayId, clientIp string, msgId *inboxMsg, request *mtproto.TLInvokeWithLayer) {
@@ -280,8 +282,10 @@ func (c *session) onInvokeWithBusinessConnection(ctx context.Context, gatewayId,
 		msgId.seqNo,
 		reflect.TypeOf(request))
 
-	if request.GetQuery() == nil {
+	if request == nil || request.GetQuery() == nil || strings.TrimSpace(request.GetConnectionId()) == "" {
 		logx.WithContext(ctx).Errorf("invokeWithBusinessConnection Query is nil, query: {%s}", request)
+		c.sendRpcResultToQueue(ctx, gatewayId, msgId.msgId, mtproto.NewRpcError(status.Error(mtproto.ErrBadRequest, "CONNECTION_ID_INVALID")))
+		msgId.state = RECEIVED | RESPONSE_GENERATED
 		return
 	}
 
@@ -289,14 +293,25 @@ func (c *session) onInvokeWithBusinessConnection(ctx context.Context, gatewayId,
 	query := dBuf.Object()
 	if dBuf.GetError() != nil {
 		logx.WithContext(ctx).Errorf("dBuf query error: %v", dBuf.GetError())
+		c.sendRpcResultToQueue(ctx, gatewayId, msgId.msgId, mtproto.NewRpcError(mtproto.ErrInputConstructorInvalid))
+		msgId.state = RECEIVED | RESPONSE_GENERATED
 		return
 	}
 
 	if query == nil {
 		logx.WithContext(ctx).Errorf("decode buf is nil, query: %v", query)
+		c.sendRpcResultToQueue(ctx, gatewayId, msgId.msgId, mtproto.NewRpcError(mtproto.ErrInputConstructorInvalid))
+		msgId.state = RECEIVED | RESPONSE_GENERATED
 		return
 	}
 
+	scope, err := c.resolveBusinessConnection(ctx, clientIp, request.GetConnectionId())
+	if err != nil {
+		c.sendRpcResultToQueue(ctx, gatewayId, msgId.msgId, mtproto.NewRpcError(err))
+		msgId.state = RECEIVED | RESPONSE_GENERATED
+		return
+	}
+	ctx = businessctx.WithScope(ctx, scope)
 	c.processMsg(ctx, gatewayId, clientIp, msgId, query)
 }
 

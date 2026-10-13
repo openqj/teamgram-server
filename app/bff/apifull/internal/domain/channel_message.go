@@ -523,16 +523,8 @@ func SetChannelMessagePinned(channelID, sender int64, messageID int32, pinned bo
 		return row, err
 	}
 	defer tx.Rollback()
-	var creator int64
-	err = tx.QueryRow(`SELECT creator_user_id FROM apifull_channel WHERE id=? FOR UPDATE`, channelID).Scan(&creator)
-	if err == sql.ErrNoRows {
-		return row, ErrChannelMissing
-	}
-	if err != nil {
+	if _, err = lockChannelMessagePinPermission(tx, channelID, sender); err != nil {
 		return row, err
-	}
-	if creator != sender {
-		return row, ErrNotCreator
 	}
 	var edited, pinFlag int
 	var contentJSON sql.NullString
@@ -576,9 +568,10 @@ func SetChannelMessagePinned(channelID, sender int64, messageID int32, pinned bo
 	return row, nil
 }
 
-// ClearChannelMessagePins removes every pinned message in a channel as one
-// atomic creator-authorized update and returns the affected message IDs.
-func ClearChannelMessagePins(channelID, sender int64) ([]int32, int32, error) {
+// ClearChannelMessagePins removes pinned messages in a channel as one atomic
+// pin-authorized update and returns the affected message IDs. When topMsgID is
+// supplied, only the matching forum topic is affected.
+func ClearChannelMessagePins(channelID, sender int64, topMsgID ...int32) ([]int32, int32, error) {
 	if db == nil {
 		return nil, 0, errors.New("domain PostgreSQL is not open")
 	}
@@ -588,11 +581,25 @@ func ClearChannelMessagePins(channelID, sender int64) ([]int32, int32, error) {
 	}
 	defer tx.Rollback()
 
-	_, err = lockChannelMessageWriter(tx, channelID, sender)
+	_, err = lockChannelMessagePinPermission(tx, channelID, sender)
 	if err != nil {
 		return nil, 0, err
 	}
-	rows, err := tx.Query(`SELECT message_id FROM apifull_channel_message WHERE channel_id=? AND pinned=1 ORDER BY message_id FOR UPDATE`, channelID)
+	filterTopicID := int32(0)
+	if len(topMsgID) > 0 {
+		filterTopicID = topMsgID[0]
+	}
+	if filterTopicID < 0 {
+		return nil, 0, ErrInvalidMessageID
+	}
+	query := `SELECT message_id FROM apifull_channel_message WHERE channel_id=? AND pinned=1`
+	args := []any{channelID}
+	if filterTopicID > 0 {
+		query += ` AND (message_id=? OR reply_to_top_id=?)`
+		args = append(args, filterTopicID, filterTopicID)
+	}
+	query += ` ORDER BY message_id FOR UPDATE`
+	rows, err := tx.Query(query, args...)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -616,7 +623,13 @@ func ClearChannelMessagePins(channelID, sender int64) ([]int32, int32, error) {
 		return nil, 0, err
 	}
 	if len(ids) > 0 {
-		if _, err = tx.Exec(`UPDATE apifull_channel_message SET pinned=0 WHERE channel_id=? AND pinned=1`, channelID); err != nil {
+		updateQuery := `UPDATE apifull_channel_message SET pinned=0 WHERE channel_id=? AND pinned=1`
+		updateArgs := []any{channelID}
+		if filterTopicID > 0 {
+			updateQuery += ` AND (message_id=? OR reply_to_top_id=?)`
+			updateArgs = append(updateArgs, filterTopicID, filterTopicID)
+		}
+		if _, err = tx.Exec(updateQuery, updateArgs...); err != nil {
 			return nil, 0, err
 		}
 		if err = appendChannelEventTx(tx, channelID, pts, int32(len(ids)), channelEventPin, ids, 0, 0, "", "", 0, false); err != nil {
@@ -860,6 +873,41 @@ func lockChannelMessageWriter(tx *sql.Tx, channelID, sender int64) (int32, error
 	}
 	if creator != sender {
 		return 0, ErrNotCreator
+	}
+	_, pts, err := loadChannelMessageSequence(tx, channelID)
+	if err != nil {
+		return 0, err
+	}
+	return pts, nil
+}
+
+// lockChannelMessagePinPermission authorizes a channel pin mutation. The
+// creator always has this right; other members need the persisted
+// pin_messages administrator permission. The channel row and member row are
+// locked before the sequence is read so the authorization and mutation share
+// one transaction snapshot.
+func lockChannelMessagePinPermission(tx *sql.Tx, channelID, sender int64) (int32, error) {
+	var creator int64
+	err := tx.QueryRow(`SELECT creator_user_id FROM apifull_channel WHERE id=? FOR UPDATE`, channelID).Scan(&creator)
+	if err == sql.ErrNoRows {
+		return 0, ErrChannelMissing
+	}
+	if err != nil {
+		return 0, err
+	}
+	if creator != sender {
+		var rawRights string
+		err = tx.QueryRow(`SELECT admin_rights FROM apifull_channel_member WHERE channel_id=? AND user_id=? FOR UPDATE`, channelID, sender).Scan(&rawRights)
+		if err == sql.ErrNoRows {
+			return 0, ErrNotCreator
+		}
+		if err != nil {
+			return 0, err
+		}
+		var rights ChannelAdminRights
+		if rawRights == "" || json.Unmarshal([]byte(rawRights), &rights) != nil || !rights.PinMessages {
+			return 0, ErrNotCreator
+		}
 	}
 	_, pts, err := loadChannelMessageSequence(tx, channelID)
 	if err != nil {

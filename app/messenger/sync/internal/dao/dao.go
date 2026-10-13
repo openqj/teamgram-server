@@ -10,15 +10,18 @@
 package dao
 
 import (
+	"context"
 	"sync"
 
 	kafka "github.com/teamgram/marmota/pkg/mq"
 	"github.com/teamgram/marmota/pkg/net/rpcx"
+	"github.com/teamgram/proto/mtproto"
 	msg_client "github.com/teamgram/teamgram-server/app/messenger/msg/msg/client"
 	sync_client "github.com/teamgram/teamgram-server/app/messenger/sync/client"
 	"github.com/teamgram/teamgram-server/app/messenger/sync/internal/config"
 	chat_client "github.com/teamgram/teamgram-server/app/service/biz/chat/client"
 	user_client "github.com/teamgram/teamgram-server/app/service/biz/user/client"
+	userpb "github.com/teamgram/teamgram-server/app/service/biz/user/user"
 	idgen_client "github.com/teamgram/teamgram-server/app/service/idgen/client"
 	status_client "github.com/teamgram/teamgram-server/app/service/status/client"
 	"github.com/zeromicro/go-zero/core/stores/kv"
@@ -61,6 +64,11 @@ func New(c config.Config) (*Dao, error) {
 	}
 	if c.PushClient != nil {
 		d.PushClient = sync_client.NewSyncMqClient(kafka.MustKafkaProducer(c.PushClient))
+	}
+	if d.Postgres != nil && d.Postgres.BotAPI != nil {
+		d.Postgres.BotAPI.SetUserLoader(func(ctx context.Context, userID int64) (*mtproto.ImmutableUser, error) {
+			return d.UserGetImmutableUser(ctx, &userpb.TLUserGetImmutableUser{Id: userID})
+		})
 	}
 
 	go d.watch(c.SessionClient)

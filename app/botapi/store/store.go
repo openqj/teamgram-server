@@ -34,6 +34,7 @@ type Store struct {
 	ownsPool   bool
 	deliverMu  sync.Mutex
 	delivering map[int64]struct{}
+	userLoader func(context.Context, int64) (*mtproto.ImmutableUser, error)
 }
 
 type Webhook struct {
@@ -60,7 +61,8 @@ func New(ctx context.Context, cfg postgres.Config) (*Store, error) {
 		`SELECT bot_id,update_id,update_data,created_at FROM bot_api_updates LIMIT 0`,
 		`SELECT bot_id,url,max_connections,allowed_updates,secret_token,last_error_date,last_error_message,last_synchronization_error_date FROM bot_api_webhooks LIMIT 0`,
 		`SELECT bot_id,menu_button_type,menu_button_text,menu_button_url FROM bots LIMIT 0`,
-		`SELECT bot_id,chat_id,button_type,button_text,button_url FROM bot_api_chat_menu_buttons LIMIT 0`); err != nil {
+		`SELECT bot_id,chat_id,button_type,button_text,button_url FROM bot_api_chat_menu_buttons LIMIT 0`,
+		`SELECT bot_id,group_rights,broadcast_rights FROM bot_api_default_admin_rights LIMIT 0`); err != nil {
 		pool.Close()
 		return nil, err
 	}
@@ -69,6 +71,15 @@ func New(ctx context.Context, cfg postgres.Config) (*Store, error) {
 
 func NewWithPool(pool *pgxpool.Pool) *Store {
 	return &Store{Pool: pool, delivering: make(map[int64]struct{})}
+}
+
+// SetUserLoader configures the authoritative user lookup used to hydrate
+// business connection updates before they are serialized into the Bot API
+// queue. It is normally set once during sync service startup.
+func (s *Store) SetUserLoader(loader func(context.Context, int64) (*mtproto.ImmutableUser, error)) {
+	if s != nil {
+		s.userLoader = loader
+	}
 }
 
 func (s *Store) Close() {
@@ -87,34 +98,49 @@ func (s *Store) Append(ctx context.Context, botID int64, updates *mtproto.Update
 	encoded := make([]encodedUpdate, 0)
 	mtproto.VisitUpdates(botID, updates, map[string]mtproto.UpdateVisitedFunc{
 		mtproto.Predicate_updateNewMessage: func(_ int64, update *mtproto.Update, users []*mtproto.User, chats []*mtproto.Chat, _ int32) {
-			s.appendConverted(&encoded, update, users, chats)
+			s.appendConverted(ctx, &encoded, update, users, chats)
 		},
 		mtproto.Predicate_updateNewChannelMessage: func(_ int64, update *mtproto.Update, users []*mtproto.User, chats []*mtproto.Chat, _ int32) {
-			s.appendConverted(&encoded, update, users, chats)
+			s.appendConverted(ctx, &encoded, update, users, chats)
 		},
 		mtproto.Predicate_updateEditMessage: func(_ int64, update *mtproto.Update, users []*mtproto.User, chats []*mtproto.Chat, _ int32) {
-			s.appendConverted(&encoded, update, users, chats)
+			s.appendConverted(ctx, &encoded, update, users, chats)
 		},
 		mtproto.Predicate_updateEditChannelMessage: func(_ int64, update *mtproto.Update, users []*mtproto.User, chats []*mtproto.Chat, _ int32) {
-			s.appendConverted(&encoded, update, users, chats)
+			s.appendConverted(ctx, &encoded, update, users, chats)
 		},
 		mtproto.Predicate_updateBotInlineQuery: func(_ int64, update *mtproto.Update, users []*mtproto.User, chats []*mtproto.Chat, _ int32) {
-			s.appendConverted(&encoded, update, users, chats)
+			s.appendConverted(ctx, &encoded, update, users, chats)
+		},
+		mtproto.Predicate_updateBotInlineSend: func(_ int64, update *mtproto.Update, users []*mtproto.User, chats []*mtproto.Chat, _ int32) {
+			s.appendConverted(ctx, &encoded, update, users, chats)
 		},
 		mtproto.Predicate_updateBotCallbackQuery: func(_ int64, update *mtproto.Update, users []*mtproto.User, chats []*mtproto.Chat, _ int32) {
-			s.appendConverted(&encoded, update, users, chats)
+			s.appendConverted(ctx, &encoded, update, users, chats)
 		},
 		mtproto.Predicate_updateBotWebhookJSONQuery: func(_ int64, update *mtproto.Update, users []*mtproto.User, chats []*mtproto.Chat, _ int32) {
-			s.appendConverted(&encoded, update, users, chats)
+			s.appendConverted(ctx, &encoded, update, users, chats)
 		},
 		mtproto.Predicate_updateBotShippingQuery: func(_ int64, update *mtproto.Update, users []*mtproto.User, chats []*mtproto.Chat, _ int32) {
-			s.appendConverted(&encoded, update, users, chats)
+			s.appendConverted(ctx, &encoded, update, users, chats)
 		},
 		mtproto.Predicate_updateBotPrecheckoutQuery: func(_ int64, update *mtproto.Update, users []*mtproto.User, chats []*mtproto.Chat, _ int32) {
-			s.appendConverted(&encoded, update, users, chats)
+			s.appendConverted(ctx, &encoded, update, users, chats)
 		},
 		mtproto.Predicate_updateBotBusinessConnect: func(_ int64, update *mtproto.Update, users []*mtproto.User, chats []*mtproto.Chat, _ int32) {
-			s.appendConverted(&encoded, update, users, chats)
+			s.appendConverted(ctx, &encoded, update, users, chats)
+		},
+		mtproto.Predicate_updateBotNewBusinessMessage: func(_ int64, update *mtproto.Update, users []*mtproto.User, chats []*mtproto.Chat, _ int32) {
+			s.appendConverted(ctx, &encoded, update, users, chats)
+		},
+		mtproto.Predicate_updateBotEditBusinessMessage: func(_ int64, update *mtproto.Update, users []*mtproto.User, chats []*mtproto.Chat, _ int32) {
+			s.appendConverted(ctx, &encoded, update, users, chats)
+		},
+		mtproto.Predicate_updateBotDeleteBusinessMessage: func(_ int64, update *mtproto.Update, users []*mtproto.User, chats []*mtproto.Chat, _ int32) {
+			s.appendConverted(ctx, &encoded, update, users, chats)
+		},
+		mtproto.Predicate_updateBusinessBotCallbackQuery: func(_ int64, update *mtproto.Update, users []*mtproto.User, chats []*mtproto.Chat, _ int32) {
+			s.appendConverted(ctx, &encoded, update, users, chats)
 		},
 	})
 	if len(encoded) == 0 {
@@ -149,7 +175,18 @@ VALUES($1,$2,$3::jsonb)`, botID, updateID, string(data)); err != nil {
 	})
 }
 
-func (s *Store) appendConverted(encoded *[]encodedUpdate, update *mtproto.Update, users []*mtproto.User, chats []*mtproto.Chat) {
+func (s *Store) appendConverted(ctx context.Context, encoded *[]encodedUpdate, update *mtproto.Update, users []*mtproto.User, chats []*mtproto.Chat) {
+	if update != nil && update.GetPredicateName() == mtproto.Predicate_updateBotBusinessConnect && s.userLoader != nil {
+		if connection := update.GetConnection(); connection != nil && connection.GetUserId() > 0 {
+			if immutable, err := s.userLoader(ctx, connection.GetUserId()); err == nil && immutable != nil && immutable.GetUser() != nil {
+				hydrated := immutable.ToUser(0)
+				if hydrated != nil {
+					users = append([]*mtproto.User{hydrated}, users...)
+				}
+			}
+		}
+	}
+
 	converted, ok := botapi.UpdateFromMTProto(update, users, chats)
 	if !ok {
 		return
@@ -166,6 +203,11 @@ func (s *Store) GetUpdates(ctx context.Context, botID, offset int64, limit int, 
 	}
 	if botID <= 0 {
 		return nil, mtproto.ErrInputRequestInvalid
+	}
+	for _, name := range allowed {
+		if !botapi.IsValidAllowedUpdateType(name) {
+			return nil, mtproto.ErrInputRequestInvalid
+		}
 	}
 	if limit <= 0 {
 		limit = defaultLimit
@@ -258,6 +300,11 @@ func (s *Store) SetWebhook(ctx context.Context, botID int64, webhook Webhook, dr
 	}
 	if webhook.MaxConnections > 100 {
 		return mtproto.ErrInputRequestInvalid
+	}
+	for _, name := range webhook.AllowedUpdates {
+		if !botapi.IsValidAllowedUpdateType(name) {
+			return mtproto.ErrInputRequestInvalid
+		}
 	}
 	allowed, err := json.Marshal(webhook.AllowedUpdates)
 	if err != nil {
@@ -417,6 +464,41 @@ FROM bots WHERE bot_id=$1`, botID).Scan(&buttonType, &text, &rawURL); err != nil
 	return menuButtonFromValues(buttonType, text, rawURL), nil
 }
 
+func (s *Store) SetDefaultAdministratorRights(ctx context.Context, botID int64, forChannels bool, rights []byte) error {
+	if s == nil || s.Pool == nil || botID <= 0 || !json.Valid(rights) {
+		return mtproto.ErrInputRequestInvalid
+	}
+	column := "group_rights"
+	if forChannels {
+		column = "broadcast_rights"
+	}
+	return postgres.WithTx(ctx, s.Pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `INSERT INTO bot_api_default_admin_rights (bot_id,`+column+`)
+VALUES($1,$2::jsonb)
+ON CONFLICT(bot_id) DO UPDATE SET `+column+`=EXCLUDED.`+column+`,updated_at=CURRENT_TIMESTAMP`, botID, string(rights))
+		return err
+	})
+}
+
+func (s *Store) GetDefaultAdministratorRights(ctx context.Context, botID int64, forChannels bool) ([]byte, bool, error) {
+	if s == nil || s.Pool == nil || botID <= 0 {
+		return nil, false, mtproto.ErrInputRequestInvalid
+	}
+	column := "group_rights"
+	if forChannels {
+		column = "broadcast_rights"
+	}
+	var rights []byte
+	err := s.Pool.QueryRow(ctx, `SELECT `+column+` FROM bot_api_default_admin_rights WHERE bot_id=$1`, botID).Scan(&rights)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	return rights, true, nil
+}
+
 func validateMenuButton(button botapi.MenuButton) error {
 	if button.Type != "default" && button.Type != "commands" && button.Type != "web_app" {
 		return mtproto.ErrInputRequestInvalid
@@ -513,8 +595,18 @@ WHERE bot_id=$1 ORDER BY update_id LIMIT $2`, botID, webhookDeliverySize)
 	if err := rows.Err(); err != nil {
 		return
 	}
+	allowedSet := make(map[string]struct{}, len(webhook.AllowedUpdates))
+	for _, name := range webhook.AllowedUpdates {
+		allowedSet[name] = struct{}{}
+	}
 	client := &http.Client{Timeout: 10 * time.Second}
 	for _, item := range items {
+		if len(allowedSet) > 0 && !allowedUpdate(item.data, allowedSet) {
+			// A filtered update must not block delivery of a later allowed
+			// update at the head of the queue.
+			_, _ = s.Pool.Exec(ctx, `DELETE FROM bot_api_updates WHERE bot_id=$1 AND update_id=$2`, botID, item.id)
+			continue
+		}
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, webhook.URL, strings.NewReader(string(item.data)))
 		if err != nil {
 			s.recordWebhookError(ctx, botID, err)

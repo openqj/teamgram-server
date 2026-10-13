@@ -1,6 +1,7 @@
 package core
 
 import (
+	"encoding/json"
 	"errors"
 	"testing"
 
@@ -56,13 +57,30 @@ func TestPasskeyFinishRejectsUnpairedMigrationAuthKey(t *testing.T) {
 	if !errors.Is(err, mtproto.ErrAuthKeyInvalid) {
 		t.Fatalf("unpaired from_auth_key_id error = %v, want AUTH_KEY_INVALID", err)
 	}
+	credential := &mtproto.InputPasskeyCredential{
+		Id:    "AQ",
+		RawId: "AQ",
+		Response: &mtproto.InputPasskeyResponse{
+			ClientData:        &mtproto.DataJSON{Data: "{}"},
+			AuthenticatorData: []byte{1},
+			Signature:         []byte{2},
+		},
+	}
 	_, err = c.AuthFinishPasskeyLogin(&mtproto.TLAuthFinishPasskeyLogin{
-		Credential:    &mtproto.InputPasskeyCredential{Id: "credential"},
+		Credential:    credential,
+		FromDcId:      wrapperspb.Int32(2),
+		FromAuthKeyId: wrapperspb.Int64(0),
+	})
+	if !errors.Is(err, mtproto.ErrAuthKeyInvalid) {
+		t.Fatalf("zero from_auth_key_id error = %v, want AUTH_KEY_INVALID", err)
+	}
+	_, err = c.AuthFinishPasskeyLogin(&mtproto.TLAuthFinishPasskeyLogin{
+		Credential:    credential,
 		FromDcId:      wrapperspb.Int32(2),
 		FromAuthKeyId: wrapperspb.Int64(-42),
 	})
-	if !errors.Is(err, mtproto.ErrAuthKeyInvalid) {
-		t.Fatalf("negative from_auth_key_id error = %v, want AUTH_KEY_INVALID", err)
+	if !errors.Is(err, mtproto.ErrAuthTokenInvalid) {
+		t.Fatalf("negative from_auth_key_id error = %v, want AUTH_TOKEN_INVALID after key validation", err)
 	}
 }
 
@@ -182,6 +200,33 @@ func TestPasskeyCredentialIDsMustMatch(t *testing.T) {
 	base.RawId = ""
 	if _, err := credentialResponsePayload(base, false); !errors.Is(err, mtproto.ErrAuthTokenInvalid) {
 		t.Fatalf("missing raw_id error = %v, want AUTH_TOKEN_INVALID", err)
+	}
+}
+
+func TestPasskeyCredentialPayloadEncodesLayer229UserHandle(t *testing.T) {
+	payload, err := credentialResponsePayload(&mtproto.InputPasskeyCredential{
+		Id:    "AQ",
+		RawId: "AQ",
+		Response: &mtproto.InputPasskeyResponse{
+			ClientData:        &mtproto.DataJSON{Data: "{}"},
+			AuthenticatorData: []byte{1},
+			Signature:         []byte{2},
+			UserHandle:        "2:42",
+		},
+	}, false)
+	if err != nil {
+		t.Fatalf("credentialResponsePayload() error = %v", err)
+	}
+	var decoded struct {
+		Response struct {
+			UserHandle string `json:"userHandle"`
+		} `json:"response"`
+	}
+	if err := json.Unmarshal(payload, &decoded); err != nil {
+		t.Fatalf("payload JSON decode error = %v", err)
+	}
+	if decoded.Response.UserHandle != "Mjo0Mg" {
+		t.Fatalf("userHandle = %q, want base64url encoding of 2:42", decoded.Response.UserHandle)
 	}
 }
 

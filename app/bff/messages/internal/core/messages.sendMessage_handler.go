@@ -40,11 +40,24 @@ func (c *MessagesCore) MessagesSendMessage(in *mtproto.TLMessagesSendMessage) (*
 	if in.GetPeer() == nil {
 		return nil, mtproto.ErrPeerIdInvalid
 	}
+	actingUserID, viaBusinessBotID, err := c.sendIdentity()
+	if err != nil {
+		return nil, err
+	}
 	var (
-		peer = mtproto.FromInputPeer2(c.MD.UserId, in.Peer)
+		peer = mtproto.FromInputPeer2(actingUserID, in.Peer)
 	)
 	if peer == nil || peer.PeerId <= 0 {
 		return nil, mtproto.ErrPeerIdInvalid
+	}
+	if viaBusinessBotID != nil && peer.IsChannel() {
+		return nil, mtproto.ErrChatAdminRequired
+	}
+	if err = c.validateBusinessReplyPeer(peer); err != nil {
+		return nil, err
+	}
+	if viaBusinessBotID != nil && in.GetScheduleDate().GetValue() != 0 {
+		return nil, mtproto.ErrMethodNotImpl
 	}
 
 	if in.Message == "" {
@@ -75,7 +88,7 @@ func (c *MessagesCore) MessagesSendMessage(in *mtproto.TLMessagesSendMessage) (*
 		return nil, mtproto.ErrPeerIdInvalid
 	}
 
-	if peer.IsUser() && peer.IsSelfUser(c.MD.UserId) {
+	if peer.IsUser() && peer.IsSelfUser(actingUserID) {
 		peer.PeerType = mtproto.PEER_USER
 	}
 	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.MsgClient == nil {
@@ -120,11 +133,12 @@ func (c *MessagesCore) MessagesSendMessage(in *mtproto.TLMessagesSendMessage) (*
 		Noforwards:           in.Noforwards,
 		InvertMedia:          in.InvertMedia,
 		Id:                   0,
-		FromId:               mtproto.MakePeerUser(c.MD.UserId),
+		FromId:               mtproto.MakePeerUser(actingUserID),
 		PeerId:               peer.ToPeer(),
 		SavedPeerId:          nil,
 		FwdFrom:              nil,
 		ViaBotId:             nil,
+		ViaBusinessBotId:     viaBusinessBotID,
 		ReplyTo:              nil,
 		Date:                 int32(time.Now().Unix()),
 		Message:              in.Message,
@@ -146,7 +160,7 @@ func (c *MessagesCore) MessagesSendMessage(in *mtproto.TLMessagesSendMessage) (*
 	}).To_Message()
 
 	// Fix SavedPeerId
-	if peer.IsSelfUser(c.MD.UserId) {
+	if peer.IsSelfUser(actingUserID) {
 		outMessage.SavedPeerId = peer.ToPeer()
 	}
 
@@ -210,7 +224,7 @@ func (c *MessagesCore) MessagesSendMessage(in *mtproto.TLMessagesSendMessage) (*
 	//})
 
 	rUpdate, err := c.svcCtx.Dao.MsgClient.MsgSendMessageV2(c.ctx, &msgpb.TLMsgSendMessageV2{
-		UserId:    c.MD.UserId,
+		UserId:    actingUserID,
 		AuthKeyId: c.MD.PermAuthKeyId,
 		PeerType:  peer.PeerType,
 		PeerId:    peer.PeerId,
@@ -233,7 +247,7 @@ func (c *MessagesCore) MessagesSendMessage(in *mtproto.TLMessagesSendMessage) (*
 	if in.ClearDraft {
 		ctx := contextx.ValueOnlyFrom(c.ctx)
 		threading.GoSafe(func() {
-			c.doClearDraft(ctx, c.MD.UserId, c.MD.PermAuthKeyId, peer)
+			c.doClearDraft(ctx, actingUserID, c.MD.PermAuthKeyId, peer)
 		})
 	}
 

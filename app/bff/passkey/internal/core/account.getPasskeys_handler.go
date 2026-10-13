@@ -49,12 +49,12 @@ func (c *PasskeyCore) AccountGetPasskeys(in *mtproto.TLAccountGetPasskeys) (*mtp
 		if credential.LastUsageDate > 0 {
 			lastUsage = wrapperspb.Int32(int32(credential.LastUsageDate))
 		}
-		passkeys = append(passkeys, &mtproto.Passkey{
+		passkeys = append(passkeys, mtproto.MakeTLPasskey(&mtproto.Passkey{
 			Id:            base64.RawURLEncoding.EncodeToString(credential.ID),
 			Name:          credential.Name,
 			Date:          int32(credential.Date),
 			LastUsageDate: lastUsage,
-		})
+		}).To_Passkey())
 	}
 	return mtproto.MakeTLAccountPasskeys(&mtproto.Account_Passkeys{Passkeys: passkeys}).To_Account_Passkeys(), nil
 }

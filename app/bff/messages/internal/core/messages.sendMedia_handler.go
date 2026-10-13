@@ -41,13 +41,16 @@ func (c *MessagesCore) MessagesSendMedia(in *mtproto.TLMessagesSendMedia) (*mtpr
 	if c == nil || c.MD == nil || c.MD.UserId <= 0 {
 		return nil, mtproto.ErrAuthKeyUnregistered
 	}
+	actingUserID, viaBusinessBotID, err := c.sendIdentity()
+	if err != nil {
+		return nil, err
+	}
 	var (
 		peer       *mtproto.PeerUtil
 		linkChatId int64
-		err        error
 	)
 
-	peer = mtproto.FromInputPeer2(c.MD.UserId, in.Peer)
+	peer = mtproto.FromInputPeer2(actingUserID, in.Peer)
 	if peer == nil || peer.PeerId <= 0 {
 		return nil, mtproto.ErrPeerIdInvalid
 	}
@@ -68,6 +71,15 @@ func (c *MessagesCore) MessagesSendMedia(in *mtproto.TLMessagesSendMedia) (*mtpr
 		c.Logger.Errorf("invalid peer: %v", in.Peer)
 		err = mtproto.ErrPeerIdInvalid
 		return nil, err
+	}
+	if viaBusinessBotID != nil && peer.IsChannel() {
+		return nil, mtproto.ErrChatAdminRequired
+	}
+	if err = c.validateBusinessReplyPeer(peer); err != nil {
+		return nil, err
+	}
+	if viaBusinessBotID != nil && in.GetScheduleDate().GetValue() != 0 {
+		return nil, mtproto.ErrMethodNotImpl
 	}
 
 	if len(in.Message) > 4000 {
@@ -90,7 +102,7 @@ func (c *MessagesCore) MessagesSendMedia(in *mtproto.TLMessagesSendMedia) (*mtpr
 		if in.GetMedia() == nil {
 			return nil, mtproto.ErrMediaInvalid
 		}
-		if err = channelview.ValidateChannelMessageWrite(c.MD.UserId, in.GetPeer()); err != nil {
+		if err = channelview.ValidateChannelMessageWrite(actingUserID, in.GetPeer()); err != nil {
 			return nil, err
 		}
 		if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.MediaClient == nil {
@@ -111,7 +123,7 @@ func (c *MessagesCore) MessagesSendMedia(in *mtproto.TLMessagesSendMedia) (*mtpr
 		}
 		requestHash := sha256.Sum256(requestData)
 		updates, postErr := channelview.PostMediaForInputPeerWithReplyAndRandomIDForDelivery(
-			c.MD.UserId,
+			actingUserID,
 			in.GetPeer(),
 			in.GetMessage(),
 			0,
@@ -155,11 +167,12 @@ func (c *MessagesCore) MessagesSendMedia(in *mtproto.TLMessagesSendMedia) (*mtpr
 		Noforwards:           in.Noforwards,
 		InvertMedia:          in.InvertMedia,
 		Id:                   0,
-		FromId:               mtproto.MakePeerUser(c.MD.UserId),
+		FromId:               mtproto.MakePeerUser(actingUserID),
 		PeerId:               peer.ToPeer(),
 		SavedPeerId:          nil,
 		FwdFrom:              nil,
 		ViaBotId:             nil,
+		ViaBusinessBotId:     viaBusinessBotID,
 		ReplyTo:              nil,
 		Date:                 int32(time.Now().Unix()),
 		Media:                nil,
@@ -181,7 +194,7 @@ func (c *MessagesCore) MessagesSendMedia(in *mtproto.TLMessagesSendMedia) (*mtpr
 	}).To_Message()
 
 	// Fix SavedPeerId
-	if peer.IsSelfUser(c.MD.UserId) {
+	if peer.IsSelfUser(actingUserID) {
 		outMessage.SavedPeerId = peer.ToPeer()
 	}
 
@@ -245,7 +258,7 @@ func (c *MessagesCore) MessagesSendMedia(in *mtproto.TLMessagesSendMedia) (*mtpr
 	//	return hasBot
 	//})
 	rUpdate, err := c.svcCtx.Dao.MsgClient.MsgSendMessageV2(c.ctx, &msgpb.TLMsgSendMessageV2{
-		UserId:    c.MD.UserId,
+		UserId:    actingUserID,
 		AuthKeyId: c.MD.PermAuthKeyId,
 		PeerType:  peer.PeerType,
 		PeerId:    peer.PeerId,
@@ -268,7 +281,7 @@ func (c *MessagesCore) MessagesSendMedia(in *mtproto.TLMessagesSendMedia) (*mtpr
 	if in.ClearDraft {
 		ctx := contextx.ValueOnlyFrom(c.ctx)
 		threading.GoSafe(func() {
-			c.doClearDraft(ctx, c.MD.UserId, c.MD.PermAuthKeyId, peer)
+			c.doClearDraft(ctx, actingUserID, c.MD.PermAuthKeyId, peer)
 		})
 	}
 

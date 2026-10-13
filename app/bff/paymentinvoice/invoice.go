@@ -171,6 +171,23 @@ func validInvoice(invoice *mtproto.Invoice) bool {
 		}
 		total += price.GetAmount()
 	}
+	maxTip := int64(0)
+	if value := invoice.GetMaxTipAmount(); value != nil {
+		maxTip = value.GetValue()
+		if maxTip <= 0 {
+			return false
+		}
+	}
+	if len(invoice.GetSuggestedTipAmounts()) > 4 || (maxTip == 0 && len(invoice.GetSuggestedTipAmounts()) > 0) {
+		return false
+	}
+	var previousTip int64
+	for _, tip := range invoice.GetSuggestedTipAmounts() {
+		if tip <= 0 || tip > maxTip || (previousTip > 0 && tip <= previousTip) {
+			return false
+		}
+		previousTip = tip
+	}
 	return true
 }
 

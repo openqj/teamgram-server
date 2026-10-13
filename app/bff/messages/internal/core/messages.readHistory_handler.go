@@ -30,6 +30,13 @@ func (c *MessagesCore) MessagesReadHistory(in *mtproto.TLMessagesReadHistory) (*
 	if c == nil || c.MD == nil || c.MD.UserId <= 0 {
 		return nil, mtproto.ErrAuthKeyUnregistered
 	}
+	actingUserID := c.MD.UserId
+	if scope, ok := c.businessScope(); ok {
+		if err := c.requireBusinessRight(scope.CanReadMessages); err != nil {
+			return nil, err
+		}
+		actingUserID = scope.OwnerID
+	}
 	if in == nil {
 		return nil, mtproto.ErrInputConstructorInvalid
 	}
@@ -40,7 +47,7 @@ func (c *MessagesCore) MessagesReadHistory(in *mtproto.TLMessagesReadHistory) (*
 		return nil, mtproto.ErrMessageIdInvalid
 	}
 
-	peer := mtproto.FromInputPeer2(c.MD.UserId, in.GetPeer())
+	peer := mtproto.FromInputPeer2(actingUserID, in.GetPeer())
 	if peer == nil || peer.PeerId <= 0 {
 		err := mtproto.ErrPeerIdInvalid
 		c.Logger.Errorf("messages.readHistory - error: %v", err)
@@ -53,7 +60,7 @@ func (c *MessagesCore) MessagesReadHistory(in *mtproto.TLMessagesReadHistory) (*
 		if !channelview.Ready() {
 			return nil, mtproto.ErrPeerIdInvalid
 		}
-		return channelview.ReadHistoryForInputPeer(c.MD.UserId, in.GetPeer(), in.GetMaxId())
+		return channelview.ReadHistoryForInputPeer(actingUserID, in.GetPeer(), in.GetMaxId())
 	}
 	if !peer.IsChatOrUser() {
 		err := mtproto.ErrPeerIdInvalid
@@ -67,7 +74,7 @@ func (c *MessagesCore) MessagesReadHistory(in *mtproto.TLMessagesReadHistory) (*
 	rV, err := c.svcCtx.Dao.MsgClient.MsgReadHistoryV2(
 		c.ctx,
 		&msgpb.TLMsgReadHistoryV2{
-			UserId:    c.MD.UserId,
+			UserId:    actingUserID,
 			AuthKeyId: c.MD.PermAuthKeyId,
 			PeerType:  peer.PeerType,
 			PeerId:    peer.PeerId,

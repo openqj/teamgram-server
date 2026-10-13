@@ -126,6 +126,19 @@ type persistedProviderOperation struct {
 	Header   string
 }
 
+var errProviderTransactionConflict = errors.New("payment provider transaction belongs to another request")
+
+// providerTransactionIdentityMatches keeps one provider transaction bound to
+// the operation/user/request that first recorded it. The database primary key
+// prevents duplicate transaction rows, but the identity check is still
+// required because a conflicting insert must fail closed instead of replacing
+// the existing receipt.
+func providerTransactionIdentityMatches(storedUserID int64, storedRequestKey string, userID int64, requestKey string) bool {
+	return storedUserID > 0 && userID > 0 && storedUserID == userID &&
+		strings.TrimSpace(storedRequestKey) != "" &&
+		strings.TrimSpace(storedRequestKey) == strings.TrimSpace(requestKey)
+}
+
 // loadOperation returns an existing result and verifies that a retry carries
 // the same payload. A different payload under an idempotency key is a hard
 // conflict and must never be silently reused.
@@ -211,12 +224,29 @@ func (p *controlPlane) saveOperation(operation, requestKey string, userID int64,
 		return persistedProviderOperation{Response: append([]byte(nil), storedResponse...), Header: storedHeader}, nil
 	}
 	if strings.TrimSpace(transactionID) != "" {
-		_, err = tx.Exec(`INSERT INTO apifull_payment_provider_receipt
+		var storedReceiptUserID int64
+		var storedReceiptRequestKey string
+		err = tx.QueryRow(`SELECT user_id, request_key
+			FROM apifull_payment_provider_receipt
+			WHERE operation=$1 AND transaction_id=$2 FOR UPDATE`, operation, transactionID).
+			Scan(&storedReceiptUserID, &storedReceiptRequestKey)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return persistedProviderOperation{}, err
+		}
+		if err == nil && !providerTransactionIdentityMatches(storedReceiptUserID, storedReceiptRequestKey, userID, requestKey) {
+			return persistedProviderOperation{}, errProviderTransactionConflict
+		}
+		insertedReceipt, insertErr := tx.Exec(`INSERT INTO apifull_payment_provider_receipt
 			(operation, user_id, request_key, transaction_id, response, created_at)
 			VALUES ($1,$2,$3,$4,$5::jsonb,$6)
-			ON CONFLICT (operation, transaction_id) DO UPDATE SET response=EXCLUDED.response`, operation, userID, requestKey, transactionID, response, now)
-		if err != nil {
-			return persistedProviderOperation{}, err
+			ON CONFLICT (operation, transaction_id) DO NOTHING`, operation, userID, requestKey, transactionID, response, now)
+		if insertErr != nil {
+			return persistedProviderOperation{}, insertErr
+		}
+		if rows, rowsErr := insertedReceipt.RowsAffected(); rowsErr != nil {
+			return persistedProviderOperation{}, rowsErr
+		} else if rows == 0 {
+			return persistedProviderOperation{}, errProviderTransactionConflict
 		}
 	}
 	if strings.TrimSpace(entitlementProduct) != "" {

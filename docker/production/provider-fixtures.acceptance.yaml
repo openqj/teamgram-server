@@ -84,8 +84,8 @@ services:
   code-provider-fixture:
     profiles: [provider-fixtures]
     build:
-      context: .
-      dockerfile: docker/production/code-provider-fixture/Dockerfile
+      context: ./docker/production/code-provider-fixture
+      dockerfile: Dockerfile
     environment:
       CODE_PROVIDER_KEY: "${TEAMGRAM_CODE_PROVIDER_KEY:?TEAMGRAM_CODE_PROVIDER_KEY is required}"
       CODE_PROVIDER_SECRET: "${TEAMGRAM_CODE_PROVIDER_SECRET:?TEAMGRAM_CODE_PROVIDER_SECRET is required}"

@@ -16,6 +16,7 @@ import (
 	"github.com/teamgram/marmota/pkg/net/rpcx"
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/proto/mtproto/rpc/metadata"
+	"github.com/teamgram/teamgram-server/pkg/rpc/businessctx"
 	"github.com/teamgram/teamgram-server/pkg/rpc/dccontext"
 
 	"github.com/zeromicro/go-zero/core/logx"
@@ -155,6 +156,9 @@ func (c *BFFProxyClient) InvokeContext(ctx context.Context, rpcMetaData *metadat
 	}
 
 	ctx2, _ := metadata.RpcMetadataToOutgoing(ctxWithTimeout, rpcMetaData)
+	if scope, ok := businessctx.ScopeFromContext(ctx); ok {
+		ctx2 = businessctx.WithOutgoingScope(ctx2, scope)
+	}
 	// RpcMetadataToOutgoing creates a fresh outgoing metadata context. Reattach
 	// the trusted gateway DC marker after it so authorization can validate the
 	// actual connection DC instead of the service's default configuration.

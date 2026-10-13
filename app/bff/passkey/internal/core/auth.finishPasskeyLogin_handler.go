@@ -43,7 +43,7 @@ func (c *PasskeyCore) AuthFinishPasskeyLogin(in *mtproto.TLAuthFinishPasskeyLogi
 		return nil, err
 	}
 	if fromAuthKeyID := in.GetFromAuthKeyId(); fromAuthKeyID != nil {
-		if in.GetFromDcId() == nil || fromAuthKeyID.GetValue() <= 0 {
+		if in.GetFromDcId() == nil || fromAuthKeyID.GetValue() == 0 {
 			return nil, mtproto.ErrAuthKeyInvalid
 		}
 	}
@@ -119,13 +119,13 @@ func (c *PasskeyCore) AuthFinishPasskeyLogin(in *mtproto.TLAuthFinishPasskeyLogi
 	if in.GetFromAuthKeyId() != nil {
 		authKeyID = in.GetFromAuthKeyId().GetValue()
 	}
-	if authKeyID <= 0 {
+	if authKeyID == 0 {
 		authKeyID = c.MD.PermAuthKeyId
 	}
-	if authKeyID <= 0 {
+	if authKeyID == 0 {
 		authKeyID = c.MD.AuthId
 	}
-	if authKeyID <= 0 {
+	if authKeyID == 0 {
 		return nil, mtproto.ErrAuthKeyUnregistered
 	}
 	if _, err = c.svcCtx.Dao.AuthsessionClient.AuthsessionBindAuthKeyUser(c.ctx, &authsession.TLAuthsessionBindAuthKeyUser{

@@ -66,8 +66,8 @@ function loadAuthKey(): string {
     FROM auth_users u
     JOIN auth_keys k USING (auth_key_id)
     JOIN auth_key_infos i USING (auth_key_id)
-    WHERE u.user_id=${userId} AND u.state=0 AND u.deleted=0
-      AND k.deleted=0 AND i.deleted=0 AND i.auth_key_type=0
+    WHERE u.user_id=${userId} AND u.state=0 AND NOT u.deleted
+      AND NOT k.deleted AND NOT i.deleted AND i.auth_key_type=0
     ORDER BY u.date_active DESC, u.id DESC
     LIMIT 1
   `);
@@ -98,39 +98,40 @@ function makeClient(authKeyHex: string): any {
   });
 }
 
-type RedisSnapshot = { exists: boolean; raw: Buffer };
+type StoreSnapshot = { exists: boolean; raw: Buffer };
 
-function redisSnapshot(key: string): RedisSnapshot {
-  const exists = execFileSync('docker', ['exec', 'redis', 'redis-cli', '--raw', 'EXISTS', key], {
-    encoding: 'utf8',
-    stdio: ['ignore', 'pipe', 'ignore'],
-  }).trim() === '1';
+function sqlLiteral(value: string): string {
+  return `'${value.replaceAll("'", "''")}'`;
+}
+
+function postgresSnapshot(key: string): StoreSnapshot {
+  const literal = sqlLiteral(key);
+  const exists = sql(`SELECT EXISTS (SELECT 1 FROM apifull_kv WHERE k=${literal})`) === 't';
   if (!exists) return { exists: false, raw: Buffer.alloc(0) };
 
-  const output = execFileSync('docker', ['exec', 'redis', 'redis-cli', '--raw', 'GET', key]) as Buffer;
-  // redis-cli appends one line-feed; the stored promo payload is JSON and has no trailing line-feed.
+  const output = execFileSync('docker', [
+    'exec', 'teamgram-postgres', 'psql', '-v', 'ON_ERROR_STOP=1', '-At', '-q',
+    '-U', 'teamgram', '-d', 'teamgram', '-c', `SELECT v FROM apifull_kv WHERE k=${literal}`,
+  ]) as Buffer;
+  // psql appends one line-feed; the stored promo payload is JSON and has no trailing line-feed.
   const raw = output.length > 0 && output[output.length - 1] === 0x0a
     ? output.subarray(0, output.length - 1)
     : output;
   return { exists: true, raw };
 }
 
-function restoreRedis(key: string, snapshot: RedisSnapshot): void {
+function restorePostgres(key: string, snapshot: StoreSnapshot): void {
+  const keyLiteral = sqlLiteral(key);
   if (!snapshot.exists) {
-    execFileSync('docker', ['exec', 'redis', 'redis-cli', '--raw', 'DEL', key], {
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-    });
+    sql(`DELETE FROM apifull_kv WHERE k=${keyLiteral}`);
     return;
   }
-  execFileSync('docker', ['exec', '-i', 'redis', 'redis-cli', '--raw', '-x', 'SET', key], {
-    input: snapshot.raw,
-    encoding: 'utf8',
-    stdio: ['pipe', 'pipe', 'ignore'],
-  });
+  const valueLiteral = sqlLiteral(snapshot.raw.toString('utf8'));
+  sql(`INSERT INTO apifull_kv (k, v) VALUES (${keyLiteral}, ${valueLiteral})
+    ON CONFLICT (k) DO UPDATE SET v=EXCLUDED.v`);
 }
 
-function rawHash(snapshot: RedisSnapshot): string | null {
+function rawHash(snapshot: StoreSnapshot): string | null {
   return snapshot.exists ? createHash('sha256').update(snapshot.raw).digest('hex') : null;
 }
 
@@ -147,8 +148,8 @@ function isPromoEmpty(value: any): boolean {
 
 async function main() {
   const authKey = loadAuthKey();
-  const redisKey = `promo:hide:${userId}`;
-  const original = redisSnapshot(redisKey);
+  const storageKey = `promo:hide:${userId}`;
+  const original = postgresSnapshot(storageKey);
   const client = makeClient(authKey);
   let restoreNeeded = false;
 
@@ -172,9 +173,9 @@ async function main() {
     if (!isTrue(hide)) {
       throw new Error(`help.hidePromoData returned ${rpcName(hide)}`);
     }
-    const redisAfterHide = redisSnapshot(redisKey);
-    if (!redisAfterHide.exists) {
-      throw new Error('help.hidePromoData returned true but did not persist promo state in Redis');
+    const postgresAfterHide = postgresSnapshot(storageKey);
+    if (!postgresAfterHide.exists) {
+      throw new Error('help.hidePromoData returned true but did not persist promo state in PostgreSQL');
     }
 
     const after = await client.invoke(new Api.help.GetPromoData());
@@ -183,36 +184,38 @@ async function main() {
       throw new Error(`help.getPromoData after hide returned the hidden peer ${String(afterPeerID)}`);
     }
 
-    restoreRedis(redisKey, original);
-    const restored = redisSnapshot(redisKey);
+    restorePostgres(storageKey, original);
+    const restored = postgresSnapshot(storageKey);
     if (restored.exists !== original.exists || !restored.raw.equals(original.raw)) {
-      throw new Error('promo Redis value did not restore byte-for-byte');
+      throw new Error('promo PostgreSQL value did not restore byte-for-byte');
     }
     restoreNeeded = false;
 
     console.log(JSON.stringify({
       userId: String(me.id),
-      redisKey,
-      redisBeforeExists: original.exists,
-      redisBeforeSha256: rawHash(original),
+      storageKey,
+      postgresBeforeExists: original.exists,
+      postgresBeforeSha256: rawHash(original),
       beforeType: rpcName(before),
       beforePeerId: String(beforePeerID),
+      beforeExpires: before?.expires ?? null,
       hideType: rpcName(hide),
-      redisAfterHideExists: redisAfterHide.exists,
-      redisAfterHideSha256: rawHash(redisAfterHide),
+      postgresAfterHideExists: postgresAfterHide.exists,
+      postgresAfterHideSha256: rawHash(postgresAfterHide),
       afterType: rpcName(after),
       afterPeerId: afterPeerID === undefined ? null : String(afterPeerID),
-      redisRestoredExists: restored.exists,
-      redisRestoredSha256: rawHash(restored),
-      redisRestoredByteEqual: true,
+      afterExpires: after?.expires ?? null,
+      postgresRestoredExists: restored.exists,
+      postgresRestoredSha256: rawHash(restored),
+      postgresRestoredByteEqual: true,
     }));
   } finally {
     try {
       if (restoreNeeded) {
-        restoreRedis(redisKey, original);
-        const restored = redisSnapshot(redisKey);
+        restorePostgres(storageKey, original);
+        const restored = postgresSnapshot(storageKey);
         if (restored.exists !== original.exists || !restored.raw.equals(original.raw)) {
-          throw new Error('promo Redis cleanup did not restore the original value');
+          throw new Error('promo PostgreSQL cleanup did not restore the original value');
         }
       }
     } finally {

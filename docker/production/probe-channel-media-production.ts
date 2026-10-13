@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 
-const userId = 136907714;
+const userId = Number(process.env.CHANNEL_MEDIA_USER_ID || '136907714');
 const gramjsDir = process.env.TEAMGRAM_GRAMJS_DIR || '/Users/mac/open/test/telegram-tt-master';
 const dcId = Number(process.env.TG_DC_ID || '2');
 const dcHost = process.env.TG_DC_HOST || '127.0.0.1';
@@ -150,8 +150,8 @@ async function main() {
     FROM auth_users u
     JOIN auth_keys k USING (auth_key_id)
     JOIN auth_key_infos i USING (auth_key_id)
-    WHERE u.user_id=${userId} AND u.state=0 AND u.deleted=0
-      AND k.deleted=0 AND i.deleted=0 AND i.auth_key_type=0
+    WHERE u.user_id=${userId} AND u.state=0 AND u.deleted=FALSE
+      AND k.deleted=FALSE AND i.deleted=FALSE AND i.auth_key_type=0
     ORDER BY u.date_active DESC,u.id DESC
     LIMIT 1
   `, 'active production auth key');

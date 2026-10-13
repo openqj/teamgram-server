@@ -30,7 +30,8 @@ type Config struct {
 	CdnProviderKey            string `json:",optional"`
 	CdnProviderSigningKey     string `json:",optional"`
 	CdnProviderTimeoutSeconds int    `json:",optional"`
-	AllowInsecureProviderHTTP bool   `json:",optional"`
+	// Only the explicit provider-fixture mode may use HTTP; production must use HTTPS.
+	AllowInsecureProviderHTTP bool `json:",optional"`
 	DfsClient                 zrpc.RpcClientConf
 	UserClient                zrpc.RpcClientConf
 	MediaClient               zrpc.RpcClientConf

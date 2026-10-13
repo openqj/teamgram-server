@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"mime"
 	"net/http"
 	"net/url"
@@ -30,6 +31,7 @@ import (
 	chatpb "github.com/teamgram/teamgram-server/app/service/biz/chat/chat"
 	userpb "github.com/teamgram/teamgram-server/app/service/biz/user/user"
 	dfspb "github.com/teamgram/teamgram-server/app/service/dfs/dfs"
+	"github.com/teamgram/teamgram-server/pkg/rpc/businessctx"
 
 	"github.com/zeromicro/go-zero/rest/httpx"
 	"google.golang.org/grpc/metadata"
@@ -313,6 +315,22 @@ func dispatchBotAPIMethod(ctx *svc.ServiceContext, r *http.Request, bot *mtproto
 		return sendPoll(ctx, r, bot, request)
 	case "sendDice":
 		return sendDice(ctx, r, bot, request)
+	case "sendChatAction":
+		return sendChatAction(ctx, r, bot, request)
+	case "sendGame":
+		return sendGame(ctx, r, bot, request)
+	case "sendInvoice":
+		return sendInvoice(ctx, r, bot, request)
+	case "createInvoiceLink":
+		return createInvoiceLink(ctx, r.Context(), botID, request)
+	case "getMyStarBalance":
+		return getMyStarBalance(ctx, r.Context(), botID)
+	case "getStarTransactions":
+		return getStarTransactions(ctx, r.Context(), botID, request)
+	case "refundStarPayment":
+		return refundStarPayment(ctx, r.Context(), botID, request)
+	case "editUserStarSubscription":
+		return editUserStarSubscription(ctx, r.Context(), botID, request)
 	case "sendMediaGroup":
 		return sendMediaGroup(ctx, r, bot, request)
 	case "forwardMessage":
@@ -321,12 +339,46 @@ func dispatchBotAPIMethod(ctx *svc.ServiceContext, r *http.Request, bot *mtproto
 		return forwardMessage(ctx, r, bot, request, true)
 	case "getChat":
 		return getChat(ctx, r, botID, request)
+	case "getUserProfilePhotos":
+		return getUserProfilePhotos(ctx, r, botID, request)
+	case "setChatPhoto":
+		return setChatPhoto(ctx, r, botID, request)
+	case "deleteChatPhoto":
+		return deleteChatPhoto(ctx, r, botID, request)
 	case "getChatAdministrators":
 		return getChatAdministrators(ctx, r, botID, request)
 	case "getChatMemberCount":
 		return getChatMemberCount(ctx, r, botID, request)
 	case "getChatMember":
 		return getChatMember(ctx, r, botID, request)
+	case "exportChatInviteLink":
+		return exportChatInviteLink(ctx, r, botID, request)
+	case "createChatInviteLink":
+		return createChatInviteLink(ctx, r, botID, request)
+	case "editChatInviteLink":
+		return editChatInviteLink(ctx, r, botID, request)
+	case "revokeChatInviteLink":
+		return revokeChatInviteLink(ctx, r, botID, request)
+	case "approveChatJoinRequest":
+		return handleChatJoinRequest(ctx, r, botID, request, true)
+	case "declineChatJoinRequest":
+		return handleChatJoinRequest(ctx, r, botID, request, false)
+	case "createForumTopic":
+		return createForumTopic(ctx, r, botID, request)
+	case "editForumTopic":
+		return editForumTopic(ctx, r, botID, request, false, false, false, false)
+	case "closeForumTopic":
+		return closeForumTopic(ctx, r, botID, request)
+	case "reopenForumTopic":
+		return reopenForumTopic(ctx, r, botID, request)
+	case "hideGeneralForumTopic":
+		return hideGeneralForumTopic(ctx, r, botID, request)
+	case "unhideGeneralForumTopic":
+		return unhideGeneralForumTopic(ctx, r, botID, request)
+	case "deleteForumTopic":
+		return deleteForumTopic(ctx, r, botID, request)
+	case "unpinAllForumTopicMessages":
+		return unpinAllForumTopicMessages(ctx, r, botID, request)
 	case "banChatMember", "kickChatMember":
 		return banChatMember(ctx, r, botID, request)
 	case "unbanChatMember":
@@ -389,6 +441,10 @@ func dispatchBotAPIMethod(ctx *svc.ServiceContext, r *http.Request, bot *mtproto
 		return setMyShortDescription(ctx, r.Context(), botID, request)
 	case "getMyShortDescription":
 		return getMyShortDescription(ctx, r.Context(), botID)
+	case "getMyDefaultAdministratorRights":
+		return getMyDefaultAdministratorRights(ctx, r.Context(), botID, request)
+	case "setMyDefaultAdministratorRights":
+		return setMyDefaultAdministratorRights(ctx, r.Context(), botID, request)
 	case "editMessageText":
 		return editMessageText(ctx, r, bot, request)
 	case "editMessageCaption":
@@ -401,6 +457,16 @@ func dispatchBotAPIMethod(ctx *svc.ServiceContext, r *http.Request, bot *mtproto
 		return deleteMessage(ctx, r, botID, request)
 	case "setMessageReaction":
 		return setMessageReaction(ctx, r, botID, request)
+	case "setGameScore":
+		return setGameScore(ctx, r, bot, request)
+	case "getGameHighScores":
+		return getGameHighScores(ctx, r, bot, request)
+	case "getBusinessConnection":
+		return getBusinessConnection(ctx, r.Context(), botID, request)
+	case "readBusinessMessage":
+		return readBusinessMessage(ctx, r, botID, request)
+	case "deleteBusinessMessages":
+		return deleteBusinessMessages(ctx, r, botID, request)
 	case "answerCallbackQuery":
 		return answerCallbackQuery(ctx, r.Context(), botID, request)
 	case "answerInlineQuery":
@@ -505,6 +571,9 @@ func getUpdates(ctx *svc.ServiceContext, r *http.Request, botID int64, request *
 	if err := request.json("allowed_updates", &allowed); err != nil {
 		return nil, http.StatusBadRequest, 400, "Bad Request: invalid allowed_updates"
 	}
+	if err := validateBotAPIAllowedUpdates(allowed); err != nil {
+		return nil, http.StatusBadRequest, 400, "Bad Request: invalid allowed_updates"
+	}
 	deadline := time.Now().Add(time.Duration(timeout) * time.Second)
 	for {
 		updates, err := ctx.BotAPIStore.GetUpdates(r.Context(), botID, offset, limit, allowed)
@@ -547,6 +616,9 @@ func setWebhook(ctx *svc.ServiceContext, requestCtx context.Context, botID int64
 	if err := request.json("allowed_updates", &allowed); err != nil {
 		return nil, http.StatusBadRequest, 400, "Bad Request: invalid allowed_updates"
 	}
+	if err := validateBotAPIAllowedUpdates(allowed); err != nil {
+		return nil, http.StatusBadRequest, 400, "Bad Request: invalid allowed_updates"
+	}
 	dropPending, err := request.bool("drop_pending_updates")
 	if err != nil {
 		return nil, http.StatusBadRequest, 400, "Bad Request: invalid drop_pending_updates"
@@ -573,8 +645,28 @@ func deleteWebhook(ctx *svc.ServiceContext, requestCtx context.Context, botID in
 	return true, http.StatusOK, 0, ""
 }
 
+func validateBotAPIAllowedUpdates(allowed []string) error {
+	for _, name := range allowed {
+		if !botapi.IsValidAllowedUpdateType(name) {
+			return errors.New("unknown allowed update type")
+		}
+	}
+	return nil
+}
+
 func sendMessage(ctx *svc.ServiceContext, r *http.Request, bot *mtproto.ImmutableUser, request *botAPIRequest) (any, int, int, string) {
-	chatID, peerType, peerID, err := resolveBotAPIChatID(r.Context(), ctx, bot.GetUser().GetId(), request.string("chat_id"))
+	botID := bot.GetUser().GetId()
+	scope, business, scopeErr := resolveBotAPISendScope(ctx, r.Context(), botID, request)
+	if scopeErr != nil {
+		return nil, http.StatusBadRequest, 400, rpcDescription(scopeErr)
+	}
+	senderID := botID
+	callCtx := botRPCContext(r.Context(), botID)
+	if business {
+		senderID = scope.OwnerID
+		callCtx = businessBotCallContext(r.Context(), botID, scope)
+	}
+	chatID, peerType, peerID, err := resolveBotAPIChatID(r.Context(), ctx, senderID, request.string("chat_id"))
 	if err != nil || chatID == 0 {
 		return nil, http.StatusBadRequest, 400, "Bad Request: chat_id is invalid"
 	}
@@ -588,7 +680,7 @@ func sendMessage(ctx *svc.ServiceContext, r *http.Request, bot *mtproto.Immutabl
 	}
 	message := mtproto.MakeTLMessage(&mtproto.Message{
 		Out:     true,
-		FromId:  mtproto.MakePeerUser(bot.GetUser().GetId()),
+		FromId:  mtproto.MakePeerUser(senderID),
 		PeerId:  mtproto.MakePeerUtil(peerType, peerID).ToPeer(),
 		Date:    int32(time.Now().Unix()),
 		Message: text,
@@ -603,19 +695,59 @@ func sendMessage(ctx *svc.ServiceContext, r *http.Request, bot *mtproto.Immutabl
 		return nil, http.StatusBadRequest, 400, "Bad Request: reply_markup is invalid"
 	}
 	message.ReplyMarkup = markup
-	noWebpage, err := botAPINoWebpage(request)
+	noWebpage, invertMedia, err := botAPILinkPreviewOptions(request)
 	if err != nil {
 		return nil, http.StatusBadRequest, 400, "Bad Request: link_preview_options is invalid"
 	}
-	if replyTo, parseErr := request.int("reply_to_message_id"); parseErr == nil && replyTo > 0 {
+	message.InvertMedia = invertMedia
+	replyTo, replyErr := botAPIReplyTo(request)
+	if replyErr != nil {
+		return nil, http.StatusBadRequest, 400, "Bad Request: reply_parameters is invalid"
+	}
+	topMsgID, topErr := botAPIOptionalInt32(request, "message_thread_id", 1, int64(^uint32(0)>>1))
+	if topErr != nil {
+		return nil, http.StatusBadRequest, 400, "Bad Request: message_thread_id is invalid"
+	}
+	if replyTo != nil {
 		message.ReplyTo = mtproto.MakeTLMessageReplyHeader(&mtproto.MessageReplyHeader{
-			ReplyToMsgId:           int32(replyTo),
-			ReplyToMsgId_INT32:     int32(replyTo),
-			ReplyToMsgId_FLAGINT32: mtproto.MakeFlagsInt32(int32(replyTo)),
+			ReplyToMsgId:           replyTo.GetReplyToMsgId(),
+			ReplyToMsgId_INT32:     replyTo.GetReplyToMsgId(),
+			ReplyToMsgId_FLAGINT32: mtproto.MakeFlagsInt32(replyTo.GetReplyToMsgId()),
+			ReplyToTopId:           topMsgID,
 		}).To_MessageReplyHeader()
 	}
-	updates, err := ctx.MsgClient.MsgSendMessageV2(botRPCContext(r.Context(), bot.GetUser().GetId()), &msgpb.TLMsgSendMessageV2{
-		UserId:   bot.GetUser().GetId(),
+	if business {
+		if ctx == nil || ctx.MessagesClient == nil {
+			return nil, http.StatusNotImplemented, 501, "Not Implemented: message service is not configured"
+		}
+		replyTo, replyErr := botAPIReplyTo(request)
+		if replyErr != nil {
+			return nil, http.StatusBadRequest, 400, "Bad Request: reply_parameters is invalid"
+		}
+		updates, sendErr := ctx.MessagesClient.MessagesSendMessage(callCtx, &mtproto.TLMessagesSendMessage{
+			NoWebpage:   noWebpage,
+			Silent:      requestBool(request, "disable_notification"),
+			Noforwards:  requestBool(request, "protect_content"),
+			InvertMedia: invertMedia,
+			Peer:        botAPIInputPeer(senderID, peerType, peerID),
+			ReplyTo:     replyTo,
+			TopMsgId:    topMsgID,
+			Message:     text,
+			RandomId:    randomID,
+			ReplyMarkup: markup,
+			Entities:    message.Entities,
+		})
+		if sendErr != nil {
+			return nil, http.StatusBadRequest, 400, rpcDescription(sendErr)
+		}
+		result := botapi.FirstMessageFromUpdates(updates)
+		if result == nil {
+			return nil, http.StatusInternalServerError, 500, "Internal Server Error: message was not returned"
+		}
+		return result, http.StatusOK, 0, ""
+	}
+	updates, err := ctx.MsgClient.MsgSendMessageV2(callCtx, &msgpb.TLMsgSendMessageV2{
+		UserId:   botID,
 		PeerType: peerType,
 		PeerId:   peerID,
 		Message: []*msgpb.OutboxMessage{msgpb.MakeTLOutboxMessage(&msgpb.OutboxMessage{
@@ -719,7 +851,18 @@ func botAPIReplyTo(request *botAPIRequest) (*mtproto.InputReplyTo, error) {
 // existing messages.sendMedia pipeline, which owns media validation and
 // persistence.
 func sendBotAPIMedia(ctx *svc.ServiceContext, r *http.Request, bot *mtproto.ImmutableUser, request *botAPIRequest, field, kind string) (any, int, int, string) {
-	chatID, peerType, peerID, err := resolveBotAPIChatID(r.Context(), ctx, bot.GetUser().GetId(), request.string("chat_id"))
+	botID := bot.GetUser().GetId()
+	scope, business, scopeErr := resolveBotAPISendScope(ctx, r.Context(), botID, request)
+	if scopeErr != nil {
+		return nil, http.StatusBadRequest, 400, rpcDescription(scopeErr)
+	}
+	senderID := botID
+	callCtx := botMediaRPCContext(r.Context(), botID)
+	if business {
+		senderID = scope.OwnerID
+		callCtx = businessBotMediaCallContext(r.Context(), botID, scope)
+	}
+	chatID, peerType, peerID, err := resolveBotAPIChatID(r.Context(), ctx, senderID, request.string("chat_id"))
 	if err != nil || chatID == 0 {
 		return nil, http.StatusBadRequest, 400, "Bad Request: chat_id is invalid"
 	}
@@ -768,7 +911,7 @@ func sendBotAPIMedia(ctx *svc.ServiceContext, r *http.Request, bot *mtproto.Immu
 		if len(data) > 64<<20 {
 			return nil, http.StatusRequestEntityTooLarge, 413, "Bad Request: file is too large"
 		}
-		inputFile, uploadErr := uploadBotAPIFile(r.Context(), ctx, bot.GetUser().GetId(), name, data)
+		inputFile, uploadErr := uploadBotAPIFile(r.Context(), ctx, botID, name, data)
 		if uploadErr != nil {
 			return nil, http.StatusBadRequest, 400, rpcDescription(uploadErr)
 		}
@@ -797,23 +940,29 @@ func sendBotAPIMedia(ctx *svc.ServiceContext, r *http.Request, bot *mtproto.Immu
 	if err != nil {
 		return nil, http.StatusBadRequest, 400, "Bad Request: reply_markup is invalid"
 	}
-	replyTo, err := request.int("reply_to_message_id")
-	if err != nil || replyTo < 0 {
-		return nil, http.StatusBadRequest, 400, "Bad Request: reply_to_message_id is invalid"
+	replyTo, err := botAPIReplyTo(request)
+	if err != nil {
+		return nil, http.StatusBadRequest, 400, "Bad Request: reply_parameters is invalid"
 	}
-	var replyToMsgID *wrapperspb.Int32Value
-	if replyTo > 0 {
-		replyToMsgID = wrapperspb.Int32(int32(replyTo))
+	topMsgID, err := botAPIOptionalInt32(request, "message_thread_id", 1, int64(^uint32(0)>>1))
+	if err != nil {
+		return nil, http.StatusBadRequest, 400, "Bad Request: message_thread_id is invalid"
 	}
-	updates, err := ctx.MessagesClient.MessagesSendMedia(botMediaRPCContext(r.Context(), bot.GetUser().GetId()), &mtproto.TLMessagesSendMedia{
-		Peer:         botAPIInputPeer(bot.GetUser().GetId(), peerType, peerID),
-		Media:        media,
-		Message:      caption,
-		RandomId:     randomMessageID(),
-		ReplyMarkup:  markup,
-		Entities:     botapi.MessageEntitiesToMTProto(entities),
-		ReplyToMsgId: replyToMsgID,
-		Noforwards:   requestBool(request, "protect_content"),
+	_, invertMedia, err := botAPILinkPreviewOptions(request)
+	if err != nil {
+		return nil, http.StatusBadRequest, 400, "Bad Request: link_preview_options is invalid"
+	}
+	updates, err := ctx.MessagesClient.MessagesSendMedia(callCtx, &mtproto.TLMessagesSendMedia{
+		Peer:        botAPIInputPeer(senderID, peerType, peerID),
+		Media:       media,
+		Message:     caption,
+		RandomId:    randomMessageID(),
+		ReplyMarkup: markup,
+		Entities:    botapi.MessageEntitiesToMTProto(entities),
+		ReplyTo:     replyTo,
+		TopMsgId:    topMsgID,
+		InvertMedia: invertMedia,
+		Noforwards:  requestBool(request, "protect_content"),
 	})
 	if err != nil {
 		return nil, http.StatusBadRequest, 400, rpcDescription(err)
@@ -918,15 +1067,29 @@ func sendVenue(ctx *svc.ServiceContext, r *http.Request, bot *mtproto.ImmutableU
 	if title == "" || address == "" {
 		return nil, http.StatusBadRequest, 400, "Bad Request: title and address are required"
 	}
+	provider, venueID, venueType := botAPIVenueProvider(request)
 	media := mtproto.MakeTLInputMediaVenue(&mtproto.InputMedia{
 		GeoPoint:        mtproto.MakeTLInputGeoPoint(&mtproto.InputGeoPoint{Lat: latitude, Long: longitude}).To_InputGeoPoint(),
 		Title:           title,
 		Address:         address,
-		Provider_STRING: request.string("foursquare_id"),
-		VenueId:         request.string("foursquare_id"),
-		VenueType:       request.string("foursquare_type"),
+		Provider_STRING: provider,
+		VenueId:         venueID,
+		VenueType:       venueType,
 	}).To_InputMedia()
 	return sendBotAPIStructuredMedia(ctx, r, bot, request, media, "")
+}
+
+func botAPIVenueProvider(request *botAPIRequest) (provider, venueID, venueType string) {
+	if request == nil {
+		return "", "", ""
+	}
+	if googleID := request.string("google_place_id"); googleID != "" {
+		return "google", googleID, request.string("google_place_type")
+	}
+	if foursquareID := request.string("foursquare_id"); foursquareID != "" {
+		return "foursquare", foursquareID, request.string("foursquare_type")
+	}
+	return "", "", ""
 }
 
 func sendContact(ctx *svc.ServiceContext, r *http.Request, bot *mtproto.ImmutableUser, request *botAPIRequest) (any, int, int, string) {
@@ -1059,7 +1222,18 @@ func sendBotAPIStructuredMedia(ctx *svc.ServiceContext, r *http.Request, bot *mt
 	if ctx == nil || ctx.MessagesClient == nil {
 		return nil, http.StatusNotImplemented, 501, "Not Implemented: media service is not configured"
 	}
-	_, peerType, peerID, err := resolveBotAPIChatID(r.Context(), ctx, bot.GetUser().GetId(), request.string("chat_id"))
+	botID := bot.GetUser().GetId()
+	scope, business, scopeErr := resolveBotAPISendScope(ctx, r.Context(), botID, request)
+	if scopeErr != nil {
+		return nil, http.StatusBadRequest, 400, rpcDescription(scopeErr)
+	}
+	senderID := botID
+	callCtx := botMediaRPCContext(r.Context(), botID)
+	if business {
+		senderID = scope.OwnerID
+		callCtx = businessBotMediaCallContext(r.Context(), botID, scope)
+	}
+	_, peerType, peerID, err := resolveBotAPIChatID(r.Context(), ctx, senderID, request.string("chat_id"))
 	if err != nil || peerID == 0 {
 		return nil, http.StatusBadRequest, 400, "Bad Request: chat_id is invalid"
 	}
@@ -1078,12 +1252,22 @@ func sendBotAPIStructuredMedia(ctx *svc.ServiceContext, r *http.Request, bot *mt
 	if err != nil {
 		return nil, http.StatusBadRequest, 400, "Bad Request: reply_parameters is invalid"
 	}
-	updates, err := ctx.MessagesClient.MessagesSendMedia(botMediaRPCContext(r.Context(), bot.GetUser().GetId()), &mtproto.TLMessagesSendMedia{
-		Peer:        botAPIInputPeer(bot.GetUser().GetId(), peerType, peerID),
+	_, invertMedia, err := botAPILinkPreviewOptions(request)
+	if err != nil {
+		return nil, http.StatusBadRequest, 400, "Bad Request: link_preview_options is invalid"
+	}
+	topMsgID, err := botAPIOptionalInt32(request, "message_thread_id", 1, int64(^uint32(0)>>1))
+	if err != nil {
+		return nil, http.StatusBadRequest, 400, "Bad Request: message_thread_id is invalid"
+	}
+	updates, err := ctx.MessagesClient.MessagesSendMedia(callCtx, &mtproto.TLMessagesSendMedia{
+		Peer:        botAPIInputPeer(senderID, peerType, peerID),
 		Media:       media,
 		Message:     caption,
 		RandomId:    randomMessageID(),
 		ReplyTo:     replyTo,
+		TopMsgId:    topMsgID,
+		InvertMedia: invertMedia,
 		ReplyMarkup: botapi.ReplyMarkupToMTProto(markup),
 		Entities:    botapi.MessageEntitiesToMTProto(entities),
 		Silent:      requestBool(request, "disable_notification"),
@@ -1115,7 +1299,18 @@ func sendMediaGroup(ctx *svc.ServiceContext, r *http.Request, bot *mtproto.Immut
 	if ctx == nil || ctx.MessagesClient == nil {
 		return nil, http.StatusNotImplemented, 501, "Not Implemented: media service is not configured"
 	}
-	_, peerType, peerID, err := resolveBotAPIChatID(r.Context(), ctx, bot.GetUser().GetId(), request.string("chat_id"))
+	botID := bot.GetUser().GetId()
+	scope, business, scopeErr := resolveBotAPISendScope(ctx, r.Context(), botID, request)
+	if scopeErr != nil {
+		return nil, http.StatusBadRequest, 400, rpcDescription(scopeErr)
+	}
+	senderID := botID
+	callCtx := botMediaRPCContext(r.Context(), botID)
+	if business {
+		senderID = scope.OwnerID
+		callCtx = businessBotMediaCallContext(r.Context(), botID, scope)
+	}
+	_, peerType, peerID, err := resolveBotAPIChatID(r.Context(), ctx, senderID, request.string("chat_id"))
 	if err != nil || peerID == 0 {
 		return nil, http.StatusBadRequest, 400, "Bad Request: chat_id is invalid"
 	}
@@ -1125,7 +1320,7 @@ func sendMediaGroup(ctx *svc.ServiceContext, r *http.Request, bot *mtproto.Immut
 	}
 	multiMedia := make([]*mtproto.InputSingleMedia, 0, len(items))
 	for _, item := range items {
-		media, err := botAPIMediaGroupInput(r, ctx, bot.GetUser().GetId(), item)
+		media, err := botAPIMediaGroupInput(r, ctx, botID, item)
 		if err != nil {
 			return nil, http.StatusBadRequest, 400, "Bad Request: media item is invalid"
 		}
@@ -1140,9 +1335,14 @@ func sendMediaGroup(ctx *svc.ServiceContext, r *http.Request, bot *mtproto.Immut
 	if err != nil {
 		return nil, http.StatusBadRequest, 400, "Bad Request: reply_parameters is invalid"
 	}
-	updates, err := ctx.MessagesClient.MessagesSendMultiMedia(botMediaRPCContext(r.Context(), bot.GetUser().GetId()), &mtproto.TLMessagesSendMultiMedia{
-		Peer:       botAPIInputPeer(bot.GetUser().GetId(), peerType, peerID),
+	topMsgID, err := botAPIOptionalInt32(request, "message_thread_id", 1, int64(^uint32(0)>>1))
+	if err != nil {
+		return nil, http.StatusBadRequest, 400, "Bad Request: message_thread_id is invalid"
+	}
+	updates, err := ctx.MessagesClient.MessagesSendMultiMedia(callCtx, &mtproto.TLMessagesSendMultiMedia{
+		Peer:       botAPIInputPeer(senderID, peerType, peerID),
 		ReplyTo:    replyTo,
+		TopMsgId:   topMsgID,
 		MultiMedia: multiMedia,
 		Silent:     requestBool(request, "disable_notification"),
 		Noforwards: requestBool(request, "protect_content"),
@@ -1224,20 +1424,27 @@ func requestBool(request *botAPIRequest, name string) bool {
 }
 
 func botAPINoWebpage(request *botAPIRequest) (bool, error) {
-	disabled, err := request.bool("disable_web_page_preview")
+	disabled, _, err := botAPILinkPreviewOptions(request)
+	return disabled, err
+}
+
+func botAPILinkPreviewOptions(request *botAPIRequest) (disabled, invertMedia bool, err error) {
+	disabled, err = request.bool("disable_web_page_preview")
 	if err != nil {
-		return false, err
+		return false, false, err
 	}
 	if raw := request.raw("link_preview_options"); len(raw) > 0 && string(raw) != "null" {
 		var options struct {
-			IsDisabled bool `json:"is_disabled"`
+			IsDisabled    bool `json:"is_disabled"`
+			ShowAboveText bool `json:"show_above_text"`
 		}
 		if err := request.json("link_preview_options", &options); err != nil {
-			return false, err
+			return false, false, err
 		}
 		disabled = disabled || options.IsDisabled
+		invertMedia = options.ShowAboveText
 	}
-	return disabled, nil
+	return disabled, invertMedia, nil
 }
 
 func botAPIReplyMarkup(request *botAPIRequest) (*mtproto.ReplyMarkup, error) {
@@ -1571,6 +1778,43 @@ func editBotAPIMessage(ctx *svc.ServiceContext, r *http.Request, bot *mtproto.Im
 }
 
 func editBotAPIMessageWithMedia(ctx *svc.ServiceContext, r *http.Request, bot *mtproto.ImmutableUser, request *botAPIRequest, text string, setText bool, entities []botapi.MessageEntity, markup *mtproto.ReplyMarkup, media *mtproto.InputMedia) (any, int, int, string) {
+	if inlineID := strings.TrimSpace(request.string("inline_message_id")); inlineID != "" {
+		if strings.TrimSpace(request.string("business_connection_id")) != "" {
+			return nil, http.StatusBadRequest, 400, "Bad Request: business_connection_id cannot be used with inline_message_id"
+		}
+		if ctx == nil || ctx.InlineBotClient == nil {
+			return nil, http.StatusNotImplemented, 501, "Not Implemented: inline message service is not configured"
+		}
+		id, err := parseBotAPIInlineMessageID(inlineID)
+		if err != nil {
+			return nil, http.StatusBadRequest, 400, "Bad Request: inline_message_id is invalid"
+		}
+		noWebpage, invertMedia, err := botAPILinkPreviewOptions(request)
+		if err != nil {
+			return nil, http.StatusBadRequest, 400, "Bad Request: link_preview_options is invalid"
+		}
+		edit := &mtproto.TLMessagesEditInlineBotMessage{
+			NoWebpage:   noWebpage,
+			InvertMedia: invertMedia,
+			Id:          id,
+			Media:       media,
+			ReplyMarkup: markup,
+		}
+		if entities != nil {
+			edit.Entities = botapi.MessageEntitiesToMTProto(entities)
+		}
+		if setText {
+			edit.Message = wrapperspb.String(text)
+		}
+		ok, err := ctx.InlineBotClient.MessagesEditInlineBotMessage(botRPCContext(r.Context(), bot.GetUser().GetId()), edit)
+		if err != nil {
+			return nil, http.StatusBadRequest, 400, rpcDescription(err)
+		}
+		if !mtproto.FromBool(ok) {
+			return nil, http.StatusBadRequest, 400, "Bad Request: inline message was not modified"
+		}
+		return true, http.StatusOK, 0, ""
+	}
 	_, peerType, peerID, err := resolveBotAPIChatID(r.Context(), ctx, bot.GetUser().GetId(), request.string("chat_id"))
 	if err != nil || peerID == 0 {
 		return nil, http.StatusBadRequest, 400, "Bad Request: chat_id is invalid"
@@ -1582,13 +1826,27 @@ func editBotAPIMessageWithMedia(ctx *svc.ServiceContext, r *http.Request, bot *m
 	if ctx == nil || ctx.MessagesClient == nil {
 		return nil, http.StatusNotImplemented, 501, "Not Implemented: message service is not configured"
 	}
-	noWebpage, err := botAPINoWebpage(request)
+	callCtx := botRPCContext(r.Context(), bot.GetUser().GetId())
+	selfID := bot.GetUser().GetId()
+	if connectionID := strings.TrimSpace(request.string("business_connection_id")); connectionID != "" {
+		scope, scopeErr := resolveBotAPIBusinessScope(ctx, r.Context(), bot.GetUser().GetId(), connectionID)
+		if scopeErr != nil {
+			return nil, http.StatusBadRequest, 400, rpcDescription(scopeErr)
+		}
+		if !scope.CanReply {
+			return nil, http.StatusBadRequest, 400, "Bad Request: business connection does not allow message edits"
+		}
+		callCtx = businessctx.WithOutgoingScope(callCtx, scope)
+		selfID = scope.OwnerID
+	}
+	noWebpage, invertMedia, err := botAPILinkPreviewOptions(request)
 	if err != nil {
 		return nil, http.StatusBadRequest, 400, "Bad Request: link_preview_options is invalid"
 	}
 	edit := &mtproto.TLMessagesEditMessage{
 		NoWebpage:   noWebpage,
-		Peer:        botAPIInputPeer(bot.GetUser().GetId(), peerType, peerID),
+		InvertMedia: invertMedia,
+		Peer:        botAPIInputPeer(selfID, peerType, peerID),
 		Id:          int32(messageID),
 		ReplyMarkup: markup,
 		Media:       media,
@@ -1599,7 +1857,7 @@ func editBotAPIMessageWithMedia(ctx *svc.ServiceContext, r *http.Request, bot *m
 	if setText {
 		edit.Message = wrapperspb.String(text)
 	}
-	updates, err := ctx.MessagesClient.MessagesEditMessage(botRPCContext(r.Context(), bot.GetUser().GetId()), edit)
+	updates, err := ctx.MessagesClient.MessagesEditMessage(callCtx, edit)
 	if err != nil {
 		return nil, http.StatusBadRequest, 400, rpcDescription(err)
 	}
@@ -1665,6 +1923,26 @@ func setMessageReaction(ctx *svc.ServiceContext, r *http.Request, botID int64, r
 }
 
 func deleteMessage(ctx *svc.ServiceContext, r *http.Request, botID int64, request *botAPIRequest) (any, int, int, string) {
+	if connectionID := strings.TrimSpace(request.string("business_connection_id")); connectionID != "" {
+		scope, err := resolveBotAPIBusinessScope(ctx, r.Context(), botID, connectionID)
+		if err != nil {
+			return nil, http.StatusBadRequest, 400, rpcDescription(err)
+		}
+		messageID, err := request.int64("message_id")
+		if err != nil || messageID <= 0 || messageID > int64(^uint32(0)>>1) {
+			return nil, http.StatusBadRequest, 400, "Bad Request: message_id is invalid"
+		}
+		if ctx == nil || ctx.MessagesClient == nil {
+			return nil, http.StatusNotImplemented, 501, "Not Implemented: message service is not configured"
+		}
+		if _, err = ctx.MessagesClient.MessagesDeleteMessages(businessBotCallContext(r.Context(), botID, scope), &mtproto.TLMessagesDeleteMessages{
+			Revoke: true,
+			Id:     []int32{int32(messageID)},
+		}); err != nil {
+			return nil, http.StatusBadRequest, 400, rpcDescription(err)
+		}
+		return true, http.StatusOK, 0, ""
+	}
 	_, peerType, peerID, err := resolveBotAPIChatID(r.Context(), ctx, botID, request.string("chat_id"))
 	if err != nil || peerID == 0 {
 		return nil, http.StatusBadRequest, 400, "Bad Request: chat_id is invalid"
@@ -1853,7 +2131,7 @@ func answerInlineQuery(ctx *svc.ServiceContext, requestCtx context.Context, botI
 		return nil, http.StatusNotImplemented, 501, "Not Implemented: inline query service is not configured"
 	}
 	var rawResults []json.RawMessage
-	if err := request.json("results", &rawResults); err != nil || len(rawResults) > 50 {
+	if len(request.raw("results")) == 0 || request.json("results", &rawResults) != nil || len(rawResults) > 50 {
 		return nil, http.StatusBadRequest, 400, "Bad Request: results must contain at most 50 JSON objects"
 	}
 	results := make([]*mtproto.InputBotInlineResult, 0, len(rawResults))
@@ -1879,6 +2157,9 @@ func answerInlineQuery(ctx *svc.ServiceContext, requestCtx context.Context, botI
 		}
 	}
 	nextOffset := optionalString(request.string("next_offset"))
+	if nextOffset != nil && len(nextOffset.GetValue()) > 64 {
+		return nil, http.StatusBadRequest, 400, "Bad Request: next_offset is too long"
+	}
 	private, err := request.bool("is_personal")
 	if err != nil {
 		return nil, http.StatusBadRequest, 400, "Bad Request: is_personal is invalid"
@@ -1887,17 +2168,52 @@ func answerInlineQuery(ctx *svc.ServiceContext, requestCtx context.Context, botI
 	if err != nil {
 		return nil, http.StatusBadRequest, 400, "Bad Request: is_gallery is invalid"
 	}
+	var resultButton botapi.InlineQueryResultsButton
+	hasResultButton := len(request.raw("button")) > 0 && string(request.raw("button")) != "null"
+	var switchPM *mtproto.InlineBotSwitchPM
+	var switchWebview *mtproto.InlineBotWebView
+	if hasResultButton {
+		if err := request.json("button", &resultButton); err != nil {
+			return nil, http.StatusBadRequest, 400, "Bad Request: button is invalid"
+		}
+		if text := strings.TrimSpace(resultButton.Text); text == "" || utf8.RuneCountInString(text) > 64 {
+			return nil, http.StatusBadRequest, 400, "Bad Request: button.text is invalid"
+		} else {
+			resultButton.Text = text
+		}
+		if resultButton.WebApp != nil {
+			if resultButton.StartParameter != "" || !validBotAPIWebAppURL(resultButton.WebApp.URL) {
+				return nil, http.StatusBadRequest, 400, "Bad Request: button.web_app is invalid"
+			}
+			switchWebview = mtproto.MakeTLInlineBotWebView(&mtproto.InlineBotWebView{
+				Text: resultButton.Text,
+				Url:  strings.TrimSpace(resultButton.WebApp.URL),
+			}).To_InlineBotWebView()
+		} else if resultButton.StartParameter != "" {
+			if !validBotAPIDeepLinkParameter(resultButton.StartParameter) {
+				return nil, http.StatusBadRequest, 400, "Bad Request: button.start_parameter is invalid"
+			}
+			switchPM = mtproto.MakeTLInlineBotSwitchPM(&mtproto.InlineBotSwitchPM{
+				Text:       resultButton.Text,
+				StartParam: resultButton.StartParameter,
+			}).To_InlineBotSwitchPM()
+		} else {
+			return nil, http.StatusBadRequest, 400, "Bad Request: button.web_app or button.start_parameter is required"
+		}
+	}
 	switchPMText := request.string("switch_pm_text")
 	switchPMParameter := request.string("switch_pm_parameter")
-	var switchPM *mtproto.InlineBotSwitchPM
 	if switchPMText != "" || switchPMParameter != "" {
-		if switchPMText == "" || switchPMParameter == "" {
+		if hasResultButton {
+			return nil, http.StatusBadRequest, 400, "Bad Request: button cannot be combined with switch_pm_*"
+		}
+		if utf8.RuneCountInString(switchPMText) == 0 || utf8.RuneCountInString(switchPMText) > 64 || !validBotAPIDeepLinkParameter(switchPMParameter) {
 			return nil, http.StatusBadRequest, 400, "Bad Request: switch_pm_text and switch_pm_parameter must be provided together"
 		}
 		switchPM = mtproto.MakeTLInlineBotSwitchPM(&mtproto.InlineBotSwitchPM{Text: switchPMText, StartParam: switchPMParameter}).To_InlineBotSwitchPM()
 	}
 	ok, err := ctx.InlineBotClient.MessagesSetInlineBotResults(botRPCContext(requestCtx, botID), &mtproto.TLMessagesSetInlineBotResults{
-		Gallery: gallery, Private: private, QueryId: queryID, Results: results, CacheTime: int32(cacheTime), NextOffset: nextOffset, SwitchPm: switchPM,
+		Gallery: gallery, Private: private, QueryId: queryID, Results: results, CacheTime: int32(cacheTime), NextOffset: nextOffset, SwitchPm: switchPM, SwitchWebview: switchWebview,
 	})
 	if err != nil {
 		return nil, http.StatusBadRequest, 400, rpcDescription(err)
@@ -1913,8 +2229,14 @@ var errBotAPIWebAppResultUnsupported = errors.New("unsupported Web App inline re
 func botAPIWebAppInlineResult(raw map[string]json.RawMessage) (*mtproto.InputBotInlineResult, error) {
 	resultType := rawString(raw, "type")
 	resultID := rawString(raw, "id")
-	if resultType == "" || resultID == "" {
+	if resultType == "" || resultID == "" || len(resultID) > 64 {
 		return nil, errors.New("result type and id are required")
+	}
+	if resultURL := rawString(raw, "url"); resultURL != "" && !validBotAPIInlineURL(resultURL) {
+		return nil, errors.New("inline result url is invalid")
+	}
+	if err := validateBotAPIInlineResultFields(raw, resultType); err != nil {
+		return nil, err
 	}
 	sendMessage, err := botAPIInlineSendMessage(raw, resultType)
 	if err != nil {
@@ -1922,7 +2244,7 @@ func botAPIWebAppInlineResult(raw map[string]json.RawMessage) (*mtproto.InputBot
 	}
 	base := &mtproto.InputBotInlineResult{
 		Id:          resultID,
-		Type:        resultType,
+		Type:        botAPIInlineResultMTProtoType(resultType),
 		Title:       optionalString(rawString(raw, "title")),
 		Description: optionalString(rawString(raw, "description")),
 		Url:         optionalString(rawString(raw, "url")),
@@ -1930,8 +2252,15 @@ func botAPIWebAppInlineResult(raw map[string]json.RawMessage) (*mtproto.InputBot
 	}
 	switch resultType {
 	case "article":
-		if sendMessage == nil || strings.TrimSpace(sendMessage.GetMessage()) == "" {
+		if strings.TrimSpace(rawString(raw, "title")) == "" || sendMessage == nil ||
+			(sendMessage.GetPredicateName() == mtproto.Predicate_inputBotInlineMessageText && strings.TrimSpace(sendMessage.GetMessage()) == "") {
 			return nil, errors.New("article message is required")
+		}
+		if thumbURL := rawString(raw, "thumb_url"); thumbURL != "" {
+			if !validBotAPIInlineURL(thumbURL) {
+				return nil, errors.New("inline thumbnail url is invalid")
+			}
+			base.Thumb = botAPIInputWebDocument(thumbURL, "image/jpeg", rawInt(raw, "thumb_width"), rawInt(raw, "thumb_height"))
 		}
 		return mtproto.MakeTLInputBotInlineResult(base).To_InputBotInlineResult(), nil
 	case "photo", "gif", "mpeg4_gif", "video", "audio", "voice", "document":
@@ -1939,14 +2268,17 @@ func botAPIWebAppInlineResult(raw map[string]json.RawMessage) (*mtproto.InputBot
 		if contentURL == "" {
 			return nil, errors.New("inline media url is required")
 		}
-		base.Content = botAPIInputWebDocument(contentURL, mimeType, rawInt(raw, "photo_width"), rawInt(raw, "photo_height"))
+		if !validBotAPIInlineURL(contentURL) || (thumbURL != "" && !validBotAPIInlineURL(thumbURL)) {
+			return nil, errors.New("inline media url is invalid")
+		}
+		base.Content = botAPIInlineMediaDocument(raw, resultType, contentURL, mimeType)
 		if thumbURL != "" {
 			base.Thumb = botAPIInputWebDocument(thumbURL, "image/jpeg", rawInt(raw, "thumbnail_width"), rawInt(raw, "thumbnail_height"))
 		}
 		return mtproto.MakeTLInputBotInlineResult(base).To_InputBotInlineResult(), nil
 	case "location":
 		return mtproto.MakeTLInputBotInlineResult(base).To_InputBotInlineResult(), nil
-	case "venue", "contact":
+	case "venue", "contact", "invoice":
 		return mtproto.MakeTLInputBotInlineResult(base).To_InputBotInlineResult(), nil
 	case "game":
 		shortName := strings.TrimSpace(rawString(raw, "game_short_name"))
@@ -1955,19 +2287,17 @@ func botAPIWebAppInlineResult(raw map[string]json.RawMessage) (*mtproto.InputBot
 		}
 		base.ShortName = shortName
 		return mtproto.MakeTLInputBotInlineResultGame(base).To_InputBotInlineResult(), nil
-	case "cached_photo", "cached_document", "cached_gif", "cached_mpeg4_gif", "cached_video", "cached_audio", "cached_voice":
-		fileID := rawString(raw, "photo_file_id")
-		if fileID == "" {
-			fileID = rawString(raw, "document_file_id")
-		}
-		if fileID == "" {
-			fileID = rawString(raw, "audio_file_id")
-		}
+	case "cached_photo", "cached_document", "cached_gif", "cached_mpeg4_gif", "cached_video", "cached_audio", "cached_voice", "cached_sticker":
+		field, expectedKind := botAPICachedInlineFileField(resultType)
+		fileID := rawString(raw, field)
 		ref, parseErr := parseBotAPIFileID(fileID)
-		if parseErr != nil {
+		if parseErr != nil || ref.kind != expectedKind {
+			if parseErr == nil {
+				parseErr = errors.New("cached inline file kind does not match result type")
+			}
 			return nil, parseErr
 		}
-		if ref.kind == "photo" {
+		if expectedKind == "photo" {
 			base.Photo = mtproto.MakeTLInputPhoto(&mtproto.InputPhoto{Id: ref.id, AccessHash: ref.accessHash}).To_InputPhoto()
 			return mtproto.MakeTLInputBotInlineResultPhoto(base).To_InputBotInlineResult(), nil
 		}
@@ -1978,9 +2308,148 @@ func botAPIWebAppInlineResult(raw map[string]json.RawMessage) (*mtproto.InputBot
 	}
 }
 
+func botAPIInlineResultMTProtoType(resultType string) string {
+	switch resultType {
+	case "cached_photo":
+		return "photo"
+	case "cached_document":
+		return "document"
+	case "cached_gif":
+		return "gif"
+	case "cached_mpeg4_gif":
+		return "mpeg4_gif"
+	case "cached_video":
+		return "video"
+	case "cached_audio":
+		return "audio"
+	case "cached_voice":
+		return "voice"
+	case "cached_sticker":
+		return "sticker"
+	default:
+		return resultType
+	}
+}
+
+func validateBotAPIInlineResultFields(raw map[string]json.RawMessage, resultType string) error {
+	require := func(key string) error {
+		if strings.TrimSpace(rawString(raw, key)) == "" {
+			return fmt.Errorf("%s is required", key)
+		}
+		return nil
+	}
+	requireURL := func(key string) error {
+		value := rawString(raw, key)
+		if value == "" || !validBotAPIInlineURL(value) {
+			return fmt.Errorf("%s is invalid", key)
+		}
+		return nil
+	}
+	requireDimensions := func(widthKey, heightKey string) error {
+		if rawInt(raw, widthKey) <= 0 || rawInt(raw, heightKey) <= 0 {
+			return fmt.Errorf("%s and %s are required", widthKey, heightKey)
+		}
+		return nil
+	}
+	switch resultType {
+	case "article":
+		return require("title")
+	case "photo":
+		if err := requireURL("photo_url"); err != nil {
+			return err
+		}
+		if err := requireURL("thumbnail_url"); err != nil {
+			return err
+		}
+		return requireDimensions("photo_width", "photo_height")
+	case "gif":
+		if err := requireURL("gif_url"); err != nil {
+			return err
+		}
+		return requireURL("thumbnail_url")
+	case "mpeg4_gif":
+		if err := requireURL("mpeg4_url"); err != nil {
+			return err
+		}
+		return requireURL("thumbnail_url")
+	case "video":
+		if err := require("title"); err != nil {
+			return err
+		}
+		if err := requireURL("video_url"); err != nil {
+			return err
+		}
+		if err := require("mime_type"); err != nil {
+			return err
+		}
+		if err := requireURL("thumbnail_url"); err != nil {
+			return err
+		}
+		return requireDimensions("video_width", "video_height")
+	case "audio":
+		if err := require("title"); err != nil {
+			return err
+		}
+		return requireURL("audio_url")
+	case "voice":
+		if err := require("title"); err != nil {
+			return err
+		}
+		return requireURL("voice_url")
+	case "document":
+		if err := require("title"); err != nil {
+			return err
+		}
+		if err := requireURL("document_url"); err != nil {
+			return err
+		}
+		return require("mime_type")
+	case "location":
+		if err := require("title"); err != nil {
+			return err
+		}
+		latitude, latitudeSet, latitudeErr := rawInlineFloat(raw, nil, "latitude")
+		longitude, longitudeSet, longitudeErr := rawInlineFloat(raw, nil, "longitude")
+		if latitudeErr != nil || longitudeErr != nil || !latitudeSet || !longitudeSet || math.IsNaN(latitude) || math.IsInf(latitude, 0) || latitude < -90 || latitude > 90 || math.IsNaN(longitude) || math.IsInf(longitude, 0) || longitude < -180 || longitude > 180 {
+			return errors.New("location coordinates are invalid")
+		}
+	case "venue":
+		if err := require("title"); err != nil {
+			return err
+		}
+		if err := require("address"); err != nil {
+			return err
+		}
+		latitude, latitudeSet, latitudeErr := rawInlineFloat(raw, nil, "latitude")
+		longitude, longitudeSet, longitudeErr := rawInlineFloat(raw, nil, "longitude")
+		if latitudeErr != nil || longitudeErr != nil || !latitudeSet || !longitudeSet || math.IsNaN(latitude) || math.IsInf(latitude, 0) || latitude < -90 || latitude > 90 || math.IsNaN(longitude) || math.IsInf(longitude, 0) || longitude < -180 || longitude > 180 {
+			return errors.New("venue coordinates are invalid")
+		}
+	case "contact":
+		if err := require("phone_number"); err != nil {
+			return err
+		}
+		return require("first_name")
+	case "game":
+		return require("game_short_name")
+	case "invoice":
+		_, err := botAPIInvoiceMedia(&botAPIRequest{values: raw})
+		return err
+	case "cached_photo", "cached_document", "cached_gif", "cached_mpeg4_gif", "cached_video", "cached_audio", "cached_voice", "cached_sticker":
+		field, _ := botAPICachedInlineFileField(resultType)
+		return require(field)
+	default:
+		return errBotAPIWebAppResultUnsupported
+	}
+	return nil
+}
+
 func botAPIInlineSendMessage(raw map[string]json.RawMessage, resultType string) (*mtproto.InputBotInlineMessage, error) {
 	content := rawObject(raw, "input_message_content")
 	messageText := rawString(content, "message_text")
+	if messageText == "" {
+		messageText = rawString(raw, "message_text")
+	}
 	if messageText == "" {
 		messageText = rawString(raw, "caption")
 	}
@@ -2002,44 +2471,233 @@ func botAPIInlineSendMessage(raw map[string]json.RawMessage, resultType string) 
 		}
 	}
 	replyMarkup := botapi.ReplyMarkupToMTProto(markup)
-	switch resultType {
+	noWebpage, invertMedia, forceLargeMedia, forceSmallMedia, err := botAPIInlineLinkPreviewOptions(raw, content)
+	if err != nil {
+		return nil, err
+	}
+	inlineMessage := &mtproto.InputBotInlineMessage{
+		NoWebpage:       noWebpage,
+		InvertMedia:     invertMedia,
+		ForceLargeMedia: forceLargeMedia,
+		ForceSmallMedia: forceSmallMedia,
+		ReplyMarkup:     replyMarkup,
+	}
+	messageType := resultType
+	if resultType == "article" {
+		messageType = botAPIInlineInputContentType(content)
+	}
+	switch messageType {
 	case "location":
-		latitude, longitude := rawFloat(raw, "latitude"), rawFloat(raw, "longitude")
-		if latitude < -90 || latitude > 90 || longitude < -180 || longitude > 180 {
+		latitude, latitudeSet, latitudeErr := rawInlineFloat(raw, content, "latitude")
+		longitude, longitudeSet, longitudeErr := rawInlineFloat(raw, content, "longitude")
+		if latitudeErr != nil || longitudeErr != nil || !latitudeSet || !longitudeSet || math.IsNaN(latitude) || math.IsNaN(longitude) || math.IsInf(latitude, 0) || math.IsInf(longitude, 0) || latitude < -90 || latitude > 90 || longitude < -180 || longitude > 180 {
 			return nil, errors.New("location coordinates are invalid")
 		}
-		return mtproto.MakeTLInputBotInlineMessageMediaGeo(&mtproto.InputBotInlineMessage{
-			GeoPoint:    mtproto.MakeTLInputGeoPoint(&mtproto.InputGeoPoint{Lat: latitude, Long: longitude}).To_InputGeoPoint(),
-			ReplyMarkup: replyMarkup,
-		}).To_InputBotInlineMessage(), nil
+		horizontalAccuracy, hasAccuracy, accuracyErr := rawInlineFloat(raw, content, "horizontal_accuracy")
+		if accuracyErr != nil || (hasAccuracy && (math.IsNaN(horizontalAccuracy) || math.IsInf(horizontalAccuracy, 0) || horizontalAccuracy < 0 || horizontalAccuracy > float64(^uint32(0)>>1))) {
+			return nil, errors.New("horizontal_accuracy is invalid")
+		}
+		livePeriod, hasLivePeriod, livePeriodErr := rawInlineInt(raw, content, "live_period")
+		heading, hasHeading, headingErr := rawInlineInt(raw, content, "heading")
+		proximity, hasProximity, proximityErr := rawInlineInt(raw, content, "proximity_alert_radius")
+		if livePeriodErr != nil || headingErr != nil || proximityErr != nil || (hasLivePeriod && (livePeriod < 0 || livePeriod > int64(^uint32(0)>>1))) || (hasHeading && (heading < 1 || heading > 360)) || (hasProximity && proximity <= 0) {
+			return nil, errors.New("location options are invalid")
+		}
+		if (hasHeading || hasProximity) && (!hasLivePeriod || livePeriod == 0) {
+			return nil, errors.New("live_period is required for live location options")
+		}
+		inlineMessage.GeoPoint = mtproto.MakeTLInputGeoPoint(&mtproto.InputGeoPoint{Lat: latitude, Long: longitude, AccuracyRadius: inlineAccuracyRadius(horizontalAccuracy, hasAccuracy)}).To_InputGeoPoint()
+		inlineMessage.Heading = inlineInt32Value(heading, hasHeading)
+		inlineMessage.Period = inlineInt32Value(livePeriod, hasLivePeriod)
+		inlineMessage.ProximityNotificationRadius = inlineInt32Value(proximity, hasProximity)
+		return mtproto.MakeTLInputBotInlineMessageMediaGeo(inlineMessage).To_InputBotInlineMessage(), nil
 	case "venue":
-		latitude, longitude := rawFloat(raw, "latitude"), rawFloat(raw, "longitude")
-		if strings.TrimSpace(rawString(raw, "title")) == "" || strings.TrimSpace(rawString(raw, "address")) == "" {
+		latitude, latitudeSet, latitudeErr := rawInlineFloat(raw, content, "latitude")
+		longitude, longitudeSet, longitudeErr := rawInlineFloat(raw, content, "longitude")
+		if latitudeErr != nil || longitudeErr != nil || !latitudeSet || !longitudeSet || math.IsNaN(latitude) || math.IsNaN(longitude) || latitude < -90 || latitude > 90 || longitude < -180 || longitude > 180 {
+			return nil, errors.New("venue coordinates are invalid")
+		}
+		title := rawInlineString(raw, content, "title")
+		address := rawInlineString(raw, content, "address")
+		if strings.TrimSpace(title) == "" || strings.TrimSpace(address) == "" {
 			return nil, errors.New("venue title and address are required")
 		}
-		return mtproto.MakeTLInputBotInlineMessageMediaVenue(&mtproto.InputBotInlineMessage{
-			GeoPoint: mtproto.MakeTLInputGeoPoint(&mtproto.InputGeoPoint{Lat: latitude, Long: longitude}).To_InputGeoPoint(),
-			Title:    rawString(raw, "title"), Address: rawString(raw, "address"), Provider: rawString(raw, "foursquare_id"),
-			VenueId: rawString(raw, "foursquare_id"), VenueType: rawString(raw, "foursquare_type"), ReplyMarkup: replyMarkup,
-		}).To_InputBotInlineMessage(), nil
+		provider, venueID, venueType := botAPIInlineVenueProvider(raw, content)
+		inlineMessage.GeoPoint = mtproto.MakeTLInputGeoPoint(&mtproto.InputGeoPoint{Lat: latitude, Long: longitude}).To_InputGeoPoint()
+		inlineMessage.Title = title
+		inlineMessage.Address = address
+		inlineMessage.Provider = provider
+		inlineMessage.VenueId = venueID
+		inlineMessage.VenueType = venueType
+		return mtproto.MakeTLInputBotInlineMessageMediaVenue(inlineMessage).To_InputBotInlineMessage(), nil
 	case "contact":
-		if strings.TrimSpace(rawString(raw, "phone_number")) == "" || strings.TrimSpace(rawString(raw, "first_name")) == "" {
+		phoneNumber := rawInlineString(raw, content, "phone_number")
+		firstName := rawInlineString(raw, content, "first_name")
+		if strings.TrimSpace(phoneNumber) == "" || strings.TrimSpace(firstName) == "" {
 			return nil, errors.New("contact phone_number and first_name are required")
 		}
-		return mtproto.MakeTLInputBotInlineMessageMediaContact(&mtproto.InputBotInlineMessage{
-			PhoneNumber: rawString(raw, "phone_number"), FirstName: rawString(raw, "first_name"), LastName: rawString(raw, "last_name"), Vcard: rawString(raw, "vcard"), ReplyMarkup: replyMarkup,
-		}).To_InputBotInlineMessage(), nil
+		inlineMessage.PhoneNumber = phoneNumber
+		inlineMessage.FirstName = firstName
+		inlineMessage.LastName = rawInlineString(raw, content, "last_name")
+		inlineMessage.Vcard = rawInlineString(raw, content, "vcard")
+		return mtproto.MakeTLInputBotInlineMessageMediaContact(inlineMessage).To_InputBotInlineMessage(), nil
+	case "invoice":
+		media, err := botAPIInvoiceMedia(&botAPIRequest{values: raw})
+		if err != nil || media == nil || media.GetInvoice() == nil {
+			if err == nil {
+				err = errors.New("invoice fields are invalid")
+			}
+			return nil, err
+		}
+		inlineMessage.Title = media.GetTitle()
+		inlineMessage.Description = media.GetDescription()
+		inlineMessage.Photo = media.GetPhoto()
+		inlineMessage.Invoice = media.GetInvoice()
+		inlineMessage.Payload = media.GetPayload_BYTES()
+		inlineMessage.Provider = media.GetProvider_STRING()
+		inlineMessage.ProviderData = media.GetProviderData()
+		if startParam := media.GetStartParam(); startParam != nil {
+			inlineMessage.Url = startParam.GetValue()
+		}
+		return mtproto.MakeTLInputBotInlineMessageMediaInvoice(inlineMessage).To_InputBotInlineMessage(), nil
 	case "game":
-		return mtproto.MakeTLInputBotInlineMessageGame(&mtproto.InputBotInlineMessage{ReplyMarkup: replyMarkup}).To_InputBotInlineMessage(), nil
+		return mtproto.MakeTLInputBotInlineMessageGame(inlineMessage).To_InputBotInlineMessage(), nil
+	case "photo", "gif", "mpeg4_gif", "video", "audio", "voice", "document",
+		"cached_photo", "cached_document", "cached_gif", "cached_mpeg4_gif", "cached_video", "cached_audio", "cached_voice", "cached_sticker":
+		inlineMessage.Message = messageText
+		inlineMessage.Entities = botapi.MessageEntitiesToMTProto(entities)
+		return mtproto.MakeTLInputBotInlineMessageMediaAuto(inlineMessage).To_InputBotInlineMessage(), nil
 	default:
 		if messageText == "" && resultType == "article" {
 			return nil, errors.New("input_message_content.message_text is required")
 		}
-		return mtproto.MakeTLInputBotInlineMessageText(&mtproto.InputBotInlineMessage{
-			Message: messageText, Entities: botapi.MessageEntitiesToMTProto(entities), ReplyMarkup: replyMarkup,
-			NoWebpage: rawBool(content, "disable_web_page_preview"),
-		}).To_InputBotInlineMessage(), nil
+		inlineMessage.Message = messageText
+		inlineMessage.Entities = botapi.MessageEntitiesToMTProto(entities)
+		return mtproto.MakeTLInputBotInlineMessageText(inlineMessage).To_InputBotInlineMessage(), nil
 	}
+}
+
+func botAPIInlineLinkPreviewOptions(raw, content map[string]json.RawMessage) (noWebpage, invertMedia, forceLargeMedia, forceSmallMedia bool, err error) {
+	if noWebpage, _, err = rawInlineBool(raw, content, "disable_web_page_preview"); err != nil {
+		return false, false, false, false, err
+	}
+	optionsValue, ok := rawInlineValue(raw, content, "link_preview_options")
+	if !ok || string(optionsValue) == "null" {
+		return noWebpage, false, false, false, nil
+	}
+	var options map[string]json.RawMessage
+	if err = json.Unmarshal(optionsValue, &options); err != nil || options == nil {
+		if err == nil {
+			err = errors.New("link_preview_options must be an object")
+		}
+		return false, false, false, false, err
+	}
+	readOption := func(name string) (bool, error) {
+		value, present := options[name]
+		if !present || string(value) == "null" {
+			return false, nil
+		}
+		var result bool
+		if err := json.Unmarshal(value, &result); err != nil {
+			return false, err
+		}
+		return result, nil
+	}
+	if value, readErr := readOption("is_disabled"); readErr != nil {
+		return false, false, false, false, readErr
+	} else {
+		noWebpage = noWebpage || value
+	}
+	if invertMedia, err = readOption("show_above_text"); err != nil {
+		return false, false, false, false, err
+	}
+	if forceLargeMedia, err = readOption("prefer_large_media"); err != nil {
+		return false, false, false, false, err
+	}
+	if forceSmallMedia, err = readOption("prefer_small_media"); err != nil {
+		return false, false, false, false, err
+	}
+	if forceLargeMedia && forceSmallMedia {
+		return false, false, false, false, errors.New("prefer_large_media and prefer_small_media are mutually exclusive")
+	}
+	return noWebpage, invertMedia, forceLargeMedia, forceSmallMedia, nil
+}
+
+func botAPIInlineInputContentType(content map[string]json.RawMessage) string {
+	if len(content) == 0 {
+		return "article"
+	}
+	_, latitude := content["latitude"]
+	_, longitude := content["longitude"]
+	if latitude && longitude {
+		if _, title := content["title"]; title {
+			if _, address := content["address"]; address {
+				return "venue"
+			}
+		}
+		return "location"
+	}
+	_, phoneNumber := content["phone_number"]
+	_, firstName := content["first_name"]
+	if phoneNumber && firstName {
+		return "contact"
+	}
+	return "article"
+}
+
+func botAPICachedInlineFileField(resultType string) (field, kind string) {
+	switch resultType {
+	case "cached_photo":
+		return "photo_file_id", "photo"
+	case "cached_document":
+		return "document_file_id", "document"
+	case "cached_gif":
+		return "gif_file_id", "document"
+	case "cached_mpeg4_gif":
+		return "mpeg4_file_id", "document"
+	case "cached_video":
+		return "video_file_id", "document"
+	case "cached_audio":
+		return "audio_file_id", "document"
+	case "cached_voice":
+		return "voice_file_id", "document"
+	case "cached_sticker":
+		return "sticker_file_id", "document"
+	default:
+		return "", ""
+	}
+}
+
+func validBotAPIInlineURL(rawURL string) bool {
+	parsed, err := url.ParseRequestURI(strings.TrimSpace(rawURL))
+	return err == nil && parsed.Host != "" && (strings.EqualFold(parsed.Scheme, "http") || strings.EqualFold(parsed.Scheme, "https"))
+}
+
+func validBotAPIWebAppURL(rawURL string) bool {
+	parsed, err := url.ParseRequestURI(strings.TrimSpace(rawURL))
+	return err == nil && parsed.Host != "" && strings.EqualFold(parsed.Scheme, "https")
+}
+
+func validBotAPIDeepLinkParameter(value string) bool {
+	if len(value) == 0 || len(value) > 64 {
+		return false
+	}
+	for _, char := range value {
+		if (char < 'a' || char > 'z') && (char < 'A' || char > 'Z') && (char < '0' || char > '9') && char != '_' && char != '-' {
+			return false
+		}
+	}
+	return true
+}
+
+func botAPIInlineVenueProvider(raw, content map[string]json.RawMessage) (provider, venueID, venueType string) {
+	if googleID := rawInlineString(raw, content, "google_place_id"); googleID != "" {
+		return "google", googleID, rawInlineString(raw, content, "google_place_type")
+	}
+	if foursquareID := rawInlineString(raw, content, "foursquare_id"); foursquareID != "" {
+		return "foursquare", foursquareID, rawInlineString(raw, content, "foursquare_type")
+	}
+	return "", "", ""
 }
 
 func botAPIInlineMediaURLs(raw map[string]json.RawMessage, resultType string) (content, thumb, mimeType string) {
@@ -2073,6 +2731,68 @@ func botAPIInputWebDocument(rawURL, mimeType string, width, height int) *mtproto
 	return mtproto.MakeTLInputWebDocument(&mtproto.InputWebDocument{Url: rawURL, MimeType: mimeType, Attributes: attributes}).To_InputWebDocument()
 }
 
+func botAPIInlineMediaDocument(raw map[string]json.RawMessage, resultType, rawURL, mimeType string) *mtproto.InputWebDocument {
+	width, height, duration := botAPIInlineMediaDimensions(raw, resultType)
+	attributes := make([]*mtproto.DocumentAttribute, 0, 2)
+	if width > 0 || height > 0 {
+		attributes = append(attributes, mtproto.MakeTLDocumentAttributeImageSize(&mtproto.DocumentAttribute{
+			W: int32(width), H: int32(height),
+		}).To_DocumentAttribute())
+	}
+	switch resultType {
+	case "gif":
+		attributes = append(attributes, mtproto.MakeTLDocumentAttributeAnimated(&mtproto.DocumentAttribute{}).To_DocumentAttribute())
+	case "mpeg4_gif", "video":
+		attributes = append(attributes, mtproto.MakeTLDocumentAttributeVideo(&mtproto.DocumentAttribute{
+			W: int32(width), H: int32(height), Duration_INT32: int32(duration), SupportsStreaming: true,
+		}).To_DocumentAttribute())
+	case "audio", "voice":
+		attributes = append(attributes, mtproto.MakeTLDocumentAttributeAudio(&mtproto.DocumentAttribute{
+			Duration_INT32: int32(duration), Voice: resultType == "voice",
+		}).To_DocumentAttribute())
+	}
+	return mtproto.MakeTLInputWebDocument(&mtproto.InputWebDocument{
+		Url: rawURL, MimeType: mimeType, Attributes: attributes,
+	}).To_InputWebDocument()
+}
+
+func botAPIInlineMediaDimensions(raw map[string]json.RawMessage, resultType string) (width, height, duration int) {
+	widthKey, heightKey, durationKey := "", "", ""
+	switch resultType {
+	case "photo":
+		widthKey, heightKey = "photo_width", "photo_height"
+	case "gif":
+		widthKey, heightKey, durationKey = "gif_width", "gif_height", "gif_duration"
+	case "mpeg4_gif":
+		widthKey, heightKey, durationKey = "mpeg4_width", "mpeg4_height", "mpeg4_duration"
+	case "video":
+		widthKey, heightKey, durationKey = "video_width", "video_height", "video_duration"
+	case "audio":
+		durationKey = "audio_duration"
+	case "voice":
+		durationKey = "voice_duration"
+	}
+	if widthKey != "" {
+		width = rawInt(raw, widthKey)
+		if width < 0 {
+			width = 0
+		}
+	}
+	if heightKey != "" {
+		height = rawInt(raw, heightKey)
+		if height < 0 {
+			height = 0
+		}
+	}
+	if durationKey != "" {
+		duration = rawInt(raw, durationKey)
+		if duration < 0 {
+			duration = 0
+		}
+	}
+	return width, height, duration
+}
+
 func rawInt(values map[string]json.RawMessage, key string) int {
 	value, ok := values[key]
 	if !ok {
@@ -2084,6 +2804,88 @@ func rawInt(values map[string]json.RawMessage, key string) int {
 	}
 	parsed, _ = strconv.Atoi(strings.TrimSpace(string(value)))
 	return parsed
+}
+
+func rawInlineValue(values, content map[string]json.RawMessage, key string) (json.RawMessage, bool) {
+	if content != nil {
+		if value, ok := content[key]; ok {
+			return value, true
+		}
+	}
+	value, ok := values[key]
+	return value, ok
+}
+
+func rawInlineString(values, content map[string]json.RawMessage, key string) string {
+	value, ok := rawInlineValue(values, content, key)
+	if !ok {
+		return ""
+	}
+	var decoded string
+	if json.Unmarshal(value, &decoded) == nil {
+		return strings.TrimSpace(decoded)
+	}
+	return ""
+}
+
+func rawInlineBool(values, content map[string]json.RawMessage, key string) (bool, bool, error) {
+	value, ok := rawInlineValue(values, content, key)
+	if !ok || string(value) == "null" {
+		return false, false, nil
+	}
+	var parsed bool
+	if err := json.Unmarshal(value, &parsed); err != nil {
+		return false, true, err
+	}
+	return parsed, true, nil
+}
+
+func rawInlineFloat(values, content map[string]json.RawMessage, key string) (float64, bool, error) {
+	value, ok := rawInlineValue(values, content, key)
+	if !ok || string(value) == "null" {
+		return 0, false, nil
+	}
+	var parsed float64
+	if err := json.Unmarshal(value, &parsed); err == nil {
+		return parsed, true, nil
+	}
+	var textValue string
+	if err := json.Unmarshal(value, &textValue); err != nil {
+		return 0, true, err
+	}
+	parsed, err := strconv.ParseFloat(strings.TrimSpace(textValue), 64)
+	return parsed, true, err
+}
+
+func rawInlineInt(values, content map[string]json.RawMessage, key string) (int64, bool, error) {
+	value, ok := rawInlineValue(values, content, key)
+	if !ok || string(value) == "null" {
+		return 0, false, nil
+	}
+	var parsed int64
+	if err := json.Unmarshal(value, &parsed); err == nil {
+		return parsed, true, nil
+	}
+	var textValue string
+	if err := json.Unmarshal(value, &textValue); err != nil {
+		return 0, true, err
+	}
+	parsed, err := strconv.ParseInt(strings.TrimSpace(textValue), 10, 64)
+	return parsed, true, err
+}
+
+func inlineInt32Value(value int64, present bool) *wrapperspb.Int32Value {
+	if !present {
+		return nil
+	}
+	return wrapperspb.Int32(int32(value))
+}
+
+func inlineAccuracyRadius(value float64, present bool) *wrapperspb.Int32Value {
+	if !present || value <= 0 {
+		return nil
+	}
+	return wrapperspb.Int32(int32(value))
 }
 
 func rawFloat(values map[string]json.RawMessage, key string) float64 {
@@ -2155,7 +2957,11 @@ func getChat(ctx *svc.ServiceContext, r *http.Request, botID int64, request *bot
 			return nil, http.StatusBadRequest, 400, rpcDescription(err)
 		}
 		converted := botapi.UserFromImmutableUser(user)
-		return &botapi.Chat{ID: converted.ID, Type: "private", FirstName: converted.FirstName, LastName: converted.LastName, Username: converted.Username}, http.StatusOK, 0, ""
+		return &botapi.Chat{
+			ID: converted.ID, Type: "private", FirstName: converted.FirstName,
+			LastName: converted.LastName, Username: converted.Username,
+			Photo: botapi.ChatPhotoFromUserProfilePhoto(user.ProfilePhoto()),
+		}, http.StatusOK, 0, ""
 	}
 	if peerType == mtproto.PEER_CHAT {
 		if ctx.ChatClient == nil {
@@ -2175,6 +2981,27 @@ func getChat(ctx *svc.ServiceContext, r *http.Request, botID int64, request *bot
 			return nil, http.StatusBadRequest, 400, rpcDescription(err)
 		}
 		if chat := botapi.ChatFromMTProtoChat(result.GetChats()[0]); chat != nil {
+			if full, fullErr := ctx.ChannelsClient.ChannelsGetFullChannel(callCtx, &mtproto.TLChannelsGetFullChannel{
+				Channel: mtproto.MakeTLInputChannel(&mtproto.InputChannel{ChannelId: peerID, AccessHash: peerID}).To_InputChannel(),
+			}); fullErr == nil && full != nil && full.GetFullChat() != nil {
+				fullChat := full.GetFullChat()
+				chat.Description = fullChat.GetAbout()
+				chat.HasHiddenMembers = fullChat.GetParticipantsHidden()
+				chat.HasAggressiveAntiSpam = fullChat.GetAntispam()
+				chat.Permissions = botapi.ChatPermissionsFromBannedRights(result.GetChats()[0].GetDefaultBannedRights())
+				if fullChat.GetSlowmodeSeconds() != nil {
+					chat.SlowModeDelay = int(fullChat.GetSlowmodeSeconds().GetValue())
+				}
+				if fullChat.GetTtlPeriod() != nil {
+					chat.MessageAutoDeleteTime = int(fullChat.GetTtlPeriod().GetValue())
+				}
+				if fullChat.GetChatPhoto() != nil {
+					chat.Photo = botapi.ChatPhotoFromPhoto(fullChat.GetChatPhoto())
+				}
+				if invite := fullChat.GetExportedInvite(); invite != nil {
+					chat.InviteLink = invite.GetLink()
+				}
+			}
 			return chat, http.StatusOK, 0, ""
 		}
 	}
@@ -2480,7 +3307,14 @@ func setChatAdministratorCustomTitle(ctx *svc.ServiceContext, r *http.Request, b
 		return nil, http.StatusBadRequest, 400, rpcDescription(err)
 	}
 	current := participant.GetParticipant()
-	if current.GetPredicateName() != mtproto.Predicate_channelParticipantAdmin && current.GetPredicateName() != mtproto.Predicate_channelParticipantCreator {
+	isAdministrator := current.GetPredicateName() == mtproto.Predicate_channelParticipantAdmin || current.GetPredicateName() == mtproto.Predicate_channelParticipantCreator
+	// channels.getParticipant returns channelParticipantSelf when the bot edits
+	// its own administrator title. Preserve the admin rights carried by that
+	// constructor instead of rejecting a valid administrator.
+	if current.GetPredicateName() == mtproto.Predicate_channelParticipantSelf && current.GetAdminRights() != nil {
+		isAdministrator = true
+	}
+	if !isAdministrator {
 		return nil, http.StatusBadRequest, 400, "Bad Request: user is not an administrator"
 	}
 	rights := current.GetAdminRights()

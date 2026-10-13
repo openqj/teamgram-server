@@ -15,6 +15,7 @@ import (
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/botapi"
 	"github.com/teamgram/teamgram-server/app/interface/httpserver/internal/svc"
+	userpb "github.com/teamgram/teamgram-server/app/service/biz/user/user"
 	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
@@ -23,9 +24,22 @@ func sendChatAction(ctx *svc.ServiceContext, r *http.Request, bot *mtproto.Immut
 		return nil, http.StatusNotImplemented, 501, "Not Implemented: dialog service is not configured"
 	}
 	botID := bot.GetUser().GetId()
-	_, peerType, peerID, err := resolveBotAPIChatID(r.Context(), ctx, botID, request.string("chat_id"))
+	scope, business, scopeErr := resolveBotAPISendScope(ctx, r.Context(), botID, request)
+	if scopeErr != nil {
+		return nil, http.StatusBadRequest, 400, rpcDescription(scopeErr)
+	}
+	actorID := botID
+	callCtx := botRPCContext(r.Context(), botID)
+	if business {
+		actorID = scope.OwnerID
+		callCtx = businessBotCallContext(r.Context(), botID, scope)
+	}
+	_, peerType, peerID, err := resolveBotAPIChatID(r.Context(), ctx, actorID, request.string("chat_id"))
 	if err != nil || peerID == 0 {
 		return nil, http.StatusBadRequest, 400, "Bad Request: chat_id is invalid"
+	}
+	if business && peerType == mtproto.PEER_CHANNEL {
+		return nil, http.StatusBadRequest, 400, "Bad Request: business connections cannot use channel targets"
 	}
 	actionName := strings.TrimSpace(request.string("action"))
 	var action *mtproto.SendMessageAction
@@ -61,8 +75,8 @@ func sendChatAction(ctx *svc.ServiceContext, r *http.Request, bot *mtproto.Immut
 	if err != nil {
 		return nil, http.StatusBadRequest, 400, "Bad Request: message_thread_id is invalid"
 	}
-	ok, err := ctx.DialogsClient.MessagesSetTyping(botRPCContext(r.Context(), botID), &mtproto.TLMessagesSetTyping{
-		Peer:     botAPIInputPeer(botID, peerType, peerID),
+	ok, err := ctx.DialogsClient.MessagesSetTyping(callCtx, &mtproto.TLMessagesSetTyping{
+		Peer:     botAPIInputPeer(actorID, peerType, peerID),
 		TopMsgId: topMsgID,
 		Action:   action,
 	})
@@ -89,31 +103,97 @@ func sendGame(ctx *svc.ServiceContext, r *http.Request, bot *mtproto.ImmutableUs
 }
 
 func sendInvoice(ctx *svc.ServiceContext, r *http.Request, bot *mtproto.ImmutableUser, request *botAPIRequest) (any, int, int, string) {
+	media, err := botAPIInvoiceMedia(request)
+	if err != nil {
+		return nil, http.StatusBadRequest, 400, "Bad Request: " + err.Error()
+	}
+	return sendBotAPIStructuredMedia(ctx, r, bot, request, media, "")
+}
+
+func createInvoiceLink(ctx *svc.ServiceContext, requestCtx context.Context, botID int64, request *botAPIRequest) (any, int, int, string) {
+	if ctx == nil || ctx.PaymentsClient == nil {
+		return nil, http.StatusNotImplemented, 501, "Not Implemented: payment service is not configured"
+	}
+	media, err := botAPIInvoiceMedia(request)
+	if err != nil {
+		return nil, http.StatusBadRequest, 400, "Bad Request: " + err.Error()
+	}
+	exported, err := ctx.PaymentsClient.PaymentsExportInvoice(botRPCContext(requestCtx, botID), &mtproto.TLPaymentsExportInvoice{InvoiceMedia: media})
+	if err != nil {
+		return nil, http.StatusBadRequest, 400, rpcDescription(err)
+	}
+	if exported == nil || strings.TrimSpace(exported.GetUrl()) == "" {
+		return nil, http.StatusInternalServerError, 500, "Internal Server Error: invoice link was not returned"
+	}
+	return exported.GetUrl(), http.StatusOK, 0, ""
+}
+
+func botAPIInvoiceMedia(request *botAPIRequest) (*mtproto.InputMedia, error) {
 	title := strings.TrimSpace(request.string("title"))
 	description := strings.TrimSpace(request.string("description"))
 	payload := request.string("payload")
 	currency := strings.ToUpper(strings.TrimSpace(request.string("currency")))
 	provider := strings.TrimSpace(request.string("provider_token"))
-	if title == "" || description == "" || payload == "" || provider == "" || len(payload) > 4096 || len(currency) != 3 {
-		return nil, http.StatusBadRequest, 400, "Bad Request: invoice fields are invalid"
+	if title == "" || description == "" || payload == "" || len(payload) > 4096 || len(currency) != 3 ||
+		(currency == "XTR" && provider != "") || (currency != "XTR" && provider == "") {
+		return nil, errors.New("invoice fields are invalid")
+	}
+	if currency == "XTR" && provider == "" {
+		// InputMedia.invoice requires a provider string even for Telegram Stars,
+		// where Bot API callers intentionally omit provider_token.
+		provider = "XTR"
 	}
 	var prices []botapi.LabeledPrice
 	if err := request.json("prices", &prices); err != nil || len(prices) == 0 {
-		return nil, http.StatusBadRequest, 400, "Bad Request: prices is invalid"
+		return nil, errors.New("prices is invalid")
 	}
 	mtPrices := make([]*mtproto.LabeledPrice, 0, len(prices))
+	var total int64
 	for _, price := range prices {
 		if strings.TrimSpace(price.Label) == "" || price.Amount < 0 {
-			return nil, http.StatusBadRequest, 400, "Bad Request: price is invalid"
+			return nil, errors.New("price is invalid")
 		}
+		if total > int64(^uint64(0)>>1)-price.Amount {
+			return nil, errors.New("price total is too large")
+		}
+		total += price.Amount
 		mtPrices = append(mtPrices, mtproto.MakeTLLabeledPrice(&mtproto.LabeledPrice{Label: price.Label, Amount: price.Amount}).To_LabeledPrice())
+	}
+	var suggestedTips []int64
+	if len(request.raw("suggested_tip_amounts")) > 0 {
+		if err := request.json("suggested_tip_amounts", &suggestedTips); err != nil || len(suggestedTips) > 4 {
+			return nil, errors.New("suggested_tip_amounts is invalid")
+		}
+	}
+	maxTipAmount, err := request.int64("max_tip_amount")
+	if err != nil || (len(request.raw("max_tip_amount")) > 0 && maxTipAmount <= 0) {
+		return nil, errors.New("max_tip_amount is invalid")
+	}
+	if len(suggestedTips) > 0 {
+		if maxTipAmount <= 0 {
+			return nil, errors.New("max_tip_amount is required for suggested tips")
+		}
+		var previous int64
+		for _, tip := range suggestedTips {
+			if tip <= 0 || tip > maxTipAmount || (previous > 0 && tip <= previous) {
+				return nil, errors.New("suggested_tip_amounts is invalid")
+			}
+			previous = tip
+		}
+	}
+	termsURL := strings.TrimSpace(request.string("terms_url"))
+	if termsURL != "" {
+		parsed, parseErr := url.ParseRequestURI(termsURL)
+		if parseErr != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+			return nil, errors.New("terms_url is invalid")
+		}
 	}
 	providerData := request.string("provider_data")
 	if providerData == "" {
 		providerData = "{}"
 	}
 	if !json.Valid([]byte(providerData)) {
-		return nil, http.StatusBadRequest, 400, "Bad Request: provider_data is invalid"
+		return nil, errors.New("provider_data is invalid")
 	}
 	invoice := mtproto.MakeTLInvoice(&mtproto.Invoice{
 		Currency:                 currency,
@@ -126,7 +206,14 @@ func sendInvoice(ctx *svc.ServiceContext, r *http.Request, bot *mtproto.Immutabl
 		Flexible:                 requestBool(request, "is_flexible"),
 		PhoneToProvider:          requestBool(request, "send_phone_number_to_provider"),
 		EmailToProvider:          requestBool(request, "send_email_to_provider"),
+		SuggestedTipAmounts:      suggestedTips,
 	}).To_Invoice()
+	if maxTipAmount > 0 {
+		invoice.MaxTipAmount = wrapperspb.Int64(maxTipAmount)
+	}
+	if termsURL != "" {
+		invoice.TermsUrl = wrapperspb.String(termsURL)
+	}
 	media := &mtproto.InputMedia{
 		Title:           title,
 		Description:     description,
@@ -142,19 +229,19 @@ func sendInvoice(ctx *svc.ServiceContext, r *http.Request, bot *mtproto.Immutabl
 	if photoURL != "" {
 		parsed, err := url.ParseRequestURI(photoURL)
 		if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
-			return nil, http.StatusBadRequest, 400, "Bad Request: photo_url is invalid"
+			return nil, errors.New("photo_url is invalid")
 		}
 		photoSize, err := request.int("photo_size")
 		if err != nil || photoSize < 0 {
-			return nil, http.StatusBadRequest, 400, "Bad Request: photo_size is invalid"
+			return nil, errors.New("photo_size is invalid")
 		}
 		photoWidth, err := request.int("photo_width")
 		if err != nil || photoWidth < 0 {
-			return nil, http.StatusBadRequest, 400, "Bad Request: photo_width is invalid"
+			return nil, errors.New("photo_width is invalid")
 		}
 		photoHeight, err := request.int("photo_height")
 		if err != nil || photoHeight < 0 {
-			return nil, http.StatusBadRequest, 400, "Bad Request: photo_height is invalid"
+			return nil, errors.New("photo_height is invalid")
 		}
 		media.Photo = mtproto.MakeTLInputWebDocument(&mtproto.InputWebDocument{
 			Url:      photoURL,
@@ -165,7 +252,7 @@ func sendInvoice(ctx *svc.ServiceContext, r *http.Request, bot *mtproto.Immutabl
 			}).To_DocumentAttribute()},
 		}).To_InputWebDocument()
 	}
-	return sendBotAPIStructuredMedia(ctx, r, bot, request, mtproto.MakeTLInputMediaInvoice(media).To_InputMedia(), "")
+	return mtproto.MakeTLInputMediaInvoice(media).To_InputMedia(), nil
 }
 
 func setGameScore(ctx *svc.ServiceContext, r *http.Request, bot *mtproto.ImmutableUser, request *botAPIRequest) (any, int, int, string) {
@@ -187,7 +274,10 @@ func setGameScore(ctx *svc.ServiceContext, r *http.Request, bot *mtproto.Immutab
 	}
 	var user *mtproto.InputUser
 	if userID > 0 {
-		user = mtproto.MakeTLInputUser(&mtproto.InputUser{UserId: userID}).To_InputUser()
+		user, err = botAPIProfilePhotoInputUser(ctx, r.Context(), bot.GetUser().GetId(), userID)
+		if err != nil {
+			return nil, http.StatusBadRequest, 400, rpcDescription(err)
+		}
 	}
 	if inlineID := strings.TrimSpace(request.string("inline_message_id")); inlineID != "" {
 		id, err := parseBotAPIInlineMessageID(inlineID)
@@ -236,7 +326,10 @@ func getGameHighScores(ctx *svc.ServiceContext, r *http.Request, bot *mtproto.Im
 	}
 	var user *mtproto.InputUser
 	if userID > 0 {
-		user = mtproto.MakeTLInputUser(&mtproto.InputUser{UserId: userID}).To_InputUser()
+		user, err = botAPIProfilePhotoInputUser(ctx, r.Context(), bot.GetUser().GetId(), userID)
+		if err != nil {
+			return nil, http.StatusBadRequest, 400, rpcDescription(err)
+		}
 	}
 	var scores *mtproto.Messages_HighScores
 	if inlineID := strings.TrimSpace(request.string("inline_message_id")); inlineID != "" {
@@ -327,6 +420,13 @@ func getBusinessConnection(ctx *svc.ServiceContext, requestCtx context.Context, 
 	for _, update := range allUpdates {
 		converted, ok := botapi.UpdateFromMTProto(update, updates.GetUsers(), updates.GetChats())
 		if ok && converted != nil && converted.BusinessConnection != nil {
+			connection := converted.BusinessConnection
+			if connection.User != nil && connection.User.FirstName == "" && ctx.UserClient != nil && connection.UserChatID > 0 {
+				profile, userErr := ctx.UserClient.UserGetImmutableUser(botRPCContext(requestCtx, botID), &userpb.TLUserGetImmutableUser{Id: connection.UserChatID})
+				if userErr == nil && profile != nil && profile.GetUser() != nil {
+					connection.User = botapi.UserFromImmutableUser(profile)
+				}
+			}
 			return converted.BusinessConnection, http.StatusOK, 0, ""
 		}
 	}

@@ -12,6 +12,17 @@ services:
         condition: service_healthy
     environment:
       TEAMGRAM_PROVIDER_FIXTURE_MODE: "1"
+      TEAMGRAM_PASSKEY_RP_ID: "${TEAMGRAM_PASSKEY_RP_ID:-passkey.teamgram.local}"
+      TEAMGRAM_PASSKEY_RP_DISPLAY_NAME: "${TEAMGRAM_PASSKEY_RP_DISPLAY_NAME:-Teamgram Isolated}"
+      TEAMGRAM_PASSKEY_ORIGINS: "${TEAMGRAM_PASSKEY_ORIGINS:-https://passkey.teamgram.local:8443}"
+      TEAMGRAM_PASSKEY_TRUSTED_APPS: "${TEAMGRAM_PASSKEY_TRUSTED_APPS:-1:0123456789abcdef0123456789abcdef}"
+      # The running business fixture uses a separate API credential from the
+      # production-shaped environment name. Keep this mapping isolated to the
+      # e2e overlay so production deployments remain explicitly configured.
+      TEAMGRAM_BUSINESS_PROVIDER_ENDPOINT: "${TEAMGRAM_BUSINESS_PROVIDER_ENDPOINT:-http://business-provider-fixture:23190}"
+      TEAMGRAM_BUSINESS_PROVIDER_KEY: "${TEAMGRAM_BUSINESS_PROVIDER_FIXTURE_KEY:-acceptance-business-api-key}"
+      TEAMGRAM_BUSINESS_PROVIDER_SIGNING_KEY: "${TEAMGRAM_BUSINESS_PROVIDER_SIGNING_KEY:-acceptance-business-signing-key-at-least-32-bytes}"
+      TEAMGRAM_BUSINESS_PROVIDER_TIMEOUT_SECONDS: "${TEAMGRAM_BUSINESS_PROVIDER_TIMEOUT_SECONDS:-5}"
       TEAMGRAM_CODE_SMS_PROVIDER: "${TEAMGRAM_CODE_SMS_PROVIDER:-http}"
       TEAMGRAM_CODE_EMAIL_PROVIDER: "${TEAMGRAM_CODE_EMAIL_PROVIDER:-http}"
       TEAMGRAM_CODE_SEND_URL: "${TEAMGRAM_CODE_SEND_URL:-http://code-provider-fixture:23193/send}"

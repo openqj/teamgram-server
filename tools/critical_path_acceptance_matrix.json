@@ -1,0 +1,309 @@
+[
+  {
+    "id": "channel.cross-account-message-fanout",
+    "category": "channel",
+    "gate": "cross_account_update_fanout",
+    "kind": "tsx",
+    "script": "docker/web-isolated/probe-channel-message-lifecycle.ts",
+    "required_env": ["TEAMGRAM_GRAMJS_DIR"],
+    "env_defaults": {"TG_DC_HOST": "127.0.0.1", "TG_DC_PORT": "31443"},
+    "requires_docker": true,
+    "evidence": "Three isolated accounts create a channel, send/edit/delete messages, and verify member/owner visibility and canonical updates.",
+    "known_gap": "The probe exercises an isolated session and client reconnect; backend process restart and native media delivery remain separate gates.",
+    "destructive": true
+  },
+  {
+    "id": "channel.cross-account-members-reconnect",
+    "category": "channel",
+    "gate": "cross_account_session_restart",
+    "kind": "tsx",
+    "script": "docker/web-isolated/probe-channel-members.ts",
+    "required_env": ["TEAMGRAM_GRAMJS_DIR"],
+    "env_defaults": {"TG_DC_HOST": "127.0.0.1", "TG_DC_PORT": "31443"},
+    "requires_docker": true,
+    "evidence": "Owner/member/admin boundaries, stale access-hash rejection, member removal and a fresh member session readback.",
+    "known_gap": "The restart assertion is a new GramJS client session, not a backend container restart.",
+    "destructive": true
+  },
+  {
+    "id": "channel.invites-cross-account-fanout",
+    "category": "channel",
+    "gate": "cross_account_update_fanout",
+    "kind": "tsx",
+    "script": "docker/web-isolated/probe-channel-invites.ts",
+    "required_env": ["TEAMGRAM_GRAMJS_DIR"],
+    "env_defaults": {"TG_DC_HOST": "127.0.0.1", "TG_DC_PORT": "31443"},
+    "requires_docker": true,
+    "evidence": "Export/revoke/join/approve/decline invite operations across owner and member accounts, with wrong-hash and cleanup checks.",
+    "known_gap": "Live update delivery to an independently running second device is not asserted by this probe.",
+    "destructive": true
+  },
+  {
+    "id": "channel.native-media-roundtrip",
+    "category": "channel",
+    "gate": "authoritative_channel_media",
+    "kind": "tsx",
+    "script": "docker/production/probe-channel-media-production.ts",
+    "required_env": ["TEAMGRAM_GRAMJS_DIR"],
+    "env_defaults": {"TG_DC_HOST": "127.0.0.1", "TG_DC_PORT": "11443", "CHANNEL_MEDIA_USER_ID": "5"},
+    "requires_docker": true,
+    "evidence": "Production-shaped channel creation, contact media, album grouping, retry idempotency, history hydration and cleanup.",
+    "known_gap": "Uses the configured PostgreSQL/auth-key fixture; external media/CDN, process restart and cross-device fan-out remain open.",
+    "destructive": true
+  },
+  {
+    "id": "channel.backend-restart-persistence",
+    "category": "channel",
+    "gate": "backend_restart",
+    "kind": "manual",
+    "required_env": ["ACCEPTANCE_COMPOSE_FILE", "ACCEPTANCE_SERVICE"],
+    "evidence": "Create a tagged channel, member, message and invite; restart only the backend/session service; reconnect both accounts and verify all objects, pts/date/seq continuity and update fan-out.",
+    "known_gap": "No checked-in probe currently preserves a tagged channel across a backend restart, so this gate must remain manual until such a probe exists.",
+    "destructive": true,
+    "manual_steps": [
+      "Run channel.cross-account-message-fanout or an equivalent tagged setup and keep the tag in the evidence artifact.",
+      "Run docker compose -f $ACCEPTANCE_COMPOSE_FILE restart $ACCEPTANCE_SERVICE.",
+      "Reconnect account A and account B with fresh auth sessions; read the tagged channel/history and verify the recipient update stream.",
+      "Run the cleanup operation and attach pre/post PostgreSQL row counts plus update state (pts/date/seq)."
+    ]
+  },
+
+  {
+    "id": "settings.notifications-cross-account",
+    "category": "settings",
+    "gate": "cross_account_update_fanout",
+    "kind": "tsx",
+    "script": "docker/web-isolated/probe-notification-settings.ts",
+    "required_env": ["TEAMGRAM_GRAMJS_DIR"],
+    "env_defaults": {"TG_DC_HOST": "127.0.0.1", "TG_DC_PORT": "31443"},
+    "requires_docker": true,
+    "evidence": "Two-account notify settings isolation, exception listing/reset, contact-signup setting and device registration cleanup.",
+    "known_gap": "It verifies caller isolation, not an independent device receiving a live update after a backend restart.",
+    "destructive": true
+  },
+  {
+    "id": "settings.session-and-password-reconnect",
+    "category": "settings",
+    "gate": "session_restart",
+    "kind": "tsx",
+    "script": "docker/web-isolated/probe-account-session-settings.ts",
+    "required_env": ["TEAMGRAM_GRAMJS_DIR"],
+    "env_defaults": {"TG_DC_HOST": "127.0.0.1", "TG_DC_PORT": "31443"},
+    "requires_docker": true,
+    "evidence": "Authorization/web-authorization lifecycle, cross-account isolation, password settings validation and cleanup after a second client session.",
+    "known_gap": "Fresh client reconnect is covered; backend process restart and provider-backed URL authorization are not.",
+    "destructive": true
+  },
+  {
+    "id": "settings.global-privacy-roundtrip",
+    "category": "settings",
+    "gate": "cross_account_persistence",
+    "kind": "tsx",
+    "script": "docker/web-isolated/probe-global-privacy-settings.ts",
+    "required_env": ["TEAMGRAM_GRAMJS_DIR"],
+    "env_defaults": {"TG_DC_HOST": "127.0.0.1", "TG_DC_PORT": "31443"},
+    "requires_docker": true,
+    "evidence": "Global privacy settings write/readback for each fixture user, field-level validation and restoration.",
+    "known_gap": "No independent device update stream or backend restart is asserted.",
+    "destructive": true
+  },
+  {
+    "id": "settings.backend-restart-persistence",
+    "category": "settings",
+    "gate": "backend_restart",
+    "kind": "manual",
+    "required_env": ["ACCEPTANCE_COMPOSE_FILE", "ACCEPTANCE_SERVICE"],
+    "evidence": "Change tagged notification/privacy/session state, restart the backend, reconnect two accounts, read state back and verify recipient/update state before restoring it.",
+    "known_gap": "Existing settings probes clean up within one process and do not provide a restart barrier.",
+    "destructive": true,
+    "manual_steps": [
+      "Run settings.notifications-cross-account or settings.global-privacy-roundtrip and capture the tagged before state.",
+      "Run docker compose -f $ACCEPTANCE_COMPOSE_FILE restart $ACCEPTANCE_SERVICE.",
+      "Reconnect both fixture accounts and verify the tagged value and any canonical updates.",
+      "Restore the exact before state and include PostgreSQL row hashes before/after restart."
+    ]
+  },
+
+  {
+    "id": "bot.inline-webview-cross-account",
+    "category": "bot_miniapp",
+    "gate": "cross_account_update_fanout",
+    "kind": "tsx",
+    "script": "docker/production/probe-db-only-bot-mini.ts",
+    "required_env": ["TEAMGRAM_GRAMJS_DIR", "USER_AUTH_B64", "BOT_AUTH_B64", "USER_ID", "BOT_ID", "USER_ACCESS_HASH", "BOT_ACCESS_HASH"],
+    "env_defaults": {"TG_DC_HOST": "127.0.0.1", "TG_DC_PORT": "11443"},
+    "requires_docker": true,
+    "evidence": "User and bot sessions exercise inline query/result publication/readback, prepared inline message, WebView requests and bot update status.",
+    "known_gap": "The probe disables the GramJS update loop and uses PostgreSQL-backed fixtures; recipient fan-out, provider authorization and restart replay remain open.",
+    "destructive": true
+  },
+  {
+    "id": "bot.webview-provider-boundary",
+    "category": "bot_miniapp",
+    "gate": "provider_contract",
+    "kind": "tsx",
+    "script": "docker/production/probe-webview-bot-business.ts",
+    "required_env": ["TEAMGRAM_GRAMJS_DIR"],
+    "env_defaults": {"TG_DC_HOST": "127.0.0.1", "TG_DC_PORT": "11443"},
+    "requires_docker": true,
+    "evidence": "WebView, requested-peer, callback, bot app and business control-plane operations return typed Layer 229 constructors and cleanup rows.",
+    "known_gap": "The control plane is seeded locally; a signed external Bot/WebView authority, restart recovery and live recipient delivery are still required.",
+    "destructive": true
+  },
+  {
+    "id": "bot.callback-payment-update-fanout",
+    "category": "bot_miniapp",
+    "gate": "provider_update_fanout",
+    "kind": "tsx",
+    "script": "docker/production/probe-bot-message-gap.ts",
+    "required_env": ["TEAMGRAM_GRAMJS_DIR", "A_AUTH_B64", "B_AUTH_B64", "A_USER_ID", "B_USER_ID"],
+    "env_defaults": {"TG_DC_HOST": "127.0.0.1", "TG_DC_PORT": "11443"},
+    "requires_docker": true,
+    "evidence": "Bot callback/custom request/webhook, WebView and shipping/precheckout callbacks run through two auth sessions and leave no pending rows.",
+    "known_gap": "Rows are seeded in the local control plane; external Bot API/WebView/payment providers, recipient update consumption and restart recovery remain open.",
+    "destructive": true
+  },
+  {
+    "id": "bot.web-ui-miniapp",
+    "category": "bot_miniapp",
+    "gate": "web_ui_real_session",
+    "kind": "manual",
+    "required_env": ["TEAMGRAM_GRAMJS_DIR"],
+    "evidence": "Run the real Playwright suite bot-miniapp-web.spec.ts against the running Web UI; capture login, bot start, main Mini App iframe and cleanup screenshots/logs.",
+    "known_gap": "The suite lives in the separate Web workspace and is not invoked by this repository runner.",
+    "destructive": true,
+    "manual_steps": [
+      "cd $TEAMGRAM_GRAMJS_DIR",
+      "npm run test:playwright:real -- tests/playwright-real/bot-miniapp-web.spec.ts",
+      "Attach the Playwright report and the WebSocket/session trace; do not infer provider or restart coverage from a UI pass."
+    ]
+  },
+  {
+    "id": "bot.backend-restart-replay",
+    "category": "bot_miniapp",
+    "gate": "backend_restart",
+    "kind": "manual",
+    "required_env": ["ACCEPTANCE_COMPOSE_FILE", "ACCEPTANCE_SERVICE"],
+    "evidence": "Create one tagged bot query/WebView request, restart backend, reconnect user and bot sessions, replay/read the query and verify exactly-once recipient update delivery.",
+    "known_gap": "No current bot probe carries a durable tagged operation across a backend restart.",
+    "destructive": true,
+    "manual_steps": [
+      "Run bot.inline-webview-cross-account and record query/request IDs from JSON output.",
+      "Run docker compose -f $ACCEPTANCE_COMPOSE_FILE restart $ACCEPTANCE_SERVICE.",
+      "Reconnect both sessions and read the recorded IDs; verify update state and idempotent replay.",
+      "Clean all tagged rows and attach before/after counts."
+    ]
+  },
+
+  {
+    "id": "premium.catalog-session",
+    "category": "premium",
+    "gate": "catalog_session",
+    "kind": "tsx",
+    "script": "docker/production/probe-premium-readonly.ts",
+    "required_env": ["TEAMGRAM_GRAMJS_DIR", "AUTH_B64", "USER_ID"],
+    "env_defaults": {"TG_DC_HOST": "127.0.0.1", "TG_DC_PORT": "11443"},
+    "requires_docker": true,
+    "evidence": "help.getPremiumPromo returns a typed non-empty subscription catalogue, with optional payment form verification.",
+    "known_gap": "Catalogue may come from the local fixture; entitlement mutation, provider failover and restart persistence are separate gates.",
+    "destructive": false
+  },
+  {
+    "id": "premium.payment-idempotency-provider",
+    "category": "premium",
+    "gate": "provider_idempotency",
+    "kind": "tsx",
+    "script": "docker/production/probe-premium-purchase.ts",
+    "required_env": ["TEAMGRAM_GRAMJS_DIR", "AUTH_B64", "USER_ID", "PREMIUM_INVOICE_SLUG"],
+    "env_defaults": {"TG_DC_HOST": "127.0.0.1", "TG_DC_PORT": "11443"},
+    "requires_docker": true,
+    "evidence": "Payment form, requested-info validation, payment submission and exact request replay return typed results and one durable settlement/grant.",
+    "known_gap": "The probe uses the local payment fixture; Apple/Google verification, refund, entitlement revocation and production reconciliation remain open.",
+    "destructive": true
+  },
+  {
+    "id": "premium.store-receipt-provider",
+    "category": "premium",
+    "gate": "provider_idempotency",
+    "kind": "tsx",
+    "script": "docker/production/probe-premium-store-assignments.ts",
+    "required_env": ["TEAMGRAM_GRAMJS_DIR", "AUTH_B64", "USER_ID"],
+    "env_defaults": {"TG_DC_HOST": "127.0.0.1", "TG_DC_PORT": "11443"},
+    "requires_docker": true,
+    "evidence": "App Store and Play transaction assignment plus exact replays return typed Updates and leave operation rows for reconciliation.",
+    "known_gap": "Receipt verification is the local provider fixture; real Apple/Google receipts, refund/revoke and restart reconciliation remain open.",
+    "destructive": true
+  },
+  {
+    "id": "premium.entitlement-refund-restart",
+    "category": "premium",
+    "gate": "provider_restart_reconciliation",
+    "kind": "manual",
+    "required_env": ["ACCEPTANCE_COMPOSE_FILE", "ACCEPTANCE_SERVICE"],
+    "evidence": "A paid membership is visible to account A and account B, survives restart, is revoked/refunded by the provider, and disappears from both sessions with a canonical update and reconciliation row.",
+    "known_gap": "No checked-in probe drives a real store receipt, refund webhook or entitlement revocation across a restart.",
+    "destructive": true,
+    "manual_steps": [
+      "Use a non-production payment/provider account and record receipt/request IDs.",
+      "Complete the provider settlement and verify entitlement in two independent Layer 229 sessions.",
+      "Run docker compose -f $ACCEPTANCE_COMPOSE_FILE restart $ACCEPTANCE_SERVICE, then read entitlement and update state again.",
+      "Issue refund/revoke, consume the provider callback, and verify both sessions plus the durable reconciliation ledger."
+    ]
+  },
+
+  {
+    "id": "business-profile-cross-session",
+    "category": "business",
+    "gate": "session_authority",
+    "kind": "tsx",
+    "script": "docker/production/probe-business-profile.ts",
+    "required_env": ["TEAMGRAM_GRAMJS_DIR", "A_AUTH_B64", "A_USER_ID"],
+    "env_defaults": {"TG_DC_HOST": "127.0.0.1", "TG_DC_PORT": "11443"},
+    "requires_docker": true,
+    "evidence": "Business work hours/location/greeting/away/intro and main profile tab typed writes persist and restore through the authenticated session.",
+    "known_gap": "Recipient fan-out, full userFull hydration, cross-account authorization and backend restart persistence remain open.",
+    "destructive": true
+  },
+  {
+    "id": "business-provider-operations",
+    "category": "business",
+    "gate": "provider_contract",
+    "kind": "tsx",
+    "script": "docker/production/probe-business-provider-operations.ts",
+    "required_env": ["TEAMGRAM_GRAMJS_DIR", "AUTH_B64", "USER_ID"],
+    "env_defaults": {"TG_DC_HOST": "127.0.0.1", "TG_DC_PORT": "11443"},
+    "requires_docker": true,
+    "evidence": "Fragment collectible, callback answer and live control-plane operations return typed Layer 229 constructors through the configured provider boundary.",
+    "known_gap": "The default path uses local fixture rows; real provider credentials, rotation/failure recovery and cross-account delivery remain open.",
+    "destructive": true
+  },
+  {
+    "id": "business-webview-cross-account",
+    "category": "business",
+    "gate": "cross_account_update_fanout",
+    "kind": "shell",
+    "script": "docker/web-isolated/verify-business-flows.sh",
+    "required_env": ["TEAMGRAM_GRAMJS_DIR"],
+    "env_defaults": {"TG_DC_HOST": "127.0.0.1", "TG_DC_PORT": "31443"},
+    "requires_docker": true,
+    "evidence": "Fourteen real fixture accounts exercise direct/group/channel, business links, webviews, reactions, forum and cleanup through the isolated gateway.",
+    "known_gap": "This is an isolated WebSocket/session flow; signed external providers, backend restart and recipient update fan-out remain separate gates.",
+    "destructive": true
+  },
+  {
+    "id": "business.backend-restart-and-hydration",
+    "category": "business",
+    "gate": "backend_restart_userfull_hydration",
+    "kind": "manual",
+    "required_env": ["ACCEPTANCE_COMPOSE_FILE", "ACCEPTANCE_SERVICE"],
+    "evidence": "Business settings/link state survives restart, a resolver account sees the exact link and a recipient receives the canonical update; users.getFullUser hydrates all business fields.",
+    "known_gap": "No existing probe verifies complete userFull hydration or recipient fan-out after a process restart.",
+    "destructive": true,
+    "manual_steps": [
+      "Run business.webview-cross-account and keep one tagged BusinessChatLink and recipient ID.",
+      "Run docker compose -f $ACCEPTANCE_COMPOSE_FILE restart $ACCEPTANCE_SERVICE.",
+      "Reconnect owner and resolver sessions; call account.resolveBusinessChatLink and users.getFullUser, then verify the recipient update stream.",
+      "Delete the tagged link/settings and attach row hashes and update state before and after restart."
+    ]
+  }
+]

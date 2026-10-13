@@ -206,6 +206,28 @@ func TestHTTPProviderFailsClosedForMissingInvalidAndProviderErrors(t *testing.T)
 	}
 }
 
+func TestHTTPProviderFixtureModeAllowsInternalCodeProvider(t *testing.T) {
+	t.Setenv("TEAMGRAM_PROVIDER_FIXTURE_MODE", "1")
+	provider := NewEmailProvider(&conf.SmsVerifyCodeConfig{
+		EmailProvider:    "http",
+		EmailSendCodeUrl: "http://code-provider-fixture:23193/send",
+	})
+	if err := provider.Ready(); err != nil {
+		t.Fatalf("fixture provider ready = %v, want ready", err)
+	}
+}
+
+func TestHTTPProviderFixtureModeRemainsFailClosedByDefault(t *testing.T) {
+	t.Setenv("TEAMGRAM_PROVIDER_FIXTURE_MODE", "")
+	provider := NewEmailProvider(&conf.SmsVerifyCodeConfig{
+		EmailProvider:    "http",
+		EmailSendCodeUrl: "http://code-provider-fixture:23193/send",
+	})
+	if !errors.Is(provider.Ready(), ErrProviderUnavailable) {
+		t.Fatalf("fixture provider ready = %v, want unavailable", provider.Ready())
+	}
+}
+
 func TestHTTPProviderRetriesServerFailures(t *testing.T) {
 	var requests atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

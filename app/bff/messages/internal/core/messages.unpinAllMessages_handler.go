@@ -44,7 +44,11 @@ func (c *MessagesCore) MessagesUnpinAllMessages(in *mtproto.TLMessagesUnpinAllMe
 		if err != nil {
 			return nil, err
 		}
-		return channelview.UnpinAll(c.MD.UserId, channelID)
+		var topMsgID []int32
+		if in.GetTopMsgId() != nil {
+			topMsgID = []int32{in.GetTopMsgId().GetValue()}
+		}
+		return channelview.UnpinAll(c.MD.UserId, channelID, topMsgID...)
 	}
 	switch peer.PeerType {
 	case mtproto.PEER_SELF:

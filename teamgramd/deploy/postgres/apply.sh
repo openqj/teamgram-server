@@ -83,6 +83,18 @@ for migration in "${migrations[@]}"; do
     # 083 performs the idempotent move to the reserved service id.
     legacy_checksum_condition="version = '080_biz_botfather' AND checksum = '65e96f6f793727d3bbbf61771eb0a9293599f162a696f0c9f5f75cd809a95819' AND to_regclass('public.botfather_sessions') IS NOT NULL"
   fi
+  if [[ "$version" == "077_apifull_business_control_plane" && "$checksum" == "18554e3c770ad5181774e9fb05b31d382d07ef9860f3871054d8925f1812a857" ]]; then
+    # 077 has one known pre-release checksum in isolated acceptance databases.
+    # Accept only that exact journal entry when its authoritative table is
+    # present; arbitrary checksum drift stays fatal.
+    legacy_checksum_condition="version = '077_apifull_business_control_plane' AND checksum = '01facac72bf4ad1b91a5d7aeb95aefe2a5d3005e621410eb19a855a5f1af160c' AND to_regclass('public.apifull_business_control_plane') IS NOT NULL"
+  fi
+  if [[ "$version" == "078_apifull_payment_provider_control_plane" && "$checksum" == "951975ed19b1f87dd9ec220f7930e9e53913c4b6fb1fd3f534b9051b8786be52" ]]; then
+    # 078 has one known pre-release checksum in isolated acceptance databases.
+    # Require all three provider tables so a stale journal row cannot mask a
+    # partial schema.
+    legacy_checksum_condition="version = '078_apifull_payment_provider_control_plane' AND checksum = 'fd59b3b61ad52a8eed47d8d8dcc57f6d78c969993a0d9f63aea442af48908a17' AND to_regclass('public.apifull_payment_provider_operation') IS NOT NULL AND to_regclass('public.apifull_payment_provider_receipt') IS NOT NULL AND to_regclass('public.apifull_payment_provider_entitlement') IS NOT NULL"
+  fi
   {
     printf '%s\n' 'BEGIN;'
     printf '%s\n' "SELECT pg_advisory_xact_lock(hashtextextended('teamgram-schema-migrations', 0));"

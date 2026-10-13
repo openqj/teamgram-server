@@ -66,6 +66,29 @@ func TestResponseEntitlementRequiresSettledTransaction(t *testing.T) {
 	}
 }
 
+func TestProviderTransactionIdentityRejectsCrossUserReuse(t *testing.T) {
+	if !providerTransactionIdentityMatches(123, "request-1", 123, "request-1") {
+		t.Fatal("same provider transaction identity was rejected")
+	}
+	for _, tc := range []struct {
+		name             string
+		storedUserID     int64
+		storedRequestKey string
+		userID           int64
+		requestKey       string
+	}{
+		{name: "different user", storedUserID: 123, storedRequestKey: "request-1", userID: 456, requestKey: "request-1"},
+		{name: "different request", storedUserID: 123, storedRequestKey: "request-1", userID: 123, requestKey: "request-2"},
+		{name: "empty stored key", storedUserID: 123, storedRequestKey: "", userID: 123, requestKey: "request-1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if providerTransactionIdentityMatches(tc.storedUserID, tc.storedRequestKey, tc.userID, tc.requestKey) {
+				t.Fatal("conflicting provider transaction identity was accepted")
+			}
+		})
+	}
+}
+
 func TestProviderUserIDUsesCallerForPaidMessages(t *testing.T) {
 	fields := testFields(t, map[string]any{
 		"caller_user_id": int64(123),

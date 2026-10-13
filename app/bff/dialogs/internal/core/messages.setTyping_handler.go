@@ -26,6 +26,7 @@ import (
 	"github.com/teamgram/teamgram-server/app/messenger/sync/sync"
 	chatpb "github.com/teamgram/teamgram-server/app/service/biz/chat/chat"
 	userpb "github.com/teamgram/teamgram-server/app/service/biz/user/user"
+	"github.com/teamgram/teamgram-server/pkg/rpc/businessctx"
 )
 
 // MessagesSetTyping
@@ -41,8 +42,18 @@ func (c *DialogsCore) MessagesSetTyping(in *mtproto.TLMessagesSetTyping) (*mtpro
 		return nil, mtproto.ErrSendMessageTypeInvalid
 	}
 
+	actorID := c.MD.UserId
+	if scope, ok := businessctx.ScopeFromContext(c.ctx); ok {
+		if !scope.CanReply {
+			return nil, mtproto.ErrChatAdminRequired
+		}
+		actorID = scope.OwnerID
+		if actorID <= 0 {
+			return nil, mtproto.ErrUserIdInvalid
+		}
+	}
 	var (
-		peer = mtproto.FromInputPeer2(c.MD.UserId, in.GetPeer())
+		peer = mtproto.FromInputPeer2(actorID, in.GetPeer())
 		date = int32(time.Now().Unix())
 	)
 	if peer.PeerId <= 0 {
@@ -66,12 +77,12 @@ func (c *DialogsCore) MessagesSetTyping(in *mtproto.TLMessagesSetTyping) (*mtpro
 	switch peer.PeerType {
 	case mtproto.PEER_SELF, mtproto.PEER_USER:
 		userIDs := []int64{peer.PeerId}
-		if c.MD.UserId != peer.PeerId {
-			userIDs = append(userIDs, c.MD.UserId)
+		if actorID != peer.PeerId {
+			userIDs = append(userIDs, actorID)
 		}
 		users, err := c.svcCtx.Dao.UserClient.UserGetMutableUsers(c.ctx, &userpb.TLUserGetMutableUsers{
 			Id: userIDs,
-			To: []int64{c.MD.UserId},
+			To: []int64{actorID},
 		})
 		if err != nil {
 			return nil, err
@@ -111,7 +122,7 @@ func (c *DialogsCore) MessagesSetTyping(in *mtproto.TLMessagesSetTyping) (*mtpro
 		}
 		updates := mtproto.MakeTLUpdateShort(&mtproto.Updates{
 			Update: mtproto.MakeTLUpdateUserTyping(&mtproto.Update{
-				UserId: c.MD.UserId,
+				UserId: actorID,
 				Action: in.Action,
 			}).To_Update(),
 			Date: date,
@@ -134,7 +145,7 @@ func (c *DialogsCore) MessagesSetTyping(in *mtproto.TLMessagesSetTyping) (*mtpro
 			if participant == nil || participant.GetUserId() <= 0 {
 				return nil, fmt.Errorf("messages.setTyping: chat.getMutableChat returned a malformed participant")
 			}
-			if participant.GetUserId() == c.MD.UserId && participant.IsChatMemberStateNormal() {
+			if participant.GetUserId() == actorID && participant.IsChatMemberStateNormal() {
 				actorIsMember = true
 			}
 		}
@@ -146,14 +157,14 @@ func (c *DialogsCore) MessagesSetTyping(in *mtproto.TLMessagesSetTyping) (*mtpro
 			// updateChatUserTyping#86cadb6c chat_id:int from_id:Peer action:SendMessageAction = Update;
 			Update: mtproto.MakeTLUpdateChatUserTyping(&mtproto.Update{
 				ChatId_INT64: peer.PeerId,
-				FromId:       mtproto.MakePeerUser(c.MD.UserId),
+				FromId:       mtproto.MakePeerUser(actorID),
 				Action:       in.Action,
 			}).To_Update(),
 			Date: date,
 		}).To_Updates()
 		recipients := make(map[int64]struct{}, len(chat.GetChatParticipants()))
 		for _, participant := range chat.GetChatParticipants() {
-			if participant.GetUserId() == c.MD.UserId || !participant.IsChatMemberStateNormal() {
+			if participant.GetUserId() == actorID || !participant.IsChatMemberStateNormal() {
 				continue
 			}
 			recipients[participant.GetUserId()] = struct{}{}
@@ -164,6 +175,9 @@ func (c *DialogsCore) MessagesSetTyping(in *mtproto.TLMessagesSetTyping) (*mtpro
 			}
 		}
 	case mtproto.PEER_CHANNEL:
+		if _, ok := businessctx.ScopeFromContext(c.ctx); ok {
+			return nil, mtproto.ErrChatAdminRequired
+		}
 		if c.svcCtx.Plugin == nil {
 			return nil, mtproto.ErrMethodNotImpl
 		}

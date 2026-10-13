@@ -145,10 +145,15 @@ async function main() {
     userId: userId.toString(),
     results,
   }));
-  if (failures.length > 0) process.exitCode = 1;
+  const exitCode = failures.length > 0 ? 1 : 0;
+  process.exitCode = exitCode;
+  // GramJS can leave a sender loop alive after disconnect. All RPCs and
+  // provider assertions are complete, so bound the probe lifetime.
+  setTimeout(() => process.exit(exitCode), 250);
 }
 
 main().catch((error) => {
   console.error(`business provider probe failed: ${error instanceof Error ? error.stack || error.message : String(error)}`);
   process.exitCode = 1;
+  setTimeout(() => process.exit(1), 250);
 });

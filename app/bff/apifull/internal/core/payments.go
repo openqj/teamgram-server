@@ -2199,6 +2199,9 @@ func (c *ApiFullCore) sendBotInvoicePaymentForm(uid int64, in *mtproto.TLPayment
 			return nil, mtproto.ErrInvoicePayloadInvalid
 		}
 	}
+	if maxTip := message.Invoice.GetMaxTipAmount(); maxTip != nil && (tipAmount < 0 || tipAmount > maxTip.GetValue()) {
+		return nil, mtproto.ErrInvoicePayloadInvalid
+	}
 	total, err := addBotPaymentAmount(baseAmount, shippingAmount)
 	if err != nil {
 		return nil, err

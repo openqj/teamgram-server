@@ -21,11 +21,15 @@ package core
 import (
 	"github.com/teamgram/proto/mtproto"
 	msgpb "github.com/teamgram/teamgram-server/app/messenger/msg/msg/msg"
+	"github.com/teamgram/teamgram-server/app/service/biz/message/message"
 )
 
 // MessagesDeleteMessages
 // messages.deleteMessages#e58e95d2 flags:# revoke:flags.0?true id:Vector<int> = messages.AffectedMessages;
 func (c *MessagesCore) MessagesDeleteMessages(in *mtproto.TLMessagesDeleteMessages) (*mtproto.Messages_AffectedMessages, error) {
+	if c == nil || c.MD == nil || c.MD.UserId <= 0 {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
 	if in == nil || len(in.GetId()) == 0 {
 		return nil, mtproto.ErrMessageIdsEmpty
 	}
@@ -34,8 +38,41 @@ func (c *MessagesCore) MessagesDeleteMessages(in *mtproto.TLMessagesDeleteMessag
 			return nil, mtproto.ErrMessageIdInvalid
 		}
 	}
+	actingUserID := c.MD.UserId
+	if scope, ok := c.businessScope(); ok {
+		if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.MessageClient == nil {
+			return nil, mtproto.ErrInternalServerError
+		}
+		actingUserID = scope.OwnerID
+		boxes, lookupErr := c.svcCtx.Dao.MessageClient.MessageGetUserMessageList(c.ctx, &message.TLMessageGetUserMessageList{
+			UserId: actingUserID,
+			IdList: in.GetId(),
+		})
+		if lookupErr != nil {
+			return nil, lookupErr
+		}
+		if boxes == nil || len(boxes.GetDatas()) != len(in.GetId()) {
+			return nil, mtproto.ErrMessageIdInvalid
+		}
+		for _, box := range boxes.GetDatas() {
+			if box == nil {
+				return nil, mtproto.ErrMessageIdInvalid
+			}
+			sentByBot := box.SenderUserId == actingUserID || box.SenderUserId == c.MD.UserId
+			if sentByBot {
+				if err := c.requireBusinessRight(scope.CanDeleteSent); err != nil {
+					return nil, err
+				}
+			} else if err := c.requireBusinessRight(scope.CanDeleteAll); err != nil {
+				return nil, err
+			}
+		}
+	}
+	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.MsgClient == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
 	affectedMessages, err := c.svcCtx.Dao.MsgClient.MsgDeleteMessages(c.ctx, &msgpb.TLMsgDeleteMessages{
-		UserId:    c.MD.UserId,
+		UserId:    actingUserID,
 		AuthKeyId: c.MD.PermAuthKeyId,
 		PeerType:  mtproto.PEER_EMPTY,
 		PeerId:    0,
