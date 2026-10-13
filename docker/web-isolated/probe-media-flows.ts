@@ -135,6 +135,10 @@ function requireBytes(actual: Uint8Array | undefined, expected: Uint8Array, name
   requireCondition(actual && Buffer.from(actual).equals(Buffer.from(expected)), `${name} bytes differ from the upload`);
 }
 
+async function pause(milliseconds: number) {
+  await new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
+}
+
 async function run() {
   requireCondition(process.env.TG_DC_HOST === '127.0.0.1', 'TG_DC_HOST must target isolated gateway');
   requireCondition(process.env.TG_DC_PORT === '31443', 'TG_DC_PORT must target isolated gateway');
@@ -166,28 +170,49 @@ async function run() {
     }
   }
 
-  async function blockedStep(name: string, action: () => Promise<any>) {
+  async function optionalStep(name: string, action: () => Promise<any>) {
     try {
       const value = await action();
-      const detail = `${rpcName(value)} (expected METHOD_NOT_IMPL)`;
-      results.push({ name, status: 'FAIL', detail });
-      console.log(`FAIL ${name}: ${detail}`);
-      return undefined;
+      const detail = rpcName(value);
+      results.push({ name, status: 'PASS', detail });
+      console.log(`PASS ${name}: ${detail}`);
+      return value;
     } catch (error) {
       const detail = String(error);
-      if (!detail.includes('METHOD_NOT_IMPL')) {
-        results.push({ name, status: 'FAIL', detail });
-        console.log(`FAIL ${name}: ${detail}`);
+      if (detail.includes('METHOD_NOT_IMPL')) {
+        results.push({ name, status: 'BLOCKED', detail });
+        console.log(`BLOCKED ${name}: ${detail}`);
         return undefined;
       }
-      results.push({ name, status: 'BLOCKED', detail });
-      console.log(`BLOCKED ${name}: ${detail}`);
+      results.push({ name, status: 'FAIL', detail });
+      console.log(`FAIL ${name}: ${detail}`);
       return undefined;
     }
   }
 
+  async function readHistoryMessage(peer: any, caption: string, mediaCheck: (message: any) => boolean) {
+    let lastMessage: any;
+    for (let attempt = 0; attempt < 30; attempt += 1) {
+      const history = await bob.client.invoke(new Api.messages.GetHistory({
+        peer,
+        offsetId: 0,
+        offsetDate: 0,
+        addOffset: 0,
+        limit: 20,
+        maxId: 0,
+        minId: 0,
+        hash: 0n,
+      }));
+      lastMessage = messageList(history).find((candidate: any) => candidate?.message === caption);
+      if (lastMessage && mediaCheck(lastMessage)) {
+        return lastMessage;
+      }
+      await pause(100);
+    }
+    throw new Error(`recipient history did not include ${caption} after async delivery (last=${rpcName(lastMessage)})`);
+  }
+
   let uploadedDocument: any;
-  let uploadedPhoto: any;
   let mediaMessageId: number | undefined;
   let directMediaMessageId: number | undefined;
   let multipartMediaMessageId: number | undefined;
@@ -196,7 +221,9 @@ async function run() {
   let avatarPhoto: any;
 
   async function saveFilePart(stepName: string, name: string, bytes: Uint8Array) {
-    const fileId = randomId();
+    // GramJS uploadFile generates signed int64 IDs; exercise the negative half
+    // here so the Web client contract is covered by the acceptance probe.
+    const fileId = -randomId();
     const saved = await step(stepName, () => alice.client.invoke(new Api.upload.SaveFilePart({
       fileId,
       filePart: 0,
@@ -263,19 +290,7 @@ async function run() {
   if (sentDocument) {
     const bobAlicePeer = inputPeerUser(Api, await searchUser(Api, bob, alice.username));
     const mediaMessage = await step('messages.getHistory media delivery', async () => {
-      const history = await bob.client.invoke(new Api.messages.GetHistory({
-        peer: bobAlicePeer,
-        offsetId: 0,
-        offsetDate: 0,
-        addOffset: 0,
-        limit: 20,
-        maxId: 0,
-        minId: 0,
-        hash: 0n,
-      }));
-      const message = messageList(history).find((candidate: any) => candidate?.message === 'isolated media probe');
-      requireCondition(message?.media?.document, 'recipient history did not include the sent document');
-      return message;
+      return readHistoryMessage(bobAlicePeer, 'isolated media probe', (message) => Boolean(message?.media?.document));
     });
     if (mediaMessage) {
       mediaMessageId = mediaMessage.id;
@@ -346,19 +361,7 @@ async function run() {
   if (sentDirectDocument) {
     const bobAlicePeer = inputPeerUser(Api, await searchUser(Api, bob, alice.username));
     const directMediaMessage = await step('messages.getHistory uploaded media delivery', async () => {
-      const history = await bob.client.invoke(new Api.messages.GetHistory({
-        peer: bobAlicePeer,
-        offsetId: 0,
-        offsetDate: 0,
-        addOffset: 0,
-        limit: 20,
-        maxId: 0,
-        minId: 0,
-        hash: 0n,
-      }));
-      const message = messageList(history).find((candidate: any) => candidate?.message === 'isolated direct media probe');
-      requireCondition(message?.media?.document, 'recipient history did not include the directly uploaded document');
-      return message;
+      return readHistoryMessage(bobAlicePeer, 'isolated direct media probe', (message) => Boolean(message?.media?.document));
     });
     if (directMediaMessage) {
       directMediaMessageId = directMediaMessage.id;
@@ -375,7 +378,7 @@ async function run() {
     }
   }
 
-  const multipartFileId = randomId();
+  const multipartFileId = -randomId();
   const multipartPartSize = 128 * 1024;
   const multipartFirstPart = await step('upload.saveFilePart multipart 0', () => alice.client.invoke(new Api.upload.SaveFilePart({
     fileId: multipartFileId,
@@ -406,19 +409,7 @@ async function run() {
   if (sentMultipartDocument) {
     const bobAlicePeer = inputPeerUser(Api, await searchUser(Api, bob, alice.username));
     const multipartMediaMessage = await step('messages.getHistory multipart media delivery', async () => {
-      const history = await bob.client.invoke(new Api.messages.GetHistory({
-        peer: bobAlicePeer,
-        offsetId: 0,
-        offsetDate: 0,
-        addOffset: 0,
-        limit: 20,
-        maxId: 0,
-        minId: 0,
-        hash: 0n,
-      }));
-      const message = messageList(history).find((candidate: any) => candidate?.message === 'isolated multipart media probe');
-      requireCondition(message?.media?.document, 'recipient history did not include the multipart document');
-      return message;
+      return readHistoryMessage(bobAlicePeer, 'isolated multipart media probe', (message) => Boolean(message?.media?.document));
     });
     if (multipartMediaMessage) {
       multipartMediaMessageId = multipartMediaMessage.id;
@@ -445,19 +436,7 @@ async function run() {
   if (sentPhotoMedia) {
     const bobAlicePeer = inputPeerUser(Api, await searchUser(Api, bob, alice.username));
     const photoMediaMessage = await step('messages.getHistory photo media delivery', async () => {
-      const history = await bob.client.invoke(new Api.messages.GetHistory({
-        peer: bobAlicePeer,
-        offsetId: 0,
-        offsetDate: 0,
-        addOffset: 0,
-        limit: 20,
-        maxId: 0,
-        minId: 0,
-        hash: 0n,
-      }));
-      const message = messageList(history).find((candidate: any) => candidate?.message === 'isolated photo media probe');
-      requireCondition(message?.media?.photo, 'recipient history did not include the uploaded photo');
-      return message;
+      return readHistoryMessage(bobAlicePeer, 'isolated photo media probe', (message) => Boolean(message?.media?.photo));
     });
     if (photoMediaMessage) {
       photoMediaMessageId = photoMediaMessage.id;
@@ -492,19 +471,7 @@ async function run() {
   if (sentVideoMedia) {
     const bobAlicePeer = inputPeerUser(Api, await searchUser(Api, bob, alice.username));
     const videoMediaMessage = await step('messages.getHistory video media delivery', async () => {
-      const history = await bob.client.invoke(new Api.messages.GetHistory({
-        peer: bobAlicePeer,
-        offsetId: 0,
-        offsetDate: 0,
-        addOffset: 0,
-        limit: 20,
-        maxId: 0,
-        minId: 0,
-        hash: 0n,
-      }));
-      const message = messageList(history).find((candidate: any) => candidate?.message === 'isolated video media probe');
-      requireCondition(message?.media?.document, 'recipient history did not include the uploaded video');
-      return message;
+      return readHistoryMessage(bobAlicePeer, 'isolated video media probe', (message) => Boolean(message?.media?.document));
     });
     if (videoMediaMessage) {
       videoMediaMessageId = videoMediaMessage.id;
@@ -525,7 +492,6 @@ async function run() {
   if (photoInput) {
     const photoResult = await step('photos.uploadProfilePhoto', () => alice.client.invoke(new Api.photos.UploadProfilePhoto({ file: photoInput })));
     avatarPhoto = photoResult?.photo;
-    uploadedPhoto = avatarPhoto;
     if (avatarPhoto) {
       await step('photos.getUserPhotos', () => alice.client.invoke(new Api.photos.GetUserPhotos({
         userId: inputUser(Api, alice.me),
@@ -533,23 +499,25 @@ async function run() {
         maxId: 0n,
         limit: 20,
       })));
-      cleanup.push(() => alice.client.invoke(new Api.photos.DeletePhotos({ id: [new Api.InputPhoto({
-        id: avatarPhoto.id,
-        accessHash: avatarPhoto.accessHash,
-        fileReference: avatarPhoto.fileReference || new Uint8Array(),
-      })] })));
+      cleanup.push(async () => {
+        await step('photos.deletePhotos profile photo', () => alice.client.invoke(new Api.photos.DeletePhotos({ id: [new Api.InputPhoto({
+          id: avatarPhoto.id,
+          accessHash: avatarPhoto.accessHash,
+          fileReference: avatarPhoto.fileReference || new Uint8Array(),
+        })] })));
+      });
     }
   }
 
-  await blockedStep('messages.getAllStickers (catalog unavailable)', () => alice.client.invoke(new Api.messages.GetAllStickers({ hash: 0n })));
-  await blockedStep('messages.getStickers emoji (catalog unavailable)', () => alice.client.invoke(new Api.messages.GetStickers({ emoticon: '👍', hash: 0n })));
-  await blockedStep('messages.getStickerSet animated emoji (catalog unavailable)', () => alice.client.invoke(new Api.messages.GetStickerSet({
+  await optionalStep('messages.getAllStickers', () => alice.client.invoke(new Api.messages.GetAllStickers({ hash: 0n })));
+  await optionalStep('messages.getStickers emoji', () => alice.client.invoke(new Api.messages.GetStickers({ emoticon: '👍', hash: 0n })));
+  await optionalStep('messages.getStickerSet animated emoji', () => alice.client.invoke(new Api.messages.GetStickerSet({
     stickerset: new Api.InputStickerSetAnimatedEmoji(),
     hash: 0,
   })));
-  await blockedStep('messages.getRecentStickers (provider unavailable)', () => alice.client.invoke(new Api.messages.GetRecentStickers({ hash: 0n })));
-  await blockedStep('messages.getFavedStickers (provider unavailable)', () => alice.client.invoke(new Api.messages.GetFavedStickers({ hash: 0n })));
-  await blockedStep('messages.getEmojiKeywordsLanguages (catalog unavailable)', () => alice.client.invoke(new Api.messages.GetEmojiKeywordsLanguages({ langCodes: ['en'] })));
+  await optionalStep('messages.getRecentStickers', () => alice.client.invoke(new Api.messages.GetRecentStickers({ hash: 0n })));
+  await optionalStep('messages.getFavedStickers', () => alice.client.invoke(new Api.messages.GetFavedStickers({ hash: 0n })));
+  await optionalStep('messages.getEmojiKeywordsLanguages', () => alice.client.invoke(new Api.messages.GetEmojiKeywordsLanguages({ langCodes: ['en'] })));
   await step('messages.getEmojiKeywordsDifference', () => alice.client.invoke(new Api.messages.GetEmojiKeywordsDifference({ langCode: 'en', fromVersion: 0 })));
   await step('messages.getEmojiGroups', () => alice.client.invoke(new Api.messages.GetEmojiGroups({ hash: 0 })));
   await step('messages.getAvailableReactions', () => alice.client.invoke(new Api.messages.GetAvailableReactions({ hash: 0 })));
@@ -573,9 +541,6 @@ async function run() {
 
   for (const action of cleanup.reverse()) {
     try { await action(); } catch (error) { console.log(`CLEANUP ${String(error)}`); }
-  }
-  if (uploadedPhoto) {
-    await step('photos.updateProfilePhoto reset', () => alice.client.invoke(new Api.photos.UpdateProfilePhoto({ id: new Api.InputPhotoEmpty() })));
   }
   await step('account.resetNotifySettings', () => alice.client.invoke(new Api.account.ResetNotifySettings()));
   alice.client.destroy();

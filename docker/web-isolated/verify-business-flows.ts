@@ -1,11 +1,13 @@
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import process from 'node:process';
+import { authSession, loadFixtureAuthKey } from './fixture-auth';
 
 type GramJs = {
   Api: any;
   WebSocketConnection: any;
   MemorySession: new () => any;
+  CallbackSession: new (data: any, callback: (session?: any) => void) => any;
   TelegramClient: new (session: any, apiId: number, apiHash: string, options: Record<string, unknown>) => any;
 };
 
@@ -84,7 +86,7 @@ function findMessage(value: any, text: string) {
   return messageList(value).find((message) => message?.message === text);
 }
 
-async function waitForMessage(action: () => Promise<any>, text: string, attempts = 10) {
+async function waitForMessage(action: () => Promise<any>, text: string, attempts = 30) {
   let value: any;
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     value = await action();
@@ -123,12 +125,14 @@ async function loadGramJs(root: string): Promise<GramJs> {
   const requireModule = createRequire(import.meta.url);
   const clientModule = requireModule(path.join(root, 'src/lib/gramjs/client/TelegramClient.ts'));
   const sessionModule = requireModule(path.join(root, 'src/lib/gramjs/sessions/Memory.ts'));
+  const callbackSessionModule = requireModule(path.join(root, 'src/lib/gramjs/sessions/CallbackSession.ts'));
   const tlModule = requireModule(path.join(root, 'src/lib/gramjs/tl/index.ts'));
   const connectionModule = requireModule(path.join(root, 'src/lib/gramjs/network/connection/TCPObfuscated.ts'));
 
   return {
     TelegramClient: clientModule.default,
     MemorySession: sessionModule.default,
+    CallbackSession: callbackSessionModule.default,
     Api: tlModule.Api,
     WebSocketConnection: connectionModule.ConnectionTCPObfuscated,
   };
@@ -136,8 +140,17 @@ async function loadGramJs(root: string): Promise<GramJs> {
 
 async function login(gram: GramJs, fixture: typeof FIXTURES[number]): Promise<Actor> {
   console.log(`login start: ${fixture.username}`);
+  const fixtureAuthKey = process.env.TEAMGRAM_BUSINESS_USE_FIXTURE_AUTH === '1'
+    ? loadFixtureAuthKey(fixture.username)
+    : undefined;
+  if (process.env.TEAMGRAM_BUSINESS_USE_FIXTURE_AUTH === '1') {
+    requireCondition(fixtureAuthKey, `fixture auth key is missing for ${fixture.username}`);
+  }
+  const session = fixtureAuthKey
+    ? authSession(gram, fixtureAuthKey, 2, process.env.TG_DC_HOST || '127.0.0.1', Number(process.env.TG_DC_PORT || '31443'))
+    : new gram.MemorySession();
   const client = new gram.TelegramClient(
-    new gram.MemorySession(),
+    session,
     API_ID,
     API_HASH,
     {
@@ -157,17 +170,19 @@ async function login(gram: GramJs, fixture: typeof FIXTURES[number]): Promise<Ac
 
   let timeoutId: ReturnType<typeof setTimeout> | undefined;
   try {
-    const loginPromise = client.start({
-      phoneNumber: fixture.phone,
-      phoneCode: async () => '12345',
-      password: async () => '',
-      firstAndLastNames: async () => ['Isolated', 'Test'],
-      qrCode: async () => {},
-      onError: (error: Error) => { throw error; },
-      webAuthTokenFailed: () => {},
-      onPasskeyOption: () => {},
-      initialMethod: 'phoneNumber',
-    }).then(() => client.getMe());
+    const loginPromise = fixtureAuthKey
+      ? client.connect().then(() => client.getMe())
+      : client.start({
+          phoneNumber: fixture.phone,
+          phoneCode: async () => '12345',
+          password: async () => '',
+          firstAndLastNames: async () => ['Isolated', 'Test'],
+          qrCode: async () => {},
+          onError: (error: Error) => { throw error; },
+          webAuthTokenFailed: () => {},
+          onPasskeyOption: () => {},
+          initialMethod: 'phoneNumber',
+        }).then(() => client.getMe());
     const me: any = await Promise.race([
       loginPromise,
       new Promise<never>((_resolve, reject) => {
@@ -831,6 +846,30 @@ async function run() {
         `messages.getFullChat did not include invited user ${String(invitedUser.id)}`,
       );
     }
+    console.log('group admin flow');
+    const promoted = await alice.client.invoke(new Api.messages.EditChatAdmin({
+      chatId: group.id,
+      userId: inputUser(Api, bobUser),
+      isAdmin: true,
+    }));
+    requireCondition(isBoolTrue(promoted), 'messages.editChatAdmin did not promote Bob');
+    try {
+      await bob.client.invoke(new Api.messages.EditChatAdmin({
+        chatId: group.id,
+        userId: inputUser(Api, carolUser),
+        isAdmin: true,
+      }));
+      throw new Error('non-admin group member unexpectedly promoted a user');
+    } catch (error) {
+      requireCondition(String(error).includes('CHAT_ADMIN_REQUIRED'), `expected CHAT_ADMIN_REQUIRED for group promotion, got ${String(error)}`);
+    }
+    const demoted = await alice.client.invoke(new Api.messages.EditChatAdmin({
+      chatId: group.id,
+      userId: inputUser(Api, bobUser),
+      isAdmin: false,
+    }));
+    requireCondition(isBoolTrue(demoted), 'messages.editChatAdmin did not demote Bob');
+
     const commonGroupChats = await alice.client.invoke(new Api.messages.GetCommonChats({
       userId: inputUser(Api, bobUser),
       maxId: 0n,
@@ -1000,6 +1039,14 @@ async function run() {
       String(bobGroupCall?.call?.id) === String(groupCall.id),
       'phone.getGroupCall did not return the channel group call to a member',
     );
+    const aliceGroupCallJoin = await alice.client.invoke(new Api.phone.JoinGroupCall({
+      call: groupCallInput,
+      joinAs: new Api.InputPeerSelf(),
+      muted: false,
+      videoStopped: true,
+      params: new Api.DataJSON({ data: '{}' }),
+    }));
+    requireCondition(rpcName(aliceGroupCallJoin).toLowerCase().includes('updates'), 'phone.joinGroupCall did not return creator updates');
     const groupCallJoin = await bob.client.invoke(new Api.phone.JoinGroupCall({
       call: groupCallInput,
       joinAs: new Api.InputPeerSelf(),
@@ -1020,12 +1067,17 @@ async function run() {
         && groupCallParticipants.participants.some((participant: any) => String(participant?.peer?.userId) === String(bob.id)),
       'phone.getGroupParticipants did not contain the joining channel member',
     );
+    const participantSources = (groupCallParticipants?.participants || [])
+      .map((participant: any) => Number(participant?.source))
+      .filter((source: number) => Number.isInteger(source) && source > 0);
     const activeSources = await bob.client.invoke(new Api.phone.CheckGroupCall({
       call: groupCallInput,
-      sources: [Number(alice.id), Number(bob.id)],
+      sources: participantSources,
     }));
     requireCondition(
-      Array.isArray(activeSources) && activeSources.length === 2,
+      participantSources.length === 2
+        && Array.isArray(activeSources)
+        && activeSources.length === participantSources.length,
       'phone.checkGroupCall did not return the active participant sources',
     );
     try {

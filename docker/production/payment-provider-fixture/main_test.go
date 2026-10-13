@@ -207,6 +207,44 @@ func TestFixturePaidMessageProviderOperations(t *testing.T) {
 	}
 }
 
+func TestFixtureStarsRefundProviderOperation(t *testing.T) {
+	f := testFixture()
+	fields := testFields(t, map[string]any{
+		"operation":      "refund_stars_charge",
+		"caller_user_id": int64(123),
+		"user_id":        int64(123),
+		"charge_id":      "fixture-stars-charge",
+		"provider":       "local-fixture",
+		"transaction_id": "fixture-stars-charge",
+		"stars":          int64(25),
+	})
+	body, header, err := f.response(fields)
+	if err != nil {
+		t.Fatalf("Stars refund response: %v", err)
+	}
+	if header != "X-Teamgram-Payment-Signature" {
+		t.Fatalf("Stars refund signature header = %q", header)
+	}
+	assertFixtureSignature(t, f.key, body, f.sign(body))
+	var result struct {
+		Verified            bool            `json:"verified"`
+		CallerUserID        int64           `json:"caller_user_id"`
+		UserID              int64           `json:"user_id"`
+		ChargeID            string          `json:"charge_id"`
+		Provider            string          `json:"provider"`
+		Stars               int64           `json:"stars"`
+		RefundTransactionID string          `json:"refund_transaction_id"`
+		Receipt             json.RawMessage `json:"receipt"`
+	}
+	if err = json.Unmarshal(body, &result); err != nil {
+		t.Fatalf("decode Stars refund response: %v", err)
+	}
+	if !result.Verified || result.CallerUserID != 123 || result.UserID != 123 || result.ChargeID != "fixture-stars-charge" ||
+		result.Provider != "local-fixture" || result.Stars != 25 || result.RefundTransactionID == "" || len(result.Receipt) == 0 {
+		t.Fatalf("Stars refund result = %+v", result)
+	}
+}
+
 func testFields(t *testing.T, value any) map[string]json.RawMessage {
 	t.Helper()
 	body, err := json.Marshal(value)

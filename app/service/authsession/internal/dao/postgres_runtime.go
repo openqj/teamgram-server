@@ -216,7 +216,9 @@ func (d *Postgres) BindTempAuthKeyV2(ctx context.Context, permAuthKeyID, tempAut
 }
 
 func (d *Postgres) DropTempAuthKeys(ctx context.Context, permAuthKeyID int64, exceptAuthKeys []int64) error {
-	if permAuthKeyID <= 0 {
+	// Auth key IDs are TL longs and may be negative when represented as signed
+	// int64 values. Zero is the only missing permanent key ID.
+	if permAuthKeyID == 0 {
 		return fmt.Errorf("invalid permanent auth key ID")
 	}
 	if exceptAuthKeys == nil {
@@ -745,12 +747,19 @@ func binaryInt64(out *int64) error {
 	if _, err := rand.Read(b[:]); err != nil {
 		return err
 	}
+	// Authorization hashes are signed TL long values, but they must remain
+	// positive and unique enough for account.getAuthorizations to identify a
+	// secondary session. Mask the sign bit instead of collapsing every random
+	// negative value to the same hash.
+	var value uint64
 	for _, x := range b {
-		*out = (*out << 8) | int64(x)
+		value = (value << 8) | uint64(x)
 	}
-	if *out <= 0 {
-		*out = 1
+	value &= uint64(^uint64(0) >> 1)
+	if value == 0 {
+		value = 1
 	}
+	*out = int64(value)
 	return nil
 }
 

@@ -18,7 +18,7 @@ import (
 // MediaUploadPhotoFile
 // media.uploadPhotoFile flags:# owner_id:long file:InputFile stickers:flags.0?Vector<InputDocument> ttl_seconds:flags.1?int = Photo;
 func (c *MediaCore) MediaUploadPhotoFile(in *media.TLMediaUploadPhotoFile) (*mtproto.Photo, error) {
-	if in == nil || in.GetOwnerId() <= 0 {
+	if in == nil || in.GetOwnerId() == 0 {
 		return nil, mtproto.ErrMediaInvalid
 	}
 	var (
@@ -26,7 +26,7 @@ func (c *MediaCore) MediaUploadPhotoFile(in *media.TLMediaUploadPhotoFile) (*mtp
 		// fileMDList []*dfspb.PhotoFileMetadata
 	)
 
-	if inputFile == nil || inputFile.GetId_INT64() <= 0 || inputFile.GetParts() <= 0 {
+	if inputFile == nil || inputFile.GetId_INT64() == 0 || inputFile.GetParts() <= 0 {
 		c.Logger.Errorf("media.uploadPhotoFile - error: file is nil")
 		return nil, mtproto.ErrMediaInvalid
 	}

@@ -34,7 +34,7 @@ func (c *UserChannelProfilesCore) PhotosUploadProfilePhoto(in *mtproto.TLPhotosU
 	if in == nil || (inputFileEmpty(in.GetFile()) && inputFileEmpty(in.GetVideo())) {
 		return nil, mtproto.ErrPhotoInvalid
 	}
-	if c.MD.PermAuthKeyId <= 0 {
+	if c.MD.PermAuthKeyId == 0 {
 		return nil, mtproto.ErrAuthKeyUnregistered
 	}
 	if c.svcCtx == nil || c.svcCtx.Dao == nil ||

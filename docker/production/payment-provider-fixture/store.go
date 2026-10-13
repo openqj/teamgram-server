@@ -65,13 +65,15 @@ func openControlPlane(dsn string) (*controlPlane, error) {
 }
 
 func validateControlPlaneSchema(ctx context.Context, db *sql.DB) error {
-	if err := requireMigrationCatalog(ctx, db, "078_apifull_payment_provider_control_plane", "079_provider_control_plane"); err != nil {
+	if err := requireMigrationCatalog(ctx, db, "078_apifull_payment_provider_control_plane", "079_provider_control_plane", "093_apifull_payment_provider_stars_subscriptions"); err != nil {
 		return fmt.Errorf("payment provider: migration catalog is unavailable: %w", err)
 	}
 	for _, query := range []string{
 		`SELECT operation, user_id, request_key, payload_hash, response, signature_header, transaction_id FROM apifull_payment_provider_operation LIMIT 0`,
 		`SELECT operation, user_id, request_key, transaction_id, response FROM apifull_payment_provider_receipt LIMIT 0`,
 		`SELECT user_id, product, transaction_id, months, stars, state FROM apifull_payment_provider_entitlement LIMIT 0`,
+		`SELECT user_id, balance FROM apifull_payment_provider_stars_account LIMIT 0`,
+		`SELECT user_id, subscription_id, peer, until_date, pricing_period, pricing_amount, canceled, can_refulfill, missing_balance, bot_canceled FROM apifull_payment_provider_stars_subscription LIMIT 0`,
 	} {
 		if _, err := db.ExecContext(ctx, query); err != nil {
 			return fmt.Errorf("payment provider: provider schema unavailable: %w", err)
@@ -266,6 +268,11 @@ func (p *controlPlane) saveOperation(operation, requestKey string, userID int64,
 			return persistedProviderOperation{}, rowsErr
 		} else if rows == 0 {
 			return persistedProviderOperation{}, errProviderTransactionConflict
+		}
+	}
+	if isStarsSubscriptionMutationOperation(operation) {
+		if err = p.applyStarsSubscriptionMutationTx(tx, operation, payload); err != nil {
+			return persistedProviderOperation{}, err
 		}
 	}
 	if strings.TrimSpace(entitlementProduct) != "" {

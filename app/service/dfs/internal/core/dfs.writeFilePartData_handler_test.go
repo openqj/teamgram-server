@@ -44,3 +44,25 @@ func TestValidateWriteFilePartDataAcceptsLastBigPart(t *testing.T) {
 		t.Fatalf("validateWriteFilePartData() = %v, want nil", err)
 	}
 }
+
+func TestValidateWriteFilePartDataAcceptsSignedAuthKeyID(t *testing.T) {
+	in := &dfs.TLDfsWriteFilePartData{
+		Creator: -5062281649313890254,
+		FileId:  2,
+		Bytes:   []byte{1},
+	}
+	if err := validateWriteFilePartData(in); err != nil {
+		t.Fatalf("validateWriteFilePartData() = %v, want nil for signed auth key id", err)
+	}
+}
+
+func TestValidateWriteFilePartDataAcceptsSignedFileID(t *testing.T) {
+	in := &dfs.TLDfsWriteFilePartData{
+		Creator: 1,
+		FileId:  -1791901419913000014,
+		Bytes:   []byte{1},
+	}
+	if err := validateWriteFilePartData(in); err != nil {
+		t.Fatalf("validateWriteFilePartData() = %v, want nil for signed file id", err)
+	}
+}

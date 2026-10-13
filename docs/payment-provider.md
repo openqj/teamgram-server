@@ -32,6 +32,8 @@ The provider must sign the exact response body with HMAC-SHA256 using `PaymentPr
 
 On acceptance, APIFull atomically writes the payment request, receipt, payment ledger entry, Stars transaction, and balance update. A duplicate request returns the settled result without another provider call or Stars credit. Missing endpoint or signing key fails closed. Production settlement requires the provider endpoint, credentials, matching active catalog offers, and a real transaction acceptance run.
 
+Stars refunds use `operation: "refund_stars_charge"` and carry the authenticated caller, target user, charge ID, original provider and transaction ID, and credited Stars amount. The provider response must be signed and include `verified`, matching caller/target/charge/provider/Stars fields, a non-empty `refund_transaction_id`, and a non-empty receipt. APIFull commits the refund and debits the Stars ledger in one PostgreSQL transaction; a committed replay returns `updates` without another provider call. `docker/production/probe-stars-refund-provider.ts` exercises this contract against the isolated fixture. Store receipt assignment probes only verify the signed Layer 229 assignment envelope and replay behavior; Apple App Store Server API, Google Play Developer API, receipt revocation, and store refunds remain external provider responsibilities and require production credentials.
+
 Read-only catalog and account operations use the same signed response header. The
 request `operation` values are `get_stars_revenue_stats`,
 `get_stars_revenue_withdrawal_url`, `get_stars_revenue_ads_account_url`,

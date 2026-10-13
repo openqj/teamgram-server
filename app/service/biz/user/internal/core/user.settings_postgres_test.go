@@ -82,3 +82,40 @@ func TestUserPostgresSettingsAndImporterRoundTrip(t *testing.T) {
 		t.Fatalf("get importers after delete = (%v, %v), want empty", contacts, err)
 	}
 }
+
+func TestUserPostgresNotifySettingsReactivateAfterReset(t *testing.T) {
+	pg := userPostgresTest(t, 1)
+	ctx := context.Background()
+	userID := time.Now().UnixNano()
+	if _, err := pg.Pool.Exec(ctx, `INSERT INTO users (id, phone) VALUES ($1, $2)`, userID, "pg-notify-"+time.Now().Format("150405.000000000")); err != nil {
+		t.Fatalf("seed user = %v", err)
+	}
+	t.Cleanup(func() { _, _ = pg.Pool.Exec(ctx, `DELETE FROM users WHERE id=$1`, userID) })
+
+	c := New(ctx, &svc.ServiceContext{Dao: &userdao.Dao{Postgres: pg}})
+	settings := mtproto.MakeTLPeerNotifySettings(&mtproto.PeerNotifySettings{
+		ShowPreviews: mtproto.BoolFalse,
+		Silent:       mtproto.BoolTrue,
+		MuteUntil:    wrapperspb.Int32(2147483647),
+		Sound:        wrapperspb.String("default"),
+	}).To_PeerNotifySettings()
+	request := &user.TLUserSetNotifySettings{
+		UserId:   userID,
+		PeerType: mtproto.PEER_USER,
+		PeerId:   2,
+		Settings: settings,
+	}
+	if got, err := c.UserSetNotifySettings(request); err != nil || !mtproto.FromBool(got) {
+		t.Fatalf("initial notify set = (%v, %v)", got, err)
+	}
+	if got, err := c.UserResetNotifySettings(&user.TLUserResetNotifySettings{UserId: userID}); err != nil || !mtproto.FromBool(got) {
+		t.Fatalf("notify reset = (%v, %v)", got, err)
+	}
+	if got, err := c.UserSetNotifySettings(request); err != nil || !mtproto.FromBool(got) {
+		t.Fatalf("notify set after reset = (%v, %v)", got, err)
+	}
+	got, err := c.UserGetNotifySettings(&user.TLUserGetNotifySettings{UserId: userID, PeerType: mtproto.PEER_USER, PeerId: 2})
+	if err != nil || got == nil || got.GetMuteUntil() == nil || got.GetMuteUntil().GetValue() != 2147483647 || !mtproto.FromBool(got.GetSilent()) {
+		t.Fatalf("notify read after reset = (%v, %v), want restored override", got, err)
+	}
+}

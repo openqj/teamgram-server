@@ -1389,6 +1389,13 @@ func paymentRequestKey(uid int64, in *mtproto.TLPaymentsSendPaymentForm) string 
 		if msgID == 0 {
 			msgID = in.GetInvoice().GetMsgId()
 		}
+		// Slug invoices are provider quoted and carry no message peer. A
+		// provider may legitimately reuse one form ID for different slugs, so
+		// the invoice identity must remain part of the idempotency key.
+		if in.GetInvoice().GetPredicateName() == mtproto.Predicate_inputInvoiceSlug &&
+			payPeerIDForUser(uid, peer) == 0 && msgID == 0 {
+			return "invoice:" + paymentFingerprint(in)
+		}
 	}
 	if in.GetFormId() == 0 && payPeerIDForUser(uid, peer) == 0 && msgID == 0 {
 		return "invoice:" + paymentFingerprint(in)

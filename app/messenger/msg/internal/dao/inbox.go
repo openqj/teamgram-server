@@ -199,6 +199,15 @@ func (d *Dao) sendMessageToInbox(ctx context.Context, fromId int64, peer *mtprot
 func (d *Dao) persistInboxPostgres(ctx context.Context, fromID int64, peer *mtproto.PeerUtil, toUserID int64, inBox *mtproto.MessageBox, message *mtproto.Message, messageData []byte, date int64) (*mtproto.MessageBox, error) {
 	var dialogDO *dataobject.DialogsDO
 	var duplicate *mtproto.MessageBox
+	// A private dialog is addressed by the other user from each account's
+	// perspective. The delivery request keeps the recipient in PeerId for
+	// routing, but the recipient's persisted message view must point at the
+	// sender so messages.readHistory and history queries use the canonical peer.
+	storedPeerID := peer.PeerId
+	if peer.PeerType == mtproto.PEER_USER {
+		storedPeerID = fromID
+		inBox.PeerId = storedPeerID
+	}
 	switch peer.PeerType {
 	case mtproto.PEER_USER:
 		dialogDO = &dataobject.DialogsDO{UserId: toUserID, PeerType: peer.PeerType, PeerId: fromID,
@@ -233,7 +242,7 @@ func (d *Dao) persistInboxPostgres(ctx context.Context, fromID int64, peer *mtpr
 		}
 		storageID, rowsAffected, err := d.Postgres.Store.Messages.InsertOrReturnIdOn(ctx, tx, &dataobject.MessagesDO{
 			UserId: inBox.UserId, UserMessageBoxId: inBox.MessageId, DialogId1: inBox.DialogId1, DialogId2: inBox.DialogId2,
-			SenderUserId: fromID, PeerType: peer.PeerType, PeerId: inBox.PeerId, RandomId: inBox.RandomId,
+			SenderUserId: fromID, PeerType: peer.PeerType, PeerId: storedPeerID, RandomId: inBox.RandomId,
 			DialogMessageId: inBox.DialogMessageId, MessageData: string(messageData), MessageFilterType: inBox.MessageFilterType,
 			Message: message.Message, Mentioned: inBox.Mentioned, MediaUnread: inBox.MediaUnread, Date2: date,
 		})
@@ -257,7 +266,7 @@ func (d *Dao) persistInboxPostgres(ctx context.Context, fromID int64, peer *mtpr
 		for _, entity := range message.GetEntities() {
 			if entity.GetPredicateName() == mtproto.Predicate_messageEntityHashtag && entity.GetUrl() != "" {
 				if _, _, err = d.Postgres.Store.HashTags.InsertOrUpdateOn(ctx, tx, &dataobject.HashTagsDO{
-					UserId: inBox.UserId, PeerType: peer.PeerType, PeerId: peer.PeerId,
+					UserId: inBox.UserId, PeerType: peer.PeerType, PeerId: storedPeerID,
 					HashTag: entity.GetUrl(), HashTagMessageId: inBox.MessageId,
 				}); err != nil {
 					return err

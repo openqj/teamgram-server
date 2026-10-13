@@ -41,7 +41,7 @@ func (c *UserChannelProfilesCore) PhotosUploadContactProfilePhoto(in *mtproto.TL
 		c.Logger.Errorf("photos.uploadContactProfilePhoto - error: %v", err)
 		return nil, err
 	}
-	if c.MD.PermAuthKeyId <= 0 {
+	if c.MD.PermAuthKeyId == 0 {
 		return nil, mtproto.ErrAuthKeyUnregistered
 	}
 	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.MediaClient == nil {

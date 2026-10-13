@@ -108,8 +108,15 @@ func (c *SyncCore) handleBotFatherMessage(message *mtproto.Message) error {
 	if c == nil || c.svcCtx == nil || c.svcCtx.Dao == nil || message == nil || message.GetOut() {
 		return nil
 	}
+	peerUserID := message.GetPeerId().GetUserId()
 	sender := message.GetFromId().GetUserId()
-	if sender <= 0 || message.GetPeerId().GetUserId() != userpb.BotFatherId || message.GetId() <= 0 {
+	// Inbox delivery to a bot represents the private peer as the sender and
+	// may omit from_id. Accept that shape while retaining support for the
+	// canonical peer=BotFather/from_id=sender representation.
+	if sender <= 0 && peerUserID > 0 && peerUserID != userpb.BotFatherId {
+		sender = peerUserID
+	}
+	if sender <= 0 || (peerUserID != userpb.BotFatherId && peerUserID != sender) || message.GetId() <= 0 {
 		return nil
 	}
 	ctx, err := botFatherRPCContext(c.ctx, sender)

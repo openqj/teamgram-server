@@ -1,0 +1,11 @@
+[
+  {"lang_code":"en","name":"English","native_name":"English","plural_code":"en","official":true},
+  {"lang_code":"zh-hans","name":"Chinese (Simplified)","native_name":"\u7b80\u4f53\u4e2d\u6587","plural_code":"zh","official":true},
+  {"lang_code":"zh-hant","name":"Chinese (Traditional)","native_name":"\u7e41\u9ad4\u4e2d\u6587","plural_code":"zh","official":true},
+  {"lang_code":"ru","name":"Russian","native_name":"\u0420\u0443\u0441\u0441\u043a\u0438\u0439","plural_code":"ru","official":true},
+  {"lang_code":"es","name":"Spanish","native_name":"Espa\u00f1ol","plural_code":"es","official":true},
+  {"lang_code":"de","name":"German","native_name":"Deutsch","plural_code":"de","official":true},
+  {"lang_code":"fr","name":"French","native_name":"Fran\u00e7ais","plural_code":"fr","official":true},
+  {"lang_code":"ja","name":"Japanese","native_name":"\u65e5\u672c\u8a9e","plural_code":"ja","official":true},
+  {"lang_code":"ko","name":"Korean","native_name":"\ud55c\uad6d\uc5b4","plural_code":"ko","official":true}
+]

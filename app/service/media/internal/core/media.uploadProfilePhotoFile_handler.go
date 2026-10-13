@@ -18,9 +18,9 @@ import (
 // MediaUploadProfilePhotoFile
 // media.uploadProfilePhotoFile flags:# owner_id:long file:flags.0?InputFile video:flags.1?InputFile video_start_ts:flags.2?double = Photo;
 func (c *MediaCore) MediaUploadProfilePhotoFile(in *media.TLMediaUploadProfilePhotoFile) (*mtproto.Photo, error) {
-	if in == nil || in.GetOwnerId() <= 0 || (in.GetFile() == nil && in.GetVideo() == nil) ||
-		(in.GetFile() != nil && (in.GetFile().GetId_INT64() <= 0 || in.GetFile().GetParts() <= 0)) ||
-		(in.GetVideo() != nil && (in.GetVideo().GetId_INT64() <= 0 || in.GetVideo().GetParts() <= 0)) {
+	if in == nil || in.GetOwnerId() == 0 || (in.GetFile() == nil && in.GetVideo() == nil) ||
+		(in.GetFile() != nil && (in.GetFile().GetId_INT64() == 0 || in.GetFile().GetParts() <= 0)) ||
+		(in.GetVideo() != nil && (in.GetVideo().GetId_INT64() == 0 || in.GetVideo().GetParts() <= 0)) {
 		c.Logger.Errorf("media.uploadProfilePhotoFile - error: file is nil")
 		return nil, mtproto.ErrMediaInvalid
 	}

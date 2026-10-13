@@ -43,10 +43,10 @@ func TestLangpackRequiresAuth(t *testing.T) {
 func TestEmbeddedEnglishLangpack(t *testing.T) {
 	c := &ApiFullCore{MD: &metadata.RpcMetadata{UserId: 81013}}
 	languages, err := c.LangpackGetLanguages(&mtproto.TLLangpackGetLanguages{LangPack: "weba"})
-	if err != nil || languages == nil || len(languages.GetDatas()) != 1 {
+	if err != nil || languages == nil || len(languages.GetDatas()) != 9 {
 		t.Fatalf("languages=(%#v,%v)", languages, err)
 	}
-	if got := languages.GetDatas()[0]; got.GetLangCode() != "en" || got.GetStringsCount() < 3000 {
+	if got := languages.GetDatas()[0]; got.GetLangCode() != "en" || got.GetStringsCount() < 3000 || got.GetTranslatedCount() < 3000 {
 		t.Fatalf("language=%#v", got)
 	}
 	strings, err := c.LangpackGetStrings(&mtproto.TLLangpackGetStrings{
@@ -70,9 +70,20 @@ func TestEmbeddedEnglishLangpack(t *testing.T) {
 	}
 }
 
-func TestEmbeddedEnglishLangpackRejectsUnsupportedLanguage(t *testing.T) {
+func TestEmbeddedLanguagePackSupportsMultipleLanguages(t *testing.T) {
 	c := &ApiFullCore{MD: &metadata.RpcMetadata{UserId: 81013}}
-	if got, err := c.LangpackGetLanguage(&mtproto.TLLangpackGetLanguage{LangPack: "weba", LangCode: "zh-hans"}); got != nil || !sameRPCErrorCode(err, mtproto.ErrLangCodeNotSupported) {
+	if got, err := c.LangpackGetLanguage(&mtproto.TLLangpackGetLanguage{LangPack: "weba", LangCode: "zh-hans"}); err != nil || got == nil || got.GetLangCode() != "zh-hans" || got.GetNativeName() != "简体中文" {
+		t.Fatalf("simplified Chinese=(%#v,%v)", got, err)
+	}
+	strings, err := c.LangpackGetStrings(&mtproto.TLLangpackGetStrings{
+		LangPack: "weba",
+		LangCode: "zh-hans",
+		Keys:     []string{"SendMessage", "Delete"},
+	})
+	if err != nil || strings == nil || len(strings.GetDatas()) != 2 || strings.GetDatas()[0].GetValue() != "发送消息" {
+		t.Fatalf("simplified Chinese strings=(%#v,%v)", strings, err)
+	}
+	if got, err := c.LangpackGetLanguage(&mtproto.TLLangpackGetLanguage{LangPack: "weba", LangCode: "xx"}); got != nil || !sameRPCErrorCode(err, mtproto.ErrLangCodeNotSupported) {
 		t.Fatalf("unsupported language=(%#v,%v)", got, err)
 	}
 	if got, err := c.LangpackGetLanguages(&mtproto.TLLangpackGetLanguages{LangPack: "unsupported"}); got != nil || !sameRPCErrorCode(err, mtproto.ErrLangPackInvalid) {

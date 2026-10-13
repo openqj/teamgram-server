@@ -1,0 +1,3 @@
+FROM teamgram-server-passkey-fix:20261013-passkey-final
+
+COPY bff /app/bin/bff

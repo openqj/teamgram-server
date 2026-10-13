@@ -24,16 +24,23 @@ if [[ ! -x $tsx_bin || ! -f $gramjs_dir/src/lib/gramjs/client/TelegramClient.ts 
   exit 2
 fi
 
-gateway_count=0
-while IFS='|' read -r _container ports project; do
-  [[ $project =~ ^teamgram-web-isolated-[0-9]{14}-[0-9a-f]{8}$ ]] || continue
-  [[ $ports == *"127.0.0.1:31443->11443/tcp"* ]] || continue
-  gateway_count=$((gateway_count + 1))
-done < <(docker ps --filter label=com.docker.compose.service=gateway --format '{{.ID}}|{{.Ports}}|{{.Label "com.docker.compose.project"}}')
+if [[ ${TEAMGRAM_ALLOW_EXTERNAL_GATEWAY:-0} == 1 ]]; then
+  if ! nc -z 127.0.0.1 31443 >/dev/null 2>&1; then
+    printf 'TEAMGRAM_ALLOW_EXTERNAL_GATEWAY=1 requires a listener on 127.0.0.1:31443\n' >&2
+    exit 2
+  fi
+else
+  gateway_count=0
+  while IFS='|' read -r _container ports project; do
+    [[ $project =~ ^teamgram-web-isolated-[0-9]{14}-[0-9a-f]{8}$ ]] || continue
+    [[ $ports == *"127.0.0.1:31443->11443/tcp"* ]] || continue
+    gateway_count=$((gateway_count + 1))
+  done < <(docker ps --filter label=com.docker.compose.service=gateway --format '{{.ID}}|{{.Ports}}|{{.Label "com.docker.compose.project"}}')
 
-if (( gateway_count != 1 )); then
-  printf 'Expected exactly one isolated gateway on 127.0.0.1:31443\n' >&2
-  exit 2
+  if (( gateway_count != 1 )); then
+    printf 'Expected exactly one isolated gateway on 127.0.0.1:31443\n' >&2
+    exit 2
+  fi
 fi
 
 exec "$tsx_bin" "$script_dir/verify-business-flows.ts"

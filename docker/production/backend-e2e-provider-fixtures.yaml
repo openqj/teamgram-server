@@ -10,8 +10,22 @@ services:
     depends_on:
       code-provider-fixture:
         condition: service_healthy
+      group-call-media-provider-fixture:
+        condition: service_healthy
     environment:
       TEAMGRAM_PROVIDER_FIXTURE_MODE: "1"
+      TEAMGRAM_GROUP_CALL_MEDIA_ENDPOINT: "${TEAMGRAM_GROUP_CALL_MEDIA_ENDPOINT:-http://group-call-media-provider-fixture:23194}"
+      TEAMGRAM_GROUP_CALL_MEDIA_API_KEY: "${TEAMGRAM_GROUP_CALL_MEDIA_API_KEY:-group-call-media-fixture-key}"
+      TEAMGRAM_GROUP_CALL_MEDIA_SIGNING_KEY: "${TEAMGRAM_GROUP_CALL_MEDIA_SIGNING_KEY:-group-call-media-fixture-signing-key-at-least-32-bytes}"
+      TEAMGRAM_GROUP_CALL_MEDIA_RTMP_HOST: "${TEAMGRAM_GROUP_CALL_MEDIA_RTMP_HOST:-127.0.0.1:1935}"
+      TEAMGRAM_GROUP_CALL_MEDIA_TIMEOUT_SECONDS: "${TEAMGRAM_GROUP_CALL_MEDIA_TIMEOUT_SECONDS:-5}"
+      # The runtime override uses Compose !override for backend.environment;
+      # repeat the object-store settings in this final E2E layer so DFS does
+      # not fall back to the legacy minio:9000 default.
+      S3_ENDPOINT: "${S3_ENDPOINT:-seaweedfs:8333}"
+      S3_ACCESS_KEY: "${S3_ACCESS_KEY:-seaweedfs}"
+      S3_SECRET_KEY: "${S3_SECRET_KEY:-seaweedfs-secret}"
+      S3_USE_SSL: "${S3_USE_SSL:-false}"
       TEAMGRAM_PASSKEY_RP_ID: "${TEAMGRAM_PASSKEY_RP_ID:-passkey.teamgram.local}"
       TEAMGRAM_PASSKEY_RP_DISPLAY_NAME: "${TEAMGRAM_PASSKEY_RP_DISPLAY_NAME:-Teamgram Isolated}"
       TEAMGRAM_PASSKEY_ORIGINS: "${TEAMGRAM_PASSKEY_ORIGINS:-https://passkey.teamgram.local:8443}"
@@ -43,6 +57,22 @@ services:
       - "127.0.0.1:23193:23193"
     healthcheck:
       test: ["CMD", "/code-provider", "--healthcheck"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
+    networks: [teamgram_net]
+
+  group-call-media-provider-fixture:
+    image: "${TEAMGRAM_GROUP_CALL_MEDIA_PROVIDER_IMAGE:-teamgram-group-call-media-provider-fixture:acceptance}"
+    environment:
+      GROUP_CALL_MEDIA_PROVIDER_KEY: "${TEAMGRAM_GROUP_CALL_MEDIA_API_KEY:-group-call-media-fixture-key}"
+      GROUP_CALL_MEDIA_PROVIDER_SIGNING_KEY: "${TEAMGRAM_GROUP_CALL_MEDIA_SIGNING_KEY:-group-call-media-fixture-signing-key-at-least-32-bytes}"
+      GROUP_CALL_MEDIA_PROVIDER_RTMP_HOST: "${TEAMGRAM_GROUP_CALL_MEDIA_RTMP_HOST:-127.0.0.1:1935}"
+      GROUP_CALL_MEDIA_PROVIDER_PORT: "23194"
+    expose: ["23194"]
+    healthcheck:
+      test: ["CMD", "/group-call-media-provider", "--healthcheck"]
       interval: 5s
       timeout: 5s
       retries: 12

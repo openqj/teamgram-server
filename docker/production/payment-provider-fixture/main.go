@@ -222,6 +222,10 @@ func premiumEnvelope(fields map[string]json.RawMessage, result any) ([]byte, str
 }
 
 func (f *fixture) response(fields map[string]json.RawMessage) ([]byte, string, error) {
+	return f.responseWithContext(context.Background(), fields)
+}
+
+func (f *fixture) responseWithContext(ctx context.Context, fields map[string]json.RawMessage) ([]byte, string, error) {
 	operation := rawString(fields, "operation")
 	if rawString(fields, "request_id") != "" {
 		var result any
@@ -237,8 +241,61 @@ func (f *fixture) response(fields map[string]json.RawMessage) ([]byte, string, e
 		}
 		return premiumEnvelope(fields, result)
 	}
+	if operation == "get_stars_subscriptions" {
+		if f.store != nil {
+			result, err := f.store.starsSubscriptionResponse(ctx, fields)
+			return result, "X-Teamgram-Payment-Signature", err
+		}
+		result, err := staticStarsSubscriptionResponse(fields)
+		return result, "X-Teamgram-Payment-Signature", err
+	}
+	if operation == "change_stars_subscription" || operation == "fulfill_stars_subscription" || operation == "bot_cancel_stars_subscription" {
+		if f.store != nil {
+			result, err := f.store.starsSubscriptionMutationResponse(ctx, fields)
+			return result, "X-Teamgram-Payment-Signature", err
+		}
+		callerID := rawInt64(fields, "caller_user_id")
+		targetID := rawInt64(fields, "user_id")
+		subscriptionID := strings.TrimSpace(rawString(fields, "subscription_id"))
+		if callerID <= 0 || targetID <= 0 || subscriptionID == "" {
+			return nil, "", errors.New("invalid Stars subscription mutation")
+		}
+		result, err := json.Marshal(map[string]any{
+			"verified":        true,
+			"caller_user_id":  callerID,
+			"user_id":         targetID,
+			"subscription_id": subscriptionID,
+			"result":          map[string]any{"predicate_name": "boolTrue", "constructor": -1720552011},
+		})
+		return result, "X-Teamgram-Payment-Signature", err
+	}
 
 	uid := userID(fields)
+	if operation == "refund_stars_charge" {
+		callerID := rawInt64(fields, "caller_user_id")
+		targetID := rawInt64(fields, "user_id")
+		chargeID := rawString(fields, "charge_id")
+		provider := rawString(fields, "provider")
+		transactionID := rawString(fields, "transaction_id")
+		stars := rawInt64(fields, "stars")
+		if callerID <= 0 || targetID <= 0 || chargeID == "" || provider == "" || transactionID == "" || stars <= 0 {
+			return nil, "", fmt.Errorf("invalid Stars refund request")
+		}
+		// This fixture models the provider's refund authority. The backend still
+		// verifies the signed response and commits the local refund atomically.
+		digest := sha256.Sum256([]byte(fmt.Sprintf("%d:%s", targetID, chargeID)))
+		body, err := json.Marshal(map[string]any{
+			"verified":              true,
+			"caller_user_id":        callerID,
+			"user_id":               targetID,
+			"charge_id":             chargeID,
+			"provider":              provider,
+			"stars":                 stars,
+			"refund_transaction_id": "fixture-refund-" + hex.EncodeToString(digest[:8]),
+			"receipt":               map[string]any{"provider": "local-fixture", "charge_id": chargeID},
+		})
+		return body, "X-Teamgram-Payment-Signature", err
+	}
 	if operation == "get_paid_messages_revenue" {
 		callerID := rawInt64(fields, "caller_user_id")
 		targetID := rawInt64(fields, "user_id")
@@ -637,7 +694,8 @@ func (f *fixture) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if rawString(fields, "request_id") != "" {
 		signatureHeader = "X-Teamgram-Payment-Provider-Signature"
 	}
-	if f.store != nil {
+	cacheOperation := operation != "get_stars_subscriptions"
+	if f.store != nil && cacheOperation {
 		if cached, found, loadErr := f.store.loadOperation(operation, requestKey, uid, body); loadErr != nil {
 			http.Error(w, loadErr.Error(), http.StatusConflict)
 			return
@@ -651,7 +709,7 @@ func (f *fixture) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	var response []byte
 	var header string
-	response, header, err = f.response(effective)
+	response, header, err = f.responseWithContext(r.Context(), effective)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -664,7 +722,7 @@ func (f *fixture) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if header == "" {
 		header = signatureHeader
 	}
-	if f.store != nil {
+	if f.store != nil && cacheOperation {
 		transactionID := responseTransactionID(response)
 		product, months, stars := responseEntitlement(response)
 		stored, saveErr := f.store.saveOperation(operation, requestKey, uid, body, response, header, transactionID, product, months, stars)

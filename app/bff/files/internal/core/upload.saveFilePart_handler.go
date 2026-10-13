@@ -32,7 +32,7 @@ func (c *FilesCore) UploadSaveFilePart(in *mtproto.TLUploadSaveFilePart) (*mtpro
 	if in == nil {
 		return nil, mtproto.ErrInputRequestInvalid
 	}
-	if in.GetFileId() <= 0 {
+	if in.GetFileId() == 0 {
 		return nil, mtproto.ErrFileIdInvalid
 	}
 	if in.GetFilePart() < 0 {

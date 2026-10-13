@@ -499,7 +499,7 @@ func ImportChannelInvite(hash string, userID, now int64) (ChannelInviteImport, e
 		if errors.Is(err, sql.ErrNoRows) {
 			if _, err = tx.Exec(`INSERT INTO chat_invite_participants
 				(chat_id, link, user_id, requested, approved_by, date2) VALUES (?,?,?,?,?,?)`,
-				invite.ChannelID, invite.Link, userID, 1, 0, now); err != nil {
+				invite.ChannelID, invite.Link, userID, true, 0, now); err != nil {
 				return ChannelInviteImport{}, err
 			}
 		} else if err != nil {
@@ -518,7 +518,7 @@ func ImportChannelInvite(hash string, userID, now int64) (ChannelInviteImport, e
 	}
 	if _, err = tx.Exec(`INSERT INTO chat_invite_participants
 		(chat_id, link, user_id, requested, approved_by, date2) VALUES (?,?,?,?,?,?)`,
-		invite.ChannelID, invite.Link, userID, 0, 0, now); err != nil {
+		invite.ChannelID, invite.Link, userID, false, 0, now); err != nil {
 		return ChannelInviteImport{}, err
 	}
 	if err = tx.Commit(); err != nil {
@@ -555,18 +555,25 @@ func activeChannelInviteTx(tx *sql.Tx, hash string, now int64) (ChannelInvite, C
 	}
 
 	var channel Channel
+	var broadcast, megagroup, signatures, signatureProfiles, hiddenPrehistory, participantsHidden int
 	err = tx.QueryRow(`SELECT id, access_hash, creator_user_id, title, about, broadcast, megagroup,
 		signatures_enabled, signature_profiles_enabled, hidden_prehistory, participants_hidden,
 		slowmode_seconds, created_at FROM apifull_channel WHERE id=? FOR UPDATE`, invite.ChannelID).Scan(
 		&channel.ID, &channel.AccessHash, &channel.Creator, &channel.Title, &channel.About,
-		&channel.Broadcast, &channel.Megagroup, &channel.Signatures, &channel.SignatureProfiles,
-		&channel.HiddenPrehistory, &channel.ParticipantsHidden, &channel.SlowmodeSeconds, &channel.CreatedAt)
+		&broadcast, &megagroup, &signatures, &signatureProfiles,
+		&hiddenPrehistory, &participantsHidden, &channel.SlowmodeSeconds, &channel.CreatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ChannelInvite{}, Channel{}, ErrChannelInviteMissing
 	}
 	if err != nil {
 		return ChannelInvite{}, Channel{}, err
 	}
+	channel.Broadcast = broadcast != 0
+	channel.Megagroup = megagroup != 0
+	channel.Signatures = signatures != 0
+	channel.SignatureProfiles = signatureProfiles != 0
+	channel.HiddenPrehistory = hiddenPrehistory != 0
+	channel.ParticipantsHidden = participantsHidden != 0
 	if err = validateChannelInviteTx(tx, invite, channel, now); err != nil {
 		return ChannelInvite{}, Channel{}, err
 	}

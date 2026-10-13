@@ -307,6 +307,12 @@ func (d *Dao) ReadHistoryState(ctx context.Context, userID int64, peer *mtproto.
  WHERE user_id=$1 AND dialog_message_id=$2 AND peer_type=$3 AND peer_id=$4
  AND sender_user_id=$1 AND NOT deleted ORDER BY user_message_box_id DESC LIMIT 1`,
 					cursor.UserID, cursor.DialogID, peer.PeerType, peer.PeerId).Scan(&senderMessageID); err != nil {
+					// A sender may have deleted its local copy of the message.
+					// That must not roll back the reader's inbox cursor; there is
+					// simply no sender-side message to advance with a read receipt.
+					if errors.Is(err, pgx.ErrNoRows) {
+						continue
+					}
 					return nil, err
 				}
 				if _, _, err := d.Postgres.Store.MessageReadOutbox.InsertOrUpdateOn(ctx, tx, &dataobject.MessageReadOutboxDO{

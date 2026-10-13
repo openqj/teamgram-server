@@ -20,7 +20,8 @@ package core
 
 import (
 	"bufio"
-	_ "embed"
+	"embed"
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
@@ -31,12 +32,17 @@ import (
 	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
-// RPCLangpackServer: the English fallback shipped with the Web client is the
-// only language data available to APIFull. It is embedded so the server does
-// not depend on a filesystem checkout or an external translations provider.
+// RPCLangpackServer: language packs are embedded so APIFull does not depend on
+// a filesystem checkout or an external translations provider at runtime.
 //
 //go:embed fallback.strings
 var fallbackStrings string
+
+//go:embed langpacks/languages.json
+var languageMetadataJSON string
+
+//go:embed langpacks/weba/*.json
+var languagePackFiles embed.FS
 
 const fallbackLangCode = "en"
 
@@ -53,14 +59,47 @@ type fallbackLangEntry struct {
 }
 
 type fallbackLangPack struct {
-	entries []*fallbackLangEntry
-	byKey   map[string]*fallbackLangEntry
-	version int32
+	langCode     string
+	metadata     langpackMetadata
+	entries      []*fallbackLangEntry
+	byKey        map[string]*fallbackLangEntry
+	version      int32
+	stringsCount int32
+}
+
+type langpackMetadata struct {
+	LangCode     string `json:"lang_code"`
+	Name         string `json:"name"`
+	NativeName   string `json:"native_name"`
+	BaseLangCode string `json:"base_lang_code,omitempty"`
+	PluralCode   string `json:"plural_code"`
+	Official     bool   `json:"official,omitempty"`
+	Rtl          bool   `json:"rtl,omitempty"`
+	Beta         bool   `json:"beta,omitempty"`
+}
+
+type serializedLangPack struct {
+	Version int32                     `json:"version"`
+	Entries []serializedLangPackEntry `json:"entries"`
+}
+
+type serializedLangPackEntry struct {
+	Key   string          `json:"key"`
+	Value json.RawMessage `json:"value"`
+}
+
+type langpackCatalog struct {
+	byCode    map[string]*fallbackLangPack
+	languages []*fallbackLangPack
 }
 
 var fallbackLangPackOnce sync.Once
 var fallbackLangPackValue *fallbackLangPack
 var fallbackLangPackErr error
+
+var langpackCatalogOnce sync.Once
+var langpackCatalogValue *langpackCatalog
+var langpackCatalogErr error
 
 func loadFallbackLangPack() (*fallbackLangPack, error) {
 	fallbackLangPackOnce.Do(func() {
@@ -132,6 +171,127 @@ func parseFallbackLangPack(raw string) (*fallbackLangPack, error) {
 	return &fallbackLangPack{entries: entries, byKey: byKey, version: 1}, nil
 }
 
+func parseJSONLangPack(raw []byte) (*fallbackLangPack, error) {
+	var serialized serializedLangPack
+	if err := json.Unmarshal(raw, &serialized); err != nil {
+		return nil, err
+	}
+	if serialized.Version <= 0 {
+		serialized.Version = 1
+	}
+
+	entries := make([]*fallbackLangEntry, 0, len(serialized.Entries))
+	byKey := make(map[string]*fallbackLangEntry, len(serialized.Entries))
+	for _, serializedEntry := range serialized.Entries {
+		if serializedEntry.Key == "" {
+			return nil, fmt.Errorf("language pack contains an empty key")
+		}
+		if _, exists := byKey[serializedEntry.Key]; exists {
+			return nil, fmt.Errorf("language pack contains duplicate key %q", serializedEntry.Key)
+		}
+
+		entry := &fallbackLangEntry{key: serializedEntry.Key}
+		var value string
+		if err := json.Unmarshal(serializedEntry.Value, &value); err == nil {
+			entry.value = value
+		} else {
+			var pluralValues map[string]string
+			if err := json.Unmarshal(serializedEntry.Value, &pluralValues); err != nil {
+				return nil, fmt.Errorf("language pack key %q has invalid value: %w", serializedEntry.Key, err)
+			}
+			entry.plural = true
+			for pluralKey, pluralValue := range pluralValues {
+				switch pluralKey {
+				case "0", "zero":
+					entry.zero = pluralValue
+				case "1", "one":
+					entry.one = pluralValue
+				case "2", "two":
+					entry.two = pluralValue
+				case "3", "few":
+					entry.few = pluralValue
+				case "4", "many":
+					entry.many = pluralValue
+				case "5", "other":
+					entry.other = pluralValue
+				}
+			}
+		}
+
+		entries = append(entries, entry)
+		byKey[entry.key] = entry
+	}
+
+	return &fallbackLangPack{
+		entries: entries,
+		byKey:   byKey,
+		version: serialized.Version,
+	}, nil
+}
+
+func loadLangpackCatalog() (*langpackCatalog, error) {
+	langpackCatalogOnce.Do(func() {
+		var metadata []langpackMetadata
+		if err := json.Unmarshal([]byte(languageMetadataJSON), &metadata); err != nil {
+			langpackCatalogErr = err
+			return
+		}
+
+		english, err := loadEnglishLangPack()
+		if err != nil {
+			langpackCatalogErr = err
+			return
+		}
+
+		catalog := &langpackCatalog{
+			byCode: make(map[string]*fallbackLangPack, len(metadata)),
+		}
+		for _, language := range metadata {
+			if language.LangCode == "" {
+				langpackCatalogErr = fmt.Errorf("language metadata contains an empty code")
+				return
+			}
+			if _, exists := catalog.byCode[language.LangCode]; exists {
+				langpackCatalogErr = fmt.Errorf("language metadata contains duplicate code %q", language.LangCode)
+				return
+			}
+
+			pack := english
+			if language.LangCode != fallbackLangCode {
+				raw, readErr := languagePackFiles.ReadFile("langpacks/weba/" + language.LangCode + ".json")
+				if readErr != nil {
+					langpackCatalogErr = fmt.Errorf("read language pack %q: %w", language.LangCode, readErr)
+					return
+				}
+				pack, err = parseJSONLangPack(raw)
+				if err != nil {
+					langpackCatalogErr = fmt.Errorf("parse language pack %q: %w", language.LangCode, err)
+					return
+				}
+			}
+			pack.langCode = language.LangCode
+			pack.metadata = language
+			catalog.byCode[language.LangCode] = pack
+			catalog.languages = append(catalog.languages, pack)
+		}
+
+		stringsCount := int32(len(english.entries))
+		for _, pack := range catalog.languages {
+			pack.stringsCount = stringsCount
+		}
+		langpackCatalogValue = catalog
+	})
+
+	return langpackCatalogValue, langpackCatalogErr
+}
+
+func loadEnglishLangPack() (*fallbackLangPack, error) {
+	if raw, err := languagePackFiles.ReadFile("langpacks/weba/en.json"); err == nil {
+		return parseJSONLangPack(raw)
+	}
+	return loadFallbackLangPack()
+}
+
 func fallbackStringSeparator(line string) int {
 	escaped, quoted := false, false
 	for i, r := range line {
@@ -164,17 +324,24 @@ func fallbackPluralKey(key string) (string, string) {
 	return key, ""
 }
 
-func langpackLanguage(pack *fallbackLangPack) *mtproto.LangPackLanguage {
-	count := int32(len(pack.entries))
+func langpackLanguage(pack *fallbackLangPack, langPack string) *mtproto.LangPackLanguage {
+	translationsURL := fmt.Sprintf("https://translations.telegram.org/%s/%s", pack.langCode, langPack)
+	var baseLangCode *wrapperspb.StringValue
+	if pack.metadata.BaseLangCode != "" {
+		baseLangCode = &wrapperspb.StringValue{Value: pack.metadata.BaseLangCode}
+	}
 	return mtproto.MakeTLLangPackLanguage(&mtproto.LangPackLanguage{
-		Official:        true,
-		Name:            "English",
-		NativeName:      "English",
-		LangCode:        fallbackLangCode,
-		PluralCode:      fallbackLangCode,
-		StringsCount:    count,
-		TranslatedCount: count,
-		TranslationsUrl: "",
+		Official:        pack.metadata.Official,
+		Rtl:             pack.metadata.Rtl,
+		Beta:            pack.metadata.Beta,
+		Name:            pack.metadata.Name,
+		NativeName:      pack.metadata.NativeName,
+		LangCode:        pack.langCode,
+		BaseLangCode:    baseLangCode,
+		PluralCode:      pack.metadata.PluralCode,
+		StringsCount:    pack.stringsCount,
+		TranslatedCount: int32(len(pack.entries)),
+		TranslationsUrl: translationsURL,
 	}).To_LangPackLanguage()
 }
 
@@ -200,17 +367,34 @@ func stringValue(value string) *wrapperspb.StringValue {
 	return &wrapperspb.StringValue{Value: value}
 }
 
-func validateLangpackRequest(langPack, langCode string) error {
-	if langPack != "" && langPack != "android" && langPack != "ios" && langPack != "tdesktop" && langPack != "webk" && langPack != "weba" {
+func validateLangpackRequest(langPack string) error {
+	if langPack != "" && langPack != "android" && langPack != "ios" && langPack != "tdesktop" && langPack != "macos" && langPack != "webk" && langPack != "weba" {
 		return mtproto.ErrLangPackInvalid
-	}
-	if langCode != "" && langCode != fallbackLangCode {
-		return mtproto.ErrLangCodeNotSupported
 	}
 	return nil
 }
 
-func fallbackLangPackDifference(pack *fallbackLangPack, from int32) *mtproto.LangPackDifference {
+func langPackForCode(catalog *langpackCatalog, langPack, langCode string) (*fallbackLangPack, error) {
+	baseCode := strings.TrimSuffix(langCode, "-raw")
+	if langPack != "weba" && baseCode != fallbackLangCode {
+		return nil, mtproto.ErrLangCodeNotSupported
+	}
+	pack := catalog.byCode[langCode]
+	if pack == nil && strings.HasSuffix(langCode, "-raw") {
+		baseCode := strings.TrimSuffix(langCode, "-raw")
+		if basePack := catalog.byCode[baseCode]; basePack != nil {
+			alias := *basePack
+			alias.langCode = langCode
+			pack = &alias
+		}
+	}
+	if pack == nil {
+		return nil, mtproto.ErrLangCodeNotSupported
+	}
+	return pack, nil
+}
+
+func langPackDifference(pack *fallbackLangPack, from int32) *mtproto.LangPackDifference {
 	strings := make([]*mtproto.LangPackString, 0, len(pack.entries))
 	if from != pack.version {
 		for _, entry := range pack.entries {
@@ -218,7 +402,7 @@ func fallbackLangPackDifference(pack *fallbackLangPack, from int32) *mtproto.Lan
 		}
 	}
 	return mtproto.MakeTLLangPackDifference(&mtproto.LangPackDifference{
-		LangCode:    fallbackLangCode,
+		LangCode:    pack.langCode,
 		FromVersion: from,
 		Version:     pack.version,
 		Strings:     strings,
@@ -242,14 +426,18 @@ func (c *ApiFullCore) LangpackGetLangPack(in *mtproto.TLLangpackGetLangPack) (*m
 	if in == nil {
 		return nil, mtproto.ErrLangPackInvalid
 	}
-	if err := validateLangpackRequest(in.GetLangPack(), in.GetLangCode()); err != nil {
+	if err := validateLangpackRequest(in.GetLangPack()); err != nil {
 		return nil, err
 	}
-	pack, err := loadFallbackLangPack()
+	catalog, err := loadLangpackCatalog()
 	if err != nil {
 		return nil, err
 	}
-	return fallbackLangPackDifference(pack, 0), nil
+	pack, err := langPackForCode(catalog, in.GetLangPack(), in.GetLangCode())
+	if err != nil {
+		return nil, err
+	}
+	return langPackDifference(pack, 0), nil
 }
 
 func (c *ApiFullCore) LangpackGetStrings(in *mtproto.TLLangpackGetStrings) (*mtproto.Vector_LangPackString, error) {
@@ -259,10 +447,14 @@ func (c *ApiFullCore) LangpackGetStrings(in *mtproto.TLLangpackGetStrings) (*mtp
 	if in == nil {
 		return nil, mtproto.ErrLangPackInvalid
 	}
-	if err := validateLangpackRequest(in.GetLangPack(), in.GetLangCode()); err != nil {
+	if err := validateLangpackRequest(in.GetLangPack()); err != nil {
 		return nil, err
 	}
-	pack, err := loadFallbackLangPack()
+	catalog, err := loadLangpackCatalog()
+	if err != nil {
+		return nil, err
+	}
+	pack, err := langPackForCode(catalog, in.GetLangPack(), in.GetLangCode())
 	if err != nil {
 		return nil, err
 	}
@@ -287,14 +479,18 @@ func (c *ApiFullCore) LangpackGetDifference(in *mtproto.TLLangpackGetDifference)
 	if in == nil {
 		return nil, mtproto.ErrLangPackInvalid
 	}
-	if err := validateLangpackRequest(in.GetLangPack(), in.GetLangCode()); err != nil {
+	if err := validateLangpackRequest(in.GetLangPack()); err != nil {
 		return nil, err
 	}
-	pack, err := loadFallbackLangPack()
+	catalog, err := loadLangpackCatalog()
 	if err != nil {
 		return nil, err
 	}
-	return fallbackLangPackDifference(pack, in.GetFromVersion()), nil
+	pack, err := langPackForCode(catalog, in.GetLangPack(), in.GetLangCode())
+	if err != nil {
+		return nil, err
+	}
+	return langPackDifference(pack, in.GetFromVersion()), nil
 }
 
 func (c *ApiFullCore) LangpackGetLanguages(in *mtproto.TLLangpackGetLanguages) (*mtproto.Vector_LangPackLanguage, error) {
@@ -304,14 +500,22 @@ func (c *ApiFullCore) LangpackGetLanguages(in *mtproto.TLLangpackGetLanguages) (
 	if in == nil {
 		return nil, mtproto.ErrLangPackInvalid
 	}
-	if err := validateLangpackRequest(in.GetLangPack(), ""); err != nil {
+	if err := validateLangpackRequest(in.GetLangPack()); err != nil {
 		return nil, err
 	}
-	pack, err := loadFallbackLangPack()
+	catalog, err := loadLangpackCatalog()
 	if err != nil {
 		return nil, err
 	}
-	return &mtproto.Vector_LangPackLanguage{Datas: []*mtproto.LangPackLanguage{langpackLanguage(pack)}}, nil
+	availableLanguages := catalog.languages
+	if in.GetLangPack() != "weba" {
+		availableLanguages = catalog.languages[:1]
+	}
+	languages := make([]*mtproto.LangPackLanguage, 0, len(availableLanguages))
+	for _, pack := range availableLanguages {
+		languages = append(languages, langpackLanguage(pack, in.GetLangPack()))
+	}
+	return &mtproto.Vector_LangPackLanguage{Datas: languages}, nil
 }
 
 func (c *ApiFullCore) LangpackGetLanguage(in *mtproto.TLLangpackGetLanguage) (*mtproto.LangPackLanguage, error) {
@@ -321,12 +525,16 @@ func (c *ApiFullCore) LangpackGetLanguage(in *mtproto.TLLangpackGetLanguage) (*m
 	if in == nil {
 		return nil, mtproto.ErrLangPackInvalid
 	}
-	if err := validateLangpackRequest(in.GetLangPack(), in.GetLangCode()); err != nil {
+	if err := validateLangpackRequest(in.GetLangPack()); err != nil {
 		return nil, err
 	}
-	pack, err := loadFallbackLangPack()
+	catalog, err := loadLangpackCatalog()
 	if err != nil {
 		return nil, err
 	}
-	return langpackLanguage(pack), nil
+	pack, err := langPackForCode(catalog, in.GetLangPack(), in.GetLangCode())
+	if err != nil {
+		return nil, err
+	}
+	return langpackLanguage(pack, in.GetLangPack()), nil
 }

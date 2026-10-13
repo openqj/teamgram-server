@@ -70,7 +70,7 @@ func (c *ApiFullCore) newGroupCallMediaProvider() (*groupCallMediaProvider, erro
 		return nil, mtproto.ErrMethodNotImpl
 	}
 	parsed, err := url.Parse(strings.TrimSpace(cfg.GroupCallMediaEndpoint))
-	if err != nil || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || !securePaymentProviderURL(parsed, false) {
+	if err != nil || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || !securePaymentProviderURL(parsed, cfg.AllowInsecureProviderHTTP) {
 		return nil, mtproto.ErrInternalServerError
 	}
 	timeout := 5 * time.Second

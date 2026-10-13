@@ -419,6 +419,35 @@ func TestBotPaymentFingerprintBindsShippingAndTip(t *testing.T) {
 	}
 }
 
+func TestPremiumSlugPaymentRequestKeySeparatesInvoices(t *testing.T) {
+	const userID int64 = 902011
+	first := &mtproto.TLPaymentsSendPaymentForm{
+		FormId:  42,
+		Invoice: premiumSelfSubscriptionInvoiceForTest("premium-monthly"),
+	}
+	replay := &mtproto.TLPaymentsSendPaymentForm{
+		FormId:  42,
+		Invoice: premiumSelfSubscriptionInvoiceForTest("premium-monthly"),
+	}
+	second := &mtproto.TLPaymentsSendPaymentForm{
+		FormId:  42,
+		Invoice: premiumSelfSubscriptionInvoiceForTest("premium-yearly"),
+	}
+
+	firstKey := paymentRequestKey(userID, first)
+	replayKey := paymentRequestKey(userID, replay)
+	secondKey := paymentRequestKey(userID, second)
+	if firstKey == "" || firstKey != replayKey {
+		t.Fatalf("same Premium slug was not idempotent: first=%q replay=%q", firstKey, replayKey)
+	}
+	if firstKey == secondKey {
+		t.Fatalf("different Premium slugs shared an idempotency key: first=%q second=%q", firstKey, secondKey)
+	}
+	if got, want := firstKey[:len("invoice:")], "invoice:"; got != want {
+		t.Fatalf("slug payment key = %q, want invoice fingerprint key", firstKey)
+	}
+}
+
 func TestPaymentsGetBankCardDataUsesVerifiedProviderData(t *testing.T) {
 	const userID int64 = 902008
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

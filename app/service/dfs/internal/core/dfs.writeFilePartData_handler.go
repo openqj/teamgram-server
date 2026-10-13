@@ -23,7 +23,9 @@ const maxFilePartBytes = 512 * 1024
 // BFF performs the same checks, but this service boundary is also reachable by
 // other callers and must not trust those callers to enforce protocol limits.
 func validateWriteFilePartData(in *dfs.TLDfsWriteFilePartData) error {
-	if in == nil || in.GetCreator() <= 0 || in.GetFileId() <= 0 {
+	// Auth key IDs are TL longs and may be negative when interpreted as
+	// signed int64 values. Zero is the only missing creator value.
+	if in == nil || in.GetCreator() == 0 || in.GetFileId() == 0 {
 		return mtproto.ErrInputRequestInvalid
 	}
 	if err := model.CheckFilePart(in.GetFilePart()); err != nil {

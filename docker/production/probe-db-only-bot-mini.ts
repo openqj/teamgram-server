@@ -310,6 +310,9 @@ async function main(): Promise<void> {
     await userClient.connect();
     const userMe = await userClient.getMe();
     if (String(userMe?.id) !== userId.toString()) throw new Error(`user auth mismatch: ${String(userMe?.id)}`);
+    await botClient.connect();
+    const botMe = await botClient.getMe();
+    if (String(botMe?.id) !== botId.toString()) throw new Error(`bot auth mismatch: ${String(botMe?.id)}`);
 
     const webView = await invoke(userClient, 'messages.requestWebView', rawRequestWebView());
     const webQueryId = queryId(webView);
@@ -326,7 +329,9 @@ async function main(): Promise<void> {
     const button = await invoke(userClient, 'bots.getRequestedWebViewButton', rawGetRequestedWebViewButton(requestId));
     results.getRequestedWebViewButton = { constructor: rpcName(button), url: button?.url, text: button?.text };
 
-    const prepared = await invoke(userClient, 'messages.savePreparedInlineMessage', rawSavePreparedInlineMessage(inlineResult(preparedId, 'prepared')));
+    // Layer 229 requires the bot account to save a prepared inline result;
+    // the user session only reads it back after publication.
+    const prepared = await invoke(botClient, 'messages.savePreparedInlineMessage', rawSavePreparedInlineMessage(inlineResult(preparedId, 'prepared')));
     results.savePreparedInlineMessage = { constructor: rpcName(prepared), id: prepared?.id };
     const preparedRead = await invoke(userClient, 'messages.getPreparedInlineMessage', rawGetPreparedInlineMessage(preparedId));
     results.getPreparedInlineMessage = { constructor: rpcName(preparedRead), id: preparedRead?.result?.id };
@@ -335,9 +340,6 @@ async function main(): Promise<void> {
     const inlineQueryId = queryId(pending);
     results.getInlineBotResults = { constructor: rpcName(pending), queryId: inlineQueryId.toString(), resultCount: pending?.results?.length ?? 0 };
 
-    await botClient.connect();
-    const botMe = await botClient.getMe();
-    if (String(botMe?.id) !== botId.toString()) throw new Error(`bot auth mismatch: ${String(botMe?.id)}`);
     const set = await invoke(botClient, 'messages.setInlineBotResults', rawSetInlineBotResults(inlineQueryId, inlineResult('db-only-result', 'inline')));
     results.setInlineBotResults = { constructor: rpcName(set), value: set?.value };
     const status = await invoke(botClient, 'help.setBotUpdatesStatus', rawSetBotUpdatesStatus());

@@ -128,6 +128,11 @@ func (d *UserNotifySettingsDAO) ext(ctx context.Context, db DB, u int64, pt int3
 	for _, c := range cols[3:] {
 		updates = append(updates, fmt.Sprintf("%s=EXCLUDED.%s", c, c))
 	}
+	// A reset keeps the row as a tombstone so defaults can be restored without
+	// losing the unique key. Any subsequent explicit update must reactivate it.
+	if _, ok := m["deleted"]; !ok {
+		updates = append(updates, "deleted=FALSE")
+	}
 	q := `INSERT INTO user_notify_settings(` + strings.Join(cols, ",") + ") VALUES (" + strings.Join(ph, ",") + ") ON CONFLICT(user_id,peer_type,peer_id) DO UPDATE SET " + strings.Join(updates, ",") + " RETURNING id"
 	var id int64
 	e := db.QueryRow(ctx, q, args...).Scan(&id)

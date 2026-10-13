@@ -80,17 +80,15 @@
     "id": "channel.backend-restart-persistence",
     "category": "channel",
     "gate": "backend_restart",
-    "kind": "manual",
-    "required_env": ["ACCEPTANCE_COMPOSE_FILE", "ACCEPTANCE_SERVICE"],
+    "kind": "shell",
+    "script": "tools/run-backend-restart-critical.sh",
+    "required_env": ["TEAMGRAM_GRAMJS_DIR", "RUN_RESTART_PROBE"],
+    "env_defaults": {"RESTART_PROBE_KIND": "channel", "TG_DC_HOST": "127.0.0.1", "TG_DC_PORT": "11443"},
+    "requires_docker": true,
     "evidence": "Create a tagged channel, member, message and invite; restart only the backend/session service; reconnect both accounts and verify all objects, pts/date/seq continuity and update fan-out.",
-    "known_gap": "No checked-in probe currently preserves a tagged channel across a backend restart, so this gate must remain manual until such a probe exists.",
+    "known_gap": "The probe uses PostgreSQL-backed fixture auth and verifies canonical fan-out after restart; production SMS login and external channel media remain separate gates.",
     "destructive": true,
-    "manual_steps": [
-      "Run channel.cross-account-message-fanout or an equivalent tagged setup and keep the tag in the evidence artifact.",
-      "Run docker compose -f $ACCEPTANCE_COMPOSE_FILE restart $ACCEPTANCE_SERVICE.",
-      "Reconnect account A and account B with fresh auth sessions; read the tagged channel/history and verify the recipient update stream.",
-      "Run the cleanup operation and attach pre/post PostgreSQL row counts plus update state (pts/date/seq)."
-    ]
+    "manual_steps": []
   },
 
   {
@@ -136,17 +134,15 @@
     "id": "settings.backend-restart-persistence",
     "category": "settings",
     "gate": "backend_restart",
-    "kind": "manual",
-    "required_env": ["ACCEPTANCE_COMPOSE_FILE", "ACCEPTANCE_SERVICE"],
+    "kind": "shell",
+    "script": "tools/run-backend-restart-critical.sh",
+    "required_env": ["TEAMGRAM_GRAMJS_DIR", "RUN_RESTART_PROBE"],
+    "env_defaults": {"RESTART_PROBE_KIND": "settings", "TG_DC_HOST": "127.0.0.1", "TG_DC_PORT": "11443"},
+    "requires_docker": true,
     "evidence": "Change tagged notification/privacy/session state, restart the backend, reconnect two accounts, read state back and verify recipient/update state before restoring it.",
-    "known_gap": "Existing settings probes clean up within one process and do not provide a restart barrier.",
+    "known_gap": "The probe covers notification settings persistence and restoration; provider-backed authorization and external device push delivery remain separate gates.",
     "destructive": true,
-    "manual_steps": [
-      "Run settings.notifications-cross-account or settings.global-privacy-roundtrip and capture the tagged before state.",
-      "Run docker compose -f $ACCEPTANCE_COMPOSE_FILE restart $ACCEPTANCE_SERVICE.",
-      "Reconnect both fixture accounts and verify the tagged value and any canonical updates.",
-      "Restore the exact before state and include PostgreSQL row hashes before/after restart."
-    ]
+    "manual_steps": []
   },
 
   {
@@ -195,12 +191,81 @@
     "kind": "manual",
     "required_env": ["TEAMGRAM_GRAMJS_DIR"],
     "evidence": "Run the real Playwright suite bot-miniapp-web.spec.ts against the running Web UI; capture login, bot start, main Mini App iframe and cleanup screenshots/logs.",
-    "known_gap": "The suite lives in the separate Web workspace and is not invoked by this repository runner.",
+    "known_gap": "The JUnit gate covers the Web UI session only; signed external provider authorization, backend restart replay and recipient update delivery remain separate.",
+    "external_evidence": {
+      "type": "playwright_junit",
+      "tests": [
+        "bot-miniapp-web.spec.ts::isolated Web UI can start a bot and open its main Mini App"
+      ]
+    },
     "destructive": true,
     "manual_steps": [
       "cd $TEAMGRAM_GRAMJS_DIR",
-      "npm run test:playwright:real -- tests/playwright-real/bot-miniapp-web.spec.ts",
-      "Attach the Playwright report and the WebSocket/session trace; do not infer provider or restart coverage from a UI pass."
+      "PLAYWRIGHT_JUNIT_OUTPUT_FILE=/tmp/teamgram-web-ui-playwright.xml npm run test:playwright:real -- --reporter=junit tests/playwright-real/bot-miniapp-web.spec.ts",
+      "Pass --playwright-junit /tmp/teamgram-web-ui-playwright.xml to critical_path_acceptance.py; do not infer provider or restart coverage from a UI pass."
+    ]
+  },
+  {
+    "id": "web-ui.channel-settings",
+    "category": "web_ui",
+    "gate": "web_ui_real_session",
+    "kind": "manual",
+    "evidence": "Real Playwright channel and settings flows create, post to, inspect and delete a channel, then persist and restore channel notification settings across reload.",
+    "known_gap": "The JUnit gate covers the Web UI session only; backend restart, provider authorization and cross-device update delivery remain separate.",
+    "external_evidence": {
+      "type": "playwright_junit",
+      "tests": [
+        "channel-settings-web.spec.ts::isolated Web UI can create, post to, inspect, and delete a channel",
+        "channel-settings-web.spec.ts::isolated Web UI persists channel notification settings across reload"
+      ]
+    },
+    "destructive": true,
+    "manual_steps": [
+      "cd $TEAMGRAM_GRAMJS_DIR",
+      "PLAYWRIGHT_JUNIT_OUTPUT_FILE=/tmp/teamgram-web-ui-playwright.xml npm run test:playwright:real -- --reporter=junit tests/playwright-real/channel-settings-web.spec.ts",
+      "Pass --playwright-junit /tmp/teamgram-web-ui-playwright.xml to critical_path_acceptance.py."
+    ]
+  },
+  {
+    "id": "web-ui.contact-and-messaging",
+    "category": "web_ui",
+    "gate": "web_ui_real_session",
+    "kind": "manual",
+    "evidence": "Real Playwright flows add and remove a contact, create a group, exchange a message, and send/edit a direct message through the live WebSocket/session/BFF path.",
+    "known_gap": "The JUnit gate covers the Web UI session only; backend restart, provider authorization and cross-device update delivery remain separate.",
+    "external_evidence": {
+      "type": "playwright_junit",
+      "tests": [
+        "contact-web.spec.ts::isolated Web UI can add and remove a fixture phone contact",
+        "isolated-web.spec.ts::isolated Web UI can create a group and exchange a message",
+        "isolated-web.spec.ts::isolated Web UI can send and edit a direct message"
+      ]
+    },
+    "destructive": true,
+    "manual_steps": [
+      "cd $TEAMGRAM_GRAMJS_DIR",
+      "PLAYWRIGHT_JUNIT_OUTPUT_FILE=/tmp/teamgram-web-ui-playwright.xml npm run test:playwright:real -- --reporter=junit tests/playwright-real/contact-web.spec.ts tests/playwright-real/isolated-web.spec.ts",
+      "Pass --playwright-junit /tmp/teamgram-web-ui-playwright.xml to critical_path_acceptance.py."
+    ]
+  },
+  {
+    "id": "web-ui.runtime-constructors",
+    "category": "web_ui",
+    "gate": "web_ui_real_session",
+    "kind": "manual",
+    "evidence": "Real Playwright worker smoke test confirms selected Layer 229 GramJS constructors are exposed by the Web UI worker after login.",
+    "known_gap": "The JUnit gate covers client constructor exposure only; backend method semantics and provider/restart behavior remain separate.",
+    "external_evidence": {
+      "type": "playwright_junit",
+      "tests": [
+        "gramjs-runtime.spec.ts::isolated Web worker exposes selected runtime API constructors"
+      ]
+    },
+    "destructive": false,
+    "manual_steps": [
+      "cd $TEAMGRAM_GRAMJS_DIR",
+      "PLAYWRIGHT_JUNIT_OUTPUT_FILE=/tmp/teamgram-web-ui-playwright.xml npm run test:playwright:real -- --reporter=junit tests/playwright-real/gramjs-runtime.spec.ts",
+      "Pass --playwright-junit /tmp/teamgram-web-ui-playwright.xml to critical_path_acceptance.py."
     ]
   },
   {
@@ -275,6 +340,30 @@
       "Issue refund/revoke, consume the provider callback, and verify both sessions plus the durable reconciliation ledger."
     ]
   },
+  {
+    "id": "premium.entitlement-restart-fixture",
+    "category": "premium",
+    "gate": "fixture_restart_reconciliation",
+    "kind": "tsx",
+    "script": "docker/production/probe-premium-entitlement-restart.ts",
+    "required_env": [
+      "TEAMGRAM_GRAMJS_DIR",
+      "A_AUTH_B64",
+      "B_AUTH_B64",
+      "A_USER_ID",
+      "B_USER_ID",
+      "PREMIUM_INVOICE_SLUG",
+      "RUN_BACKEND_RESTART",
+      "ACCEPTANCE_COMPOSE_FILE",
+      "ACCEPTANCE_SERVICE"
+    ],
+    "env_defaults": {"TG_DC_ID": "2", "TG_DC_HOST": "127.0.0.1", "TG_DC_PORT": "11443"},
+    "requires_docker": true,
+    "evidence": "The local signed payment fixture settles a Premium invoice once, replays the exact Layer 229 request, verifies A's premium flag from A and B sessions, restarts only the backend, and verifies provider/local receipt, entitlement, outbox and user rows after reconnect.",
+    "known_gap": "This is fixture settlement and restart evidence only; real Apple/Google receipt verification, refund/revoke webhooks, entitlement removal and production provider reconciliation remain covered by premium.entitlement-refund-restart.",
+    "destructive": true,
+    "manual_steps": []
+  },
 
   {
     "id": "business-profile-cross-session",
@@ -319,16 +408,14 @@
     "id": "business.backend-restart-and-hydration",
     "category": "business",
     "gate": "backend_restart_userfull_hydration",
-    "kind": "manual",
-    "required_env": ["ACCEPTANCE_COMPOSE_FILE", "ACCEPTANCE_SERVICE"],
+    "kind": "shell",
+    "script": "tools/run-backend-restart-critical.sh",
+    "required_env": ["TEAMGRAM_GRAMJS_DIR", "RUN_RESTART_PROBE"],
+    "env_defaults": {"RESTART_PROBE_KIND": "business", "TG_DC_HOST": "127.0.0.1", "TG_DC_PORT": "11443"},
+    "requires_docker": true,
     "evidence": "Business settings/link state survives restart, a resolver account sees the exact link and a recipient receives the canonical update; users.getFullUser hydrates all business fields.",
-    "known_gap": "No existing probe verifies complete userFull hydration or recipient fan-out after a process restart.",
+    "known_gap": "The probe verifies the tagged link, UserFull constructor and post-restart recipient update using fixture auth; signed external Business provider authority remains separate.",
     "destructive": true,
-    "manual_steps": [
-      "Run business.webview-cross-account and keep one tagged BusinessChatLink and recipient ID.",
-      "Run docker compose -f $ACCEPTANCE_COMPOSE_FILE restart $ACCEPTANCE_SERVICE.",
-      "Reconnect owner and resolver sessions; call account.resolveBusinessChatLink and users.getFullUser, then verify the recipient update stream.",
-      "Delete the tagged link/settings and attach row hashes and update state before and after restart."
-    ]
+    "manual_steps": []
   }
 ]

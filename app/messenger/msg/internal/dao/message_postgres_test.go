@@ -26,6 +26,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/test/bufconn"
+	"google.golang.org/protobuf/proto"
 )
 
 type messageIDGenStub struct {
@@ -525,6 +526,84 @@ func TestPostgresZeroRandomIDConsumerReplay(t *testing.T) {
 				t.Fatalf("replay messages/updates=%d/%d", messageCount, updateCount)
 			}
 		})
+	}
+}
+
+func TestPostgresIncomingUserMessageUsesSenderPeerForReadHistory(t *testing.T) {
+	d, _ := newMessagePostgresFixture(t)
+	ctx := context.Background()
+	const senderID, recipientID = int64(101), int64(202)
+	outbox := &msg.OutboxMessage{
+		RandomId: 303,
+		Message:  messageTestBox(senderID, recipientID, 303, 0).Message,
+	}
+	senderBox, _, err := d.SendUserMessage(ctx, senderID, recipientID, outbox)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inboxBox, err := d.SendUserMessageToInbox(ctx, senderID, recipientID, senderBox.DialogMessageId, senderBox.RandomId, senderBox.Message)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inboxBox.PeerId != senderID || inboxBox.Message.GetPeerId().GetUserId() != senderID {
+		t.Fatalf("incoming peer = %d/message peer = %d, want sender %d", inboxBox.PeerId, inboxBox.Message.GetPeerId().GetUserId(), senderID)
+	}
+	var storedPeerID, dialogPeerID int64
+	if err := d.Pool.QueryRow(ctx, `SELECT peer_id FROM messages WHERE user_id=$1 AND user_message_box_id=$2`, recipientID, inboxBox.MessageId).Scan(&storedPeerID); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Pool.QueryRow(ctx, `SELECT peer_id FROM dialogs WHERE user_id=$1 AND peer_type=$2 AND peer_id=$3`, recipientID, mtproto.PEER_USER, senderID).Scan(&dialogPeerID); err != nil {
+		t.Fatal(err)
+	}
+	if storedPeerID != senderID || dialogPeerID != senderID {
+		t.Fatalf("stored incoming peer=%d dialog peer=%d, want %d", storedPeerID, dialogPeerID, senderID)
+	}
+	updates, _, _, err := d.ReadHistoryState(ctx, recipientID, mtproto.MakePeerUtil(mtproto.PEER_USER, senderID), inboxBox.MessageId)
+	if err != nil {
+		t.Fatalf("read history for incoming message: %v", err)
+	}
+	if len(updates) != 1 || updates[0].GetPredicateName() != mtproto.Predicate_updateReadHistoryInbox {
+		t.Fatalf("read history updates = %#v, want one inbox receipt", updates)
+	}
+}
+
+func TestPostgresIncomingUserMessageAppliesEditWithDeliveryPeer(t *testing.T) {
+	d, _ := newMessagePostgresFixture(t)
+	ctx := context.Background()
+	const senderID, recipientID = int64(101), int64(202)
+	peer := mtproto.MakePeerUtil(mtproto.PEER_USER, recipientID)
+	outbox := &msg.OutboxMessage{
+		RandomId: 303,
+		Message:  messageTestBox(senderID, recipientID, 303, 0).Message,
+	}
+	senderBox, _, err := d.SendUserMessage(ctx, senderID, recipientID, outbox)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.SendUserMessageToInbox(ctx, senderID, recipientID, senderBox.DialogMessageId, senderBox.RandomId, senderBox.Message); err != nil {
+		t.Fatal(err)
+	}
+	replacement := proto.Clone(senderBox.Message).(*mtproto.Message)
+	replacement.Message = "postgres edited"
+	updatedBox, err := d.EditMessageState(ctx, senderID, peer, senderBox.MessageId, replacement,
+		&inbox.TLInboxEditMessageToInboxV2{
+			UserId: recipientID, FromId: senderID, PeerType: mtproto.PEER_USER, PeerId: recipientID,
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.EditInboxMessageState(ctx, &inbox.TLInboxEditMessageToInboxV2{
+		UserId: recipientID, FromId: senderID, PeerType: mtproto.PEER_USER, PeerId: recipientID,
+		NewMessage: updatedBox,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var message string
+	if err := d.Pool.QueryRow(ctx, `SELECT message FROM messages WHERE user_id=$1 AND dialog_message_id=$2`, recipientID, senderBox.DialogMessageId).Scan(&message); err != nil {
+		t.Fatal(err)
+	}
+	if message != "postgres edited" {
+		t.Fatalf("recipient message = %q, want edited text", message)
 	}
 }
 
