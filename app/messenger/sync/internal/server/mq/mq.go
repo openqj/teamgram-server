@@ -10,9 +10,11 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	kafka "github.com/teamgram/marmota/pkg/mq"
+	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/messenger/sync/internal/core"
 	"github.com/teamgram/teamgram-server/app/messenger/sync/internal/dao"
 	"github.com/teamgram/teamgram-server/app/messenger/sync/internal/svc"
@@ -80,5 +82,14 @@ func handleMessage(ctx context.Context, svcCtx *svc.ServiceContext, method, key 
 	case *sync.TLSyncBroadcastUpdates:
 		_, err = c.SyncBroadcastUpdates(in)
 	}
+	// A deleted auth key cannot become valid again. Treat this as a consumed
+	// update so one stale session does not permanently block its Kafka partition.
+	if isPermanentSessionError(err) {
+		return nil
+	}
 	return err
+}
+
+func isPermanentSessionError(err error) bool {
+	return errors.Is(err, mtproto.ErrAuthKeyUnregistered)
 }

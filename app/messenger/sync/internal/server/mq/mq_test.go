@@ -2,9 +2,11 @@ package mq
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
+	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/messenger/sync/sync"
 	"google.golang.org/protobuf/proto"
 )
@@ -34,6 +36,18 @@ func TestHandleMessageDispatchesPushVariants(t *testing.T) {
 				t.Fatalf("message was not handled or its error was swallowed: %v", err)
 			}
 		})
+	}
+}
+
+func TestPermanentAuthKeyFailureIsConsumed(t *testing.T) {
+	if !errors.Is(mtproto.ErrAuthKeyUnregistered, mtproto.ErrAuthKeyUnregistered) {
+		t.Fatal("auth key error must be comparable with errors.Is")
+	}
+	if !isPermanentSessionError(mtproto.ErrAuthKeyUnregistered) {
+		t.Fatal("AUTH_KEY_UNREGISTERED must be treated as permanent")
+	}
+	if isPermanentSessionError(mtproto.ErrInternalServerError) {
+		t.Fatal("transient/internal errors must remain retryable")
 	}
 }
 
