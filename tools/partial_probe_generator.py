@@ -286,8 +286,8 @@ fi
 ROOT=%s
 OUT_DIR="${1:-$(dirname "$0")/runs}"
 mkdir -p "$OUT_DIR"
-python3 "$ROOT/tools/sql_evidence.py" \
-  --sql-file "$(dirname "$0")/sql-evidence.sql" \
+python3 "$ROOT/tools/sql_evidence.py" \\
+  --sql-file "$(dirname "$0")/sql-evidence.sql" \\
   --output "$OUT_DIR/sql-evidence.json"
 """ % shell_quote(str(root)),
         encoding="utf-8",
