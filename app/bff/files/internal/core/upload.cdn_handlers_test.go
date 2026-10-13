@@ -14,6 +14,7 @@ import (
 	"github.com/teamgram/teamgram-server/app/bff/files/internal/config"
 	"github.com/teamgram/teamgram-server/app/bff/files/internal/svc"
 	"github.com/zeromicro/go-zero/core/logx"
+	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
 func newCDNCore() *FilesCore {
@@ -283,5 +284,27 @@ func TestCanonicalCDNLocationOmitsWireConstructor(t *testing.T) {
 	}
 	if _, found := got["constructor"]; found {
 		t.Fatalf("canonical location leaked constructor: %#v", got)
+	}
+}
+
+func TestCanonicalCDNLocationPreservesMediaSelectorFlags(t *testing.T) {
+	photo := canonicalCDNLocation(&mtproto.InputFileLocation{
+		PredicateName: mtproto.Predicate_inputPeerPhotoFileLocation,
+		Big:           true,
+		PhotoId:       7,
+	})
+	if photo["big"] != true || photo["photo_id"] != int64(7) {
+		t.Fatalf("canonical peer photo location = %#v", photo)
+	}
+
+	stream := canonicalCDNLocation(&mtproto.InputFileLocation{
+		PredicateName: mtproto.Predicate_inputGroupCallStream,
+		TimeMs:        123,
+		Scale:         2,
+		VideoChannel:  wrapperspb.Int32(4),
+		VideoQuality:  wrapperspb.Int32(5),
+	})
+	if stream["time_ms"] != int64(123) || stream["scale"] != int32(2) || stream["video_channel"] != int32(4) || stream["video_quality"] != int32(5) {
+		t.Fatalf("canonical group-call location = %#v", stream)
 	}
 }

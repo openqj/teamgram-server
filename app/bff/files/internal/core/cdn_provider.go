@@ -86,6 +86,9 @@ func canonicalCDNLocation(location *mtproto.InputFileLocation) map[string]any {
 		putInt64("id", location.GetId())
 		putInt64("access_hash", location.GetAccessHash())
 	case mtproto.Predicate_inputPeerPhotoFileLocation:
+		if location.GetBig() {
+			result["big"] = true
+		}
 		putInt64("photo_id", location.GetPhotoId())
 		if peer := location.GetPeer(); peer != nil {
 			result["peer"] = peer
@@ -98,6 +101,12 @@ func canonicalCDNLocation(location *mtproto.InputFileLocation) map[string]any {
 	case mtproto.Predicate_inputGroupCallStream:
 		putInt64("time_ms", location.GetTimeMs())
 		putInt32("scale", location.GetScale())
+		if channel := location.GetVideoChannel(); channel != nil {
+			result["video_channel"] = channel.GetValue()
+		}
+		if quality := location.GetVideoQuality(); quality != nil {
+			result["video_quality"] = quality.GetValue()
+		}
 		if call := location.GetCall(); call != nil {
 			result["call"] = call
 		}
