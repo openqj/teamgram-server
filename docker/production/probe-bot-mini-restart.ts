@@ -1,6 +1,5 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { execFileSync } from 'node:child_process';
 import { authSession, loadFixtureAuthKey } from '../web-isolated/fixture-auth';
@@ -251,17 +250,6 @@ function rawRequestWebView(bot: Actor, url: string): RawRequest {
   );
 }
 
-function rawProlongWebView(queryId: bigint): RawRequest {
-  return new RawRequest(
-    0xb0d81a83,
-    concatBytes(int32(0), selfPeer().getBytes(), new Api.InputUser({ userId: 0n, accessHash: 0n }).getBytes(), int64(queryId)),
-    'messages.prolongWebView',
-  );
-}
-
-// messages.prolongWebView carries the bot InputUser, but the bot identity is
-// not part of the query lookup. Replace the placeholder with the actual bot
-// in the call site to keep the raw encoder explicit.
 function rawProlongWebViewFor(bot: Actor, queryId: bigint): RawRequest {
   return new RawRequest(
     0xb0d81a83,
@@ -296,10 +284,6 @@ function readState<T extends Record<string, any>>(): T {
 function writeState(value: Record<string, any>): void {
   fs.mkdirSync(path.dirname(stateFile), { recursive: true });
   fs.writeFileSync(stateFile, `${JSON.stringify(value, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
-}
-
-function stateJson(value: unknown): string {
-  return JSON.stringify(value).replaceAll("'", "''");
 }
 
 type InlineSeed = { query: string; resultId: string; message: string; queryId: string };
@@ -384,6 +368,16 @@ function extractMessageId(value: any, text: string): number {
   if (value.message?.message === text) return Number(value.message.id || 0);
   if (value.message === text) return Number(value.id || 0);
   return 0;
+}
+
+async function waitForEvent(events: any[], text: string, timeoutMs = 8_000): Promise<any> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const event = events.find((item) => item?.text === text);
+    if (event) return event;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  throw new Error(`recipient update timeout for ${text}; observed=${JSON.stringify(events.slice(-8))}`);
 }
 
 async function disconnect(client: any): Promise<void> {
@@ -489,16 +483,15 @@ async function afterPhase(): Promise<void> {
     requireCondition(messages.length === 1, `exactly-once message history count is ${messages.length}`);
     const messageId = Number(messages[0]?.id || extractMessageId(sentOne, saved.messageText) || extractMessageId(sentTwo, saved.messageText));
     requireCondition(messageId > 0, 'exactly-once message has no durable id');
+    await waitForEvent(eventsB, saved.messageText);
     const matchingEvents = eventsB.filter((event) => event?.text === saved.messageText);
-    requireCondition(matchingEvents.length <= 1, `recipient observed duplicate live updates (${matchingEvents.length})`);
+    requireCondition(matchingEvents.length === 1, `recipient observed ${matchingEvents.length} live updates`);
     const finalStateA = assertMonotonic(stateA, await invoke(a.client, 'A updates.getState final', new Api.updates.GetState()), 'A final');
     const finalStateB = assertMonotonic(stateB, await invoke(b.client, 'B updates.getState final', new Api.updates.GetState()), 'B final');
-    if (matchingEvents.length === 1) {
-      const event = matchingEvents[0];
-      requireCondition(event.id > 0 && event.date > 0, 'recipient update has no id/date');
-      requireCondition(event.pts > stateB.pts && event.pts <= finalStateB.pts, `recipient update pts is outside state window: ${JSON.stringify(event)}`);
-      requireCondition(event.ptsCount > 0, `recipient update pts_count is invalid: ${JSON.stringify(event)}`);
-    }
+    const event = matchingEvents[0];
+    requireCondition(event.id > 0 && event.date > 0, 'recipient update has no id/date');
+    requireCondition(event.pts > stateB.pts && event.pts <= finalStateB.pts, `recipient update pts is outside state window: ${JSON.stringify(event)}`);
+    requireCondition(event.ptsCount > 0, `recipient update pts_count is invalid: ${JSON.stringify(event)}`);
     saved.messageId = messageId;
     writeState({ ...saved, after: { stateA: finalStateA, stateB: finalStateB, readbacks, durableInline, eventCount: matchingEvents.length, sendResults: [rpcName(sentOne), rpcName(sentTwo)] } });
     console.log(JSON.stringify({ phase, tag, readbacks, durableInline, message: { id: messageId, eventCount: matchingEvents.length }, state: { before: { a: saved.stateA, b: saved.stateB }, after: { a: finalStateA, b: finalStateB } } }));

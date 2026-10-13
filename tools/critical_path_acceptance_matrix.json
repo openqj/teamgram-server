@@ -159,6 +159,20 @@
     "destructive": true
   },
   {
+    "id": "bot.backend-restart-replay",
+    "category": "bot_miniapp",
+    "gate": "backend_restart",
+    "kind": "shell",
+    "script": "tools/run-backend-restart-bot-mini.sh",
+    "required_env": ["TEAMGRAM_GRAMJS_DIR", "RUN_RESTART_PROBE"],
+    "env_defaults": {"TG_DC_HOST": "127.0.0.1", "TG_DC_PORT": "11443"},
+    "requires_docker": true,
+    "evidence": "Before restart, two independent fixture users create tagged inline queries and Mini App WebView requests; after restart, fresh A/B/Bot sessions read both records, replay identical inline results twice, prolong both WebViews, verify exactly one durable cross-account message and one recipient update with monotonic pts/date, then clean only probe-owned rows.",
+    "known_gap": "Uses PostgreSQL-backed fixture auth and local provider-shaped Bot/Mini App state. Signed external WebView/Bot authorization, production bot traffic and real payment provider callbacks remain separate gates.",
+    "destructive": true,
+    "manual_steps": []
+  },
+  {
     "id": "bot.webview-provider-boundary",
     "category": "bot_miniapp",
     "gate": "provider_contract",
