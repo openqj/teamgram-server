@@ -494,7 +494,9 @@ def merge_report(
         row_id = str(row["id"])
         if row_id in result_ids:
             continue
-        item = apply_external_evidence(inspect_row(row), row, evidence)
+        inspected = inspect_row(row)
+        item = {**inspected, "result": inspected["status"]}
+        item = apply_external_evidence(item, row, evidence)
         apply_probe_evidence(item, probe_evidence)
         report["results"].append(item)
     report["merged_at"] = dt.datetime.now(dt.timezone.utc).isoformat()
