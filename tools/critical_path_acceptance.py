@@ -477,7 +477,7 @@ def merge_report(
     output_path: Path | None,
     rows: list[dict[str, Any]],
     evidence: dict[str, Any] | None,
-    probe_evidence: dict[str, Any] | None,
+    probe_evidence: dict[str, Any] | None = None,
 ) -> tuple[Path, dict[str, Any]]:
     source_path = source_path.expanduser()
     report = json.loads(source_path.read_text(encoding="utf-8"))
