@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -9,6 +11,24 @@ import (
 	"testing"
 	"time"
 )
+
+func TestCanonicalJSONSortsObjectsWithoutChangingNumbers(t *testing.T) {
+	canonical, err := canonicalJSON([]byte(`{"z":{"b":2,"a":1},"amount":9007199254740993}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []byte(`{"amount":9007199254740993,"z":{"a":1,"b":2}}`)
+	if !bytes.Equal(canonical, want) {
+		t.Fatalf("canonical JSON = %s, want %s", canonical, want)
+	}
+	var decoded map[string]any
+	if err = json.Unmarshal(canonical, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = canonicalJSON([]byte(`{"valid":true}{"trailing":true}`)); err == nil {
+		t.Fatal("multiple JSON values were accepted")
+	}
+}
 
 func TestControlPlaneRejectsProviderTransactionReuse(t *testing.T) {
 	dsn := strings.TrimSpace(os.Getenv("TEAMGRAM_POSTGRES_DSN"))
@@ -49,7 +69,11 @@ func TestControlPlaneRejectsProviderTransactionReuse(t *testing.T) {
 		Scan(&storedUserID, &storedRequestKey, &storedResponse); err != nil {
 		t.Fatalf("load original receipt: %v", err)
 	}
-	if storedUserID != userID || storedRequestKey != "request-1" || string(storedResponse) != string(response) {
+	canonicalResponse, canonicalErr := canonicalJSON(storedResponse)
+	if canonicalErr != nil {
+		t.Fatalf("canonicalize original receipt: %v", canonicalErr)
+	}
+	if storedUserID != userID || storedRequestKey != "request-1" || string(canonicalResponse) != string(response) {
 		t.Fatalf("original receipt was changed: user=%d request=%q response=%s", storedUserID, storedRequestKey, storedResponse)
 	}
 

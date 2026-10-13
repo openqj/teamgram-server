@@ -18,7 +18,6 @@ package core
 import (
 	"bytes"
 	"context"
-	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -31,6 +30,7 @@ import (
 	"time"
 
 	"github.com/teamgram/proto/mtproto"
+	"github.com/teamgram/teamgram-server/pkg/providercontract"
 )
 
 const premiumProviderBodyLimit = 1 << 20
@@ -258,20 +258,11 @@ func (r *premiumPromoProviderResult) UnmarshalJSON(data []byte) error {
 }
 
 func premiumProviderSignature(key string, body []byte) string {
-	h := hmac.New(sha256.New, []byte(key))
-	_, _ = h.Write(body)
-	return "sha256=" + hex.EncodeToString(h.Sum(nil))
+	return providercontract.Signature(key, body)
 }
 
 func verifyPremiumProviderSignature(key, signature string, body []byte) bool {
-	signature = strings.TrimPrefix(strings.TrimSpace(signature), "sha256=")
-	provided, err := hex.DecodeString(signature)
-	if err != nil || len(provided) != sha256.Size || strings.TrimSpace(key) == "" {
-		return false
-	}
-	h := hmac.New(sha256.New, []byte(key))
-	_, _ = h.Write(body)
-	return hmac.Equal(provided, h.Sum(nil))
+	return providercontract.VerifySignature(key, signature, body)
 }
 
 func securePremiumProviderURL(parsed *url.URL, allowInsecureHTTP bool) bool {
@@ -344,12 +335,8 @@ func (c *PremiumCore) callPaymentProvider(operation string, payload any, result 
 	if err != nil {
 		return mtproto.ErrPaymentProviderInvalid
 	}
-	req.Header.Set("Content-Type", "application/json")
-	if key != "" {
-		req.Header.Set("Authorization", "Bearer "+key)
-	}
-	req.Header.Set("Idempotency-Key", request.RequestID)
-	req.Header.Set("X-Teamgram-Payment-Provider-Request-Signature", premiumProviderSignature(signingKey, body))
+	providercontract.SetRequestHeaders(req, body, key, request.RequestID,
+		"X-Teamgram-Payment-Provider-Request-Signature", signingKey)
 	client := &http.Client{Timeout: timeout, CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}
 	resp, err := client.Do(req)
 	if err != nil {

@@ -374,7 +374,12 @@ async function main(): Promise<void> {
   }));
 }
 
-main().catch((error) => {
+main().then(() => {
+  // The authenticated GramJS senders can keep an idle timer alive after the
+  // final cleanup assertion. Exit only after the successful JSON evidence has
+  // been printed so the acceptance runner cannot turn a passed probe into a timeout.
+  process.exit(0);
+}).catch((error) => {
   cleanupState();
   console.error(`db-only bot/mini probe failed: ${error instanceof Error ? error.stack || error.message : String(error)}`);
   process.exitCode = 1;

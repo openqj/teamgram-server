@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/teamgram/teamgram-server/pkg/providercontract"
 )
 
 const (
@@ -650,7 +652,7 @@ func scanBotPaymentOutbox(scanner botPaymentQueryScanner) (BotPaymentOutbox, err
 	}
 	if item.ID <= 0 || item.QueryID <= 0 || item.BotUserID <= 0 || item.BuyerUserID <= 0 ||
 		!validBotPaymentOutboxEvent(item.EventType) ||
-		(item.State != BotPaymentOutboxStatePending && item.State != BotPaymentOutboxStateInflight && item.State != BotPaymentOutboxStateComplete) ||
+		!providercontract.ValidDeliveryState(item.State) ||
 		item.Attempts < 0 || !json.Valid(payload) {
 		return BotPaymentOutbox{}, ErrBotPaymentOutboxState
 	}

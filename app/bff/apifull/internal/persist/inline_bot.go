@@ -18,6 +18,11 @@ type InlineBotQuery struct {
 	BotID         int64              `json:"bot_id"`
 	RequesterID   int64              `json:"requester_id"`
 	PeerKey       string             `json:"peer_key"`
+	PeerType      string             `json:"peer_type,omitempty"`
+	HasGeo        bool               `json:"has_geo,omitempty"`
+	GeoLat        float64            `json:"geo_lat,omitempty"`
+	GeoLong       float64            `json:"geo_long,omitempty"`
+	GeoAccuracy   int32              `json:"geo_accuracy,omitempty"`
 	Query         string             `json:"query"`
 	Offset        string             `json:"offset"`
 	Gallery       bool               `json:"gallery"`
@@ -30,6 +35,13 @@ type InlineBotQuery struct {
 	Ready         bool               `json:"ready"`
 	ExpiresAt     int64              `json:"expires_at"`
 	UpdatedAt     int64              `json:"updated_at"`
+	DeliveryState string             `json:"delivery_state,omitempty"`
+	ClaimToken    string             `json:"claim_token,omitempty"`
+	LeaseUntil    int64              `json:"lease_until,omitempty"`
+	RetryAt       int64              `json:"retry_at,omitempty"`
+	LastError     string             `json:"last_error,omitempty"`
+	Attempts      int                `json:"attempts,omitempty"`
+	DeliveredAt   int64              `json:"delivered_at,omitempty"`
 }
 
 // InlineBotSwitchPM and InlineBotWebView are the JSON-safe subset of the
@@ -64,9 +76,21 @@ func CreateInlineBotQuery(query InlineBotQuery) error {
 	if query.ExpiresAt <= 0 {
 		query.ExpiresAt = time.Now().UTC().Add(5 * time.Minute).Unix()
 	}
+	if query.DeliveryState == "" {
+		query.DeliveryState = InlineBotQueryStatePending
+	}
+	if !validInlineBotQueryDeliveryState(query.DeliveryState) {
+		return ErrInlineQueryState
+	}
 	query.Ready = false
 	query.Results = []json.RawMessage{}
 	query.UpdatedAt = time.Now().UTC().Unix()
+	query.RetryAt = query.UpdatedAt
+	query.ClaimToken = ""
+	query.LeaseUntil = 0
+	query.LastError = ""
+	query.Attempts = 0
+	query.DeliveredAt = 0
 	return Update(inlineBotQueryKey(query.BotID), func(raw string) (string, error) {
 		items, err := decodeInlineQueries(raw)
 		if err != nil {

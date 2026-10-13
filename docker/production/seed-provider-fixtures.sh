@@ -14,6 +14,7 @@ set -Eeuo pipefail
 : "${COLLECTIBLE_URL:?COLLECTIBLE_URL must be set}"
 : "${CDN_PUBLIC_KEYS_JSON:?CDN_PUBLIC_KEYS_JSON must be set to a non-empty JSON array}"
 
+CALLBACK_TTL_SECONDS=${CALLBACK_TTL_SECONDS:-86400}
 COLLECTIBLE_CRYPTO_CURRENCY=${COLLECTIBLE_CRYPTO_CURRENCY:-}
 COLLECTIBLE_CRYPTO_AMOUNT=${COLLECTIBLE_CRYPTO_AMOUNT:-0}
 collectible_crypto_currency=$COLLECTIBLE_CRYPTO_CURRENCY
@@ -23,14 +24,14 @@ live_random_id=${LIVE_RANDOM_ID:-}
 live_request_payload=${LIVE_REQUEST_PAYLOAD:-}
 live_updates_json=${LIVE_UPDATES_JSON:-}
 
-for value_name in CALLBACK_USER_ID CALLBACK_MESSAGE_ID COLLECTIBLE_PURCHASE_DATE COLLECTIBLE_AMOUNT COLLECTIBLE_CRYPTO_AMOUNT; do
+for value_name in CALLBACK_USER_ID CALLBACK_MESSAGE_ID CALLBACK_TTL_SECONDS COLLECTIBLE_PURCHASE_DATE COLLECTIBLE_AMOUNT COLLECTIBLE_CRYPTO_AMOUNT; do
   value=${!value_name}
   if [[ ! "$value" =~ ^[0-9]+$ ]]; then
     printf '%s must be a non-negative integer\n' "$value_name" >&2
     exit 1
   fi
 done
-if (( CALLBACK_USER_ID <= 0 || CALLBACK_MESSAGE_ID <= 0 || COLLECTIBLE_PURCHASE_DATE <= 0 || COLLECTIBLE_AMOUNT < 0 || COLLECTIBLE_CRYPTO_AMOUNT < 0 )); then
+if (( CALLBACK_USER_ID <= 0 || CALLBACK_MESSAGE_ID <= 0 || CALLBACK_TTL_SECONDS <= 0 || COLLECTIBLE_PURCHASE_DATE <= 0 || COLLECTIBLE_AMOUNT < 0 || COLLECTIBLE_CRYPTO_AMOUNT < 0 )); then
   printf 'callback IDs, purchase date, amount and crypto amount are invalid\n' >&2
   exit 1
 fi
@@ -90,6 +91,7 @@ fi
 psql "$DATABASE_URL" --set=ON_ERROR_STOP=1 \
   --variable=callback_user_id="$CALLBACK_USER_ID" \
   --variable=callback_message_id="$CALLBACK_MESSAGE_ID" \
+  --variable=callback_ttl_seconds="$CALLBACK_TTL_SECONDS" \
   --variable=callback_data="$CALLBACK_DATA" \
   --variable=callback_answer_json="$CALLBACK_ANSWER_JSON" \
   --variable=collectible_username="$COLLECTIBLE_USERNAME" \
@@ -132,7 +134,7 @@ VALUES
    :'callback_message_id'::bigint,
    digest(convert_to(:'callback_data', 'UTF8'), 'sha256'),
    (:'callback_answer_json')::jsonb,
-   CURRENT_TIMESTAMP + INTERVAL '1 hour')
+   CURRENT_TIMESTAMP + (:'callback_ttl_seconds')::bigint * INTERVAL '1 second')
 ON CONFLICT (user_id, peer_key, message_id, data_digest) DO UPDATE
   SET answer = EXCLUDED.answer,
       expires_at = EXCLUDED.expires_at,

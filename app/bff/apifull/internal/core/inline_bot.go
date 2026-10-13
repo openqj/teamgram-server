@@ -80,6 +80,10 @@ func (c *ApiFullCore) MessagesGetInlineBotResults(in *mtproto.TLMessagesGetInlin
 	if err != nil {
 		return nil, err
 	}
+	peerType, err := c.inlineQueryPeerType(botID, in.GetPeer())
+	if err != nil {
+		return nil, err
+	}
 	query, err := persist.FindInlineBotQuery(botID, uid, peerKey, in.GetQuery(), in.GetOffset())
 	if err != nil {
 		return nil, err
@@ -94,10 +98,19 @@ func (c *ApiFullCore) MessagesGetInlineBotResults(in *mtproto.TLMessagesGetInlin
 			BotID:       botID,
 			RequesterID: uid,
 			PeerKey:     peerKey,
+			PeerType:    peerType,
 			Query:       in.GetQuery(),
 			Offset:      in.GetOffset(),
 			ExpiresAt:   0,
 			Results:     []json.RawMessage{},
+		}
+		if point := in.GetGeoPoint(); point != nil {
+			query.HasGeo = true
+			query.GeoLat = point.GetLat()
+			query.GeoLong = point.GetLong()
+			if accuracy := point.GetAccuracyRadius(); accuracy != nil {
+				query.GeoAccuracy = accuracy.GetValue()
+			}
 		}
 		if err = persist.CreateInlineBotQuery(*query); err != nil {
 			return nil, err
@@ -234,6 +247,63 @@ func inlineQueryPeerKey(callerID int64, peer *mtproto.InputPeer) (string, error)
 	}
 }
 
+// inlineQueryPeerType converts the target peer into the constructor carried by
+// updateBotInlineQuery. The constructor is part of the bot-facing contract and
+// must be derived from the authoritative peer kind, rather than from the
+// client-supplied string key.
+func (c *ApiFullCore) inlineQueryPeerType(botID int64, peer *mtproto.InputPeer) (string, error) {
+	if botID <= 0 || peer == nil {
+		return "", mtproto.ErrInputRequestInvalid
+	}
+	switch peer.GetPredicateName() {
+	case mtproto.Predicate_inputPeerSelf:
+		return mtproto.Predicate_inlineQueryPeerTypePM, nil
+	case mtproto.Predicate_inputPeerUser:
+		if peer.GetUserId() <= 0 || peer.GetAccessHash() == 0 {
+			return "", mtproto.ErrUserIdInvalid
+		}
+		if peer.GetUserId() == botID {
+			return mtproto.Predicate_inlineQueryPeerTypeSameBotPM, nil
+		}
+		if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.UserClient == nil {
+			return "", mtproto.ErrMethodNotImpl
+		}
+		profile, err := c.svcCtx.Dao.UserGetImmutableUser(c.ctx, &userpb.TLUserGetImmutableUser{Id: peer.GetUserId()})
+		if err != nil {
+			return "", err
+		}
+		if profile != nil && profile.GetUser() != nil && profile.IsBot() {
+			return mtproto.Predicate_inlineQueryPeerTypeBotPM, nil
+		}
+		return mtproto.Predicate_inlineQueryPeerTypePM, nil
+	case mtproto.Predicate_inputPeerChat:
+		if peer.GetChatId() <= 0 {
+			return "", mtproto.ErrPeerIdInvalid
+		}
+		return mtproto.Predicate_inlineQueryPeerTypeChat, nil
+	case mtproto.Predicate_inputPeerChannel:
+		if peer.GetChannelId() <= 0 || peer.GetAccessHash() == 0 {
+			return "", mtproto.ErrChannelInvalid
+		}
+		if !domain.Ready() {
+			return "", mtproto.ErrMethodNotImpl
+		}
+		channel, ok, err := domain.LoadChannel(peer.GetChannelId())
+		if err != nil {
+			return "", mtproto.ErrInternalServerError
+		}
+		if !ok || channel.AccessHash != peer.GetAccessHash() {
+			return "", mtproto.ErrChannelInvalid
+		}
+		if channel.Megagroup {
+			return mtproto.Predicate_inlineQueryPeerTypeMegagroup, nil
+		}
+		return mtproto.Predicate_inlineQueryPeerTypeBroadcast, nil
+	default:
+		return "", mtproto.ErrMethodNotImpl
+	}
+}
+
 func inlineQueryGeoKey(point *mtproto.InputGeoPoint) (string, error) {
 	if point == nil {
 		return "", nil
@@ -269,8 +339,11 @@ func (c *ApiFullCore) MessagesSetInlineBotResults(in *mtproto.TLMessagesSetInlin
 	encoded := make([]json.RawMessage, 0, len(in.GetResults()))
 	seenResultIDs := make(map[string]struct{}, len(in.GetResults()))
 	for _, result := range in.GetResults() {
+		if result == nil {
+			return nil, mtproto.ErrInputRequestInvalid
+		}
 		resultID := strings.TrimSpace(result.GetId())
-		if result == nil || resultID == "" || len(resultID) > 64 || strings.TrimSpace(result.GetType()) == "" {
+		if resultID == "" || len(resultID) > 64 || strings.TrimSpace(result.GetType()) == "" {
 			return nil, mtproto.ErrInputRequestInvalid
 		}
 		if _, exists := seenResultIDs[resultID]; exists {
@@ -1042,7 +1115,17 @@ func (c *ApiFullCore) inlineInputToMessageMedia(result *mtproto.InputBotInlineRe
 			Vcard:       message.GetVcard(),
 		}).To_MessageMedia(), nil, nil
 	case mtproto.Predicate_inputBotInlineMessageMediaWebPage:
-		return nil, nil, mtproto.ErrMethodNotImpl
+		if strings.TrimSpace(message.GetUrl()) == "" {
+			return nil, nil, mtproto.ErrInputRequestInvalid
+		}
+		record, err := loadOrCreateWebPage(message.GetUrl())
+		if err != nil {
+			return nil, nil, err
+		}
+		media := webPageMedia(record)
+		media.ForceLargeMedia = message.GetForceLargeMedia()
+		media.ForceSmallMedia = message.GetForceSmallMedia()
+		return mtproto.MakeTLMessageMediaWebPage(media).To_MessageMedia(), nil, nil
 	}
 	if message.GetPredicateName() == mtproto.Predicate_inputBotInlineMessageMediaInvoice {
 		media := &mtproto.InputMedia{

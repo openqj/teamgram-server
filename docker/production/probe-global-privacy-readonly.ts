@@ -5,7 +5,7 @@ import { createRequire } from 'node:module';
 
 const gramjsDir = process.env.TEAMGRAM_GRAMJS_DIR || '/Users/mac/open/test/telegram-tt-master';
 const dcId = Number(process.env.TG_DC_ID || '2');
-const userId = '136907714';
+const userId = process.env.GLOBAL_PRIVACY_USER_ID || '136907714';
 const globalAny = globalThis as typeof globalThis & { self?: any; addEventListener?: () => void };
 globalAny.self ??= globalThis;
 globalAny.addEventListener ??= () => {};
@@ -19,8 +19,8 @@ function sql(query: string): string {
 
 function loadAuthKey(): string {
   const body = sql(`SELECT encode(k.body, 'base64') FROM auth_users u JOIN auth_keys k USING(auth_key_id)
-    JOIN auth_key_infos i USING(auth_key_id) WHERE u.user_id=${userId} AND u.state=0 AND u.deleted=0
-    AND k.deleted=0 AND i.deleted=0 AND i.auth_key_type=0 ORDER BY u.date_active DESC,u.id DESC LIMIT 1`);
+    JOIN auth_key_infos i USING(auth_key_id) WHERE u.user_id=${userId} AND u.state=0 AND u.deleted=false
+    AND k.deleted=false AND i.deleted=false AND i.auth_key_type=0 ORDER BY u.date_active DESC,u.id DESC LIMIT 1`);
   if (!body) throw new Error(`no active production auth key found for user ${userId}`);
   return Buffer.from(body, 'base64').toString('hex');
 }

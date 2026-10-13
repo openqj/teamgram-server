@@ -90,8 +90,8 @@ func TestInlineResultPredicateValidation(t *testing.T) {
 	}{
 		{predicate: "", want: nil},
 		{predicate: mtproto.Predicate_inputBotInlineResult, want: nil},
-		{predicate: mtproto.Predicate_inputBotInlineResultPhoto, want: mtproto.ErrMethodNotImpl},
-		{predicate: mtproto.Predicate_inputBotInlineResultDocument, want: mtproto.ErrMethodNotImpl},
+		{predicate: mtproto.Predicate_inputBotInlineResultPhoto, want: nil},
+		{predicate: mtproto.Predicate_inputBotInlineResultDocument, want: nil},
 		{predicate: "unknownInlineResult", want: mtproto.ErrInputConstructorInvalid},
 	} {
 		t.Run(tc.predicate, func(t *testing.T) {
@@ -109,8 +109,8 @@ func TestInlineMessagePredicateValidation(t *testing.T) {
 	}{
 		{predicate: "", want: nil},
 		{predicate: mtproto.Predicate_inputBotInlineMessageText, want: nil},
-		{predicate: mtproto.Predicate_inputBotInlineMessageGame, want: mtproto.ErrMethodNotImpl},
-		{predicate: mtproto.Predicate_inputBotInlineMessageMediaInvoice, want: mtproto.ErrMethodNotImpl},
+		{predicate: mtproto.Predicate_inputBotInlineMessageGame, want: nil},
+		{predicate: mtproto.Predicate_inputBotInlineMessageMediaInvoice, want: nil},
 		{predicate: "unknownInlineMessage", want: mtproto.ErrInputConstructorInvalid},
 	} {
 		t.Run(tc.predicate, func(t *testing.T) {

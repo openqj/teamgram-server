@@ -719,7 +719,27 @@ func responseEntitlement(body []byte) (string, int64, int64) {
 	if product == "" {
 		return "", 0, 0
 	}
-	return product, rawInt64(fields, "premium_months"), rawInt64(fields, "stars")
+	// Bot invoices are one-time charges. Their receipt and transaction are
+	// durable provider records, but they do not grant an account entitlement.
+	// Returning them here would violate the entitlement table invariant that
+	// at least one of months or stars is positive and make PostgreSQL-backed
+	// checkout fail after the provider already accepted the charge.
+	switch product {
+	case "premium_subscription":
+		months := rawInt64(fields, "premium_months")
+		if months <= 0 {
+			return "", 0, 0
+		}
+		return product, months, 0
+	case "stars_topup":
+		stars := rawInt64(fields, "stars")
+		if stars <= 0 {
+			return "", 0, 0
+		}
+		return product, 0, stars
+	default:
+		return "", 0, 0
+	}
 }
 
 func main() {

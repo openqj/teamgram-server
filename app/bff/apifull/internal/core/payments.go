@@ -21,7 +21,6 @@ package core
 import (
 	"bytes"
 	"context"
-	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/binary"
@@ -43,6 +42,7 @@ import (
 	"github.com/teamgram/teamgram-server/app/bff/paymentinvoice"
 	messagepb "github.com/teamgram/teamgram-server/app/service/biz/message/message"
 	userpb "github.com/teamgram/teamgram-server/app/service/biz/user/user"
+	"github.com/teamgram/teamgram-server/pkg/providercontract"
 	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
@@ -611,22 +611,11 @@ func securePaymentProviderURL(parsed *url.URL, allowInsecureHTTP bool) bool {
 }
 
 func verifyPaymentProviderSignature(key, signature string, body []byte) bool {
-	key = strings.TrimSpace(key)
-	signature = strings.TrimSpace(signature)
-	signature = strings.TrimPrefix(signature, "sha256=")
-	provided, err := hex.DecodeString(signature)
-	if err != nil || key == "" || len(provided) != sha256.Size {
-		return false
-	}
-	mac := hmac.New(sha256.New, []byte(key))
-	_, _ = mac.Write(body)
-	return hmac.Equal(provided, mac.Sum(nil))
+	return providercontract.VerifySignature(key, signature, body)
 }
 
 func paymentProviderRequestSignature(key string, body []byte) string {
-	mac := hmac.New(sha256.New, []byte(strings.TrimSpace(key)))
-	_, _ = mac.Write(body)
-	return "sha256=" + hex.EncodeToString(mac.Sum(nil))
+	return providercontract.Signature(key, body)
 }
 
 func (c *ApiFullCore) setPaymentProviderRequestSignature(req *http.Request, body []byte) {
@@ -634,7 +623,7 @@ func (c *ApiFullCore) setPaymentProviderRequestSignature(req *http.Request, body
 		return
 	}
 	if key := strings.TrimSpace(c.svcCtx.Config.PaymentProviderSigningKey); key != "" {
-		req.Header.Set("X-Teamgram-Payment-Provider-Request-Signature", paymentProviderRequestSignature(key, body))
+		providercontract.SetRequestHeaders(req, body, "", "", "X-Teamgram-Payment-Provider-Request-Signature", key)
 	}
 }
 

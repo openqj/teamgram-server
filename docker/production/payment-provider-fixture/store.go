@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"database/sql"
@@ -8,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 
@@ -162,7 +164,11 @@ func (p *controlPlane) loadOperation(operation, requestKey string, userID int64,
 	if storedHash != hex.EncodeToString(digest[:]) {
 		return persistedProviderOperation{}, false, errors.New("payment provider idempotency conflict")
 	}
-	return persistedProviderOperation{Response: append([]byte(nil), response...), Header: header}, true, nil
+	canonical, err := canonicalJSON(response)
+	if err != nil {
+		return persistedProviderOperation{}, false, fmt.Errorf("payment provider stored response is invalid JSON: %w", err)
+	}
+	return persistedProviderOperation{Response: canonical, Header: header}, true, nil
 }
 
 func (p *controlPlane) saveOperation(operation, requestKey string, userID int64, payload, response []byte, header string, transactionID string, entitlementProduct string, entitlementMonths, entitlementStars int64) (persistedProviderOperation, error) {
@@ -172,6 +178,11 @@ func (p *controlPlane) saveOperation(operation, requestKey string, userID int64,
 	if strings.TrimSpace(operation) == "" || strings.TrimSpace(requestKey) == "" || userID <= 0 || len(response) == 0 || strings.TrimSpace(header) == "" {
 		return persistedProviderOperation{}, errors.New("payment provider operation identity is invalid")
 	}
+	canonicalResponse, err := canonicalJSON(response)
+	if err != nil {
+		return persistedProviderOperation{}, fmt.Errorf("payment provider response is invalid JSON: %w", err)
+	}
+	response = canonicalResponse
 	digest := sha256.Sum256(payload)
 	hash := hex.EncodeToString(digest[:])
 	tx, err := p.db.Begin()
@@ -189,6 +200,10 @@ func (p *controlPlane) saveOperation(operation, requestKey string, userID int64,
 	if err == nil {
 		if storedHash != hash {
 			return persistedProviderOperation{}, errors.New("payment provider idempotency conflict")
+		}
+		storedResponse, err = canonicalJSON(storedResponse)
+		if err != nil {
+			return persistedProviderOperation{}, fmt.Errorf("payment provider stored response is invalid JSON: %w", err)
 		}
 		if err = tx.Commit(); err != nil {
 			return persistedProviderOperation{}, err
@@ -217,6 +232,10 @@ func (p *controlPlane) saveOperation(operation, requestKey string, userID int64,
 		}
 		if storedHash != hash {
 			return persistedProviderOperation{}, errors.New("payment provider idempotency conflict")
+		}
+		storedResponse, err = canonicalJSON(storedResponse)
+		if err != nil {
+			return persistedProviderOperation{}, fmt.Errorf("payment provider stored response is invalid JSON: %w", err)
 		}
 		if err = tx.Commit(); err != nil {
 			return persistedProviderOperation{}, err
@@ -265,6 +284,28 @@ func (p *controlPlane) saveOperation(operation, requestKey string, userID int64,
 		return persistedProviderOperation{}, err
 	}
 	return persistedProviderOperation{Response: append([]byte(nil), response...), Header: header}, nil
+}
+
+// canonicalJSON makes the exact response bytes stable across a PostgreSQL
+// JSONB round-trip. JSONB does not preserve object key order, while provider
+// signatures and idempotent replay are defined over the response bytes.
+// UseNumber keeps large integer fields lossless while encoding/json sorts map
+// keys recursively.
+func canonicalJSON(body []byte) ([]byte, error) {
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.UseNumber()
+	var value any
+	if err := decoder.Decode(&value); err != nil {
+		return nil, err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			return nil, errors.New("multiple JSON values")
+		}
+		return nil, err
+	}
+	return json.Marshal(value)
 }
 
 func providerRequestKey(fields map[string]json.RawMessage, operation string, body []byte) string {

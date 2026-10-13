@@ -1,6 +1,6 @@
 # Layer 229 关键业务链路验收
 
-这份矩阵把当前缺口拆成五类可重复验收：频道、设置、Bot/Mini App、Premium、Business。矩阵数据在
+这份矩阵把当前缺口拆成六类可重复验收：消息、频道、设置、Bot/Mini App、Premium、Business。矩阵数据在
 [`tools/critical_path_acceptance_matrix.json`](../tools/critical_path_acceptance_matrix.json)，执行器在
 [`tools/critical_path_acceptance.py`](../tools/critical_path_acceptance.py)。执行器只运行已存在的探针并原样保存
 stdout/stderr；它不会修改 `LAYER229_METHOD_LEDGER.csv`，也不会把跳过、组件测试或数据库读回写成生产通过。
@@ -58,6 +58,12 @@ git diff --check
 ## 当前矩阵
 
 完整字段和已知限制以 JSON 为准。下面列出每个域的执行入口和尚未关闭的门槛。
+
+### 消息
+
+| 行 | 执行入口 | 覆盖 | 尚未关闭 |
+| --- | --- | --- | --- |
+| `messaging.cross-account-live-updates` | `docker/production/probe-cross-account-live-updates.ts` | 两个独立 auth key/session 保存 `updates.getState` 前后值，双向发送私聊，接收标准 `Updates` 容器，按 recipient state 校验消息 ID、`pts/pts_count/date`、历史回读并删除带 tag 消息 | 频道/Bot/Mini App、backend 重启、provider 和 Web UI 完整流程仍需各自验收 |
 
 ### 频道
 

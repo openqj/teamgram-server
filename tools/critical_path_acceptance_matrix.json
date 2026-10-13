@@ -1,5 +1,30 @@
 [
   {
+    "id": "messaging.cross-account-live-updates",
+    "category": "messaging",
+    "gate": "cross_account_update_fanout",
+    "kind": "tsx",
+    "script": "docker/production/probe-cross-account-live-updates.ts",
+    "required_env": [
+      "TEAMGRAM_GRAMJS_DIR",
+      "A_AUTH_B64",
+      "B_AUTH_B64",
+      "A_USER_ID",
+      "B_USER_ID",
+      "A_ACCESS_HASH",
+      "B_ACCESS_HASH"
+    ],
+    "env_defaults": {
+      "TG_DC_ID": "2",
+      "TG_DC_HOST": "127.0.0.1",
+      "TG_DC_PORT": "11443"
+    },
+    "requires_docker": true,
+    "evidence": "Two independent authenticated sessions capture updates.getState before/after, send private messages in both directions, receive the live Updates container, validate message IDs, pts/pts_count and date against the recipient state, read both histories, and delete the tagged messages.",
+    "known_gap": "This closes the live recipient fan-out gate for private messages only; channel, Bot/Mini App, backend restart, provider, and Web UI workflow evidence remain separate gates.",
+    "destructive": true
+  },
+  {
     "id": "channel.cross-account-message-fanout",
     "category": "channel",
     "gate": "cross_account_update_fanout",

@@ -48,7 +48,8 @@ type Webhook struct {
 }
 
 type encodedUpdate struct {
-	data []byte
+	data      []byte
+	dedupeKey string
 }
 
 func New(ctx context.Context, cfg postgres.Config) (*Store, error) {
@@ -59,6 +60,7 @@ func New(ctx context.Context, cfg postgres.Config) (*Store, error) {
 	if err := postgres.VerifySchema(ctx, pool,
 		`SELECT bot_id,next_update_id FROM bot_api_update_counters LIMIT 0`,
 		`SELECT bot_id,update_id,update_data,created_at FROM bot_api_updates LIMIT 0`,
+		`SELECT bot_id,dedupe_key,first_update_id,created_at FROM bot_api_update_dedup LIMIT 0`,
 		`SELECT bot_id,url,max_connections,allowed_updates,secret_token,last_error_date,last_error_message,last_synchronization_error_date FROM bot_api_webhooks LIMIT 0`,
 		`SELECT bot_id,menu_button_type,menu_button_text,menu_button_url FROM bots LIMIT 0`,
 		`SELECT bot_id,chat_id,button_type,button_text,button_url FROM bot_api_chat_menu_buttons LIMIT 0`,
@@ -89,11 +91,21 @@ func (s *Store) Close() {
 }
 
 func (s *Store) Append(ctx context.Context, botID int64, updates *mtproto.Updates) error {
+	_, err := s.AppendOnce(ctx, botID, updates)
+	return err
+}
+
+// AppendOnce persists bot updates in one transaction and reports whether at
+// least one update was newly appended. Payment query updates carry a durable
+// query key, so retries after an outbox claim or process crash are ignored
+// even when the original queue row was already consumed by getUpdates or a
+// webhook.
+func (s *Store) AppendOnce(ctx context.Context, botID int64, updates *mtproto.Updates) (bool, error) {
 	if s == nil || s.Pool == nil {
-		return errors.New("botapi: update store is not configured")
+		return false, errors.New("botapi: update store is not configured")
 	}
 	if botID <= 0 || updates == nil {
-		return mtproto.ErrInputRequestInvalid
+		return false, mtproto.ErrInputRequestInvalid
 	}
 	encoded := make([]encodedUpdate, 0)
 	mtproto.VisitUpdates(botID, updates, map[string]mtproto.UpdateVisitedFunc{
@@ -144,14 +156,33 @@ func (s *Store) Append(ctx context.Context, botID int64, updates *mtproto.Update
 		},
 	})
 	if len(encoded) == 0 {
-		return nil
+		return false, nil
 	}
-	return postgres.WithTx(ctx, s.Pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+	inserted := false
+	err := postgres.WithTx(ctx, s.Pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx, `INSERT INTO bot_api_update_counters(bot_id,next_update_id)
 VALUES($1,1) ON CONFLICT (bot_id) DO NOTHING`, botID); err != nil {
 			return err
 		}
+		// Serialize allocation and the durable query-key check per bot. This
+		// prevents concurrent retries from both allocating an update for the
+		// same shipping/precheckout query.
+		if _, err := tx.Exec(ctx, `SELECT next_update_id FROM bot_api_update_counters
+WHERE bot_id=$1 FOR UPDATE`, botID); err != nil {
+			return err
+		}
 		for _, item := range encoded {
+			if item.dedupeKey != "" {
+				var exists bool
+				if err := tx.QueryRow(ctx, `SELECT EXISTS(
+SELECT 1 FROM bot_api_update_dedup WHERE bot_id=$1 AND dedupe_key=$2
+)`, botID, item.dedupeKey).Scan(&exists); err != nil {
+					return err
+				}
+				if exists {
+					continue
+				}
+			}
 			var updateID int64
 			if err := tx.QueryRow(ctx, `UPDATE bot_api_update_counters
 SET next_update_id=next_update_id+1 WHERE bot_id=$1 RETURNING next_update_id-1`, botID).Scan(&updateID); err != nil {
@@ -166,13 +197,21 @@ SET next_update_id=next_update_id+1 WHERE bot_id=$1 RETURNING next_update_id-1`,
 			if err != nil {
 				return err
 			}
+			if item.dedupeKey != "" {
+				if _, err := tx.Exec(ctx, `INSERT INTO bot_api_update_dedup(bot_id,dedupe_key,first_update_id)
+VALUES($1,$2,$3)`, botID, item.dedupeKey, updateID); err != nil {
+					return err
+				}
+			}
 			if _, err := tx.Exec(ctx, `INSERT INTO bot_api_updates(bot_id,update_id,update_data)
 VALUES($1,$2,$3::jsonb)`, botID, updateID, string(data)); err != nil {
 				return err
 			}
+			inserted = true
 		}
 		return nil
 	})
+	return inserted, err
 }
 
 func (s *Store) appendConverted(ctx context.Context, encoded *[]encodedUpdate, update *mtproto.Update, users []*mtproto.User, chats []*mtproto.Chat) {
@@ -193,8 +232,26 @@ func (s *Store) appendConverted(ctx context.Context, encoded *[]encodedUpdate, u
 	}
 	data, err := botapi.EncodeUpdate(converted)
 	if err == nil && len(data) > 0 {
-		*encoded = append(*encoded, encodedUpdate{data: data})
+		*encoded = append(*encoded, encodedUpdate{data: data, dedupeKey: botUpdateDedupeKey(update)})
 	}
+}
+
+func botUpdateDedupeKey(update *mtproto.Update) string {
+	if update == nil {
+		return ""
+	}
+	switch update.GetPredicateName() {
+	case mtproto.Predicate_updateBotShippingQuery:
+		if queryID := update.GetQueryId_INT64(); queryID > 0 {
+			return fmt.Sprintf("shipping_query:%d", queryID)
+		}
+	case mtproto.Predicate_updateBotPrecheckoutQuery:
+		if queryID := update.GetQueryId_INT64(); queryID > 0 {
+			return fmt.Sprintf("precheckout_query:%d", queryID)
+		}
+	default:
+	}
+	return ""
 }
 
 func (s *Store) GetUpdates(ctx context.Context, botID, offset int64, limit int, allowed []string) ([]json.RawMessage, error) {

@@ -48,20 +48,6 @@ func FromInputMedia(media *mtproto.InputMedia) (*mtproto.MessageMedia, error) {
 	if len(media.GetPayload_BYTES()) == 0 || len(media.GetPayload_BYTES()) > 4096 {
 		return nil, ErrMissingPayload
 	}
-	provider := strings.TrimSpace(media.GetProvider_STRING())
-	if provider == "" && media.GetProvider_FLAGSTRING() != nil {
-		provider = strings.TrimSpace(media.GetProvider_FLAGSTRING().GetValue())
-	}
-	if provider == "" {
-		return nil, ErrMissingProvider
-	}
-	providerData := media.GetProviderData()
-	if providerData == nil || strings.TrimSpace(providerData.GetData()) == "" || !json.Valid([]byte(providerData.GetData())) {
-		return nil, ErrInvalidMedia
-	}
-	if providerData.GetPredicateName() == "" {
-		mtproto.MakeTLDataJSON(providerData).To_DataJSON()
-	}
 	invoice := media.GetInvoice()
 	if !validInvoice(invoice) {
 		return nil, ErrInvalidMedia
@@ -73,6 +59,26 @@ func FromInputMedia(media *mtproto.InputMedia) (*mtproto.MessageMedia, error) {
 		if price.GetPredicateName() == "" {
 			mtproto.MakeTLLabeledPrice(price).To_LabeledPrice()
 		}
+	}
+	provider := strings.TrimSpace(media.GetProvider_STRING())
+	if provider == "" && media.GetProvider_FLAGSTRING() != nil {
+		provider = strings.TrimSpace(media.GetProvider_FLAGSTRING().GetValue())
+	}
+	if provider == "" && invoice.GetCurrency() == "XTR" {
+		// Stars do not use a provider token on the public Bot API surface. Keep
+		// an internal marker in BizDataRaw so payment reconciliation can still
+		// distinguish a trusted Stars invoice from a missing provider.
+		provider = "XTR"
+	}
+	if provider == "" {
+		return nil, ErrMissingProvider
+	}
+	providerData := media.GetProviderData()
+	if providerData == nil || strings.TrimSpace(providerData.GetData()) == "" || !json.Valid([]byte(providerData.GetData())) {
+		return nil, ErrInvalidMedia
+	}
+	if providerData.GetPredicateName() == "" {
+		mtproto.MakeTLDataJSON(providerData).To_DataJSON()
 	}
 	invoiceBytes, err := proto.Marshal(invoice)
 	if err != nil {
@@ -162,6 +168,14 @@ func ParseMetadata(media *mtproto.MessageMedia) (Metadata, *mtproto.Invoice, err
 
 func validInvoice(invoice *mtproto.Invoice) bool {
 	if invoice == nil || strings.TrimSpace(invoice.GetCurrency()) == "" || len(invoice.GetCurrency()) != 3 || len(invoice.GetPrices()) == 0 {
+		return false
+	}
+	if invoice.GetRecurring() {
+		period := invoice.GetSubscriptionPeriod()
+		if invoice.GetCurrency() != "XTR" || period == nil || period.GetValue() != 2592000 {
+			return false
+		}
+	} else if invoice.GetSubscriptionPeriod() != nil {
 		return false
 	}
 	var total int64

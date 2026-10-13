@@ -257,6 +257,7 @@ func TestSecureCDNProviderURLRequiresFixtureModeForHTTP(t *testing.T) {
 		{name: "compose fixture production", endpoint: "http://cdn-provider-fixture:23191", wantSecure: false},
 		{name: "compose fixture enabled", endpoint: "http://cdn-provider-fixture:23191", fixture: true, wantSecure: true},
 		{name: "named fixture domain", endpoint: "http://cdn-provider-fixture.test:23191", fixture: true, wantSecure: true},
+		{name: "unrelated test domain", endpoint: "http://unrelated.test:23191", fixture: true, wantSecure: false},
 		{name: "fixture suffix spoof", endpoint: "http://cdn-provider-fixture.attacker.test.evil:23191", fixture: true, wantSecure: false},
 	}
 	for _, tt := range tests {
@@ -291,10 +292,23 @@ func TestCanonicalCDNLocationPreservesMediaSelectorFlags(t *testing.T) {
 	photo := canonicalCDNLocation(&mtproto.InputFileLocation{
 		PredicateName: mtproto.Predicate_inputPeerPhotoFileLocation,
 		Big:           true,
-		PhotoId:       7,
+		Peer: &mtproto.InputPeer{
+			PredicateName: mtproto.Predicate_inputPeerUser,
+			Constructor:   mtproto.TLConstructor_CRC32_inputPeerUser,
+			UserId:        11,
+			AccessHash:    12,
+		},
+		PhotoId: 7,
 	})
 	if photo["big"] != true || photo["photo_id"] != int64(7) {
 		t.Fatalf("canonical peer photo location = %#v", photo)
+	}
+	peer, ok := photo["peer"].(map[string]any)
+	if !ok || peer["predicate_name"] != mtproto.Predicate_inputPeerUser || peer["user_id"] != int64(11) || peer["access_hash"] != int64(12) {
+		t.Fatalf("canonical nested peer = %#v", photo["peer"])
+	}
+	if _, found := peer["constructor"]; found {
+		t.Fatalf("canonical nested peer leaked constructor: %#v", peer)
 	}
 
 	stream := canonicalCDNLocation(&mtproto.InputFileLocation{

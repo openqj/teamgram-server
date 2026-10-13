@@ -41,6 +41,64 @@ func cdnProviderIdempotencyKey(userID int64, operation string, payload []byte) s
 	return hex.EncodeToString(digest[:])
 }
 
+func canonicalCDNPeer(peer *mtproto.InputPeer) map[string]any {
+	if peer == nil {
+		return nil
+	}
+	result := map[string]any{"predicate_name": peer.GetPredicateName()}
+	putInt64 := func(name string, value int64) {
+		if value != 0 {
+			result[name] = value
+		}
+	}
+	putInt32 := func(name string, value int32) {
+		if value != 0 {
+			result[name] = value
+		}
+	}
+	switch peer.GetPredicateName() {
+	case mtproto.Predicate_inputPeerChat:
+		putInt64("chat_id", peer.GetChatId())
+	case mtproto.Predicate_inputPeerUser:
+		putInt64("user_id", peer.GetUserId())
+		putInt64("access_hash", peer.GetAccessHash())
+	case mtproto.Predicate_inputPeerChannel:
+		putInt64("channel_id", peer.GetChannelId())
+		putInt64("access_hash", peer.GetAccessHash())
+	case mtproto.Predicate_inputPeerUserFromMessage:
+		if nested := peer.GetPeer(); nested != nil {
+			result["peer"] = canonicalCDNPeer(nested)
+		}
+		putInt32("msg_id", peer.GetMsgId())
+		putInt64("user_id", peer.GetUserId())
+	case mtproto.Predicate_inputPeerChannelFromMessage:
+		if nested := peer.GetPeer(); nested != nil {
+			result["peer"] = canonicalCDNPeer(nested)
+		}
+		putInt32("msg_id", peer.GetMsgId())
+		putInt64("channel_id", peer.GetChannelId())
+	case mtproto.Predicate_inputPeerUsername:
+		if peer.GetUsername() != "" {
+			result["username"] = peer.GetUsername()
+		}
+	default:
+		// Keep fields needed by future InputPeer constructors while excluding the
+		// generated constructor value from the provider key.
+		putInt64("chat_id", peer.GetChatId())
+		putInt64("user_id", peer.GetUserId())
+		putInt64("access_hash", peer.GetAccessHash())
+		putInt64("channel_id", peer.GetChannelId())
+		if nested := peer.GetPeer(); nested != nil {
+			result["peer"] = canonicalCDNPeer(nested)
+		}
+		putInt32("msg_id", peer.GetMsgId())
+		if peer.GetUsername() != "" {
+			result["username"] = peer.GetUsername()
+		}
+	}
+	return result
+}
+
 // canonicalCDNLocation removes generated protobuf metadata from the provider
 // contract. The constructor is a wire decoding detail and must not change the
 // provider's stable object key when the same Telegram location is received by
@@ -91,7 +149,7 @@ func canonicalCDNLocation(location *mtproto.InputFileLocation) map[string]any {
 		}
 		putInt64("photo_id", location.GetPhotoId())
 		if peer := location.GetPeer(); peer != nil {
-			result["peer"] = peer
+			result["peer"] = canonicalCDNPeer(peer)
 		}
 	case mtproto.Predicate_inputStickerSetThumb:
 		putInt32("thumb_version", location.GetThumbVersion())
@@ -147,7 +205,7 @@ func secureCDNProviderURL(parsed *url.URL, allowInsecureHTTP bool) bool {
 		return false
 	}
 	host := strings.TrimSuffix(strings.ToLower(parsed.Hostname()), ".")
-	if host == "localhost" || host == "cdn-provider-fixture" || strings.HasSuffix(host, ".test") {
+	if host == "localhost" || host == "cdn-provider-fixture" || host == "cdn-provider-fixture.test" {
 		return true
 	}
 	ip := net.ParseIP(host)

@@ -3,20 +3,18 @@ package core
 import (
 	"bytes"
 	"context"
-	"crypto/hmac"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"io"
 	"net"
 	"net/http"
 	"net/url"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/teamgram/proto/mtproto"
+	"github.com/teamgram/teamgram-server/pkg/providercontract"
 )
 
 const businessProviderBodyLimit = 1 << 20
@@ -35,27 +33,15 @@ type businessProviderEnvelope struct {
 }
 
 func businessProviderSignature(key string, body []byte) string {
-	mac := hmac.New(sha256.New, []byte(key))
-	_, _ = mac.Write(body)
-	return "sha256=" + hex.EncodeToString(mac.Sum(nil))
+	return providercontract.Signature(key, body)
 }
 
 func businessProviderIdempotencyKey(userID int64, operation string, payload []byte) string {
-	input := []byte(strconv.FormatInt(userID, 10) + "\x00" + operation + "\x00")
-	input = append(input, payload...)
-	digest := sha256.Sum256(input)
-	return hex.EncodeToString(digest[:])
+	return providercontract.IdempotencyKey(userID, operation, payload)
 }
 
 func verifyBusinessProviderSignature(key, signature string, body []byte) bool {
-	signature = strings.TrimPrefix(strings.TrimSpace(signature), "sha256=")
-	provided, err := hex.DecodeString(signature)
-	if err != nil || len(provided) != sha256.Size || strings.TrimSpace(key) == "" {
-		return false
-	}
-	mac := hmac.New(sha256.New, []byte(key))
-	_, _ = mac.Write(body)
-	return hmac.Equal(provided, mac.Sum(nil))
+	return providercontract.VerifySignature(key, signature, body)
 }
 
 func secureBusinessProviderURL(parsed *url.URL, allowInsecureHTTP bool) bool {
@@ -130,12 +116,9 @@ func (c *ApiFullCore) callBusinessProvider(operation string, payload any, result
 	if err != nil {
 		return mtproto.ErrInternalServerError
 	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Idempotency-Key", businessProviderIdempotencyKey(c.MD.GetUserId(), operation, payloadJSON))
-	if key != "" {
-		req.Header.Set("Authorization", "Bearer "+key)
-	}
-	req.Header.Set("X-Teamgram-Business-Provider-Request-Signature", businessProviderSignature(signingKey, body))
+	providercontract.SetRequestHeaders(req, body, key,
+		businessProviderIdempotencyKey(c.MD.GetUserId(), operation, payloadJSON),
+		"X-Teamgram-Business-Provider-Request-Signature", signingKey)
 	client := &http.Client{Timeout: timeout, CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}
 	resp, err := client.Do(req)
 	if err != nil {

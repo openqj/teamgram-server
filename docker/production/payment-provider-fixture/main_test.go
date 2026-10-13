@@ -64,6 +64,19 @@ func TestResponseEntitlementRequiresSettledTransaction(t *testing.T) {
 	if product, months, stars := responseEntitlement(settled); product != "premium_subscription" || months != 1 || stars != 0 {
 		t.Fatalf("settled response entitlement = (%q, %d, %d), want premium/1/0", product, months, stars)
 	}
+
+	botInvoice, err := json.Marshal(map[string]any{
+		"verified":       true,
+		"product_type":   "bot_invoice",
+		"transaction_id": "fixture-bot-1",
+		"receipt":        map[string]any{"provider": "fixture"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if product, months, stars := responseEntitlement(botInvoice); product != "" || months != 0 || stars != 0 {
+		t.Fatalf("bot invoice entitlement = (%q, %d, %d), want empty", product, months, stars)
+	}
 }
 
 func TestProviderTransactionIdentityRejectsCrossUserReuse(t *testing.T) {
@@ -682,5 +695,110 @@ func TestFixturePremiumRetryHitsPostgresControlPlane(t *testing.T) {
 	}
 	if operationCount != 1 {
 		t.Fatalf("Premium control-plane rows = %d, want 1", operationCount)
+	}
+}
+
+func TestFixtureBotInvoiceRetrySurvivesProviderRestart(t *testing.T) {
+	dsn := os.Getenv("TEAMGRAM_POSTGRES_DSN")
+	if dsn == "" {
+		t.Skip("TEAMGRAM_POSTGRES_DSN must point to an isolated PostgreSQL 18 database")
+	}
+	store, err := openControlPlane(dsn)
+	if err != nil {
+		t.Skipf("PostgreSQL control-plane schema unavailable: %v", err)
+	}
+	defer func() { _ = store.close() }()
+
+	requestKey := "bot-restart-control-plane-" + time.Now().UTC().Format("20060102150405.000000000")
+	const userID = int64(90219)
+	const botID = int64(90220)
+	operationKey := "settle_bot_invoice:" + requestKey
+	t.Cleanup(func() {
+		_, _ = store.db.Exec(`DELETE FROM apifull_payment_provider_entitlement WHERE user_id=$1 AND transaction_id LIKE 'fixture-bot-%'`, userID)
+		_, _ = store.db.Exec(`DELETE FROM apifull_payment_provider_receipt WHERE user_id=$1 AND request_key=$2`, userID, operationKey)
+		_, _ = store.db.Exec(`DELETE FROM apifull_payment_provider_operation WHERE user_id=$1 AND request_key=$2`, userID, operationKey)
+	})
+
+	request := map[string]any{
+		"operation":           "settle_bot_invoice",
+		"user_id":             userID,
+		"beneficiary_user_id": botID,
+		"bot_user_id":         botID,
+		"required_product":    "bot_invoice",
+		"request_key":         requestKey,
+		"fingerprint":         "bot-restart-fingerprint",
+		"form_id":             int64(990003),
+		"currency":            "USD",
+		"amount":              int64(125),
+	}
+	body, err := json.Marshal(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstFixture := &fixture{
+		key:      []byte("fixture-test-key"),
+		settled:  map[string]settledCacheEntry{},
+		requests: map[string]int{},
+		store:    store,
+	}
+	first := httptest.NewRecorder()
+	firstFixture.ServeHTTP(first, httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(body)))
+	if first.Code != http.StatusOK {
+		t.Fatalf("first bot settlement status = %d, body = %s", first.Code, first.Body.String())
+	}
+	firstBody := append([]byte(nil), first.Body.Bytes()...)
+	firstSignature := first.Header().Get("X-Teamgram-Payment-Signature")
+	if firstSignature == "" {
+		t.Fatal("first bot settlement did not include a signature")
+	}
+
+	// Reopen the control plane and create a fresh fixture to model a provider
+	// process restart. The second instance has no in-memory settlement cache.
+	if err = store.close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err = openControlPlane(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondFixture := &fixture{
+		key:      []byte("fixture-test-key"),
+		settled:  map[string]settledCacheEntry{},
+		requests: map[string]int{},
+		store:    store,
+	}
+	second := httptest.NewRecorder()
+	secondFixture.ServeHTTP(second, httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(body)))
+	if second.Code != http.StatusOK || !bytes.Equal(firstBody, second.Body.Bytes()) || second.Header().Get("X-Teamgram-Payment-Signature") != firstSignature {
+		t.Fatalf("bot replay after provider restart changed response: first=%s second=%s", firstBody, second.Body.Bytes())
+	}
+
+	var operationCount, receiptCount, entitlementCount int
+	if err = store.db.QueryRow(`SELECT count(*) FROM apifull_payment_provider_operation WHERE operation='settle_bot_invoice' AND user_id=$1 AND request_key=$2`, userID, operationKey).Scan(&operationCount); err != nil {
+		t.Fatal(err)
+	}
+	if err = store.db.QueryRow(`SELECT count(*) FROM apifull_payment_provider_receipt WHERE operation='settle_bot_invoice' AND user_id=$1 AND request_key=$2`, userID, operationKey).Scan(&receiptCount); err != nil {
+		t.Fatal(err)
+	}
+	if err = store.db.QueryRow(`SELECT count(*) FROM apifull_payment_provider_entitlement WHERE user_id=$1 AND product='bot_invoice'`, userID).Scan(&entitlementCount); err != nil {
+		t.Fatal(err)
+	}
+	if operationCount != 1 || receiptCount != 1 || entitlementCount != 0 {
+		t.Fatalf("bot control-plane rows = operation %d receipt %d entitlement %d", operationCount, receiptCount, entitlementCount)
+	}
+
+	conflicting := map[string]any{}
+	if err = json.Unmarshal(body, &conflicting); err != nil {
+		t.Fatal(err)
+	}
+	conflicting["amount"] = int64(126)
+	conflictBody, err := json.Marshal(conflicting)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conflict := httptest.NewRecorder()
+	secondFixture.ServeHTTP(conflict, httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(conflictBody)))
+	if conflict.Code != http.StatusConflict {
+		t.Fatalf("conflicting bot replay status = %d, body = %s", conflict.Code, conflict.Body.String())
 	}
 }

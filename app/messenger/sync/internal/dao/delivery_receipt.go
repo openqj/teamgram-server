@@ -24,6 +24,17 @@ func WithDeliveryReceipt(ctx context.Context, receipt DeliveryReceipt) context.C
 	return context.WithValue(ctx, deliveryReceiptKey{}, receipt)
 }
 
+// DeliveryReceiptFromContext reports whether the caller already supplied a
+// durable delivery identity. Sync handlers that add their own idempotency key
+// must preserve an upstream Kafka identity when one is present.
+func DeliveryReceiptFromContext(ctx context.Context) (DeliveryReceipt, bool) {
+	if ctx == nil {
+		return DeliveryReceipt{}, false
+	}
+	receipt, ok := ctx.Value(deliveryReceiptKey{}).(DeliveryReceipt)
+	return receipt, ok
+}
+
 func loadDeliveryReceipt(ctx context.Context, tx pgx.Tx, userID int64) (*PreparedUpdates, error) {
 	receipt, ok := ctx.Value(deliveryReceiptKey{}).(DeliveryReceipt)
 	if !ok {

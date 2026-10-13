@@ -129,6 +129,9 @@ func createInvoiceLink(ctx *svc.ServiceContext, requestCtx context.Context, botI
 }
 
 func botAPIInvoiceMedia(request *botAPIRequest) (*mtproto.InputMedia, error) {
+	if request == nil {
+		return nil, errors.New("invoice request is invalid")
+	}
 	title := strings.TrimSpace(request.string("title"))
 	description := strings.TrimSpace(request.string("description"))
 	payload := request.string("payload")
@@ -138,10 +141,15 @@ func botAPIInvoiceMedia(request *botAPIRequest) (*mtproto.InputMedia, error) {
 		(currency == "XTR" && provider != "") || (currency != "XTR" && provider == "") {
 		return nil, errors.New("invoice fields are invalid")
 	}
-	if currency == "XTR" && provider == "" {
-		// InputMedia.invoice requires a provider string even for Telegram Stars,
-		// where Bot API callers intentionally omit provider_token.
-		provider = "XTR"
+	subscriptionPeriod, subscriptionErr := request.int("subscription_period")
+	hasSubscriptionPeriod := len(request.raw("subscription_period")) > 0
+	if subscriptionErr != nil || (hasSubscriptionPeriod && subscriptionPeriod <= 0) {
+		return nil, errors.New("subscription_period is invalid")
+	}
+	if hasSubscriptionPeriod {
+		if currency != "XTR" || subscriptionPeriod != 2592000 {
+			return nil, errors.New("subscription_period is invalid")
+		}
 	}
 	var prices []botapi.LabeledPrice
 	if err := request.json("prices", &prices); err != nil || len(prices) == 0 {
@@ -208,6 +216,10 @@ func botAPIInvoiceMedia(request *botAPIRequest) (*mtproto.InputMedia, error) {
 		EmailToProvider:          requestBool(request, "send_email_to_provider"),
 		SuggestedTipAmounts:      suggestedTips,
 	}).To_Invoice()
+	if hasSubscriptionPeriod {
+		invoice.Recurring = true
+		invoice.SubscriptionPeriod = wrapperspb.Int32(int32(subscriptionPeriod))
+	}
 	if maxTipAmount > 0 {
 		invoice.MaxTipAmount = wrapperspb.Int64(maxTipAmount)
 	}
@@ -219,8 +231,12 @@ func botAPIInvoiceMedia(request *botAPIRequest) (*mtproto.InputMedia, error) {
 		Description:     description,
 		Invoice:         invoice,
 		Payload_BYTES:   []byte(payload),
-		Provider_STRING: provider,
 		ProviderData:    mtproto.MakeTLDataJSON(&mtproto.DataJSON{Data: providerData}).To_DataJSON(),
+	}
+	if provider != "" {
+		// Layer 229 uses the optional provider flag. Telegram Stars invoices
+		// intentionally leave this field absent when provider_token is empty.
+		media.Provider_FLAGSTRING = wrapperspb.String(provider)
 	}
 	if startParam := strings.TrimSpace(request.string("start_parameter")); startParam != "" {
 		media.StartParam = wrapperspb.String(startParam)
