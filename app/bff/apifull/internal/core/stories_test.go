@@ -77,6 +77,45 @@ func TestStoryMaxIDUsesPersistedMaximum(t *testing.T) {
 	}
 }
 
+func TestStoriesReadPeerUserStoriesUsesTargetStore(t *testing.T) {
+	const callerID int64 = 229906
+	const targetID int64 = 777000
+	callerKey := storyKey(callerID)
+	targetKey := storyKey(targetID)
+	t.Cleanup(func() {
+		_ = persist.Default.Set(callerKey, "")
+		_ = persist.Default.Set(targetKey, "")
+	})
+	if err := saveUserStories(targetID, &userStoryStore{
+		Order: []int32{8},
+		Items: map[int32]*mtproto.StoryItem{8: mtproto.MakeTLStoryItem(&mtproto.StoryItem{Id: 8}).To_StoryItem()},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	c := &ApiFullCore{MD: &metadata.RpcMetadata{UserId: callerID}}
+	peer := mtproto.MakeTLInputPeerUser(&mtproto.InputPeer{UserId: targetID, AccessHash: 1}).To_InputPeer()
+	got, err := c.StoriesGetPeerStories(&mtproto.TLStoriesGetPeerStories{Peer: peer})
+	if err != nil || got == nil || got.GetStories() == nil || got.GetStories().GetPeer().GetUserId() != targetID || len(got.GetStories().GetStories()) != 1 || got.GetStories().GetStories()[0].GetId() != 8 {
+		t.Fatalf("peer stories=(%#v,%v)", got, err)
+	}
+	maxIDs, err := c.StoriesGetPeerMaxIDs78499170(&mtproto.TLStoriesGetPeerMaxIDs78499170{Id: []*mtproto.InputPeer{peer}})
+	if err != nil || maxIDs == nil || len(maxIDs.GetDatas()) != 1 || maxIDs.GetDatas()[0].GetMaxId().GetValue() != 8 {
+		t.Fatalf("peer max ids=(%#v,%v)", maxIDs, err)
+	}
+}
+
+func TestStoriesReadPeerMaxIDsReturnsEmptyRecentStoryForUnknownUser(t *testing.T) {
+	const callerID int64 = 229907
+	const targetID int64 = 777001
+	t.Cleanup(func() { _ = persist.Default.Set(storyKey(targetID), "") })
+	c := &ApiFullCore{MD: &metadata.RpcMetadata{UserId: callerID}}
+	peer := mtproto.MakeTLInputPeerUser(&mtproto.InputPeer{UserId: targetID, AccessHash: 1}).To_InputPeer()
+	maxIDs, err := c.StoriesGetPeerMaxIDs78499170(&mtproto.TLStoriesGetPeerMaxIDs78499170{Id: []*mtproto.InputPeer{peer}})
+	if err != nil || maxIDs == nil || len(maxIDs.GetDatas()) != 1 || maxIDs.GetDatas()[0].GetMaxId() != nil {
+		t.Fatalf("unknown peer max ids=(%#v,%v)", maxIDs, err)
+	}
+}
+
 func TestStoriesSendReactionRequiresReaction(t *testing.T) {
 	uid := int64(229903)
 	t.Cleanup(func() { _ = persist.Default.Set(storyKey(uid), "") })

@@ -7,7 +7,7 @@ const gramjsDir = process.env.TEAMGRAM_GRAMJS_DIR || '/Users/mac/open/test/teleg
 const dcId = Number(process.env.TG_DC_ID || '2');
 const dcHost = process.env.TG_DC_HOST || '127.0.0.1';
 const dcPort = Number(process.env.TG_DC_PORT || '11443');
-const userId = process.env.LOOK_USER_ID || '136907714';
+const userId = process.env.LOOK_USER_ID || '1';
 
 const globalAny = globalThis as typeof globalThis & { self?: any; addEventListener?: () => void };
 globalAny.self ??= globalThis;
@@ -22,7 +22,7 @@ function sql(query: string): string {
 
 function contentSettingValue(): string {
   return sql(`SELECT COALESCE((SELECT value FROM user_settings
-    WHERE user_id=${userId} AND key2='sensitive_enabled' AND deleted=0 LIMIT 1), '<absent>')`);
+    WHERE user_id=${userId} AND key2='sensitive_enabled' AND deleted=FALSE LIMIT 1), '<absent>')`);
 }
 
 function loadAuthKey(): string {
@@ -31,8 +31,8 @@ function loadAuthKey(): string {
     FROM auth_users u
     JOIN auth_keys k USING (auth_key_id)
     JOIN auth_key_infos i USING (auth_key_id)
-    WHERE u.user_id=${userId} AND u.state=0 AND u.deleted=0
-      AND k.deleted=0 AND i.deleted=0 AND i.auth_key_type=0
+    WHERE u.user_id=${userId} AND u.state=0 AND u.deleted=FALSE
+      AND k.deleted=FALSE AND i.deleted=FALSE AND i.auth_key_type=0
     ORDER BY u.date_active DESC, u.id DESC
     LIMIT 1
   `);

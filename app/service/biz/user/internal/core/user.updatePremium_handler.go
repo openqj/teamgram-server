@@ -33,7 +33,17 @@ func (c *UserCore) UserUpdatePremium(in *user.TLUserUpdatePremium) (*mtproto.Boo
 	transactionID := in.GetTransactionId()
 	if provider != "" || transactionID != "" {
 		months := in.GetMonths().GetValue()
-		if !mtproto.FromBool(in.Premium) || provider == "" || transactionID == "" || months < 1 || months > 36 {
+		if provider == "" || transactionID == "" {
+			return nil, mtproto.ErrInputRequestInvalid
+		}
+		if !mtproto.FromBool(in.Premium) {
+			ok, err := c.svcCtx.Dao.RevokeUserPremium(c.ctx, in.GetUserId(), provider, transactionID)
+			if err != nil {
+				return nil, err
+			}
+			return mtproto.ToBool(ok), nil
+		}
+		if months < 1 || months > 36 {
 			return nil, mtproto.ErrInputRequestInvalid
 		}
 		ok, err := c.svcCtx.Dao.GrantUserPremium(c.ctx, in.GetUserId(), months, provider, transactionID)

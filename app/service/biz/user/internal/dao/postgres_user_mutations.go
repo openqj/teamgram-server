@@ -278,16 +278,40 @@ func (d *Dao) pgGrantPremium(ctx context.Context, id int64, months int32, provid
 			}
 			return err
 		}
+		now := time.Now().Unix()
+		grantStarts := now
+		grantExpiry := int64(0)
+		if !(premium && expiry == 0) {
+			base := time.Unix(now, 0)
+			if premium && expiry > now {
+				base = time.Unix(expiry, 0)
+			}
+			grantStarts = base.Unix()
+			grantExpiry = base.AddDate(0, int(months), 0).Unix()
+		}
 		var inserted int64
-		err := tx.QueryRow(ctx, `INSERT INTO user_premium_payment_grant(transaction_key,provider,transaction_id,user_id,months,created_at) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(transaction_key) DO NOTHING RETURNING 1`, transactionKey[:], provider, transactionID, id, months, time.Now().Unix()).Scan(&inserted)
+		err := tx.QueryRow(ctx, `INSERT INTO user_premium_payment_grant
+			(transaction_key,provider,transaction_id,user_id,months,created_at,starts_at,expires_at,revoked_at)
+			VALUES($1,$2,$3,$4,$5,$6,$7,$8,0)
+			ON CONFLICT(transaction_key) DO NOTHING RETURNING 1`, transactionKey[:], provider, transactionID, id, months, now, grantStarts, grantExpiry).Scan(&inserted)
 		if errors.Is(err, pgx.ErrNoRows) {
 			var existingProvider, existingTransaction string
 			var existingUser int64
 			var existingMonths int32
-			if err = tx.QueryRow(ctx, `SELECT provider,transaction_id,user_id,months FROM user_premium_payment_grant WHERE transaction_key=$1 FOR UPDATE`, transactionKey[:]).Scan(&existingProvider, &existingTransaction, &existingUser, &existingMonths); err != nil {
+			var existingRevokedAt int64
+			if err = tx.QueryRow(ctx, `SELECT provider,transaction_id,user_id,months,revoked_at FROM user_premium_payment_grant WHERE transaction_key=$1 FOR UPDATE`, transactionKey[:]).Scan(&existingProvider, &existingTransaction, &existingUser, &existingMonths, &existingRevokedAt); err != nil {
 				return err
 			}
-			if existingProvider != provider || existingTransaction != transactionID || existingUser != id || existingMonths != months {
+			if existingProvider != provider || existingTransaction != transactionID || existingUser != id {
+				return errPremiumPaymentConflict
+			}
+			// A refund can be processed before the asynchronous grant reaches
+			// this service. A revoked tombstone prevents that later retry from
+			// recreating the entitlement.
+			if existingRevokedAt != 0 {
+				return nil
+			}
+			if existingMonths != months {
 				return errPremiumPaymentConflict
 			}
 			return nil
@@ -298,11 +322,110 @@ func (d *Dao) pgGrantPremium(ctx context.Context, id int64, months int32, provid
 		if inserted != 1 || (premium && expiry == 0) {
 			return nil
 		}
-		base := time.Now()
-		if premium && expiry > base.Unix() {
-			base = time.Unix(expiry, 0)
+		_, err = tx.Exec(ctx, `UPDATE users SET premium=TRUE,premium_expire_date=$1 WHERE id=$2`, grantExpiry, id)
+		return err
+	})
+}
+
+func (d *Dao) pgRevokePremium(ctx context.Context, id int64, provider, transactionID string) error {
+	transactionKey := sha256.Sum256([]byte(provider + "\x00" + transactionID))
+	return d.Postgres.InTx(ctx, func(tx pgx.Tx) error {
+		var currentPremium bool
+		var currentExpiry int64
+		if err := tx.QueryRow(ctx, `SELECT premium,premium_expire_date FROM users WHERE id=$1 FOR UPDATE`, id).Scan(&currentPremium, &currentExpiry); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return mtproto.ErrUserIdInvalid
+			}
+			return err
 		}
-		_, err = tx.Exec(ctx, `UPDATE users SET premium=TRUE,premium_expire_date=$1 WHERE id=$2`, base.AddDate(0, int(months), 0).Unix(), id)
+		var grantUser int64
+		var revokedAt int64
+		if err := tx.QueryRow(ctx, `SELECT user_id,revoked_at FROM user_premium_payment_grant WHERE transaction_key=$1 FOR UPDATE`, transactionKey[:]).Scan(&grantUser, &revokedAt); errors.Is(err, pgx.ErrNoRows) {
+			// A payment may be revoked before its asynchronous grant reaches the
+			// user service. Persist a tombstone so a later grant retry is a no-op.
+			now := time.Now().Unix()
+			_, insertErr := tx.Exec(ctx, `INSERT INTO user_premium_payment_grant
+				(transaction_key,provider,transaction_id,user_id,months,created_at,starts_at,expires_at,revoked_at)
+				VALUES($1,$2,$3,$4,0,$5,$5,0,$5) ON CONFLICT(transaction_key) DO NOTHING`, transactionKey[:], provider, transactionID, id, now)
+			return insertErr
+		} else if err != nil {
+			return err
+		} else if grantUser != id {
+			return errPremiumPaymentConflict
+		} else if revokedAt != 0 {
+			return nil
+		}
+		now := time.Now().Unix()
+		if _, err := tx.Exec(ctx, `UPDATE user_premium_payment_grant SET revoked_at=$1 WHERE transaction_key=$2`, now, transactionKey[:]); err != nil {
+			return err
+		}
+
+		// Rebuild the remaining paid schedule after removing this transaction.
+		// A later purchase was originally chained after the revoked expiry; using
+		// its original end time would silently retain the refunded duration.
+		rows, err := tx.Query(ctx, `SELECT transaction_key, created_at, months, starts_at, expires_at, revoked_at
+			FROM user_premium_payment_grant WHERE user_id=$1 ORDER BY created_at, transaction_key FOR UPDATE`, id)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		var hasLifetime bool
+		var maxExpiry int64
+		var hasExpiry bool
+		var scheduleBase int64
+		var revokedPaidGrantSeen bool
+		for rows.Next() {
+			var key []byte
+			var createdAt, startsAt, expiresAt, revokedAt int64
+			var months int32
+			if err = rows.Scan(&key, &createdAt, &months, &startsAt, &expiresAt, &revokedAt); err != nil {
+				return err
+			}
+			if revokedAt != 0 {
+				if months > 0 {
+					revokedPaidGrantSeen = true
+				}
+				continue
+			}
+			if months <= 0 {
+				continue
+			}
+			if expiresAt == 0 {
+				hasLifetime = true
+				continue
+			}
+			if startsAt == 0 {
+				startsAt = createdAt
+			}
+			if revokedPaidGrantSeen || scheduleBase > 0 {
+				if createdAt > scheduleBase {
+					startsAt = createdAt
+				} else {
+					startsAt = scheduleBase
+				}
+			}
+			expiresAt = time.Unix(startsAt, 0).AddDate(0, int(months), 0).Unix()
+			if _, err = tx.Exec(ctx, `UPDATE user_premium_payment_grant SET starts_at=$1, expires_at=$2 WHERE transaction_key=$3`, startsAt, expiresAt, key); err != nil {
+				return err
+			}
+			scheduleBase = expiresAt
+			if !hasExpiry || expiresAt > maxExpiry {
+				maxExpiry = expiresAt
+				hasExpiry = true
+			}
+		}
+		if err = rows.Err(); err != nil {
+			return err
+		}
+		if hasLifetime || (currentPremium && currentExpiry == 0) {
+			_, err := tx.Exec(ctx, `UPDATE users SET premium=TRUE,premium_expire_date=0 WHERE id=$1`, id)
+			return err
+		}
+		if hasExpiry && maxExpiry > now {
+			_, err := tx.Exec(ctx, `UPDATE users SET premium=TRUE,premium_expire_date=$1 WHERE id=$2`, maxExpiry, id)
+			return err
+		}
+		_, err = tx.Exec(ctx, `UPDATE users SET premium=FALSE,premium_expire_date=0 WHERE id=$1`, id)
 		return err
 	})
 }
@@ -318,7 +441,7 @@ func (d *Dao) pgCreateBot(ctx context.Context, creatorUserID, managerBotID, mana
 			}
 			return err
 		}
-		if creatorDeleted || creatorType != user.UserTypeRegular {
+		if creatorDeleted || (creatorType != user.UserTypeRegular && creatorType != user.UserTypeTest) {
 			return mtproto.ErrForbiddenUserBotInvalid
 		}
 		if managerBotID > 0 {

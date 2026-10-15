@@ -419,7 +419,8 @@ def build_restart_entries(rows: list[dict[str, str]], matrix: list[dict[str, Any
             ),
             "command": (
                 'python3 tools/restart_probe.py --compose-file "$ACCEPTANCE_COMPOSE_FILE" '
-                '--service "$ACCEPTANCE_SERVICE" --before-command "$RESTART_BEFORE_COMMAND" '
+                '--service "$ACCEPTANCE_SERVICE" --expected-image "$TEAMGRAM_BACKEND_IMAGE" '
+                '--before-command "$RESTART_BEFORE_COMMAND" '
                 '--after-command "$RESTART_AFTER_COMMAND" --execute --output restart-evidence.json'
                 if exact_ids else None
             ),
@@ -533,6 +534,10 @@ if [[ -z ${RESTART_BEFORE_COMMAND:-} || -z ${RESTART_AFTER_COMMAND:-} ]]; then
   echo 'RESTART_BEFORE_COMMAND and RESTART_AFTER_COMMAND are required.' >&2
   exit 2
 fi
+if [[ -z ${TEAMGRAM_BACKEND_IMAGE:-} ]]; then
+  echo 'TEAMGRAM_BACKEND_IMAGE is required.' >&2
+  exit 2
+fi
 
 ROOT=%s
 COMPOSE_FILE=$1
@@ -542,6 +547,7 @@ mkdir -p "$OUT_DIR"
 ARGS=(
   --compose-file "$COMPOSE_FILE"
   --service "$SERVICE"
+  --expected-image "$TEAMGRAM_BACKEND_IMAGE"
   --before-command "$RESTART_BEFORE_COMMAND"
   --after-command "$RESTART_AFTER_COMMAND"
   --output "$OUT_DIR/restart-evidence.json"

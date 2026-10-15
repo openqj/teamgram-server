@@ -295,6 +295,35 @@ def _premium_fixture_errors(evidence: dict[str, Any]) -> list[str]:
             errors.append(f"{label}.aGetMePremium is not true")
         if not isinstance(observed, dict) or observed.get("premium") is not True:
             errors.append(f"{label}.bObservedUser.premium is not true")
+    webhook = evidence.get("refundWebhook")
+    if not isinstance(webhook, dict) or webhook.get("status") != 202:
+        errors.append("refundWebhook was not accepted with HTTP 202")
+    refund = evidence.get("refundRevoke")
+    if not isinstance(refund, dict):
+        errors.append("refundRevoke object is missing")
+    else:
+        for field, expected in (("webhookState", "complete"), ("requestState", "reversed"),
+                                ("entitlementState", "revoked"), ("reconciliationState", "complete"),
+                                ("reconciliationStatus", "revoked")):
+            if refund.get(field) != expected:
+                errors.append(f"refundRevoke.{field}={refund.get(field)!r}, expected {expected!r}")
+        if int(refund.get("reversalCount") or 0) != 1:
+            errors.append("refundRevoke.reversalCount is not one")
+        if int(refund.get("reversedLedgerCount") or 0) != 1:
+            errors.append("refundRevoke.reversedLedgerCount is not one")
+        if int(refund.get("grantRevokedAt") or 0) <= 0:
+            errors.append("refundRevoke.grantRevokedAt is not set")
+        active_grants = int(refund.get("activeGrantCount") or 0)
+        expected_premium = active_grants > 0
+        if refund.get("userPremium") is not expected_premium:
+            errors.append(f"refundRevoke.userPremium={refund.get('userPremium')!r}, expected {expected_premium!r}")
+    final_sessions = evidence.get("sessionsAfterRevoke")
+    final_observed = final_sessions.get("bObservedUser") if isinstance(final_sessions, dict) else None
+    final_expected = bool(isinstance(refund, dict) and int(refund.get("activeGrantCount") or 0) > 0)
+    if not isinstance(final_sessions, dict) or final_sessions.get("aGetMePremium") is not final_expected:
+        errors.append("sessionsAfterRevoke.aGetMePremium does not match remaining active grants")
+    if not isinstance(final_observed, dict) or final_observed.get("premium") is not final_expected:
+        errors.append("sessionsAfterRevoke.bObservedUser.premium does not match remaining active grants")
     return errors
 
 
@@ -355,8 +384,6 @@ def load_probe_evidence(
                 "provenance": "local_signed_payment_fixture",
                 "known_limitations": [
                     "real Apple/Google receipt verification is not covered",
-                    "real refund/revoke webhook and entitlement removal are not covered",
-                    "production provider reconciliation is not covered",
                 ],
                 "artifact": artifact,
             }))
@@ -472,6 +499,15 @@ def apply_probe_evidence(
     return result
 
 
+def sync_matrix_metadata(result: dict[str, Any], row: dict[str, Any]) -> dict[str, Any]:
+    """Refresh descriptive fields when an older report is merged."""
+
+    for field in ("category", "gate", "kind", "script", "evidence", "known_gap", "manual_steps", "destructive"):
+        if field in row:
+            result[field] = row[field]
+    return result
+
+
 def merge_report(
     source_path: Path,
     output_path: Path | None,
@@ -488,6 +524,7 @@ def merge_report(
     for item in report["results"]:
         row = rows_by_id.get(str(item.get("id")))
         if row is not None:
+            sync_matrix_metadata(item, row)
             apply_external_evidence(item, row, evidence)
         apply_probe_evidence(item, probe_evidence)
     for row in rows:
@@ -586,9 +623,10 @@ def main() -> int:
         print("critical path acceptance: --run and --merge-report are mutually exclusive", file=sys.stderr)
         return 2
     try:
-        rows = select_rows(load_rows(args.matrix), args)
+        all_rows = load_rows(args.matrix)
+        rows = select_rows(all_rows, args)
         playwright_evidence = load_playwright_evidence(args.playwright_junit)
-        probe_evidence = load_probe_evidence(args.probe_evidence, rows)
+        probe_evidence = load_probe_evidence(args.probe_evidence, all_rows)
     except (OSError, ValueError, json.JSONDecodeError) as error:
         print(f"critical path acceptance: {error}", file=sys.stderr)
         return 2

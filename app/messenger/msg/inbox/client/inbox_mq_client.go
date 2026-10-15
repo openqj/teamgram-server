@@ -22,19 +22,19 @@ import (
 	"context"
 	"strconv"
 
-	kafka "github.com/teamgram/marmota/pkg/mq"
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/messenger/msg/inbox/inbox"
+	"github.com/teamgram/teamgram-server/pkg/mqproducer"
 
 	"github.com/zeromicro/go-zero/core/jsonx"
 	"google.golang.org/protobuf/proto"
 )
 
 type defaultInboxMqClient struct {
-	cli *kafka.Producer
+	cli mqproducer.Sender
 }
 
-func NewInboxMqClient(cli *kafka.Producer) InboxClient {
+func NewInboxMqClient(cli mqproducer.Sender) InboxClient {
 	return &defaultInboxMqClient{
 		cli: cli,
 	}

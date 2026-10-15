@@ -344,7 +344,11 @@ func (c *ApiFullCore) PaymentsSendStarsForm(in *mtproto.TLPaymentsSendStarsForm)
 		return nil, mtproto.ErrPaymentUnsupported
 	}
 	defer release()
-	request, err := domain.BeginPaymentRequest(uid, requestKey, "external", fingerprint, offer.Currency, offer.Amount, 0, 0)
+	providerName, err := configuredPaymentProviderName(c.svcCtx.Config.PaymentProviderName)
+	if err != nil {
+		return nil, err
+	}
+	request, err := domain.BeginPaymentRequest(uid, requestKey, providerName, fingerprint, offer.Currency, offer.Amount, 0, 0)
 	if err != nil {
 		return nil, err
 	}

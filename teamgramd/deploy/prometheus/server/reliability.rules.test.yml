@@ -1,0 +1,90 @@
+rule_files:
+  - reliability.rules.yml
+evaluation_interval: 1m
+tests:
+  - interval: 1m
+    input_series:
+      - series: 'up{job="messenger.msg",instance="healthy:20031"}'
+        values: '1 1 1'
+      - series: 'up{job="messenger.msg",instance="missing:20031"}'
+        values: '1 1 1'
+      - series: 'teamgram_delivery_backlog_sample_timestamp_seconds{job="messenger.msg",instance="healthy:20031"}'
+        values: '0 60 120'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: TeamgramDeliveryMetricsStale
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: messenger.msg
+              instance: missing:20031
+            exp_annotations:
+              summary: "Delivery backlog cannot be observed"
+              description: "The database sampler is stale or missing; the last backlog values must not be interpreted as current health."
+  - interval: 1m
+    input_series:
+      - series: 'teamgram_delivery_max_attempts{job="messenger.msg",instance="backend:20031",queue="inbox"}'
+        values: '10 10 10'
+      - series: 'teamgram_delivery_oldest_pending_seconds{job="messenger.msg",instance="backend:20031",queue="inbox"}'
+        values: '350 350 350'
+      - series: 'teamgram_delivery_publications_total{job="messenger.msg",instance="backend:20031",queue="inbox",outcome="timeout"}'
+        values: '0+12x6'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: TeamgramDeliveryPoisonIntent
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: messenger.msg
+              instance: backend:20031
+              queue: inbox
+            exp_annotations:
+              summary: "Delivery backlog includes old work and repeated failures"
+              description: "Inspect pending intents for their individual age and attempts. Do not discard pending messages to clear this alert."
+      - eval_time: 6m
+        alertname: TeamgramDeliveryPublishFailures
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: messenger.msg
+              instance: backend:20031
+              queue: inbox
+            exp_annotations:
+              summary: "Message publications repeatedly fail or time out"
+              description: "Check Kafka connectivity and broker acknowledgement latency. Timeout may be an ambiguous send; durable intents must remain retryable."
+  - interval: 1m
+    input_series:
+      - series: 'teamgram_delivery_oldest_pending_seconds{job="messenger.msg",instance="backend:20031",queue="inbox"}'
+        values: '90 90 90 90 90'
+      - series: 'teamgram_delivery_backlog_sample_timestamp_seconds{job="messenger.msg",instance="backend:20031"}'
+        values: '0 60 120 180 240'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: TeamgramDeliveryBacklogStalled
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: messenger.msg
+              instance: backend:20031
+              queue: inbox
+            exp_annotations:
+              summary: "Message delivery has pending work older than one minute"
+              description: "Queue inbox on backend:20031 has stopped meeting the local recovery budget. Check consumer health, broker availability and leases."
+      - eval_time: 3m
+        alertname: TeamgramDeliveryMetricsStale
+        exp_alerts: []
+  - interval: 1m
+    input_series:
+      - series: 'teamgram_delivery_backlog_sample_timestamp_seconds{job="messenger.msg",instance="backend:20031"}'
+        values: '0 0 0 0 0'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: TeamgramDeliveryMetricsStale
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: messenger.msg
+              instance: backend:20031
+            exp_annotations:
+              summary: "Delivery backlog cannot be observed"
+              description: "The database sampler is stale or missing; the last backlog values must not be interpreted as current health."

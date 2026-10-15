@@ -5,7 +5,7 @@ import { createRequire } from 'node:module';
 
 const gramjsDir = process.env.TEAMGRAM_GRAMJS_DIR || '/Users/mac/open/test/telegram-tt-master';
 const dcId = Number(process.env.TG_DC_ID || '2');
-const userId = process.env.GLOBAL_PRIVACY_USER_ID || '136907714';
+const userId = process.env.GLOBAL_PRIVACY_USER_ID || '1';
 const globalAny = globalThis as typeof globalThis & { self?: any; addEventListener?: () => void };
 globalAny.self ??= globalThis;
 globalAny.addEventListener ??= () => {};

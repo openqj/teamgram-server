@@ -192,6 +192,12 @@ func saveDialogFilters(userId int64, list []*mtproto.DialogFilter) error {
 	return persist.Default.Set(dialogFiltersKey(userId), string(b))
 }
 
+func dialogFiltersWithDefault(list []*mtproto.DialogFilter) []*mtproto.DialogFilter {
+	filters := make([]*mtproto.DialogFilter, 0, len(list)+1)
+	filters = append(filters, mtproto.MakeTLDialogFilterDefault(nil).To_DialogFilter())
+	return append(filters, list...)
+}
+
 func reorderDialogFilters(list []*mtproto.DialogFilter, order []int32) []*mtproto.DialogFilter {
 	if len(order) == 0 {
 		if list == nil {
@@ -272,7 +278,7 @@ func (c *ApiFullCore) MessagesGetDialogFiltersEFD48C89(in *mtproto.TLMessagesGet
 	}
 	return mtproto.MakeTLMessagesDialogFilters(&mtproto.Messages_DialogFilters{
 		TagsEnabled: tagsEnabled,
-		Filters:     filters,
+		Filters:     dialogFiltersWithDefault(filters),
 	}).To_Messages_DialogFilters(), nil
 }
 
@@ -290,7 +296,8 @@ func (c *ApiFullCore) MessagesGetDialogFiltersF19ED96D(in *mtproto.TLMessagesGet
 }
 
 func (c *ApiFullCore) MessagesGetSuggestedDialogFilters(_ *mtproto.TLMessagesGetSuggestedDialogFilters) (*mtproto.Vector_DialogFilterSuggested, error) {
-	if _, err := c.requireUserId(); err != nil {
+	userId, err := c.requireUserId()
+	if err != nil {
 		return nil, err
 	}
 	empty := []*mtproto.InputPeer{}
@@ -316,11 +323,46 @@ func (c *ApiFullCore) MessagesGetSuggestedDialogFilters(_ *mtproto.TLMessagesGet
 			Description: title,
 		}).To_DialogFilterSuggested()
 	}
-	return &mtproto.Vector_DialogFilterSuggested{Datas: []*mtproto.DialogFilterSuggested{
+	suggested := []*mtproto.DialogFilterSuggested{
 		filter(2, "Contacts", "👥", true, false, false, false),
 		filter(3, "Groups", "👨‍👩‍👧‍👦", false, true, false, false),
 		filter(4, "Channels", "📣", false, false, true, false),
-	}}, nil
+	}
+	existing, err := c.loadDialogFilters(userId)
+	if err != nil {
+		return nil, err
+	}
+	available := make([]*mtproto.DialogFilterSuggested, 0, len(suggested))
+	for _, candidate := range suggested {
+		alreadyAdded := false
+		for _, current := range existing {
+			if dialogFilterMatchesSuggestion(current, candidate.GetFilter()) {
+				alreadyAdded = true
+				break
+			}
+		}
+		if !alreadyAdded {
+			available = append(available, candidate)
+		}
+	}
+	return &mtproto.Vector_DialogFilterSuggested{Datas: available}, nil
+}
+
+func dialogFilterMatchesSuggestion(current, suggested *mtproto.DialogFilter) bool {
+	if current == nil || suggested == nil || current.GetPredicateName() != mtproto.Predicate_dialogFilter || suggested.GetPredicateName() != mtproto.Predicate_dialogFilter {
+		return false
+	}
+	if current.GetContacts() != suggested.GetContacts() ||
+		current.GetNonContacts() != suggested.GetNonContacts() ||
+		current.GetGroups() != suggested.GetGroups() ||
+		current.GetBroadcasts() != suggested.GetBroadcasts() ||
+		current.GetBots() != suggested.GetBots() ||
+		current.GetExcludeMuted() != suggested.GetExcludeMuted() ||
+		current.GetExcludeRead() != suggested.GetExcludeRead() ||
+		current.GetExcludeArchived() != suggested.GetExcludeArchived() {
+		return false
+	}
+	return len(current.GetPinnedPeers()) == 0 && len(current.GetIncludePeers()) == 0 && len(current.GetExcludePeers()) == 0
 }
 
 func (c *ApiFullCore) MessagesUpdateDialogFilter(in *mtproto.TLMessagesUpdateDialogFilter) (*mtproto.Bool, error) {

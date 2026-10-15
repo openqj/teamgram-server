@@ -1,4 +1,6 @@
 Name: bff.bff
+Shutdown:
+  WaitTime: 35s
 ListenOn: 0.0.0.0:20010
 DcId: 2
 # This isolated deployment is an explicitly shared authority for DC 1 and 2.
@@ -35,6 +37,7 @@ SearchPostsFlood:
   TotalDaily: 10
 
 PaymentProviderEndpoint: ""
+PaymentProviderName: external
 PaymentProviderKey: ""
 PaymentProviderSigningKey: ""
 PaymentProviderTimeoutSeconds: 5

@@ -75,6 +75,8 @@ func (c *UserCore) UserGetBotInfoV2(in *user.TLUserGetBotInfoV2) (*user.BotInfoD
 			Text: botsDO.MenuButtonText,
 			Url:  botsDO.MenuButtonUrl,
 		}).To_BotMenuButton()
+	} else if len(botInfo.Commands) > 0 {
+		botInfo.MenuButton = mtproto.MakeTLBotMenuButtonCommands(&mtproto.BotMenuButton{}).To_BotMenuButton()
 	}
 
 	// DescriptionPhoto

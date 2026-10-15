@@ -15,6 +15,7 @@ const (
 	PaymentStatePending  = "pending"
 	PaymentStateRejected = "rejected"
 	PaymentStateSettled  = "settled"
+	PaymentStateReversed = "reversed"
 )
 
 var (

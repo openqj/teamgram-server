@@ -27,40 +27,43 @@ import (
 
 type Config struct {
 	zrpc.RpcServerConf
-	DcId                           int32 `json:",optional"`
-	DialogClient                   zrpc.RpcClientConf
-	UserClient                     zrpc.RpcClientConf
-	ChatClient                     zrpc.RpcClientConf
-	MessageClient                  zrpc.RpcClientConf
-	MsgClient                      zrpc.RpcClientConf
-	DfsClient                      zrpc.RpcClientConf
-	SyncClient                     *kafka.KafkaProducerConf
-	KV                             kv.KvConf
-	Code                           *conf.SmsVerifyCodeConfig `json:",optional"`
-	PostgresDSN                    string                    `json:",optional"`
-	PaymentProviderEndpoint        string                    `json:",optional"`
-	PaymentProviderKey             string                    `json:",optional"`
-	PaymentProviderSigningKey      string                    `json:",optional"`
-	PaymentProviderTimeoutSeconds  int                       `json:",optional"`
-	AllowInsecureProviderHTTP      bool                      `json:",optional"`
-	GroupCallMediaEndpoint         string                    `json:",optional"`
-	GroupCallMediaAPIKey           string                    `json:",optional"`
-	GroupCallMediaSigningKey       string                    `json:",optional"`
-	GroupCallMediaRTMPHost         string                    `json:",optional"`
-	GroupCallMediaTimeoutSeconds   int                       `json:",optional"`
-	AIProviderEndpoint             string                    `json:",optional"`
-	AIProviderKey                  string                    `json:",optional"`
-	AIProviderSigningKey           string                    `json:",optional"`
-	AIProviderModel                string                    `json:",optional"`
-	AIProviderTimeoutSeconds       int                       `json:",optional"`
-	BusinessProviderEndpoint       string                    `json:",optional"`
-	BusinessProviderKey            string                    `json:",optional"`
-	BusinessProviderSigningKey     string                    `json:",optional"`
-	BusinessProviderTimeoutSeconds int                       `json:",optional"`
-	TurnHost                       string                    `json:",optional"`
-	TurnPort                       int32                     `json:",optional"`
-	TurnUsername                   string                    `json:",optional"`
-	TurnPassword                   string                    `json:",optional"`
-	TurnSharedSecret               string                    `json:",optional"`
-	TurnCredentialTTLSeconds       int                       `json:",optional"`
+	DcId                                 int32 `json:",optional"`
+	DialogClient                         zrpc.RpcClientConf
+	UserClient                           zrpc.RpcClientConf
+	ChatClient                           zrpc.RpcClientConf
+	MessageClient                        zrpc.RpcClientConf
+	MsgClient                            zrpc.RpcClientConf
+	DfsClient                            zrpc.RpcClientConf
+	SyncClient                           *kafka.KafkaProducerConf
+	KV                                   kv.KvConf
+	Code                                 *conf.SmsVerifyCodeConfig `json:",optional"`
+	PostgresDSN                          string                    `json:",optional"`
+	PaymentProviderEndpoint              string                    `json:",optional"`
+	PaymentProviderName                  string                    `json:",optional"`
+	PaymentProviderKey                   string                    `json:",optional"`
+	PaymentProviderSigningKey            string                    `json:",optional"`
+	PaymentProviderTimeoutSeconds        int                       `json:",optional"`
+	PaymentReconciliationIntervalSeconds int                       `json:",optional"`
+	PaymentReconciliationBatchSize       int                       `json:",optional"`
+	AllowInsecureProviderHTTP            bool                      `json:",optional"`
+	GroupCallMediaEndpoint               string                    `json:",optional"`
+	GroupCallMediaAPIKey                 string                    `json:",optional"`
+	GroupCallMediaSigningKey             string                    `json:",optional"`
+	GroupCallMediaRTMPHost               string                    `json:",optional"`
+	GroupCallMediaTimeoutSeconds         int                       `json:",optional"`
+	AIProviderEndpoint                   string                    `json:",optional"`
+	AIProviderKey                        string                    `json:",optional"`
+	AIProviderSigningKey                 string                    `json:",optional"`
+	AIProviderModel                      string                    `json:",optional"`
+	AIProviderTimeoutSeconds             int                       `json:",optional"`
+	BusinessProviderEndpoint             string                    `json:",optional"`
+	BusinessProviderKey                  string                    `json:",optional"`
+	BusinessProviderSigningKey           string                    `json:",optional"`
+	BusinessProviderTimeoutSeconds       int                       `json:",optional"`
+	TurnHost                             string                    `json:",optional"`
+	TurnPort                             int32                     `json:",optional"`
+	TurnUsername                         string                    `json:",optional"`
+	TurnPassword                         string                    `json:",optional"`
+	TurnSharedSecret                     string                    `json:",optional"`
+	TurnCredentialTTLSeconds             int                       `json:",optional"`
 }

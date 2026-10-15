@@ -16,6 +16,7 @@ import json
 import os
 from pathlib import Path
 import shlex
+import signal
 import shutil
 import subprocess
 import sys
@@ -50,6 +51,11 @@ def parse_args() -> argparse.Namespace:
         help="Existing Compose working directory (or ACCEPTANCE_COMPOSE_PROJECT_DIRECTORY).",
     )
     parser.add_argument("--service", default=os.environ.get("ACCEPTANCE_SERVICE", ""))
+    parser.add_argument(
+        "--expected-image",
+        default=os.environ.get("TEAMGRAM_BACKEND_IMAGE", "").strip(),
+        help="Expected image reference; execute mode fails closed when it differs from Compose or the running container.",
+    )
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument(
         "--before-command",
@@ -111,31 +117,48 @@ def record_command(
         "command": display,
         "shell": shell,
     }
+    process: subprocess.Popen[str] | None = None
     try:
-        completed = subprocess.run(
+        process = subprocess.Popen(
             command,
             cwd=ROOT,
             env=env,
             shell=shell,
             text=True,
-            capture_output=True,
-            timeout=timeout,
-            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
         )
-        stdout = completed.stdout or ""
-        stderr = completed.stderr or ""
+        stdout, stderr = process.communicate(timeout=timeout)
         record.update({
-            "exit_code": completed.returncode,
-            "ok": completed.returncode == 0,
+            "exit_code": process.returncode,
+            "ok": process.returncode == 0,
             "duration_seconds": round(time.monotonic() - started, 3),
-            "stdout": stdout,
-            "stderr": stderr,
-            "stdout_sha256": sha256_text(stdout),
-            "stderr_sha256": sha256_text(stderr),
+            "stdout": stdout or "",
+            "stderr": stderr or "",
+            "stdout_sha256": sha256_text(stdout or ""),
+            "stderr_sha256": sha256_text(stderr or ""),
         })
     except subprocess.TimeoutExpired as error:
         stdout = output_text(error.stdout)
         stderr = output_text(error.stderr)
+        if process is not None:
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+            except (ProcessLookupError, PermissionError):
+                pass
+            try:
+                process_stdout, process_stderr = process.communicate(timeout=5)
+                stdout = process_stdout or stdout
+                stderr = process_stderr or stderr
+            except subprocess.TimeoutExpired:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except (ProcessLookupError, PermissionError):
+                    pass
+                process_stdout, process_stderr = process.communicate()
+                stdout = process_stdout or stdout
+                stderr = process_stderr or stderr
         record.update({
             "exit_code": None,
             "ok": False,
@@ -198,6 +221,104 @@ def parse_ps_output(value: str) -> list[dict[str, Any]]:
         if isinstance(parsed, dict):
             records.append(parsed)
     return records
+
+
+def verify_backend_image(
+    config_command: list[str],
+    ps_command: list[str],
+    service: str,
+    expected_image: str,
+    timeout: float,
+) -> dict[str, Any]:
+    """Verify the requested image against Compose and the running container."""
+    result: dict[str, Any] = {
+        "name": "backend_image_check",
+        "expected_image": expected_image,
+        "status": "FAIL",
+        "ok": False,
+    }
+    if not expected_image:
+        result["reason"] = "expected backend image is empty"
+        return result
+
+    config = record_command(config_command, timeout=timeout)
+    config_stdout = config.get("stdout", "")
+    # Compose config contains the complete environment, including provider
+    # secrets. Keep only its hash and parsed image in the evidence report.
+    config["stdout"] = ""
+    config["stdout_redacted"] = True
+    config["stdout_length"] = len(config_stdout)
+    result["compose_config"] = config
+    if not config.get("ok"):
+        result["reason"] = "Compose config could not be rendered"
+        return result
+    try:
+        config_value = json.loads(config_stdout)
+    except json.JSONDecodeError as error:
+        result["reason"] = f"Compose config was not valid JSON: {error}"
+        return result
+    config_services = config_value.get("services") if isinstance(config_value, dict) else None
+    service_config = config_services.get(service) if isinstance(config_services, dict) else None
+    compose_image = service_config.get("image", "") if isinstance(service_config, dict) else ""
+    result["compose_image"] = compose_image
+    if not compose_image:
+        result["reason"] = f"Compose config has no image for service {service!r}"
+
+    ps = record_command(ps_command, timeout=timeout)
+    ps_services = parse_ps_output(ps.get("stdout", ""))
+    ps["services"] = ps_services
+    result["ps"] = ps
+    container = next(
+        (
+            item
+            for item in ps_services
+            if str(item.get("Service", item.get("service", ""))) == service
+        ),
+        ps_services[0] if len(ps_services) == 1 else None,
+    )
+    container_name = ""
+    if isinstance(container, dict):
+        container_name = str(container.get("Name") or container.get("name") or "").strip()
+    result["container_name"] = container_name
+    if not ps.get("ok") or not container_name:
+        result["reason"] = result.get("reason") or "running Compose service container could not be identified"
+        return result
+
+    inspect = record_command(
+        ["docker", "inspect", "--format", "{{.Config.Image}}", container_name],
+        timeout=timeout,
+    )
+    result["container_inspect"] = inspect
+    actual_images = [line.strip() for line in inspect.get("stdout", "").splitlines() if line.strip()]
+    container_image = actual_images[0] if len(actual_images) == 1 else ""
+    result["container_image"] = container_image
+    result["images"] = {
+        "expected": expected_image,
+        "compose": compose_image,
+        "container_config": container_image,
+    }
+    if not inspect.get("ok") or not container_image:
+        result["reason"] = result.get("reason") or "running container Config.Image could not be read"
+        return result
+
+    mismatches = [
+        name
+        for name, image in (
+            ("expected", expected_image),
+            ("compose", compose_image),
+            ("container_config", container_image),
+        )
+        if image != expected_image
+    ]
+    if mismatches:
+        result["reason"] = "backend image references do not match"
+        result["mismatches"] = mismatches
+        return result
+
+    result["status"] = "PASS"
+    result["ok"] = True
+    result["reason"] = "expected image matches Compose and running container Config.Image"
+    return result
 
 
 def service_ready(ps_record: dict[str, Any]) -> tuple[bool, str]:
@@ -329,6 +450,7 @@ def main() -> int:
             str(Path(args.project_directory).expanduser().resolve()) if args.project_directory else ""
         ),
         "service": args.service,
+        "expected_image": args.expected_image,
         "before_command": args.before_command or "",
         "after_command": args.after_command or "",
         "cleanup_command": args.cleanup_command or "",
@@ -362,6 +484,13 @@ def main() -> int:
         print(report["reason"], file=sys.stderr)
         return 2
 
+    if args.execute and not args.expected_image:
+        report["status"] = "BLOCKED"
+        report["reason"] = "--execute requires --expected-image or TEAMGRAM_BACKEND_IMAGE"
+        write_report(output, report)
+        print(report["reason"], file=sys.stderr)
+        return 2
+
     compose_files = [str(path) for path in compose_paths]
     project_directory = (
         str(Path(args.project_directory).expanduser().resolve()) if args.project_directory else ""
@@ -376,9 +505,12 @@ def main() -> int:
         )
 
     config_command = command("config", "--services")
+    config_json_command = command("config", "--format", "json")
+    ps_command = command("ps", "--all", "--format", "json", args.service)
     report["planned_commands"] = {
         "config": config_command,
-        "ps": command("ps", "--all", "--format", "json", args.service),
+        "config_json": config_json_command,
+        "ps": ps_command,
         "restart": command("restart", args.service),
     }
     if not args.execute:
@@ -405,6 +537,21 @@ def main() -> int:
         report["reason"] = f"service {args.service!r} is not present in compose config"
         write_report(output, report)
         return 1
+
+    if args.expected_image:
+        image_check = verify_backend_image(
+            config_json_command,
+            ps_command,
+            args.service,
+            args.expected_image,
+            args.timeout,
+        )
+        report["steps"].append(image_check)
+        if not image_check.get("ok"):
+            report["status"] = "FAIL"
+            report["reason"] = image_check.get("reason", "backend image check failed")
+            write_report(output, report)
+            return 1
 
     if args.before_command:
         before = record_command(args.before_command, shell=True, timeout=args.timeout)

@@ -258,6 +258,8 @@ func (d *Dao) watch(c zrpc.RpcClientConf) {
 }
 
 func (d *Dao) PushUpdatesToSession(ctx context.Context, serverId string, msg *session.TLSessionPushUpdatesData) (err error) {
+	started := time.Now()
+	defer func() { ObserveDeliveryStage("gateway_push", started, err) }()
 	d.mu.RLock()
 	pusher, ok := d.sessionServers[serverId]
 	d.mu.RUnlock()
@@ -271,6 +273,8 @@ func (d *Dao) PushUpdatesToSession(ctx context.Context, serverId string, msg *se
 }
 
 func (d *Dao) PushSessionUpdatesToSession(ctx context.Context, serverId string, msg *session.TLSessionPushSessionUpdatesData) (err error) {
+	started := time.Now()
+	defer func() { ObserveDeliveryStage("gateway_push", started, err) }()
 	d.mu.RLock()
 	pusher, ok := d.sessionServers[serverId]
 	d.mu.RUnlock()
@@ -284,6 +288,8 @@ func (d *Dao) PushSessionUpdatesToSession(ctx context.Context, serverId string, 
 }
 
 func (d *Dao) PushRpcResultToSession(ctx context.Context, serverId string, msg *session.TLSessionPushRpcResultData) (err error) {
+	started := time.Now()
+	defer func() { ObserveDeliveryStage("gateway_push", started, err) }()
 	d.mu.RLock()
 	pusher, ok := d.sessionServers[serverId]
 	d.mu.RUnlock()

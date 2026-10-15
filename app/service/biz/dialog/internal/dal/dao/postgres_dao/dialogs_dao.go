@@ -411,13 +411,19 @@ func (d *DialogsDAO) UpdatePeerDialogListPinned(ctx context.Context, pinned int6
 	return d.update(ctx, d.db, `UPDATE dialogs SET pinned = $1 WHERE user_id = $2 AND folder_id = 0 AND peer_dialog_id = ANY($3::bigint[])`, pinned, userID, ids)
 }
 func (d *DialogsDAO) UpdateFolderPeerDialogListPinned(ctx context.Context, pinned int64, userID int64, ids []int64) (int64, error) {
-	return d.update(ctx, d.db, `UPDATE dialogs SET folder_pinned = $1 WHERE user_id = $2 AND folder_id = 1 AND peer_dialog_id = ANY($3::bigint[])`, pinned, userID, ids)
+	return d.UpdateFolderPeerDialogListPinnedForFolder(ctx, 1, pinned, userID, ids)
+}
+func (d *DialogsDAO) UpdateFolderPeerDialogListPinnedForFolder(ctx context.Context, folderID int32, pinned int64, userID int64, ids []int64) (int64, error) {
+	return d.update(ctx, d.db, `UPDATE dialogs SET folder_pinned = $1 WHERE user_id = $2 AND folder_id = $3 AND peer_dialog_id = ANY($4::bigint[])`, pinned, userID, folderID, ids)
 }
 func (d *DialogsDAO) UpdateUnPinnedNotIdList(ctx context.Context, userID int64, ids []int64) (int64, error) {
 	return d.update(ctx, d.db, `UPDATE dialogs SET pinned = 0 WHERE user_id = $1 AND folder_id = 0 AND pinned > 0 AND NOT (peer_dialog_id = ANY($2::bigint[]))`, userID, ids)
 }
 func (d *DialogsDAO) UpdateFolderUnPinnedNotIdList(ctx context.Context, userID int64, ids []int64) (int64, error) {
-	return d.update(ctx, d.db, `UPDATE dialogs SET folder_pinned = 0 WHERE user_id = $1 AND folder_id = 1 AND folder_pinned > 0 AND NOT (peer_dialog_id = ANY($2::bigint[]))`, userID, ids)
+	return d.UpdateFolderUnPinnedNotIdListForFolder(ctx, 1, userID, ids)
+}
+func (d *DialogsDAO) UpdateFolderUnPinnedNotIdListForFolder(ctx context.Context, folderID int32, userID int64, ids []int64) (int64, error) {
+	return d.update(ctx, d.db, `UPDATE dialogs SET folder_pinned = 0 WHERE user_id = $1 AND folder_id = $2 AND folder_pinned > 0 AND NOT (peer_dialog_id = ANY($3::bigint[]))`, userID, folderID, ids)
 }
 func (d *DialogsDAO) SelectAllDialogs(ctx context.Context, userID int64) ([]dataobject.DialogsDO, error) {
 	return d.selectList(ctx, `WHERE user_id = $1 AND deleted = FALSE ORDER BY date2 DESC`, userID)

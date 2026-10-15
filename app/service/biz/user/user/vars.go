@@ -6,6 +6,8 @@
 
 package user
 
+import "strings"
+
 /*
 ## Inline bot samples
 Here are some sample inline bots, in case you’re curious to see one in action. Try any of these:
@@ -29,15 +31,15 @@ const (
 )
 
 const (
-	BotGifId          = int64(101)
+	BotGifId          = int64(900000000011)
 	BotGifName        = "gif"
-	BotVidId          = int64(102)
+	BotVidId          = int64(900000000012)
 	BotVidName        = "vid"
-	BotPicId          = int64(103)
+	BotPicId          = int64(900000000013)
 	BotPicName        = "pic"
-	BotBingId         = int64(104)
+	BotBingId         = int64(900000000014)
 	BotBingName       = "bing"
-	BotWikiId         = int64(105)
+	BotWikiId         = int64(900000000015)
 	BotWikiName       = "wiki"
 	BotImdbId         = int64(106)
 	BotImdbName       = "imdb"
@@ -91,7 +93,7 @@ func GetBotNameById(id int64) (n string) {
 }
 
 func GetBotIdByName(n string) (id int64) {
-	id, _ = botNameIdMap[n]
+	id, _ = botNameIdMap[strings.ToLower(strings.TrimSpace(n))]
 	return
 }
 

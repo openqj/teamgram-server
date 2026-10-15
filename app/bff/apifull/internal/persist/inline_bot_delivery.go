@@ -197,6 +197,9 @@ func claimInlineBotQueriesMemory(store *mem, limit int) ([]InlineBotQuery, error
 }
 
 func inlineBotQueryDue(item InlineBotQuery, now time.Time) bool {
+	if item.Ready {
+		return false
+	}
 	if item.DeliveryState == "" {
 		item.DeliveryState = InlineBotQueryStatePending
 	}

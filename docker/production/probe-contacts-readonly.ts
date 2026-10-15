@@ -6,7 +6,7 @@ for (const key of ['HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'http_proxy', 'http
   delete process.env[key];
 }
 
-const userId = '136907714';
+const userId = process.env.CONTACTS_USER_ID || '1';
 const dcId = 2;
 const dcHost = '127.0.0.1';
 const dcPort = 11443;
@@ -38,8 +38,8 @@ function loadAuthKey(): string {
     FROM auth_users u
     JOIN auth_keys k USING (auth_key_id)
     JOIN auth_key_infos i USING (auth_key_id)
-    WHERE u.user_id=${userId} AND u.state=0 AND u.deleted=0
-      AND k.deleted=0 AND i.deleted=0 AND i.auth_key_type=0
+    WHERE u.user_id=${userId} AND u.state=0 AND u.deleted=FALSE
+      AND k.deleted=FALSE AND i.deleted=FALSE AND i.auth_key_type=0
     ORDER BY u.date_active DESC, u.id DESC
     LIMIT 1
   `);
@@ -54,7 +54,7 @@ function loadContactSnapshot(): ContactSnapshot[] {
     SELECT c.contact_user_id, p.last_seen_at, p.expires
     FROM user_contacts c
     LEFT JOIN user_presences p ON p.user_id=c.contact_user_id
-    WHERE c.owner_user_id=${userId} AND c.is_deleted=0
+    WHERE c.owner_user_id=${userId} AND c.is_deleted=FALSE
     ORDER BY c.contact_user_id
   `);
   if (!output) return [];
@@ -183,8 +183,12 @@ async function main() {
       throw new Error('contacts.getContacts full response did not match active production contacts and hydrated users');
     }
     const unchangedContacts = await client.invoke(new Api.contacts.GetContacts({ hash: contactHash(expectedIds) }));
-    if (!matchesType(unchangedContacts, 'ContactsNotModified')) {
+    if (expectedIds.length > 0 && !matchesType(unchangedContacts, 'ContactsNotModified')) {
       throw new Error(`contacts.getContacts(current hash) returned ${rpcName(unchangedContacts)}, want contacts.contactsNotModified`);
+    }
+    if (expectedIds.length === 0 && (!matchesType(unchangedContacts, 'Contacts')
+      || unchangedContacts.contacts.length !== 0 || unchangedContacts.users.length !== 0)) {
+      throw new Error(`contacts.getContacts(empty hash) returned malformed ${rpcName(unchangedContacts)}`);
     }
 
     const after = loadContactSnapshot();

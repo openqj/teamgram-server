@@ -1,313 +1,690 @@
+import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
+import { randomBytes } from 'node:crypto';
+import { performance } from 'node:perf_hooks';
 
-// This probe deliberately leaves GramJS' update transport enabled. The other
-// acceptance probes disable it while polling history; this one verifies the
-// recipient fan-out path on two independent authenticated sessions.
-const required = [
-  'TEAMGRAM_GRAMJS_DIR', 'A_AUTH_B64', 'B_AUTH_B64', 'A_USER_ID', 'B_USER_ID',
-  'A_ACCESS_HASH', 'B_ACCESS_HASH',
-];
-for (const key of required) {
-  if (!process.env[key]) throw new Error(`${key} is required`);
-}
-
-const gramjsDir = process.env.TEAMGRAM_GRAMJS_DIR!;
+// Local Layer 229 acceptance: SLO_SAMPLES counts sequential sends in EACH
+// direction. Fresh clients reuse the auth keys; they do not register new keys.
+// before/after/cleanup can be placed around an external backend restart barrier.
+// fault uses ready/stopped/sent/restored milestones in PROBE_CONTROL_DIR.
+const phase = process.env.PROBE_PHASE || 'single';
+const tag = process.env.PROBE_TAG || `live-update-${Date.now()}-${randomBytes(4).toString('hex')}`;
+const sampleCount = Number(process.env.SLO_SAMPLES || '1');
+const timeoutMs = Number(process.env.LIVE_UPDATE_TIMEOUT_MS || '8000');
 const dcId = Number(process.env.TG_DC_ID || '2');
 const dcHost = process.env.TG_DC_HOST || '127.0.0.1';
 const dcPort = Number(process.env.TG_DC_PORT || '11443');
-const apiId = Number(process.env.TG_API_ID || '1');
-const apiHash = process.env.TG_API_HASH || '0123456789abcdef0123456789abcdef';
-const aID = BigInt(process.env.A_USER_ID!);
-const bID = BigInt(process.env.B_USER_ID!);
-const aHash = BigInt(process.env.A_ACCESS_HASH!);
-const bHash = BigInt(process.env.B_ACCESS_HASH!);
-const timeoutMs = Number(process.env.LIVE_UPDATE_TIMEOUT_MS || '8000');
-
-const globalAny = globalThis as typeof globalThis & { self?: any; addEventListener?: () => void };
-globalAny.self ??= globalThis;
-globalAny.addEventListener ??= () => {};
-globalAny.self.addEventListener ??= globalAny.addEventListener;
-
-const requireModule = createRequire(import.meta.url);
-const TelegramClient = requireModule(path.join(gramjsDir, 'src/lib/gramjs/client/TelegramClient.ts')).default;
-const CallbackSession = requireModule(path.join(gramjsDir, 'src/lib/gramjs/sessions/CallbackSession.ts')).default;
-const Api = requireModule(path.join(gramjsDir, 'src/lib/gramjs/tl/index.ts')).Api;
-const Connection = requireModule(path.join(gramjsDir, 'src/lib/gramjs/network/connection/TCPObfuscated.ts')).ConnectionTCPObfuscated;
+const stateFile = process.env.PROBE_STATE_FILE || `/tmp/teamgram-${tag}.json`;
+const controlDir = process.env.PROBE_CONTROL_DIR || '';
+const loadRate = Number(process.env.LOAD_RATE || '10');
+const loadSeconds = Number(process.env.LOAD_SECONDS || '60');
+const loadInflight = Number(process.env.LOAD_MAX_INFLIGHT || '32');
+const loadLagMs = Number(process.env.LOAD_MAX_LAG_MS || '100');
+const apiLayer = 229;
+const sendMessageConstructorId = 0xfef48f62;
+let Api: any;
+let TelegramClient: any;
+let CallbackSession: any;
+let Connection: any;
+let stage = 'configuration';
+type State = { pts: number; qts: number; seq: number; date: number };
+type Actor = { name: 'A' | 'B'; id: bigint; hash: bigint; client: any; events: any[] };
+type MessageSpec = { sender: 'A' | 'B'; text: string; randomId: string; ids?: Record<string, number> };
+const report: any = {
+  schemaVersion: 1, probe: 'messaging.cross-account-live-updates',
+  evidenceClass: 'local_probe', productionSloEvidence: false, phase, tag,
+  externalBarrierVerificationRequired: ['before', 'after', 'fault'].includes(phase),
+  clock: 'performance.now', samplesPerDirection: phase === 'fault' ? 1 : sampleCount, ok: false,
+  rpcSamples: [], deliverySamples: [], replaySamples: [], checks: {},
+};
 const quietLogger = { debug() {}, info() {}, warn() {}, error() {} };
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+function check(condition: unknown, code: string): asserts condition {
+  if (!condition) throw Object.assign(new Error(code), { probeCode: code });
+}
+
+function errorCode(error: any): string {
+  if (typeof error?.probeCode === 'string') return error.probeCode;
+  // SDK messages can contain requests or credentials. Emit only canonical RPC
+  // identifiers and our own fixed codes, never stack traces or arbitrary text.
+  return /^[A-Z][A-Z0-9_]{0,79}$/.test(error?.errorMessage || '')
+    ? error.errorMessage : 'RPC_OR_TRANSPORT_ERROR';
+}
+
+async function bounded<T>(promise: Promise<T>): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([promise, new Promise<T>((_, reject) => {
+      timer = setTimeout(() => reject(Object.assign(new Error('PROBE_TIMEOUT'), { probeCode: 'PROBE_TIMEOUT' })), timeoutMs);
+    })]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
 
 function rpcName(value: any): string {
   return value?.className || value?.constructor?.name || typeof value;
 }
 
-function stateFields(value: any): { pts: number; qts: number; seq: number; date: number } {
-  return {
-    pts: Number(value?.pts ?? 0),
-    qts: Number(value?.qts ?? 0),
-    seq: Number(value?.seq ?? 0),
-    date: Number(value?.date ?? 0),
+function stateFields(value: any): State {
+  const state = { pts: Number(value?.pts), qts: Number(value?.qts), seq: Number(value?.seq), date: Number(value?.date) };
+  check(Object.values(state).every(Number.isInteger) && state.pts >= 0
+    && state.qts >= 0 && state.seq >= -1 && state.date > 0, 'INVALID_UPDATE_STATE');
+  return state;
+}
+
+function assertMonotonic(before: State, after: State): void {
+  check(after.pts >= before.pts && after.qts === before.qts
+    && after.seq >= before.seq && after.date >= before.date, 'UPDATE_STATE_REGRESSED');
+}
+
+function updateMessages(update: any, envelope: any = {}): any[] {
+  const next = {
+    date: Number.isInteger(update?.date) ? update.date : envelope.date,
+    seq: Number.isInteger(update?.seq) ? update.seq : envelope.seq,
   };
+  if (Array.isArray(update?.updates)) return update.updates.flatMap((item: any) => updateMessages(item, next));
+  if (update?.update) return updateMessages(update.update, next);
+  const message = typeof update?.message === 'string' ? update : update?.message;
+  if (typeof message?.message !== 'string') return [];
+  return [{
+    text: message.message, id: Number(message.id || 0),
+    pts: Number(update.pts ?? message.pts), ptsCount: Number(update.ptsCount ?? message.ptsCount),
+    date: Number(message.date ?? next.date), seq: next.seq,
+  }];
 }
 
-function assertState(label: string, state: { pts: number; qts: number; seq: number; date: number }): void {
-  for (const [field, value] of Object.entries(state)) {
-    if (!Number.isInteger(value)) throw new Error(`${label} state had non-integer ${field}=${value}`);
-  }
-  if (state.pts < 0 || state.qts < 0 || state.date <= 0) {
-    throw new Error(`${label} state had invalid pts/qts/date=${JSON.stringify(state)}`);
-  }
+function peer(actor: Actor): any {
+  return new Api.InputPeerUser({ userId: actor.id, accessHash: actor.hash });
 }
 
-function makeClient(authBase64: string): any {
+async function disconnect(actor?: Actor): Promise<void> {
+  if (actor) { try { await bounded(actor.client.disconnect()); } catch {} }
+}
+
+async function connectActor(name: 'A' | 'B'): Promise<Actor> {
   const session = new CallbackSession({
-    mainDcId: dcId,
-    keys: { [dcId]: Buffer.from(authBase64, 'base64').toString('hex') },
+    mainDcId: dcId, keys: { [dcId]: Buffer.from(process.env[`${name}_AUTH_B64`]!, 'base64').toString('hex') },
   }, () => {});
   const load = session.load.bind(session);
-  session.load = async () => {
-    await load();
-    (session as any)._serverAddress = dcHost;
-    (session as any)._port = dcPort;
+  session.load = async () => { await load(); session._serverAddress = dcHost; session._port = dcPort; };
+  const client = new TelegramClient(session, Number(process.env.TG_API_ID || '1'),
+    process.env.TG_API_HASH || '0123456789abcdef0123456789abcdef', {
+      connection: Connection, fallbackConnection: Connection,
+      shouldAllowHttpTransport: false, shouldForceHttpTransport: false,
+      timeout: 20, requestRetries: 1, connectionRetries: 1, connectionRetriesToFallback: 0,
+      retryDelay: 250, autoReconnect: false, sequentialUpdates: true, baseLogger: quietLogger,
+    });
+  const initWith = client._initWith.bind(client);
+  client._initWith = (query: any) => {
+    const original = initWith(query);
+    check(rpcName(original) === 'InvokeWithLayer' && rpcName(original.query) === 'InitConnection'
+      && original.query.query === query, 'INVALID_INIT_CONNECTION_WRAPPER');
+    const initialized = new Api.InvokeWithLayer({ layer: apiLayer, query: original.query });
+    report.apiLayer = initialized.layer;
+    return initialized;
   };
-  const client = new TelegramClient(session, apiId, apiHash, {
-    connection: Connection,
-    fallbackConnection: Connection,
-    shouldAllowHttpTransport: false,
-    shouldForceHttpTransport: false,
-    timeout: 20,
-    requestRetries: 1,
-    connectionRetries: 1,
-    connectionRetriesToFallback: 0,
-    retryDelay: 250,
-    autoReconnect: false,
-    sequentialUpdates: true,
-    baseLogger: quietLogger,
-  });
-  // The probe only uses the authenticated primary DC. Avoid an unrelated
-  // exported media sender, while retaining the primary sender's update loop.
-  (client as any)._borrowExportedSender = async () => undefined;
-  return client;
-}
-
-function inputPeer(id: bigint, accessHash: bigint): any {
-  return new Api.InputPeerUser({ userId: id, accessHash });
-}
-
-type LiveMessage = {
-  text: string;
-  id: number;
-  pts?: number;
-  ptsCount?: number;
-  date?: number;
-  seq?: number;
-  qts?: number;
-};
-
-function updateMessage(update: any, envelope: { date?: number; seq?: number; qts?: number } = {}): LiveMessage | undefined {
-  const message = update?.message;
-  if (message?.message !== undefined) {
-    return {
-      text: String(message.message),
-      id: Number(message.id || 0),
-      pts: Number.isInteger(update.pts) ? Number(update.pts) : (Number.isInteger(message.pts) ? Number(message.pts) : undefined),
-      ptsCount: Number.isInteger(update.ptsCount) ? Number(update.ptsCount) : (Number.isInteger(message.ptsCount) ? Number(message.ptsCount) : undefined),
-      date: Number.isInteger(message.date) ? Number(message.date) : envelope.date,
-      seq: envelope.seq,
-      qts: Number.isInteger(update.qts) ? Number(update.qts) : envelope.qts,
-    };
-  }
-  // UpdateShortMessage is used by some gateways for private messages and
-  // carries the text directly on the update rather than on `message`.
-  if (update?.message !== undefined && typeof update.message === 'string') {
-    return {
-      text: String(update.message),
-      id: Number(update.id || 0),
-      pts: Number.isInteger(update.pts) ? Number(update.pts) : undefined,
-      ptsCount: Number.isInteger(update.ptsCount) ? Number(update.ptsCount) : undefined,
-      date: Number.isInteger(update.date) ? Number(update.date) : envelope.date,
-      seq: envelope.seq,
-      qts: Number.isInteger(update.qts) ? Number(update.qts) : envelope.qts,
-    };
-  }
-  return undefined;
-}
-
-function updateMessages(update: any, envelope: { date?: number; seq?: number; qts?: number } = {}): LiveMessage[] {
-  const nextEnvelope = {
-    date: Number.isInteger(update?.date) ? Number(update.date) : envelope.date,
-    seq: Number.isInteger(update?.seq) ? Number(update.seq) : envelope.seq,
-    qts: Number.isInteger(update?.qts) ? Number(update.qts) : envelope.qts,
+  // Keep the primary update loop; media sender creation is unrelated to this probe.
+  client._borrowExportedSender = async () => undefined;
+  const actor: Actor = {
+    name, id: BigInt(process.env[`${name}_USER_ID`]!), hash: BigInt(process.env[`${name}_ACCESS_HASH`]!), client, events: [],
   };
-  if (Array.isArray(update?.updates)) {
-    return update.updates.flatMap((item: any) => updateMessages(item, nextEnvelope));
-  }
-  if (update?.update) {
-    return updateMessages(update.update, nextEnvelope);
-  }
-  const event = updateMessage(update, nextEnvelope);
-  return event ? [event] : [];
-}
-
-function updateBuilder(): { build: (update: any) => any } {
-  return { build: (update: any) => update };
-}
-
-function waitForText(events: any[], text: string, deadline: number): Promise<any> {
-  return new Promise((resolve, reject) => {
-    const poll = () => {
-      const match = events.find((event) => event?.text === text);
-      if (match) {
-        resolve(match);
-        return;
-      }
-      if (Date.now() >= deadline) {
-        reject(new Error(`live update timeout for ${text}; observed=${JSON.stringify(events.slice(-8))}`));
-        return;
-      }
-      setTimeout(poll, 25).unref?.();
-    };
-    poll();
-  });
-}
-
-function history(peer: any): any {
-  return new Api.messages.GetHistory({
-    peer, offsetId: 0, offsetDate: 0, addOffset: 0, limit: 100,
-    maxId: 0, minId: 0, hash: 0n,
-  });
-}
-
-function findHistoryMessage(result: any, text: string): any {
-  return (Array.isArray(result?.messages) ? result.messages : [])
-    .find((message: any) => message?.message === text);
-}
-
-async function disconnect(client: any): Promise<void> {
+  client.addEventHandler((update: any) => {
+    const receivedAtMs = performance.now();
+    for (const event of updateMessages(update)) actor.events.push({ ...event, receivedAtMs, update: rpcName(update) });
+  }, { build: (update: any) => update });
   try {
-    await client.disconnect();
-  } catch {
-    // Cleanup must not hide a failed assertion.
+    await bounded(client.connect());
+    const me: any = await bounded(client.getMe());
+    check(String(me?.id) === actor.id.toString(), 'AUTH_KEY_USER_MISMATCH');
+    return actor;
+  } catch (error) {
+    await disconnect(actor);
+    throw error;
   }
 }
 
-async function main() {
-  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1000 || timeoutMs > 60000) {
-    throw new Error('LIVE_UPDATE_TIMEOUT_MS must be between 1000 and 60000');
+async function invoke(actor: Actor, request: any, purpose: string): Promise<any> {
+  if (rpcName(request) === 'messages.SendMessage') {
+    check(Number.isInteger(request.CONSTRUCTOR_ID) && (request.CONSTRUCTOR_ID >>> 0) === sendMessageConstructorId,
+      'LAYER229_SEND_CONSTRUCTOR_MISMATCH');
   }
-  const a = makeClient(process.env.A_AUTH_B64!);
-  const b = makeClient(process.env.B_AUTH_B64!);
-  const eventsA: any[] = [];
-  const eventsB: any[] = [];
-  const tag = `live-update-${Date.now()}-${process.pid}`;
-  const aToB = `${tag}:a-to-b`;
-  const bToA = `${tag}:b-to-a`;
-  let aMessageId = 0;
-  let bMessageId = 0;
+  const started = performance.now();
+  const sample: any = { actor: actor.name, method: rpcName(request), purpose, ok: false };
+  report.rpcSamples.push(sample);
   try {
-    a.addEventHandler((update: any) => {
-      for (const event of updateMessages(update)) {
-        eventsA.push({ ...event, update: rpcName(update) });
-      }
-    }, updateBuilder());
-    b.addEventHandler((update: any) => {
-      for (const event of updateMessages(update)) {
-        eventsB.push({ ...event, update: rpcName(update) });
-      }
-    }, updateBuilder());
-    await Promise.all([a.connect(), b.connect()]);
-    const [meA, meB] = await Promise.all([a.getMe(), b.getMe()]);
-    if (String(meA?.id) !== aID.toString() || String(meB?.id) !== bID.toString()) {
-      throw new Error(`auth key user mismatch: ${String(meA?.id)} ${String(meB?.id)}`);
-    }
-
-    // Telegram marks a generic updates session online when updates.getState
-    // (or getDifference) is requested. Without this handshake the status
-    // service correctly treats these auth keys as history-only sessions and
-    // recipient fan-out has nowhere to deliver a live update.
-    const [stateA, stateB] = await Promise.all([
-      a.invoke(new Api.updates.GetState()),
-      b.invoke(new Api.updates.GetState()),
-    ]);
-    if (rpcName(stateA) !== 'updates.State' || rpcName(stateB) !== 'updates.State') {
-      throw new Error(`updates.getState returned ${rpcName(stateA)} / ${rpcName(stateB)}`);
-    }
-    const beforeStateA = stateFields(stateA);
-    const beforeStateB = stateFields(stateB);
-    assertState('A before', beforeStateA);
-    assertState('B before', beforeStateB);
-    // Some gateways only mark the generic session online after the explicit
-    // account.updateStatus handshake. Keep it in the acceptance path so the
-    // check exercises the same producer/recipient registration used by the
-    // Web client.
-    await Promise.all([
-      a.invoke(new Api.account.UpdateStatus({ offline: false })),
-      b.invoke(new Api.account.UpdateStatus({ offline: false })),
-    ]);
-
-    const peerB = inputPeer(bID, bHash);
-    const peerA = inputPeer(aID, aHash);
-    const sentA = await a.invoke(new Api.messages.SendMessage({
-      peer: peerB, message: aToB, randomId: BigInt(Date.now()) * 1000n + 1n,
-    }));
-    const eventB = await waitForText(eventsB, aToB, Date.now() + timeoutMs);
-    const sentB = await b.invoke(new Api.messages.SendMessage({
-      peer: peerA, message: bToA, randomId: BigInt(Date.now()) * 1000n + 2n,
-    }));
-    const eventA = await waitForText(eventsA, bToA, Date.now() + timeoutMs);
-
-    const [historyA, historyB] = await Promise.all([a.invoke(history(peerB)), b.invoke(history(peerA))]);
-    const [stateAfterA, stateAfterB] = await Promise.all([
-      a.invoke(new Api.updates.GetState()),
-      b.invoke(new Api.updates.GetState()),
-    ]);
-    if (rpcName(stateAfterA) !== 'updates.State' || rpcName(stateAfterB) !== 'updates.State') {
-      throw new Error(`updates.getState after delivery returned ${rpcName(stateAfterA)} / ${rpcName(stateAfterB)}`);
-    }
-    const afterStateA = stateFields(stateAfterA);
-    const afterStateB = stateFields(stateAfterB);
-    assertState('A after', afterStateA);
-    assertState('B after', afterStateB);
-    const storedA = findHistoryMessage(historyA, bToA);
-    const storedB = findHistoryMessage(historyB, aToB);
-    if (!storedA?.id || !storedB?.id) throw new Error('live messages were not visible in recipient histories');
-    aMessageId = Number(storedB.id);
-    bMessageId = Number(storedA.id);
-    if (eventB.id <= 0 || eventA.id <= 0) throw new Error('recipient live update did not include a message id');
-    for (const [label, event] of [['A', eventA], ['B', eventB]] as const) {
-      const before = label === 'A' ? beforeStateA : beforeStateB;
-      const after = label === 'A' ? afterStateA : afterStateB;
-      if (!Number.isInteger(event.pts) || event.pts <= before.pts || event.pts > after.pts) {
-        throw new Error(`${label} recipient update had invalid pts=${event.pts}`);
-      }
-      if (!Number.isInteger(event.ptsCount) || event.ptsCount <= 0) {
-        throw new Error(`${label} recipient update had invalid pts_count=${event.ptsCount}`);
-      }
-      if (!Number.isInteger(event.date) || event.date <= 0) {
-        throw new Error(`${label} recipient update had invalid date=${event.date}`);
-      }
-    }
-    console.log(JSON.stringify({
-      ok: true,
-      transport: `DC${dcId} TCPObfuscated -> gateway -> session -> recipient update producer`,
-      users: { sender: aID.toString(), recipient: bID.toString() },
-      aToB: { send: rpcName(sentA), event: eventB },
-      bToA: { send: rpcName(sentB), event: eventA },
-      histories: { sender: rpcName(historyA), recipient: rpcName(historyB), aToB: bMessageId, bToA: aMessageId },
-      state: { before: { a: beforeStateA, b: beforeStateB }, after: { a: afterStateA, b: afterStateB } },
-      eventCounts: { a: eventsA.length, b: eventsB.length },
-    }));
+    const result = await bounded(actor.client.invoke(request));
+    sample.ok = true;
+    return result;
+  } catch (error) {
+    sample.error = errorCode(error);
+    throw error;
   } finally {
-    if (aMessageId > 0) {
-      try { await a.invoke(new Api.messages.DeleteMessages({ revoke: true, id: [aMessageId] })); } catch {}
-    }
-    if (bMessageId > 0) {
-      try { await b.invoke(new Api.messages.DeleteMessages({ revoke: true, id: [bMessageId] })); } catch {}
-    }
-    await Promise.all([disconnect(a), disconnect(b)]);
+    sample.elapsedMs = performance.now() - started;
   }
 }
 
-main().then(() => process.exit(0)).catch((error) => {
-  console.error(`cross-account live-update probe failed: ${error instanceof Error ? error.stack || error.message : String(error)}`);
-  process.exit(1);
+async function states(a: Actor, b: Actor): Promise<Record<string, State>> {
+  const result: Record<string, State> = {};
+  for (const actor of [a, b]) {
+    const value = await invoke(actor, new Api.updates.GetState(), 'state');
+    check(rpcName(value) === 'updates.State', 'INVALID_STATE_CONSTRUCTOR');
+    result[actor.name] = stateFields(value);
+  }
+  return result;
+}
+
+async function activate(a: Actor, b: Actor): Promise<Record<string, State>> {
+  // getState and updateStatus register a generic updates recipient session.
+  await states(a, b);
+  for (const actor of [a, b]) await invoke(actor, new Api.account.UpdateStatus({ offline: false }), 'online');
+  return states(a, b);
+}
+
+async function readTagged(actor: Actor, other: Actor): Promise<any[]> {
+  const tagged: any[] = [];
+  let offsetId = 0;
+  // Pagination also makes cleanup correct when SLO_SAMPLES exceeds one page.
+  const pageLimit = phase === 'capacity' ? Math.ceil(loadRate * loadSeconds / 50) + 2 : 20;
+  for (let page = 0; page < pageLimit; page += 1) {
+    const value = await invoke(actor, new Api.messages.GetHistory({
+      peer: peer(other), offsetId, offsetDate: 0, addOffset: 0, limit: 50, maxId: 0, minId: 0, hash: 0n,
+    }), 'history');
+    check(Array.isArray(value?.messages), 'INVALID_HISTORY_CONSTRUCTOR');
+    tagged.push(...value.messages.filter((message: any) => typeof message?.message === 'string' && message.message.startsWith(`${tag}:`)));
+    if (value.messages.length < 50) return tagged;
+    const next = Number(value.messages[value.messages.length - 1]?.id);
+    check(next > 0 && (!offsetId || next < offsetId), 'HISTORY_PAGINATION_STALLED');
+    offsetId = next;
+  }
+  throw Object.assign(new Error('HISTORY_PAGE_LIMIT'), { probeCode: 'HISTORY_PAGE_LIMIT' });
+}
+
+async function verifyHistory(a: Actor, b: Actor, messages: MessageSpec[]): Promise<void> {
+  for (const [actor, other] of [[a, b], [b, a]]) {
+    const history = await readTagged(actor, other);
+    check(history.length === messages.length, 'HISTORY_MESSAGE_COUNT_MISMATCH');
+    for (const expected of messages) {
+      const found = history.filter((message: any) => message.message === expected.text);
+      check(found.length === 1 && Number(found[0].id) > 0, 'HISTORY_MISSING_OR_DUPLICATE');
+      const id = Number(found[0].id);
+      check(!expected.ids?.[actor.name] || expected.ids[actor.name] === id, 'HISTORY_MESSAGE_ID_CHANGED');
+      const live = report.deliverySamples.find((sample: any) => sample.text === expected.text);
+      if (actor.name !== expected.sender && live?.ok) check(live.messageId === id, 'LIVE_UPDATE_HISTORY_ID_MISMATCH');
+      expected.ids = { ...expected.ids, [actor.name]: id };
+    }
+  }
+  report.checks.historiesUnique = true;
+}
+
+async function sendMessage(sender: Actor, recipient: Actor, spec: MessageSpec, fresh = false): Promise<void> {
+  const before = await states(sender, recipient);
+  const started = performance.now();
+  const sample: any = { direction: `${sender.name}-to-${recipient.name}`, text: spec.text, freshSession: fresh, ok: false };
+  report.deliverySamples.push(sample);
+  try {
+    const response = await invoke(sender, new Api.messages.SendMessage({
+      peer: peer(recipient), message: spec.text, randomId: BigInt(spec.randomId),
+    }), 'send');
+    sample.rpcMs = performance.now() - started;
+    check(rpcName(response).toLowerCase().includes('update'), 'INVALID_SEND_CONSTRUCTOR');
+    const deadline = performance.now() + timeoutMs;
+    let event: any;
+    while (!(event = recipient.events.find((value) => value.text === spec.text))) {
+      check(performance.now() < deadline, 'LIVE_UPDATE_TIMEOUT');
+      await sleep(10);
+    }
+    sample.deliveryMs = event.receivedAtMs - started;
+    sample.messageId = event.id;
+    sample.pts = event.pts;
+    sample.ptsCount = event.ptsCount;
+    sample.date = event.date;
+    sample.seq = event.seq;
+    const after = await states(sender, recipient);
+    const previous = before[recipient.name];
+    check(Number.isInteger(event.ptsCount) && event.ptsCount > 0 && event.id > 0
+      && event.pts === previous.pts + event.ptsCount && after[recipient.name].pts === event.pts, 'PTS_CONTINUITY_GAP');
+    check(after[sender.name].pts === before[sender.name].pts + 1, 'SENDER_PTS_CONTINUITY_GAP');
+    assertMonotonic(before[sender.name], after[sender.name]);
+    assertMonotonic(previous, after[recipient.name]);
+    check(event.date >= previous.date, 'UPDATE_DATE_REGRESSED');
+    if (Number.isInteger(event.seq) && event.seq > 0) {
+      check(event.seq > previous.seq && event.seq <= after[recipient.name].seq, 'UPDATE_SEQ_OUT_OF_STATE');
+    }
+    sample.before = before;
+    sample.after = after;
+    sample.contiguous = true;
+    sample.ok = true;
+  } catch (error) {
+    sample.error = errorCode(error);
+    throw error;
+  } finally {
+    sample.elapsedMs = performance.now() - started;
+  }
+}
+
+async function capacityMessages(a: Actor, b: Actor, messages: MessageSpec[]): Promise<void> {
+  const before = await states(a, b);
+  const durationMs = loadSeconds * 1000;
+  const samples: any[] = Array.from({ length: loadRate * loadSeconds }, (_, index) => ({
+    slot: index, direction: index % 2 ? 'B-to-A' : 'A-to-B', scheduledAtMs: index * 1000 / loadRate,
+  }));
+  const evidence: any = { rate: loadRate, durationMs, maxInflight: loadInflight, maxScheduleLagMs: loadLagMs,
+    planned: samples.length, samples, before, after: {} };
+  report.capacity = evidence;
+  const started = performance.now();
+  const active = new Set<Promise<void>>();
+  const send = async (row: any, sender: Actor, recipient: Actor, spec: MessageSpec) => {
+    try {
+      const response = await invoke(sender, new Api.messages.SendMessage({
+        peer: peer(recipient), message: spec.text, randomId: BigInt(spec.randomId),
+      }), 'capacity-send');
+      row.ackAtMs = performance.now() - started;
+      const constructor = rpcName(response);
+      check(['Updates', 'UpdatesCombined', 'UpdateShortSentMessage'].includes(constructor), 'INVALID_SEND_CONSTRUCTOR');
+      const events = updateMessages(response).filter((value) => value.text === spec.text);
+      const ack = constructor === 'UpdateShortSentMessage'
+        ? { id: Number(response.id), pts: Number(response.pts), ptsCount: Number(response.ptsCount) }
+        : events.length === 1 ? events[0] : undefined;
+      check(ack?.id > 0 && Number.isInteger(ack.pts) && ack.ptsCount === 1, 'CAPACITY_INVALID_ACK');
+      row.ack = { id: ack.id, pts: ack.pts, ptsCount: ack.ptsCount };
+      spec.ids = { [sender.name]: ack.id };
+    } catch (error) {
+      row.ackError = errorCode(error);
+    }
+    const deadline = started + row.dispatchedAtMs + timeoutMs;
+    let events: any[];
+    while (!(events = recipient.events.filter((event) => event.text === spec.text)).length && performance.now() < deadline) {
+      await sleep(10);
+    }
+    if (events.length === 1) {
+      const event = events[0];
+      row.liveAtMs = event.receivedAtMs - started;
+      row.live = { id: event.id, pts: event.pts, ptsCount: event.ptsCount, date: event.date };
+    } else row.liveError = events.length ? 'DUPLICATE_LIVE_UPDATE' : 'LIVE_UPDATE_TIMEOUT';
+  };
+  for (const row of samples) {
+    const delay = started + row.scheduledAtMs - performance.now();
+    if (delay > 0) await sleep(delay);
+    row.observedScheduleLagMs = Math.max(0, performance.now() - started - row.scheduledAtMs);
+    if (row.observedScheduleLagMs > loadLagMs || active.size >= loadInflight) {
+      row.dropped = row.observedScheduleLagMs > loadLagMs ? 'GENERATOR_LATE' : 'MAX_INFLIGHT';
+      continue;
+    }
+    const [sender, recipient] = row.slot % 2 ? [b, a] : [a, b];
+    const spec: MessageSpec = { sender: sender.name, text: `${tag}:${sender.name}:load${row.slot}`,
+      randomId: (BigInt(`0x${randomBytes(8).toString('hex')}`) & ((1n << 63n) - 1n)).toString() };
+    messages.push(spec);
+    Object.assign(row, { text: spec.text, randomId: spec.randomId, dispatchedAtMs: performance.now() - started });
+    const task = send(row, sender, recipient, spec);
+    active.add(task);
+    void task.finally(() => active.delete(task));
+  }
+  const remaining = started + durationMs - performance.now();
+  if (remaining > 0) await sleep(remaining);
+  await Promise.all(active);
+  report.loadDurationMs = performance.now() - started;
+  // State/history reads begin only after the fixed schedule and live drain.
+  evidence.after = await states(a, b);
+  for (const actor of [a, b]) {
+    assertMonotonic(before[actor.name], evidence.after[actor.name]);
+    const intervals = samples.filter((row) => row.dispatchedAtMs !== undefined).map((row) =>
+      row.direction.startsWith(actor.name) ? row.ack : row.live).sort((x, y) => (x?.pts || 0) - (y?.pts || 0));
+    let pts = before[actor.name].pts;
+    for (const interval of intervals) {
+      check(interval?.id > 0 && interval.ptsCount === 1 && interval.pts === pts + 1, 'CAPACITY_PTS_GAP_OR_DUPLICATE');
+      pts = interval.pts;
+    }
+    check(evidence.after[actor.name].pts === pts, 'CAPACITY_FINAL_PTS_MISMATCH');
+  }
+  report.checks.ptsContinuity = true;
+  await verifyHistory(a, b, messages);
+  for (const row of samples.filter((value) => value.dispatchedAtMs !== undefined)) {
+    const recipient = row.direction.endsWith('A') ? a : b;
+    const spec = messages.find((value) => value.text === row.text)!;
+    check(recipient.events.filter((value) => value.text === row.text).length === 1
+      && row.live?.id === spec.ids?.[recipient.name], 'CAPACITY_LIVE_HISTORY_MISMATCH');
+  }
+  report.checks.liveMatchesHistory = true;
+}
+
+function writeMilestone(name: 'ready' | 'sent', payload: any): void {
+  const target = path.join(controlDir, `${name}.json`);
+  const temporary = `${target}.${process.pid}.tmp`;
+  fs.writeFileSync(temporary, `${JSON.stringify({ schemaVersion: 1, tag, stage: name, ...payload })}\n`, { mode: 0o600 });
+  fs.renameSync(temporary, target);
+}
+
+async function waitMilestone(name: 'stopped' | 'restored'): Promise<void> {
+  const target = path.join(controlDir, `${name}.json`);
+  const deadline = performance.now() + 120000;
+  while (!fs.existsSync(target)) {
+    check(performance.now() < deadline, `FAULT_${name.toUpperCase()}_BARRIER_TIMEOUT`);
+    await sleep(50);
+  }
+  const payload = JSON.parse(fs.readFileSync(target, 'utf8'));
+  check(payload?.schemaVersion === 1 && payload.tag === tag && payload.stage === name, 'INVALID_FAULT_MILESTONE');
+}
+
+async function faultMessages(a: Actor, b: Actor, messages: MessageSpec[]): Promise<void> {
+  fs.mkdirSync(controlDir, { recursive: true, mode: 0o700 });
+  for (const name of ['ready', 'stopped', 'sent', 'restored']) {
+    check(!fs.existsSync(path.join(controlDir, `${name}.json`)), 'FAULT_CONTROL_DIR_NOT_EMPTY');
+  }
+  const before = await states(a, b);
+  const sessions = [a, b].map((actor) => ({
+    actor, sender: actor.client._sender, id: actor.client._sender?._state?.id,
+  }));
+  check(sessions.every((session) => typeof session.id === 'bigint'), 'FAULT_SESSION_ID_UNAVAILABLE');
+  report.state.before = before;
+  for (const sender of [a, b]) messages.push({
+    sender: sender.name, text: `${tag}:${sender.name}:fault`,
+    randomId: (BigInt(`0x${randomBytes(8).toString('hex')}`) & ((1n << 63n) - 1n)).toString(),
+  });
+  const fault: any = { preStates: before, messages: [...messages], acknowledgements: [], sameSessions: false };
+  report.fault = fault;
+  stage = 'fault-ready';
+  writeMilestone('ready', { preStates: before, messages });
+  await waitMilestone('stopped');
+  const rpcBoundary = report.rpcSamples.length;
+  const deliveries: { recipient: Actor; spec: MessageSpec; started: number; sample: any }[] = [];
+  stage = 'fault-durable-send';
+  for (const [sender, recipient] of [[a, b], [b, a]]) {
+    const spec = messages.find((value) => value.sender === sender.name)!;
+    const started = performance.now();
+    const sample: any = {
+      direction: `${sender.name}-to-${recipient.name}`, text: spec.text,
+      freshSession: false, fault: true, ok: false,
+    };
+    report.deliverySamples.push(sample);
+    deliveries.push({ recipient, spec, started, sample });
+    const response = await invoke(sender, new Api.messages.SendMessage({
+      peer: peer(recipient), message: spec.text, randomId: BigInt(spec.randomId),
+    }), 'send');
+    sample.rpcMs = performance.now() - started;
+    const constructor = rpcName(response);
+    check(['Updates', 'UpdatesCombined', 'UpdateShortSentMessage'].includes(constructor), 'INVALID_SEND_CONSTRUCTOR');
+    const ackMessages = updateMessages(response).filter((value) => value.text === spec.text);
+    const ack = constructor === 'UpdateShortSentMessage'
+      ? { id: Number(response.id), pts: Number(response.pts), ptsCount: Number(response.ptsCount), date: Number(response.date) }
+      : ackMessages.length === 1 ? ackMessages[0] : undefined;
+    check(ack && ack.id > 0 && ack.ptsCount === 1 && ack.pts === before[sender.name].pts + 1
+      && ack.date >= before[sender.name].date, 'FAULT_DURABLE_ACK_STATE_MISMATCH');
+    spec.ids = { [sender.name]: ack.id };
+    fault.acknowledgements.push({
+      sender: sender.name, recipient: recipient.name, text: spec.text, constructor,
+      rpcMs: sample.rpcMs, messageId: ack.id, pts: ack.pts, ptsCount: ack.ptsCount, date: ack.date,
+    });
+  }
+  // Only send RPCs are allowed during the stopped-broker window. State,
+  // difference or history requests could repair the gap and hide failed MQ
+  // delivery. The same connected recipient sessions must receive both events.
+  await sleep(1000);
+  for (const { recipient, spec } of deliveries) {
+    check(!recipient.events.some((value) => value.text === spec.text), 'LIVE_UPDATE_WHILE_BROKER_STOPPED');
+  }
+  fault.durableAckWhileStopped = true;
+  fault.noLiveUpdateWhileStopped = true;
+  stage = 'fault-durable-ack';
+  writeMilestone('sent', { preStates: before, messages, acknowledgements: fault.acknowledgements });
+  await waitMilestone('restored');
+  const restoredAt = performance.now();
+  stage = 'fault-live-recovery';
+  const deadline = restoredAt + 120000;
+  while (deliveries.some(({ recipient, spec }) => !recipient.events.some((value) => value.text === spec.text))) {
+    check(performance.now() < deadline, 'FAULT_LIVE_RECOVERY_TIMEOUT');
+    await sleep(10);
+  }
+  check(report.rpcSamples.slice(rpcBoundary).every((value: any) => value.purpose === 'send'), 'FAULT_RECOVERY_READ_BEFORE_LIVE_UPDATE');
+  check(sessions.every(({ actor, sender, id }) => actor.client._sender === sender
+    && sender._state.id === id && actor.client.isConnected()), 'FAULT_RECIPIENT_SESSION_CHANGED');
+  fault.sameSessions = true;
+  fault.noRecoveryReadBeforeLiveUpdate = true;
+  fault.liveRecoveryBeforeStateRead = true;
+  const after = await states(a, b);
+  fault.afterStates = after;
+  for (const actor of [a, b]) {
+    assertMonotonic(before[actor.name], after[actor.name]);
+    // Each actor has one sender commit and one recipient commit.
+    check(after[actor.name].pts === before[actor.name].pts + 2, 'FAULT_FINAL_PTS_MISMATCH');
+  }
+  for (const { recipient, spec, started, sample } of deliveries) {
+    const events = recipient.events.filter((value) => value.text === spec.text);
+    check(events.length === 1, 'FAULT_DUPLICATE_LIVE_UPDATE');
+    const event = events[0];
+    check(event.id > 0 && event.ptsCount === 1 && event.pts === before[recipient.name].pts + 2, 'FAULT_RECIPIENT_PTS_MISMATCH');
+    check(event.date >= before[recipient.name].date, 'UPDATE_DATE_REGRESSED');
+    if (Number.isInteger(event.seq) && event.seq > 0) {
+      check(event.seq > before[recipient.name].seq && event.seq <= after[recipient.name].seq, 'UPDATE_SEQ_OUT_OF_STATE');
+    }
+    Object.assign(sample, {
+      deliveryMs: event.receivedAtMs - started,
+      recoveryAfterBarrierMs: Math.max(0, event.receivedAtMs - restoredAt),
+      messageId: event.id, pts: event.pts, ptsCount: event.ptsCount,
+      date: event.date, seq: event.seq, before, after, contiguous: true, ok: true,
+      elapsedMs: performance.now() - started,
+    });
+  }
+  report.state.after = after;
+  report.checks.brokerFaultRecovery = true;
+}
+
+async function replay(a: Actor, b: Actor, spec: MessageSpec): Promise<void> {
+  const sender = spec.sender === 'A' ? a : b;
+  const recipient = spec.sender === 'A' ? b : a;
+  const before = await states(a, b);
+  const eventCount = recipient.events.filter((value) => value.text === spec.text).length;
+  await invoke(sender, new Api.messages.SendMessage({
+    peer: peer(recipient), message: spec.text, randomId: BigInt(spec.randomId),
+  }), 'replay');
+  await sleep(500);
+  const after = await states(a, b);
+  for (const actor of [a, b]) {
+    check(after[actor.name].pts === before[actor.name].pts, 'REPLAY_ADVANCED_PTS');
+    assertMonotonic(before[actor.name], after[actor.name]);
+  }
+  check(recipient.events.filter((value) => value.text === spec.text).length === eventCount, 'REPLAY_CREATED_UPDATE');
+  report.replaySamples.push({ direction: `${sender.name}-to-${recipient.name}`, before, after, noNewUpdate: true, ok: true });
+}
+
+async function cleanupTagged(): Promise<void> {
+  let a: Actor | undefined;
+  let b: Actor | undefined;
+  try {
+    a = await connectActor('A');
+    b = await connectActor('B');
+    const deleted: Record<string, number> = {};
+    for (const [actor, other] of [[a, b], [b, a]]) {
+      const found = await readTagged(actor, other);
+      const ids = found.map((value) => Number(value.id));
+      for (let offset = 0; offset < ids.length; offset += 100) {
+        await invoke(actor, new Api.messages.DeleteMessages({ revoke: true, id: ids.slice(offset, offset + 100) }), 'cleanup');
+      }
+      deleted[actor.name] = ids.length;
+    }
+    const remaining = (await readTagged(a, b)).length + (await readTagged(b, a)).length;
+    check(remaining === 0, 'CLEANUP_MESSAGES_REMAIN');
+    report.cleanup = { ok: true, deleted, remaining };
+  } finally {
+    await disconnect(a);
+    await disconnect(b);
+  }
+}
+
+function distribution(values: number[]): any {
+  const sorted = [...values].sort((a, b) => a - b);
+  const percentile = (p: number) => sorted.length ? sorted[Math.ceil(sorted.length * p) - 1] : null;
+  return { count: sorted.length, p50Ms: percentile(0.5), p95Ms: percentile(0.95), p99Ms: percentile(0.99), maxMs: sorted.at(-1) ?? null };
+}
+
+async function main(): Promise<void> {
+  const started = performance.now();
+  let a: Actor | undefined;
+  let b: Actor | undefined;
+  let configured = false;
+  let ownsTag = false;
+  let success = false;
+  let messages: MessageSpec[] = [];
+  const save = () => fs.writeFileSync(stateFile, `${JSON.stringify({
+    schemaVersion: 1, tag, users: { A: process.env.A_USER_ID, B: process.env.B_USER_ID }, messages, state: report.state?.after,
+  }, null, 2)}\n`, { mode: 0o600 });
+  try {
+    for (const key of ['TEAMGRAM_GRAMJS_DIR', 'A_AUTH_B64', 'B_AUTH_B64', 'A_USER_ID', 'B_USER_ID', 'A_ACCESS_HASH', 'B_ACCESS_HASH']) {
+      check(Boolean(process.env[key]), `MISSING_${key}`);
+    }
+    check(Number.isInteger(sampleCount) && sampleCount >= 1 && sampleCount <= 200, 'INVALID_SLO_SAMPLES');
+    check(Number.isInteger(timeoutMs) && timeoutMs >= 1000 && timeoutMs <= 60000, 'INVALID_TIMEOUT');
+    check(Number.isInteger(dcId) && dcId > 0 && Number.isInteger(dcPort) && dcPort > 0 && dcPort < 65536, 'INVALID_DC_ENDPOINT');
+    check(['single', 'before', 'after', 'fault', 'capacity', 'cleanup'].includes(phase) && /^[A-Za-z0-9_-]{1,100}$/.test(tag), 'INVALID_PHASE_OR_TAG');
+    if (phase === 'capacity') {
+      check([loadRate, loadSeconds, loadInflight, loadLagMs].every(Number.isInteger)
+        && loadRate > 0 && loadSeconds > 0 && loadRate * loadSeconds <= 20000
+        && loadInflight > 0 && loadInflight <= 256 && loadLagMs > 0, 'INVALID_CAPACITY_PROFILE');
+    }
+    check(phase === 'single' || Boolean(process.env.PROBE_TAG), 'PHASE_REQUIRES_PROBE_TAG');
+    check(phase !== 'fault' || Boolean(controlDir), 'FAULT_REQUIRES_CONTROL_DIR');
+    check(phase !== 'capacity' || Boolean(controlDir), 'CAPACITY_REQUIRES_DRAIN_CONTROL_DIR');
+    const authA = Buffer.from(process.env.A_AUTH_B64!, 'base64');
+    const authB = Buffer.from(process.env.B_AUTH_B64!, 'base64');
+    check(authA.length === 256 && authB.length === 256 && !authA.equals(authB), 'AUTH_KEYS_MUST_BE_DISTINCT_256_BYTES');
+    check(process.env.A_USER_ID !== process.env.B_USER_ID, 'ACCOUNTS_MUST_DIFFER');
+    const globalAny = globalThis as any;
+    globalAny.self ??= globalThis;
+    globalAny.addEventListener ??= () => {};
+    globalAny.self.addEventListener ??= globalAny.addEventListener;
+    const requireModule = createRequire(import.meta.url);
+    const gramjsDir = process.env.TEAMGRAM_GRAMJS_DIR!;
+    TelegramClient = requireModule(path.join(gramjsDir, 'src/lib/gramjs/client/TelegramClient.ts')).default;
+    CallbackSession = requireModule(path.join(gramjsDir, 'src/lib/gramjs/sessions/CallbackSession.ts')).default;
+    Api = requireModule(path.join(gramjsDir, 'src/lib/gramjs/tl/index.ts')).Api;
+    const sendId = Api.messages.SendMessage.CONSTRUCTOR_ID;
+    check(Number.isInteger(sendId) && (sendId >>> 0) === sendMessageConstructorId, 'LAYER229_SEND_CONSTRUCTOR_MISMATCH');
+    report.sendConstructorId = (sendId >>> 0).toString(16);
+    Connection = requireModule(path.join(gramjsDir, 'src/lib/gramjs/network/connection/TCPObfuscated.ts')).ConnectionTCPObfuscated;
+    configured = true;
+    stage = 'connect';
+    a = await connectActor('A');
+    b = await connectActor('B');
+    check(a.id > 0n && b.id > 0n && a.id !== b.id && a.hash !== 0n && b.hash !== 0n, 'INVALID_IDENTITIES');
+    report.users = { A: a.id.toString(), B: b.id.toString() };
+    report.state = { before: await activate(a, b) };
+    if (phase === 'cleanup') { ownsTag = true; success = true; return; }
+    if (phase === 'after') {
+      stage = 'restart-readback';
+      const saved = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+      check(saved.tag === tag && saved.users?.A === a.id.toString() && saved.users?.B === b.id.toString()
+        && Array.isArray(saved.messages) && saved.messages.length > 0 && saved.state, 'INVALID_SAVED_STATE');
+      messages = saved.messages;
+      for (const message of messages) check(message.text.startsWith(`${tag}:`) && ['A', 'B'].includes(message.sender) && /^\d+$/.test(message.randomId), 'INVALID_SAVED_MESSAGE');
+      ownsTag = true;
+      for (const actor of [a, b]) assertMonotonic(stateFields(saved.state[actor.name]), report.state.before[actor.name]);
+      await verifyHistory(a, b, messages);
+      report.checks.savedStateReadback = true;
+    } else if (phase === 'capacity') {
+      stage = 'fixed-rate-capacity';
+      check((await readTagged(a, b)).length === 0 && (await readTagged(b, a)).length === 0, 'PROBE_TAG_ALREADY_EXISTS');
+      ownsTag = true;
+      await capacityMessages(a, b, messages);
+      success = true;
+      return;
+    } else if (phase === 'fault') {
+      stage = 'fault-preflight';
+      check((await readTagged(a, b)).length === 0 && (await readTagged(b, a)).length === 0, 'PROBE_TAG_ALREADY_EXISTS');
+      ownsTag = true;
+      await faultMessages(a, b, messages);
+      await verifyHistory(a, b, messages);
+    } else {
+      stage = 'sequential-messages';
+      check((await readTagged(a, b)).length === 0 && (await readTagged(b, a)).length === 0, 'PROBE_TAG_ALREADY_EXISTS');
+      ownsTag = true;
+      const loadStarted = performance.now();
+      for (let index = 0; index < sampleCount; index += 1) {
+        for (const [sender, recipient] of [[a, b], [b, a]]) {
+          const spec: MessageSpec = {
+            sender: sender.name, text: `${tag}:${sender.name}:${index}`,
+            randomId: (BigInt(`0x${randomBytes(8).toString('hex')}`) & ((1n << 63n) - 1n)).toString(),
+          };
+          messages.push(spec);
+          if (phase === 'before') save();
+          await sendMessage(sender, recipient, spec);
+        }
+      }
+      report.loadDurationMs = performance.now() - loadStarted;
+      await verifyHistory(a, b, messages);
+    }
+    stage = 'random-id-replay';
+    for (const sender of ['A', 'B']) {
+      const first = messages.find((value) => value.sender === sender);
+      check(first, 'MISSING_DIRECTION_SAMPLE');
+      await replay(a, b, first);
+    }
+    await verifyHistory(a, b, messages);
+    report.checks.randomIdReplay = true;
+    report.state.after = await states(a, b);
+    if (phase === 'before') {
+      save();
+      report.stateFile = stateFile;
+      report.cleanup = { ok: true, retainedForRestart: true };
+      success = true;
+      return;
+    }
+    stage = 'fresh-session';
+    const beforeFresh = report.state.after;
+    await disconnect(a);
+    await disconnect(b);
+    a = await connectActor('A');
+    b = await connectActor('B');
+    const freshState = await activate(a, b);
+    for (const actor of [a, b]) assertMonotonic(beforeFresh[actor.name], freshState[actor.name]);
+    await verifyHistory(a, b, messages);
+    // Replay an old random_id from a new session before continuing both ways.
+    for (const sender of ['A', 'B']) await replay(a, b, messages.find((value) => value.sender === sender)!);
+    for (const [sender, recipient] of [[a, b], [b, a]]) {
+      const spec: MessageSpec = { sender: sender.name, text: `${tag}:${sender.name}:fresh`, randomId: (BigInt(Date.now()) * 1000n + (sender.name === 'A' ? 1n : 2n)).toString() };
+      messages.push(spec);
+      await sendMessage(sender, recipient, spec, true);
+    }
+    await verifyHistory(a, b, messages);
+    report.state.after = await states(a, b);
+    report.checks.freshSessionReadbackAndSend = true;
+    report.freshSession = { sameAuthKeys: true, newClientObjects: true, newAuthKeys: false };
+    success = true;
+  } catch (error) {
+    report.error = { stage, code: errorCode(error) };
+  } finally {
+    if (phase === 'capacity' && configured && ownsTag && controlDir) {
+      try {
+        writeMilestone('sent', { purpose: 'capacity-drain' });
+        await waitMilestone('restored');
+        report.checks.outboxDrainedBeforeCleanup = true;
+      } catch (error) {
+        report.error = { stage: 'capacity-drain-barrier', code: errorCode(error) };
+        success = false;
+      }
+    }
+    await disconnect(a);
+    await disconnect(b);
+    if (configured && ownsTag && (phase !== 'before' || !success)) {
+      try { await cleanupTagged(); } catch (error) { report.cleanup = { ok: false, code: errorCode(error) }; success = false; }
+    }
+    report.durationMs = performance.now() - started;
+    const deliveries = report.deliverySamples.filter((value: any) => value.ok);
+    const load = deliveries.filter((value: any) => !value.freshSession);
+    report.stats = {
+      rpc: distribution(report.rpcSamples.filter((value: any) => value.ok).map((value: any) => value.elapsedMs)),
+      delivery: distribution(deliveries.map((value: any) => value.deliveryMs)),
+      throughput: { messages: load.length, durationMs: report.loadDurationMs || 0, messagesPerSecond: report.loadDurationMs ? load.length * 1000 / report.loadDurationMs : null },
+    };
+    if (phase !== 'capacity') report.checks.ptsContinuity = deliveries.length > 0 && deliveries.every((value: any) => value.contiguous);
+    report.ok = success && !report.error && report.cleanup?.ok === true;
+    await new Promise<void>((resolve, reject) => {
+      process.stdout.write(`${JSON.stringify(report)}\n`, (error) => { if (error) reject(error); else resolve(); });
+    });
+  }
+}
+
+main().then(() => process.exit(report.ok ? 0 : 1)).catch(() => {
+  process.stdout.write(`${JSON.stringify({ ...report, ok: false, error: { stage, code: 'UNEXPECTED_PROBE_ERROR' } })}\n`, () => process.exit(1));
 });

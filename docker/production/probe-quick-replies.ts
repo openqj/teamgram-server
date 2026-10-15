@@ -1,15 +1,12 @@
+import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 
-for (const key of ['TEAMGRAM_GRAMJS_DIR', 'A_AUTH_B64', 'A_USER_ID']) {
-  if (!process.env[key]) throw new Error(`${key} is required`);
-}
-
-const root = process.env.TEAMGRAM_GRAMJS_DIR!;
+const root = process.env.TEAMGRAM_GRAMJS_DIR || '/Users/mac/open/test/telegram-tt-master';
 const dcId = Number(process.env.TG_DC_ID || '2');
 const dcHost = process.env.TG_DC_HOST || '127.0.0.1';
 const dcPort = Number(process.env.TG_DC_PORT || '11443');
-const userId = String(process.env.A_USER_ID);
+const userId = String(process.env.A_USER_ID || '7');
 
 const globalAny = globalThis as typeof globalThis & { self?: any; addEventListener?: () => void };
 globalAny.self ??= globalThis;
@@ -22,6 +19,19 @@ const CallbackSession = requireModule(path.join(root, 'src/lib/gramjs/sessions/C
 const Api = requireModule(path.join(root, 'src/lib/gramjs/tl/index.ts')).Api;
 const Connection = requireModule(path.join(root, 'src/lib/gramjs/network/connection/TCPObfuscated.ts')).ConnectionTCPObfuscated;
 const quietLogger = { debug() {}, info() {}, warn() {}, error() {} };
+
+function loadAuthKey(): string {
+  const output = execFileSync('docker', [
+    'exec', process.env.TEAMGRAM_POSTGRES_CONTAINER || 'teamgram-postgres', 'psql',
+    '-Atq', '-U', 'teamgram', '-d', 'teamgram', '-c',
+    `SELECT encode(k.body, 'base64') FROM auth_users u JOIN auth_keys k USING (auth_key_id)
+     JOIN auth_key_infos i USING (auth_key_id) WHERE u.user_id=${Number(userId)}
+     AND u.state=0 AND NOT u.deleted AND NOT k.deleted AND NOT i.deleted AND i.auth_key_type=0
+     ORDER BY u.date_active DESC,u.id DESC LIMIT 1`,
+  ], { encoding: 'utf8' }).trim();
+  if (!output) throw new Error(`no active production auth key found for user ${userId}`);
+  return output;
+}
 
 class RawRequest {
   SUBCLASS_OF_ID = 0;
@@ -102,7 +112,7 @@ function isTrue(value: any): boolean {
 function makeClient(): any {
   const session = new CallbackSession({
     mainDcId: dcId,
-    keys: { [dcId]: Buffer.from(process.env.A_AUTH_B64!, 'base64').toString('hex') },
+    keys: { [dcId]: Buffer.from(process.env.A_AUTH_B64 || loadAuthKey(), 'base64').toString('hex') },
   }, () => {});
   const load = session.load.bind(session);
   session.load = async () => {
@@ -110,7 +120,7 @@ function makeClient(): any {
     (session as any)._serverAddress = dcHost;
     (session as any)._port = dcPort;
   };
-  return new TelegramClient(session, Number(process.env.TG_API_ID || '1'), process.env.TG_API_HASH || '0123456789abcdef0123456789abcdef', {
+  const client = new TelegramClient(session, Number(process.env.TG_API_ID || '1'), process.env.TG_API_HASH || '0123456789abcdef0123456789abcdef', {
     connection: Connection,
     fallbackConnection: Connection,
     shouldAllowHttpTransport: false,
@@ -123,6 +133,9 @@ function makeClient(): any {
     autoReconnect: false,
     baseLogger: quietLogger,
   });
+  (client as any)._borrowExportedSender = async () => undefined;
+  (client as any)._updateLoop = async () => undefined;
+  return client;
 }
 
 function quickReplies(result: any): any[] {

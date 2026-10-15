@@ -81,7 +81,9 @@ function assertState(value: any, label: string): void {
   const state = stateFields(value);
   requireCondition(state.date > 0, `${label} updates state has no date`);
   for (const [name, field] of Object.entries(state)) {
-    requireCondition(Number.isInteger(field) && field >= 0, `${label} updates state has invalid ${name}=${field}`);
+    // Telegram uses seq=-1 when this account has no global sequence yet.
+    const minimum = name === 'seq' ? -1 : 0;
+    requireCondition(Number.isInteger(field) && field >= minimum, `${label} updates state has invalid ${name}=${field}`);
   }
 }
 
@@ -324,7 +326,12 @@ async function runChannel(): Promise<void> {
       try {
         const resolved = chatList(await a.client.invoke(new Api.contacts.ResolveUsername({ username: saved.username })))
           .find((item: any) => rpcName(item).toLowerCase().includes('channel'));
-        if (resolved) await a.client.invoke(new Api.channels.DeleteChannel({ channel: inputChannel(resolved) }));
+        if (resolved) {
+          const ownerChannel = inputChannel(resolved);
+          const cleared = await a.client.invoke(new Api.channels.UpdateUsername({ channel: ownerChannel, username: '' }));
+          requireCondition(cleared === true || rpcName(cleared).toLowerCase().includes('true'), 'channel username cleanup failed');
+          await a.client.invoke(new Api.channels.DeleteChannel({ channel: ownerChannel }));
+        }
       } finally {
         try { fs.unlinkSync(stateFile); } catch {}
       }
@@ -443,12 +450,18 @@ async function runBusiness(): Promise<void> {
       requireCondition(slug, 'could not locate tagged business link for cleanup');
       const deleted = await a.client.invoke(deleteBusinessLink(slug));
       requireCondition(deleted === true || rpcName(deleted).toLowerCase().includes('true'), `business link cleanup returned ${rpcName(deleted)}`);
-      if (saved.event?.id || (saved.postRestartMessage && saved.recipientId && saved.recipientAccessHash)) {
-        const ids = saved.event?.id ? [Number(saved.event.id)] : messageList(await a.client.invoke(history(Api, new Api.InputPeerUser({ userId: BigInt(saved.recipientId), accessHash: BigInt(saved.recipientAccessHash) }))))
-          .filter((item: any) => item?.message === saved.postRestartMessage && item?.id !== undefined)
-          .map((item: any) => Number(item.id));
-        if (ids.length) {
-          try { await a.client.invoke(new Api.messages.DeleteMessages({ revoke: true, id: ids })); } catch {}
+      if (saved.postRestartMessage && saved.recipientId && saved.recipientAccessHash) {
+        const peerB = new Api.InputPeerUser({ userId: BigInt(saved.recipientId), accessHash: BigInt(saved.recipientAccessHash) });
+        const userA = await searchUser(b, A_USERNAME);
+        const peerA = new Api.InputPeerUser({ userId: userA.id, accessHash: userA.accessHash });
+        for (const [client, peer] of [[a.client, peerB], [b.client, peerA]] as const) {
+          const ids = messageList(await client.invoke(history(Api, peer)))
+            .filter((item: any) => item?.message === saved.postRestartMessage && item?.id !== undefined)
+            .map((item: any) => Number(item.id));
+          if (ids.length) await client.invoke(new Api.messages.DeleteMessages({ revoke: true, id: ids }));
+          const remaining = messageList(await client.invoke(history(Api, peer)))
+            .filter((item: any) => item?.message === saved.postRestartMessage);
+          requireCondition(remaining.length === 0, `business message cleanup left ${remaining.length} tagged messages`);
         }
       }
       try { fs.unlinkSync(stateFile); } catch {}

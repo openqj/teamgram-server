@@ -2,17 +2,13 @@ import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 
-for (const key of ['TEAMGRAM_GRAMJS_DIR', 'AUTH_B64', 'USER_ID']) {
-  if (!process.env[key]) throw new Error(`${key} is required`);
-}
-
-const gramjsDir = process.env.TEAMGRAM_GRAMJS_DIR!;
+const gramjsDir = process.env.TEAMGRAM_GRAMJS_DIR || '/Users/mac/open/test/telegram-tt-master';
 const dcId = Number(process.env.TG_DC_ID || '2');
 const dcHost = process.env.TG_DC_HOST || '127.0.0.1';
 const dcPort = Number(process.env.TG_DC_PORT || '11443');
 const apiId = Number(process.env.TG_API_ID || '1');
 const apiHash = process.env.TG_API_HASH || '0123456789abcdef0123456789abcdef';
-const userId = BigInt(process.env.USER_ID!);
+const userId = BigInt(process.env.USER_ID || '7');
 const subscriptionId = process.env.STARS_SUBSCRIPTION_ID || `probe-stars-${userId}-${Date.now()}`;
 const startedAt = new Date().toISOString();
 
@@ -38,6 +34,13 @@ function sql(query: string): string {
   ], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
 }
 
+function loadAuthKey(): string {
+  return sql(`SELECT encode(k.body, 'base64') FROM auth_users u JOIN auth_keys k USING (auth_key_id)
+    JOIN auth_key_infos i USING (auth_key_id) WHERE u.user_id=${userId} AND u.state=0
+    AND NOT u.deleted AND NOT k.deleted AND NOT i.deleted AND i.auth_key_type=0
+    ORDER BY u.date_active DESC,u.id DESC LIMIT 1`);
+}
+
 function quote(value: string): string {
   return `'${value.replaceAll("'", "''")}'`;
 }
@@ -53,7 +56,9 @@ function assertType(value: any, ...names: string[]): void {
 }
 
 function makeClient(): any {
-  const keyHex = Buffer.from(process.env.AUTH_B64!, 'base64').toString('hex');
+  const auth = process.env.AUTH_B64 || loadAuthKey();
+  if (!auth) throw new Error(`no active production auth key found for user ${userId}`);
+  const keyHex = Buffer.from(auth, 'base64').toString('hex');
   const session = new CallbackSession({ mainDcId: dcId, keys: { [dcId]: keyHex } }, () => {});
   const load = session.load.bind(session);
   session.load = async () => {

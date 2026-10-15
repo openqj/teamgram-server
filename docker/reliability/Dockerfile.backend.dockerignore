@@ -1,0 +1,14 @@
+**
+!proto/
+!proto/**
+!teamgram-server/
+!teamgram-server/**
+teamgram-server/data/
+teamgram-server/teamgramd/bin/*
+!teamgram-server/teamgramd/bin/config.json
+!teamgram-server/teamgramd/bin/server_pkcs1.key
+!teamgram-server/teamgramd/bin/runall-docker.sh
+teamgram-server/.git/
+teamgram-server/**/.DS_Store
+teamgram-server/tmp*
+teamgram-server/logs/

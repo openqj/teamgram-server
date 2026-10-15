@@ -197,7 +197,18 @@ func parseJSONLangPack(raw []byte) (*fallbackLangPack, error) {
 		} else {
 			var pluralValues map[string]string
 			if err := json.Unmarshal(serializedEntry.Value, &pluralValues); err != nil {
-				return nil, fmt.Errorf("language pack key %q has invalid value: %w", serializedEntry.Key, err)
+				// Telegram's Arabic pack uses the same six plural slots as the
+				// map representation, but serializes them as an ordered array.
+				// Accept both encodings so a valid official pack cannot make the
+				// whole catalog unavailable.
+				var pluralArray []string
+				if arrayErr := json.Unmarshal(serializedEntry.Value, &pluralArray); arrayErr != nil {
+					return nil, fmt.Errorf("language pack key %q has invalid value: %w", serializedEntry.Key, err)
+				}
+				pluralValues = make(map[string]string, len(pluralArray))
+				for index, pluralValue := range pluralArray {
+					pluralValues[strconv.Itoa(index)] = pluralValue
+				}
 			}
 			entry.plural = true
 			for pluralKey, pluralValue := range pluralValues {

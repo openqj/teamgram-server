@@ -29,6 +29,7 @@ func TestChannelsDeleteChannelOwnerTransactionRoundTrip(t *testing.T) {
 	legacyKey := chanDataKey(owner, channelID)
 	t.Cleanup(func() {
 		for _, query := range []string{
+			`DELETE FROM username WHERE peer_type=4 AND peer_id=?`,
 			`DELETE FROM apifull_channel_message_request WHERE channel_id=?`,
 			`DELETE FROM apifull_channel_message_hidden WHERE channel_id=?`,
 			`DELETE FROM apifull_channel_message WHERE channel_id=?`,
@@ -85,6 +86,12 @@ func TestChannelsDeleteChannelOwnerTransactionRoundTrip(t *testing.T) {
 		channelID, inviteLink, member, false, 0, time.Now().Unix()); err != nil {
 		t.Fatal("save channel invite participant:", err)
 	}
+	if _, err = db.Exec(`INSERT INTO username
+		(username, peer_type, peer_id, editable, active, order2, deleted)
+			VALUES ($1,$2,$3,TRUE,TRUE,0,FALSE)`,
+		fmt.Sprintf("deletechannel%d", channelID), 4, channelID); err != nil {
+		t.Fatal("save channel username:", err)
+	}
 
 	input := mtproto.MakeTLInputChannel(&mtproto.InputChannel{ChannelId: channelID, AccessHash: channelID}).To_InputChannel()
 	outsiderCore := &ApiFullCore{MD: &metadata.RpcMetadata{UserId: member}}
@@ -126,6 +133,7 @@ func TestChannelsDeleteChannelOwnerTransactionRoundTrip(t *testing.T) {
 		"call_subscriptions": `SELECT COUNT(*) FROM apifull_group_call_subscription WHERE call_id=?`,
 		"call_send_as":       `SELECT COUNT(*) FROM apifull_group_call_send_as WHERE call_id=?`,
 		"call_messages":      `SELECT COUNT(*) FROM apifull_group_call_message WHERE call_id=?`,
+		"channel_username":   `SELECT COUNT(*) FROM username WHERE peer_type=4 AND peer_id=? AND editable=TRUE AND deleted=FALSE`,
 	} {
 		var count int
 		queryArg := channelID

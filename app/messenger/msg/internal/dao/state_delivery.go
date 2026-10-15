@@ -14,6 +14,15 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+type messageStateDeliveryClaim struct {
+	id        int64
+	token     string
+	method    string
+	payload   []byte
+	attempts  int
+	createdAt time.Time
+}
+
 func (d *Dao) EnqueueMessageStateDeliveryOn(ctx context.Context, tx pgx.Tx, userID int64, request proto.Message) error {
 	if tx == nil || userID <= 0 || request == nil {
 		return errors.New("messenger/msg: state delivery requires a transaction and request")
@@ -68,6 +77,61 @@ func publishStateRequest[T proto.Message](ctx context.Context, data []byte, requ
 	return err
 }
 
+func (d *Dao) claimMessageStateDelivery(ctx context.Context) (*messageStateDeliveryClaim, error) {
+	claim := new(messageStateDeliveryClaim)
+	err := d.Postgres.InTx(ctx, func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `WITH due AS (
+ SELECT o.id FROM msg_state_delivery_outbox o
+ WHERE o.state=0 AND o.available_at<=now() AND (o.lease_until IS NULL OR o.lease_until<=now())
+ AND NOT EXISTS (SELECT 1 FROM msg_state_delivery_outbox prior WHERE prior.user_id=o.user_id AND prior.state=0 AND prior.id<o.id)
+ AND NOT EXISTS (SELECT 1 FROM msg_inbox_delivery_outbox pending WHERE pending.sender_user_id=o.user_id AND pending.state=0 AND pending.created_at<=o.created_at)
+ ORDER BY o.id LIMIT 1 FOR UPDATE OF o SKIP LOCKED)
+ UPDATE msg_state_delivery_outbox o SET claim_token=gen_random_uuid(),lease_until=now()+interval '60 seconds',attempts=o.attempts+1
+		 FROM due WHERE o.id=due.id RETURNING o.id,o.claim_token::text,o.method,o.payload,o.attempts,o.created_at`).Scan(&claim.id, &claim.token, &claim.method, &claim.payload, &claim.attempts, &claim.createdAt)
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	observeDeliveryClaim("state", claim.createdAt)
+	return claim, nil
+}
+
+func (d *Dao) dispatchMessageStateDelivery(ctx context.Context, claim *messageStateDeliveryClaim) (int, error) {
+	publishCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	err := d.publishMessagePublication(publishCtx, "state", fmt.Sprintf("%d", claim.id), func() error {
+		return d.publishMessageState(publishCtx, claim.method, claim.payload)
+	})
+	cancel()
+	observeDeliveryPublication("state", err)
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return 0, err
+	}
+	if ctx.Err() != nil {
+		return 0, ctx.Err()
+	}
+	delay := time.Second << min(claim.attempts-1, 8)
+	if err != nil {
+		_, releaseErr := d.Postgres.Pool.Exec(ctx, `UPDATE msg_state_delivery_outbox SET lease_until=NULL,claim_token=NULL,available_at=now()+($3::double precision*interval '1 second'),last_error=$4
+ WHERE id=$1 AND claim_token=$2::uuid AND state=0`, claim.id, claim.token, delay.Seconds(), "publication failed")
+		return 0, errors.Join(err, releaseErr)
+	}
+	var elapsed float64
+	err = d.Postgres.Pool.QueryRow(ctx, `UPDATE msg_state_delivery_outbox SET state=1,delivered_at=now(),payload='{}'::jsonb,lease_until=NULL,claim_token=NULL,last_error=''
+ WHERE id=$1 AND claim_token=$2::uuid AND state=0
+ RETURNING extract(epoch FROM delivered_at-created_at)::double precision`, claim.id, claim.token).Scan(&elapsed)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, errors.New("messenger/msg: state delivery lease was lost")
+	}
+	if err != nil {
+		return 0, err
+	}
+	deliveryCompletion.WithLabelValues("state", "broker_ack").Observe(max(elapsed, 0))
+	return 1, nil
+}
+
 func (d *Dao) DispatchMessageStateDeliveries(ctx context.Context, limit int) (int, error) {
 	if d == nil || d.Postgres == nil || d.Postgres.Pool == nil {
 		return 0, errors.New("messenger/msg: PostgreSQL state delivery is not configured")
@@ -75,52 +139,5 @@ func (d *Dao) DispatchMessageStateDeliveries(ctx context.Context, limit int) (in
 	if limit <= 0 || limit > 100 {
 		limit = 50
 	}
-	published := 0
-	for i := 0; i < limit; i++ {
-		var id int64
-		var token, method string
-		var payload []byte
-		var attempts int
-		err := d.Postgres.InTx(ctx, func(tx pgx.Tx) error {
-			return tx.QueryRow(ctx, `WITH due AS (
- SELECT o.id FROM msg_state_delivery_outbox o
- WHERE o.state=0 AND o.available_at<=now() AND (o.lease_until IS NULL OR o.lease_until<=now())
- AND NOT EXISTS (SELECT 1 FROM msg_state_delivery_outbox prior WHERE prior.user_id=o.user_id AND prior.state=0 AND prior.id<o.id)
- AND NOT EXISTS (SELECT 1 FROM msg_inbox_delivery_outbox pending WHERE pending.sender_user_id=o.user_id AND pending.state=0 AND pending.created_at<=o.created_at)
- ORDER BY o.id LIMIT 1 FOR UPDATE OF o SKIP LOCKED)
- UPDATE msg_state_delivery_outbox o SET claim_token=gen_random_uuid(),lease_until=now()+interval '60 seconds',attempts=o.attempts+1
- FROM due WHERE o.id=due.id RETURNING o.id,o.claim_token::text,o.method,o.payload,o.attempts`).Scan(&id, &token, &method, &payload, &attempts)
-		})
-		if errors.Is(err, pgx.ErrNoRows) {
-			return published, nil
-		}
-		if err != nil {
-			return published, err
-		}
-		publishCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		err = d.publishMessagePublication(publishCtx, func() error { return d.publishMessageState(publishCtx, method, payload) })
-		cancel()
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			return published, err
-		}
-		if ctx.Err() != nil {
-			return published, ctx.Err()
-		}
-		delay := time.Second << min(attempts-1, 8)
-		if err != nil {
-			_, releaseErr := d.Postgres.Pool.Exec(ctx, `UPDATE msg_state_delivery_outbox SET lease_until=NULL,claim_token=NULL,available_at=now()+($3::double precision*interval '1 second'),last_error=$4
- WHERE id=$1 AND claim_token=$2::uuid AND state=0`, id, token, delay.Seconds(), "publication failed")
-			return published, errors.Join(err, releaseErr)
-		}
-		tag, err := d.Postgres.Pool.Exec(ctx, `UPDATE msg_state_delivery_outbox SET state=1,delivered_at=now(),payload='{}'::jsonb,lease_until=NULL,claim_token=NULL,last_error=''
- WHERE id=$1 AND claim_token=$2::uuid AND state=0`, id, token)
-		if err != nil {
-			return published, err
-		}
-		if tag.RowsAffected() != 1 {
-			return published, errors.New("messenger/msg: state delivery lease was lost")
-		}
-		published++
-	}
-	return published, nil
+	return runDeliveryWorkers(ctx, limit, d.deliveryConcurrency(), d.claimMessageStateDelivery, d.dispatchMessageStateDelivery)
 }

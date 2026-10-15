@@ -125,6 +125,7 @@ func (s *Server) Initialize() error {
 			MediaClient:   c.MediaClient,
 		})
 		user.RegisterRPCUserServer(grpcServer, userService)
+		user.RegisterRPCBotRegistryServer(grpcServer, userService)
 		s.closers = append(s.closers, func() { userService.GetServiceContext().Dao.Postgres.Close() })
 	})
 

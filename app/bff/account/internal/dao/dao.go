@@ -19,7 +19,6 @@
 package dao
 
 import (
-	kafka "github.com/teamgram/marmota/pkg/mq"
 	"github.com/teamgram/marmota/pkg/net/rpcx"
 	"github.com/teamgram/teamgram-server/app/bff/account/internal/config"
 	sharedpersist "github.com/teamgram/teamgram-server/app/bff/apifull/persist"
@@ -28,6 +27,7 @@ import (
 	chat_client "github.com/teamgram/teamgram-server/app/service/biz/chat/client"
 	user_client "github.com/teamgram/teamgram-server/app/service/biz/user/client"
 	verification "github.com/teamgram/teamgram-server/pkg/code"
+	"github.com/teamgram/teamgram-server/pkg/mqproducer"
 	"github.com/zeromicro/go-zero/core/stores/kv"
 )
 
@@ -51,6 +51,6 @@ func New(c config.Config) *Dao {
 		UserClient:        user_client.NewUserClient(rpcx.GetCachedRpcClient(c.UserClient)),
 		AuthsessionClient: authsession_client.NewAuthsessionClient(rpcx.GetCachedRpcClient(c.AuthsessionClient)),
 		ChatClient:        chat_client.NewChatClient(rpcx.GetCachedRpcClient(c.ChatClient)),
-		SyncClient:        sync_client.NewSyncMqClient(kafka.MustKafkaProducer(c.SyncClient)),
+		SyncClient:        sync_client.NewSyncMqClient(mqproducer.MustNew(c.SyncClient)),
 	}
 }

@@ -16,6 +16,7 @@ import (
 
 	"github.com/teamgram/marmota/pkg/net/rpcx"
 	"github.com/teamgram/proto/mtproto"
+	"github.com/teamgram/teamgram-server/app/bff/apifull/paymentrecovery"
 	"github.com/teamgram/teamgram-server/app/botapi/store"
 	"github.com/teamgram/teamgram-server/app/interface/httpserver/internal/config"
 	"github.com/teamgram/teamgram-server/app/interface/httpserver/internal/dao"
@@ -60,6 +61,10 @@ func NewServiceContext(c config.Config) (*ServiceContext, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err = paymentrecovery.OpenPostgresReadOnly(c.Postgres.DSN); err != nil {
+		botAPIStore.Close()
+		return nil, err
+	}
 	service := &ServiceContext{
 		Config:            c,
 		Dao:               dao.New(c),
@@ -95,7 +100,10 @@ func NewServiceContext(c config.Config) (*ServiceContext, error) {
 }
 
 func (s *ServiceContext) Close() {
-	if s != nil && s.BotAPIStore != nil {
-		s.BotAPIStore.Close()
+	if s != nil {
+		if s.BotAPIStore != nil {
+			s.BotAPIStore.Close()
+		}
+		_ = paymentrecovery.ClosePostgres()
 	}
 }

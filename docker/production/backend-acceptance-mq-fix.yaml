@@ -1,0 +1,9 @@
+# Final acceptance image pin.
+#
+# Keep this layer last in the acceptance Compose stack. Temporary local
+# overlays may select feature images, but the restart acceptance must run on
+# the image containing the MQ writable-layer fix unless a caller explicitly
+# supplies TEAMGRAM_BACKEND_IMAGE.
+services:
+  backend:
+    image: "${TEAMGRAM_BACKEND_IMAGE:-teamgram-server-e2e-premium:20261014-mq-fix}"

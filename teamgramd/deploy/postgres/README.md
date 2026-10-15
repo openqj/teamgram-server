@@ -114,13 +114,20 @@ failures, recipient order, concurrent claims, lease recovery, stale token
 rejection, acknowledgement races, and worker cancellation. This evidence does
 not establish a complete Layer 229 session or production acceptance.
 
-The existing Kafka adapter does not cancel its underlying synchronous producer
-call when its context expires. The worker bounds its wait to 30 seconds and
-allows only one in-flight publication per DAO; shutdown cancels the worker and
-closes the owning producer. PostgreSQL message, update, and `pts` counter rows
-commit together for the PostgreSQL runtime. Downstream Sync consumption,
-ordering between concurrent sender transactions, and complete
-restart/fault-injection session checks remain acceptance work.
+The Kafka adapter in `pkg/mqproducer` bounds each caller's wait to 30 seconds
+and each producer's outstanding records to 64. An accepted record retains its
+slot after caller cancellation until the broker returns its final result;
+background draining handles late acknowledgements. The worker retains durable
+intents until consumer acknowledgement, and ambiguous cancellation retains its
+lease. Shutdown stops admission, cancels the worker and drains the owned
+producers. PostgreSQL message, update, and `pts` rows commit together.
+
+The disposable PostgreSQL 18 and Layer 229 session recovery commands, acceptance
+limits and evidence are documented in
+[`docs/communication-reliability.md`](../../../docs/communication-reliability.md).
+They exercise local dual-account delivery, fresh sessions, backend recreation,
+Kafka stop/restart, physical backup, PITR and fenced manual promotion. Local
+results do not establish production availability or throughput.
 
 ## Design rules
 

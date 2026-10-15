@@ -1,6 +1,6 @@
 # Layer 229 关键业务链路验收
 
-这份矩阵把当前缺口拆成六类可重复验收：消息、频道、设置、Bot/Mini App、Premium、Business。矩阵数据在
+这份矩阵把当前缺口拆成七类可重复验收：消息、频道、设置、provider catalog、Bot/Mini App、Premium、Business。矩阵数据在
 [`tools/critical_path_acceptance_matrix.json`](../tools/critical_path_acceptance_matrix.json)，执行器在
 [`tools/critical_path_acceptance.py`](../tools/critical_path_acceptance.py)。执行器只运行已存在的探针并原样保存
 stdout/stderr；它不会修改 `LAYER229_METHOD_LEDGER.csv`，也不会把跳过、组件测试或数据库读回写成生产通过。
@@ -49,7 +49,9 @@ RUN_RESTART_PROBE=1 python3 tools/critical_path_acceptance.py \
 RUN_RESTART_PROBE=1 tools/run-backend-restart-critical.sh settings
 RUN_RESTART_PROBE=1 tools/run-backend-restart-critical.sh business
 
-# Premium fixture settlement plus backend restart (real refund/revoke stays manual)
+# Premium fixture settlement, refund/revoke, reconciliation plus backend restart
+export ACCEPTANCE_COMPOSE_FILES="/path/to/docker-compose.yaml /path/to/backend-deploy.yaml"
+export ACCEPTANCE_SERVICE=backend
 RUN_BACKEND_RESTART=1 python3 tools/critical_path_acceptance.py \
   --run --id premium.entitlement-restart-fixture \
   --output /tmp/teamgram-premium-entitlement-restart.json
@@ -98,25 +100,32 @@ git diff --check
 | `settings.global-privacy-roundtrip` | `docker/web-isolated/probe-global-privacy-settings.ts` | 全局隐私字段写读和恢复 | 独立设备 updates、backend 重启 |
 | `settings.backend-restart-persistence` | `tools/run-backend-restart-critical.sh` (`RESTART_PROBE_KIND=settings`) | 通知设置保存原值、写入 tag marker，重启后读回、账号隔离并逐字段恢复 | provider-backed authorization、外部设备 push |
 
+### Provider Catalog
+
+| 行 | 执行入口 | 覆盖 | 尚未关闭 |
+| --- | --- | --- | --- |
+| `provider.sponsored-collectible-catalog` | `docker/production/probe-sponsored-collectible-fixtures.sh` | 真实 DC2 session 读取 sponsored peers 和 owner-scoped collectible emoji，校验 collectible hash replay，并精确清理 PostgreSQL fixture rows | 广告/collectible 权威 provider、backend restart、生产流量 |
+| `provider.stars-gifts-catalog` | `docker/production/probe-stars-gifts-catalog.ts` | 真实 DC2 session 读取 Stars top-up catalog、Stars balance、saved gift 和 active auction，校验 provider fingerprint 和全量清理 | Stars checkout/settlement、全局礼物库存/拍卖权威、backend restart、生产流量 |
+
 ### Bot/Mini App
 
 | 行 | 执行入口 | 覆盖 | 尚未关闭 |
 | --- | --- | --- | --- |
 | `bot.inline-webview-cross-account` | `docker/production/probe-db-only-bot-mini.ts` | 用户和 bot 两 session、inline 结果、prepared message、WebView、bot status | 更新 loop 被关闭、provider authority、重启 replay |
 | `bot.webview-provider-boundary` | `docker/production/probe-webview-bot-business.ts` | WebView、requested peer、callback、Bot App、business control plane | 当前是本地 control-plane fixture，缺真实 provider 和 recipient fan-out |
-| `bot.callback-payment-update-fanout` | `docker/production/probe-bot-message-gap.ts` | callback/webhook/custom request、shipping/precheckout、清理 pending rows | 外部 Bot API/payment provider、实时消费、重启 |
+| `bot.callback-payment-update-fanout` | `docker/production/probe-bot-message-gap.ts` | callback/webhook/custom request、paid-reaction privacy、shipping/precheckout、清理 pending rows | 外部 Bot API/payment provider、实时消费、重启 |
 | `bot.web-ui-miniapp` | Web workspace 的 `tests/playwright-real/bot-miniapp-web.spec.ts` | 真实 WebSocket 登录、`/start`、主 Mini App iframe | provider 和重启证据不由 UI pass 推导 |
-| `bot.backend-restart-replay` | 手工门槛 | 带 query/request ID 的 bot/WebView 操作跨 backend restart 且 exactly-once | 目前没有现成跨进程探针 |
+| `bot.backend-restart-replay` | `tools/run-backend-restart-bot-mini.sh` | 带 query/request ID 的 bot/WebView 操作跨 backend restart 且 exactly-once | 本轮使用本地 Bot/Mini App provider-shaped state；签名外部 Bot API/WebView authority、真实生产流量和支付回调仍需单独验收 |
 
 ### Premium
 
 | 行 | 执行入口 | 覆盖 | 尚未关闭 |
 | --- | --- | --- | --- |
 | `premium.catalog-session` | `docker/production/probe-premium-readonly.ts` | Premium promo 和可选 payment form 构造器 | 真实目录/provider、权益变更、重启 |
-| `premium.payment-idempotency-provider` | `docker/production/probe-premium-purchase.ts` | form、requested info、payment form、相同请求 replay | Apple/Google、退款/撤销、生产对账 |
+| `premium.payment-idempotency-provider` | `docker/production/probe-premium-purchase.ts` | form、requested info、payment form、相同请求 replay | Apple/Google 真实 receipt；退款/撤销和生产对账由恢复门槛覆盖 |
 | `premium.store-receipt-provider` | `docker/production/probe-premium-store-assignments.ts` | App Store/Play assignment 和 replay | 真实 receipt、退款/撤销、重启对账 |
-| `premium.entitlement-restart-fixture` | `docker/production/probe-premium-entitlement-restart.ts` | A/B 两个真实 Layer 229 session 观察 Premium 权益，精确 replay，backend restart 后核对 provider/local receipt、entitlement、outbox 和 users 行 | 仅为本地签名 fixture 的结算与重启证据；真实 Apple/Google receipt、退款/revoke webhook、权益移除仍是手工门槛 |
-| `premium.entitlement-refund-restart` | 手工门槛 | 两账号权益、重启后读回、退款撤销和 canonical update | 没有真实 store webhook/revoke 探针 |
+| `premium.entitlement-restart-fixture` | `docker/production/probe-premium-entitlement-restart.ts` | A/B 两个真实 Layer 229 session 观察 Premium 权益，精确 replay，backend restart 后核对 provider/local receipt、entitlement、outbox、reconciliation、webhook reversal、grant tombstone 和 users 行 | 仅为本地签名 fixture；真实 Apple/Google receipt 和真实 store webhook 仍是手工门槛 |
+| `premium.entitlement-refund-restart` | 手工门槛 | 两账号权益、重启后读回、真实 provider 退款撤销和 canonical update | 需要真实 Apple/Google receipt、store webhook 凭证及生产 provider 对账证据 |
 
 ### Business
 
@@ -136,6 +145,10 @@ runner 默认使用现有 `backend` Compose project 和 layered production fixtu
 探针对象。`probe-backend-restart.ts` 的 `channel`、`settings`、`business` 三种 kind 都按
 `before -> restart -> after -> cleanup` 顺序运行。
 
+Premium fixture 重启探针在执行 Compose restart 前会从当前 backend 容器补齐
+`TEAMGRAM_CODE_PROVIDER_KEY`、`TEAMGRAM_CODE_PROVIDER_SECRET` 和
+`TEAMGRAM_CODE_CHALLENGE_SECRET`（显式环境变量优先），避免运行时使用的旧变量名导致 Compose 插值失败。
+
 ### Restart readiness race 记录
 
 首次 Business barrier 中，Compose 已报告 `backend` 为 `healthy`，但 after/cleanup 的第一次
@@ -150,6 +163,39 @@ state 文件与最终 report 分离；cleanup 在 state 缺失时按 tag 查找 
 
 上述报告的 before、Compose restart barrier、after 和 cleanup 步骤均为零退出码；Business 报告还包含
 `users.UserFull` 和 recipient update 的 `id/pts/date`。
+
+### 持久会话重连记录
+
+一次直接重启 `backend-backend-1` 的持久会话探针复现了 readiness 窗口问题：WebSocket 已断开后，
+`MTProtoSender._reconnect()` 的单次连接尝试在 backend 尚未重新接受 MTProto 连接时失败，随后
+`_userConnected=false` 使心跳不再发起重连。修复位于 `telegram-tt-master/src/lib/gramjs/network/MTProtoSender.ts`
+和 `telegram-tt-master/src/lib/gramjs/network/connection/Connection.ts`：重连期间创建新的传输对象并按退避持续
+尝试，显式断开仍可终止循环，失败对象会关闭底层 socket。真实双账号证据：
+
+* `/tmp/teamgram-connection-stability-backend-restart-final.json`：backend 进程重启后 36/36 RPC 成功，A/B
+  `updates.State` 的 `pts/qts/seq/date` 未回退，双向消息 fan-out 和带 tag 消息清理通过。
+* `/tmp/teamgram-connection-stability-11443.json`、`/tmp/teamgram-connection-stability-31443.json`：
+  两个 TCP 网关各自完成主动断链、自动恢复和双向消息回归。
+
+### 2026-10-14 重跑记录
+
+本轮使用独立 fixture session 完成的关键报告：
+
+* `/tmp/teamgram-agent-restart-channel-final.json`
+* `/tmp/teamgram-agent-restart-settings.json`
+* `/tmp/teamgram-agent-restart-business.json`
+* `/tmp/teamgram-agent-restart-bot-mini-final.json`
+* `/tmp/teamgram-agent-channel-cross-account-members-reconnect.json`
+* `/tmp/teamgram-agent-invites-cross-account-fanout.json`
+* `/tmp/teamgram-agent-channel-settings-global-privacy-roundtrip.json`
+
+三条重启报告的 `before`、Compose restart barrier、`after` 和 `cleanup` 均为 `PASS`，其中 channel
+报告验证了 A/B 新 session 的历史读回和成员 update fan-out，business 报告验证了 `users.UserFull`
+和 recipient update。channel 重启所用的既有 acceptance image 在删除 probe 频道后留下了一条
+editable username 行；该行已按精确 probe tag 清理。源码的 `DeleteChannel` 事务现在同步删除
+`peer_type=PEER_CHANNEL` 的 editable username，并由 `TestChannelsDeleteChannelOwnerTransactionRoundTrip`
+覆盖；由于 Docker 构建网络无法解析 `ports.ubuntu.com`/`proxy.golang.org`，包含该修复的新 acceptance image
+尚未完成重启部署验证。
 
 ## 手工重启门槛
 

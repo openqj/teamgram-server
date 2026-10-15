@@ -33,11 +33,13 @@ export TG_DC_PORT=${TG_DC_PORT:-11443}
 export ACCEPTANCE_SERVICE=${ACCEPTANCE_SERVICE:-backend}
 export ACCEPTANCE_COMPOSE_PROJECT=${ACCEPTANCE_COMPOSE_PROJECT:-backend}
 export ACCEPTANCE_COMPOSE_PROJECT_DIRECTORY=${ACCEPTANCE_COMPOSE_PROJECT_DIRECTORY:-/Users/mac/open/tg/services/backend}
+export TEAMGRAM_BACKEND_IMAGE=${TEAMGRAM_BACKEND_IMAGE:-teamgram-server-e2e-premium:20261014-mq-fix}
+[[ -n "$TEAMGRAM_BACKEND_IMAGE" ]] || { echo 'TEAMGRAM_BACKEND_IMAGE must be non-empty' >&2; exit 2; }
 
-# Preserve the same runtime image/fixture settings as the existing guarded
-# restart acceptance wrapper when the caller has not supplied them.
+# Preserve the provider fixture settings from the running backend when the
+# caller has not supplied them. The backend image is pinned above so a stale
+# running container cannot silently select an older acceptance image.
 if docker inspect backend-backend-1 >/dev/null 2>&1; then
-  export TEAMGRAM_BACKEND_IMAGE=${TEAMGRAM_BACKEND_IMAGE:-$(docker inspect backend-backend-1 --format '{{.Config.Image}}')}
   get_backend_env() {
     docker inspect backend-backend-1 --format '{{range .Config.Env}}{{println .}}{{end}}' \
       | awk -F= -v key="$1" '$1 == key {sub(/^[^=]*=/, ""); print; exit}'
@@ -64,6 +66,7 @@ else
     /tmp/teamgram-production-runtime.yaml
     "$ROOT/docker/production/backend-e2e-provider-fixtures.yaml"
     /tmp/teamgram-passkey-image-userhandle.yaml
+    "$ROOT/docker/production/backend-acceptance-mq-fix.yaml"
   )
 fi
 for compose_file in "${COMPOSE_FILES[@]}"; do
@@ -79,10 +82,20 @@ probe_command() {
 BEFORE_COMMAND=$(probe_command before)
 AFTER_COMMAND=$(probe_command after)
 CLEANUP_COMMAND=$(probe_command cleanup)
+if [[ "$KIND" == business ]]; then
+  BUSINESS_CLEANUP_SQL="BEGIN;
+DELETE FROM public.messages WHERE message = '${MARKER}:business:after';
+COMMIT;
+"
+  printf -v BUSINESS_SQL_COMMAND 'printf %%s %q | docker exec -i teamgram-postgres psql -U %q -d %q --no-psqlrc --set=ON_ERROR_STOP=1' \
+    "$BUSINESS_CLEANUP_SQL" "$POSTGRES_USER" "$POSTGRES_DB"
+  CLEANUP_COMMAND+="; probe_status=\$?; ${BUSINESS_SQL_COMMAND}; sql_status=\$?; if [ \"\$probe_status\" -ne 0 ]; then exit \"\$probe_status\"; fi; exit \"\$sql_status\""
+fi
 OUTPUT=${RESTART_OUTPUT:-/tmp/teamgram-backend-restart-${KIND}-${MARKER}.json}
 
 ARGS=(
   --service "$ACCEPTANCE_SERVICE"
+  --expected-image "$TEAMGRAM_BACKEND_IMAGE"
   --project-name "$ACCEPTANCE_COMPOSE_PROJECT"
   --project-directory "$ACCEPTANCE_COMPOSE_PROJECT_DIRECTORY"
   --before-command "$BEFORE_COMMAND"

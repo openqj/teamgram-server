@@ -10,19 +10,19 @@ import (
 	"context"
 	"strconv"
 
-	kafka "github.com/teamgram/marmota/pkg/mq"
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/messenger/sync/sync"
+	"github.com/teamgram/teamgram-server/pkg/mqproducer"
 
 	"github.com/zeromicro/go-zero/core/jsonx"
 	"google.golang.org/protobuf/proto"
 )
 
 type defaultSyncMqClient struct {
-	cli *kafka.Producer
+	cli mqproducer.Sender
 }
 
-func NewSyncMqClient(cli *kafka.Producer) SyncClient {
+func NewSyncMqClient(cli mqproducer.Sender) SyncClient {
 	return &defaultSyncMqClient{
 		cli: cli,
 	}

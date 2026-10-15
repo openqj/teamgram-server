@@ -7,6 +7,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"crypto/subtle"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -271,6 +272,51 @@ func (f *fixture) responseWithContext(ctx context.Context, fields map[string]jso
 	}
 
 	uid := userID(fields)
+	if operation == "get_payment_status" {
+		transactionID := strings.TrimSpace(rawString(fields, "transaction_id"))
+		provider := strings.TrimSpace(rawString(fields, "provider"))
+		requestedProduct := strings.TrimSpace(rawString(fields, "product"))
+		if uid <= 0 || transactionID == "" || provider == "" {
+			return nil, "", fmt.Errorf("invalid payment status request")
+		}
+		status := "not_found"
+		product := requestedProduct
+		var months, stars int64
+		if f.store != nil && f.store.db != nil {
+			var state string
+			err := f.store.db.QueryRowContext(ctx, `SELECT product, months, stars, state
+				FROM apifull_payment_provider_entitlement WHERE user_id=$1 AND transaction_id=$2`, uid, transactionID).
+				Scan(&product, &months, &stars, &state)
+			if err == nil {
+				status = "settled"
+				if state == "revoked" {
+					status = "revoked"
+				}
+			} else if !errors.Is(err, sql.ErrNoRows) {
+				return nil, "", err
+			} else {
+				var found int
+				if err = f.store.db.QueryRowContext(ctx, `SELECT 1 FROM apifull_payment_provider_receipt WHERE user_id=$1 AND transaction_id=$2`, uid, transactionID).Scan(&found); err == nil {
+					status = "settled"
+					if product == "" {
+						product = "bot_invoice"
+					}
+				} else if !errors.Is(err, sql.ErrNoRows) {
+					return nil, "", err
+				}
+			}
+		}
+		if product == "" {
+			product = requestedProduct
+		}
+		body, err := json.Marshal(map[string]any{
+			"verified": true, "user_id": uid, "provider": provider, "transaction_id": transactionID,
+			"request_key": rawString(fields, "request_key"),
+			"product":     product, "status": status, "months": months, "stars": stars,
+			"occurred_at": time.Now().Unix(),
+		})
+		return body, "X-Teamgram-Payment-Signature", err
+	}
 	if operation == "refund_stars_charge" {
 		callerID := rawInt64(fields, "caller_user_id")
 		targetID := rawInt64(fields, "user_id")
@@ -694,7 +740,7 @@ func (f *fixture) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if rawString(fields, "request_id") != "" {
 		signatureHeader = "X-Teamgram-Payment-Provider-Signature"
 	}
-	cacheOperation := operation != "get_stars_subscriptions"
+	cacheOperation := operation != "get_stars_subscriptions" && operation != "get_payment_status"
 	if f.store != nil && cacheOperation {
 		if cached, found, loadErr := f.store.loadOperation(operation, requestKey, uid, body); loadErr != nil {
 			http.Error(w, loadErr.Error(), http.StatusConflict)

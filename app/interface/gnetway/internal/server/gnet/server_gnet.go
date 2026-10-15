@@ -151,6 +151,7 @@ func (s *Server) setConnTransport(ctx *connContext, http, websocket bool) {
 		proto = "http"
 	}
 	metricConnOpen.Inc(proto)
+	metricConnActive.Inc(proto)
 	ctx.metricOpened = true
 }
 
@@ -219,6 +220,7 @@ func (s *Server) OnClose(c gnet.Conn, err error) (action gnet.Action) {
 				proto = "http"
 			}
 			metricConnClose.Inc(proto)
+			metricConnActive.Dec(proto)
 		}
 
 		c.SetContext(nil)

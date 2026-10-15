@@ -33,11 +33,7 @@ func (c *UserCore) UserResolveUsername(in *user.TLUserResolveUsername) (*mtproto
 		username = in.Username
 	)
 
-	switch username {
-	case "gif":
-	case "pic":
-	case "bing":
-	default:
+	if user.GetBotIdByName(username) == 0 {
 		if len(username) < 5 {
 			err = mtproto.ErrUsernameInvalid
 			return nil, err

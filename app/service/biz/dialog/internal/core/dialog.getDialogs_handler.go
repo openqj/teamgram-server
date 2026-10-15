@@ -81,6 +81,9 @@ import (
 // DialogGetDialogs
 // dialog.getDialogs user_id:long exclude_pinned:Bool folder_id:int = Vector<DialogExt>;
 func (c *DialogCore) DialogGetDialogs(in *dialog.TLDialogGetDialogs) (*dialog.Vector_DialogExt, error) {
+	if in == nil || in.GetUserId() <= 0 {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
 	var (
 		excludePinned = mtproto.FromBool(in.GetExcludePinned())
 		folderId      = in.GetFolderId()
@@ -88,6 +91,9 @@ func (c *DialogCore) DialogGetDialogs(in *dialog.TLDialogGetDialogs) (*dialog.Ve
 		dlgExtIdList  []int64
 		err           error
 	)
+	if folderId < 0 {
+		return nil, mtproto.ErrFolderIdInvalid
+	}
 
 	// excludePinned
 	if folderId == 0 {

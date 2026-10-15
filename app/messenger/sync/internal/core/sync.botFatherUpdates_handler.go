@@ -478,7 +478,7 @@ func parseBotFatherMenuButton(text string) (botapi.MenuButton, bool) {
 		return botapi.MenuButton{}, false
 	}
 	buttonText, rawURL := strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1])
-	if buttonText == "" || rawURL == "" {
+	if buttonText == "" || !validBotFatherAppURL(rawURL) {
 		return botapi.MenuButton{}, false
 	}
 	return botapi.MenuButton{Type: "web_app", Text: buttonText, WebApp: &botapi.WebAppInfo{URL: rawURL}}, true
@@ -788,7 +788,9 @@ func (c *SyncCore) setBotInfoFromBotFather(ctx context.Context, sender int64, se
 	if (kind == "about" || kind == "description") && strings.EqualFold(value, "/empty") {
 		value = ""
 	}
-	if (kind == "name" && value == "") || !utf8.ValidString(value) || utf8.RuneCountInString(value) > map[string]int{"name": 64, "about": 128, "description": 10240}[kind] {
+	limits := map[string]int{"name": 64, "about": 128, "description": 10240}
+	allowLineBreaks := kind == "about" || kind == "description"
+	if (kind == "name" && value == "") || !validBotFatherProfileText(value, limits[kind], allowLineBreaks) {
 		return "That text is too long or invalid. Please try again.", nil
 	}
 	request := &userpb.BotRegistrySetBotInfoRequest{BotId: session.PendingBotID}
@@ -1049,7 +1051,8 @@ func parseBotFatherCommands(text string) ([]*mtproto.BotCommand, bool) {
 		}
 		command := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(parts[0]), "/"))
 		description := strings.TrimSpace(parts[1])
-		if command == "" || description == "" || len(command) > 32 || len(commands) >= 100 {
+		if command == "" || description == "" || len(command) > 32 || len(commands) >= 100 ||
+			!utf8.ValidString(description) || utf8.RuneCountInString(description) > 256 {
 			return nil, false
 		}
 		for _, r := range command {
@@ -1064,4 +1067,16 @@ func parseBotFatherCommands(text string) ([]*mtproto.BotCommand, bool) {
 		commands = append(commands, &mtproto.BotCommand{Command: command, Description: description})
 	}
 	return commands, len(commands) > 0
+}
+
+func validBotFatherProfileText(value string, maxRunes int, allowLineBreaks bool) bool {
+	if !utf8.ValidString(value) || utf8.RuneCountInString(value) > maxRunes {
+		return false
+	}
+	for _, r := range value {
+		if unicode.IsControl(r) && !(allowLineBreaks && (r == '\n' || r == '\r' || r == '\t')) {
+			return false
+		}
+	}
+	return true
 }

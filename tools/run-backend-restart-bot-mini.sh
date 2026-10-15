@@ -35,9 +35,10 @@ export POSTGRES_DB=${POSTGRES_DB:-teamgram}
 export POSTGRES_USER=${POSTGRES_USER:-teamgram}
 export POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-teamgram}
 export TEAMGRAM_DEPLOY_DIR=${TEAMGRAM_DEPLOY_DIR:-$ROOT/teamgramd/deploy}
+export TEAMGRAM_BACKEND_IMAGE=${TEAMGRAM_BACKEND_IMAGE:-teamgram-server-e2e-premium:20261014-mq-fix}
+[[ -n "$TEAMGRAM_BACKEND_IMAGE" ]] || { echo 'TEAMGRAM_BACKEND_IMAGE must be non-empty' >&2; exit 2; }
 
 if docker inspect backend-backend-1 >/dev/null 2>&1; then
-  export TEAMGRAM_BACKEND_IMAGE=${TEAMGRAM_BACKEND_IMAGE:-$(docker inspect backend-backend-1 --format '{{.Config.Image}}')}
   get_backend_env() {
     docker inspect backend-backend-1 --format '{{range .Config.Env}}{{println .}}{{end}}' \
       | awk -F= -v key="$1" '$1 == key {sub(/^[^=]*=/, ""); print; exit}'
@@ -58,6 +59,7 @@ else
     /tmp/teamgram-production-runtime.yaml
     "$ROOT/docker/production/backend-e2e-provider-fixtures.yaml"
     /tmp/teamgram-passkey-image-userhandle.yaml
+    "$ROOT/docker/production/backend-acceptance-mq-fix.yaml"
   )
 fi
 for compose_file in "${COMPOSE_FILES[@]}"; do
@@ -72,6 +74,7 @@ probe_command() {
 
 ARGS=(
   --service "$ACCEPTANCE_SERVICE"
+  --expected-image "$TEAMGRAM_BACKEND_IMAGE"
   --project-name "$ACCEPTANCE_COMPOSE_PROJECT"
   --project-directory "$ACCEPTANCE_COMPOSE_PROJECT_DIRECTORY"
   --before-command "$(probe_command before)"

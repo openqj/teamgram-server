@@ -1,0 +1,90 @@
+# Local-only Patroni/DCS experiment; not a complete communication HA topology.
+x-labels: &labels
+  org.teamgram.reliability.run: "${TEAMGRAM_RELIABILITY_RUN_ID:?Disposable run required}"
+x-etcd: &etcd
+  image: quay.io/coreos/etcd:v3.5.11
+  labels: *labels
+  restart: "no"
+  environment: &etcd-env
+    ETCD_DATA_DIR: /etcd-data
+    ETCD_LISTEN_CLIENT_URLS: http://0.0.0.0:2379
+    ETCD_LISTEN_PEER_URLS: http://0.0.0.0:2380
+    ETCD_INITIAL_CLUSTER: dcs1=http://dcs1:2380,dcs2=http://dcs2:2380,dcs3=http://dcs3:2380
+    ETCD_INITIAL_CLUSTER_TOKEN: "${TEAMGRAM_RELIABILITY_RUN_ID}"
+x-pg: &pg
+  image: "${TEAMGRAM_RELIABILITY_HA_IMAGE:-teamgram-patroni:4.1.5-pg18}"
+  labels: *labels
+  restart: "no"
+  stop_grace_period: 25s
+  environment: &pg-env
+    TEAMGRAM_RELIABILITY_DB_PASSWORD: "${TEAMGRAM_RELIABILITY_DB_PASSWORD:?Disposable password required}"
+    TEAMGRAM_RELIABILITY_REPLICATION_PASSWORD: "${TEAMGRAM_RELIABILITY_REPLICATION_PASSWORD:?Disposable password required}"
+
+services:
+  dcs1:
+    <<: *etcd
+    environment:
+      <<: *etcd-env
+      ETCD_NAME: dcs1
+      ETCD_ADVERTISE_CLIENT_URLS: http://dcs1:2379
+      ETCD_INITIAL_ADVERTISE_PEER_URLS: http://dcs1:2380
+    volumes: [dcs1_data:/etcd-data]
+  dcs2:
+    <<: *etcd
+    environment:
+      <<: *etcd-env
+      ETCD_NAME: dcs2
+      ETCD_ADVERTISE_CLIENT_URLS: http://dcs2:2379
+      ETCD_INITIAL_ADVERTISE_PEER_URLS: http://dcs2:2380
+    volumes: [dcs2_data:/etcd-data]
+  dcs3:
+    <<: *etcd
+    environment:
+      <<: *etcd-env
+      ETCD_NAME: dcs3
+      ETCD_ADVERTISE_CLIENT_URLS: http://dcs3:2379
+      ETCD_INITIAL_ADVERTISE_PEER_URLS: http://dcs3:2380
+    volumes: [dcs3_data:/etcd-data]
+  pg1:
+    <<: *pg
+    environment:
+      <<: *pg-env
+      PATRONI_NAME: pg1
+    volumes: [pg1_data:/var/lib/postgresql]
+  pg2:
+    <<: *pg
+    environment:
+      <<: *pg-env
+      PATRONI_NAME: pg2
+    volumes: [pg2_data:/var/lib/postgresql]
+  pg3:
+    <<: *pg
+    environment:
+      <<: *pg-env
+      PATRONI_NAME: pg3
+    volumes: [pg3_data:/var/lib/postgresql]
+  proxy:
+    image: haproxy:3.2-alpine
+    labels: *labels
+    restart: "no"
+    ports:
+      - "127.0.0.1:${TEAMGRAM_RELIABILITY_PG_PORT:-55437}:5432"
+    volumes:
+      - ./haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+
+volumes:
+  dcs1_data:
+    labels: *labels
+  dcs2_data:
+    labels: *labels
+  dcs3_data:
+    labels: *labels
+  pg1_data:
+    labels: *labels
+  pg2_data:
+    labels: *labels
+  pg3_data:
+    labels: *labels
+networks:
+  default:
+    labels: *labels

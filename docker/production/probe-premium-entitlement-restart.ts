@@ -1,3 +1,4 @@
+import { createHmac } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -22,6 +23,10 @@ const aUserId = BigInt(process.env.A_USER_ID!);
 const bUserId = BigInt(process.env.B_USER_ID!);
 const invoiceSlugBase = process.env.PREMIUM_INVOICE_SLUG!.trim();
 const runRestart = process.env.RUN_BACKEND_RESTART === '1';
+const webhookURL = process.env.PAYMENT_WEBHOOK_URL || 'http://127.0.0.1:8801/payment/provider/webhook';
+let webhookSigningKey = '';
+let providerSigningKey = '';
+let providerName = 'external';
 const startedAt = Math.floor(Date.now() / 1000);
 
 if (!Number.isSafeInteger(dcId) || dcId <= 0 || !Number.isSafeInteger(dcPort) || dcPort <= 0) {
@@ -52,6 +57,21 @@ function rpcName(value: any): string {
 
 function requireCondition(value: unknown, message: string): asserts value {
   if (!value) throw new Error(message);
+}
+
+async function withTimeout<T>(promise: Promise<T>, label: string): Promise<T> {
+  const timeoutMs = Number(process.env.PREMIUM_CONNECT_TIMEOUT_MS || '15000');
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`${label} timed out after ${timeoutMs}ms`)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 function makeClient(authKeyBase64: string): any {
@@ -136,6 +156,38 @@ function composeFiles(): string[] {
   ];
 }
 
+function hydrateComposeProviderEnvironment(): void {
+  const project = process.env.ACCEPTANCE_COMPOSE_PROJECT?.trim() || 'backend';
+  const service = process.env.ACCEPTANCE_SERVICE?.trim() || 'backend';
+  const container = process.env.ACCEPTANCE_BACKEND_CONTAINER?.trim() || `${project}-${service}-1`;
+  let raw: string;
+  try {
+    raw = execFileSync('docker', [
+      'inspect', container, '--format', '{{range .Config.Env}}{{println .}}{{end}}',
+    ], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+  } catch {
+    return;
+  }
+  const values = new Map<string, string>();
+  for (const line of raw.split(/\r?\n/)) {
+    const separator = line.indexOf('=');
+    if (separator > 0) values.set(line.slice(0, separator), line.slice(separator + 1));
+  }
+  // The production Compose layer names these values PROVIDER_KEY/SECRET,
+  // while the running backend keeps the legacy CODE_KEY/SECRET names.
+  for (const [target, source] of [
+    ['TEAMGRAM_CODE_PROVIDER_KEY', 'TEAMGRAM_CODE_KEY'],
+    ['TEAMGRAM_CODE_PROVIDER_SECRET', 'TEAMGRAM_CODE_SECRET'],
+    ['TEAMGRAM_CODE_CHALLENGE_SECRET', 'TEAMGRAM_CODE_CHALLENGE_SECRET'],
+    ['TEAMGRAM_PAYMENT_PROVIDER_KEY', 'TEAMGRAM_PAYMENT_PROVIDER_KEY'],
+    ['TEAMGRAM_PAYMENT_PROVIDER_SIGNING_KEY', 'TEAMGRAM_PAYMENT_PROVIDER_SIGNING_KEY'],
+    ['TEAMGRAM_PAYMENT_PROVIDER_WEBHOOK_SIGNING_KEY', 'TEAMGRAM_PAYMENT_PROVIDER_WEBHOOK_SIGNING_KEY'],
+    ['TEAMGRAM_PAYMENT_PROVIDER_NAME', 'TEAMGRAM_PAYMENT_PROVIDER_NAME'],
+  ] as const) {
+    if (!process.env[target] && values.has(source)) process.env[target] = values.get(source)!;
+  }
+}
+
 async function waitForTcp(): Promise<void> {
   const timeoutMs = Number(process.env.RESTART_WAIT_SECONDS || '120') * 1000;
   const deadline = Date.now() + timeoutMs;
@@ -159,6 +211,7 @@ async function waitForTcp(): Promise<void> {
 function restartBackend(): void {
   const files = composeFiles();
   for (const file of files) requireCondition(file && fs.existsSync(file), `compose file not found: ${file}`);
+  hydrateComposeProviderEnvironment();
   const args = ['compose'];
   const project = process.env.ACCEPTANCE_COMPOSE_PROJECT?.trim();
   const directory = process.env.ACCEPTANCE_COMPOSE_PROJECT_DIRECTORY?.trim();
@@ -181,8 +234,14 @@ async function connectPair(): Promise<{ a: any; b: any; aMe: any; bMe: any }> {
   const a = makeClient(process.env.A_AUTH_B64!);
   const b = makeClient(process.env.B_AUTH_B64!);
   try {
-    await Promise.all([a.connect(), b.connect()]);
-    const [aMe, bMe] = await Promise.all([a.getMe(), b.getMe()]);
+    await Promise.all([
+      withTimeout(a.connect(), 'A Telegram connection'),
+      withTimeout(b.connect(), 'B Telegram connection'),
+    ]);
+    const [aMe, bMe] = await Promise.all([
+      withTimeout(a.getMe(), 'A users.getMe'),
+      withTimeout(b.getMe(), 'B users.getMe'),
+    ]);
     requireCondition(String(aMe?.id) === aUserId.toString(), `A auth key user mismatch: ${String(aMe?.id)}`);
     requireCondition(String(bMe?.id) === bUserId.toString(), `B auth key user mismatch: ${String(bMe?.id)}`);
     return { a, b, aMe, bMe };
@@ -269,8 +328,9 @@ function premiumUserFromFull(full: any, userId: bigint): any {
   return users.find((user: any) => String(user?.id) === userId.toString());
 }
 
-async function readPremium(a: any, b: any, aMe: any): Promise<Record<string, unknown>> {
-  requireCondition(aMe?.premium === true, `A users.getMe did not show premium=true (got ${String(aMe?.premium)})`);
+async function readPremium(a: any, b: any, expected: boolean): Promise<Record<string, unknown>> {
+  const aMe = await a.getMe();
+  requireCondition(Boolean(aMe?.premium) === expected, `A users.getMe premium=${String(aMe?.premium)}, expected ${String(expected)}`);
   const aAccessHash = aMe?.accessHash;
   requireCondition(aAccessHash !== undefined && aAccessHash !== null, 'A users.getMe did not return an access hash');
   const full = await b.invoke(new Api.users.GetFullUser({
@@ -280,7 +340,7 @@ async function readPremium(a: any, b: any, aMe: any): Promise<Record<string, unk
   requireCondition(fullType === 'users.UserFull' || fullType === 'UserFull', `B users.getFullUser returned ${fullType}`);
   const target = premiumUserFromFull(full, aUserId);
   requireCondition(target != null, `B users.getFullUser did not include A in users[] (count=${Array.isArray(full?.users) ? full.users.length : 0})`);
-  requireCondition(target.premium === true, `B users.getFullUser users[] did not show A premium=true (got ${String(target.premium)})`);
+  requireCondition(Boolean(target.premium) === expected, `B users.getFullUser users[] premium=${String(target.premium)}, expected ${String(expected)}`);
   const ownFull = await a.invoke(new Api.users.GetFullUser({ id: new Api.InputUserSelf() }));
   requireCondition(rpcName(ownFull) === 'users.UserFull' || rpcName(ownFull) === 'UserFull', `A users.getFullUser returned ${rpcName(ownFull)}`);
   return {
@@ -288,6 +348,25 @@ async function readPremium(a: any, b: any, aMe: any): Promise<Record<string, unk
     bGetFullUser: fullType,
     bObservedUser: { id: String(target.id), premium: Boolean(target.premium) },
     aGetFullUser: rpcName(ownFull),
+  };
+}
+
+async function readPremiumState(a: any, b: any, expected: boolean): Promise<Record<string, unknown>> {
+  const aMe = await a.getMe();
+  requireCondition(Boolean(aMe?.premium) === expected, `A users.getMe premium=${String(aMe?.premium)}, expected ${String(expected)}`);
+  const aAccessHash = aMe?.accessHash;
+  requireCondition(aAccessHash !== undefined && aAccessHash !== null, 'A users.getMe did not return an access hash');
+  const full = await b.invoke(new Api.users.GetFullUser({
+    id: new Api.InputUser({ userId: aUserId, accessHash: BigInt(String(aAccessHash)) }),
+  }));
+  const fullType = rpcName(full);
+  requireCondition(fullType === 'users.UserFull' || fullType === 'UserFull', `B users.getFullUser returned ${fullType}`);
+  const target = premiumUserFromFull(full, aUserId);
+  requireCondition(target != null, `B users.getFullUser did not include A in users[]`);
+  requireCondition(Boolean(target.premium) === expected, `B users.getFullUser premium=${String(target.premium)}, expected ${String(expected)}`);
+  return {
+    aGetMePremium: Boolean(aMe.premium),
+    bObservedUser: { id: String(target.id), premium: Boolean(target.premium) },
   };
 }
 
@@ -347,6 +426,125 @@ function readUserPremiumRow(): Record<string, unknown> {
   return result;
 }
 
+function readReversalEvidence(transactionId: string, eventID: string): Record<string, unknown> {
+  const result = sqlJson(`
+    SELECT json_build_object(
+      'webhookState', (SELECT state FROM apifull_payment_provider_webhook WHERE event_id = ${quote(eventID)}),
+      'webhookAttempts', (SELECT attempts FROM apifull_payment_provider_webhook WHERE event_id = ${quote(eventID)}),
+      'reversalCount', (SELECT count(*) FROM apifull_payment_provider_reversal WHERE provider = ${quote(providerName)} AND transaction_id = ${quote(transactionId)}),
+      'reversalEventId', (SELECT event_id FROM apifull_payment_provider_reversal WHERE provider = ${quote(providerName)} AND transaction_id = ${quote(transactionId)}),
+      'requestState', (SELECT state FROM apifull_payment_request WHERE user_id = ${aUserId.toString()} AND transaction_id = ${quote(transactionId)}),
+      'reversedLedgerCount', (SELECT count(*) FROM apifull_payment_ledger WHERE user_id = ${aUserId.toString()} AND transaction_id = ${quote(transactionId)} AND state = 'reversed'),
+      'entitlementState', (SELECT state FROM apifull_payment_provider_entitlement WHERE user_id = ${aUserId.toString()} AND product = 'premium_subscription' AND transaction_id = ${quote(transactionId)}),
+      'grantRevokedAt', (SELECT revoked_at FROM user_premium_payment_grant WHERE user_id = ${aUserId.toString()} AND transaction_id = ${quote(transactionId)}),
+      'activeGrantCount', (SELECT count(*) FROM user_premium_payment_grant WHERE user_id = ${aUserId.toString()} AND revoked_at = 0 AND (expires_at = 0 OR expires_at > EXTRACT(EPOCH FROM CURRENT_TIMESTAMP)::bigint)),
+      'userPremium', (SELECT premium FROM users WHERE id = ${aUserId.toString()}),
+      'reconciliationState', (SELECT state FROM apifull_payment_provider_reconciliation WHERE provider = ${quote(providerName)} AND user_id = ${aUserId.toString()} AND transaction_id = ${quote(transactionId)}),
+      'reconciliationStatus', (SELECT provider_status FROM apifull_payment_provider_reconciliation WHERE provider = ${quote(providerName)} AND user_id = ${aUserId.toString()} AND transaction_id = ${quote(transactionId)})
+    )
+  `);
+  requireCondition(result != null, `no reversal evidence found for ${transactionId}`);
+  return result;
+}
+
+function markProviderEntitlementRevoked(transactionId: string): Record<string, unknown> {
+  const result = sqlJson(`
+    UPDATE apifull_payment_provider_entitlement
+    SET state = 'revoked', updated_at = CURRENT_TIMESTAMP
+    WHERE user_id = ${aUserId.toString()} AND product = 'premium_subscription' AND transaction_id = ${quote(transactionId)}
+    RETURNING json_build_object('transactionId', transaction_id, 'state', state)
+  `);
+  requireCondition(result != null && result.state === 'revoked', `provider entitlement ${transactionId} was not marked revoked`);
+  return result;
+}
+
+function armPaymentReconciliation(transactionId: string): Record<string, unknown> {
+  const result = sqlJson(`
+    UPDATE apifull_payment_provider_reconciliation
+    SET state = 'pending', next_check_at = EXTRACT(EPOCH FROM CURRENT_TIMESTAMP)::bigint,
+        lease_until = 0, claim_token = '', updated_at = EXTRACT(EPOCH FROM CURRENT_TIMESTAMP)::bigint
+    WHERE provider = ${quote(providerName)} AND user_id = ${aUserId.toString()} AND transaction_id = ${quote(transactionId)}
+    RETURNING json_build_object('provider', provider, 'transactionId', transaction_id, 'state', state)
+  `);
+  requireCondition(result != null && result.state === 'pending', `payment reconciliation row for ${transactionId} was not armed`);
+  return result;
+}
+
+async function waitForPaymentReconciliationRow(transactionId: string): Promise<Record<string, unknown>> {
+  const deadline = Date.now() + Number(process.env.RECONCILIATION_SEED_TIMEOUT_SECONDS || '120') * 1000;
+  let last: Record<string, unknown> | null = null;
+  while (Date.now() < deadline) {
+    last = sqlJson(`
+      SELECT json_build_object('state', state, 'providerStatus', provider_status, 'transactionId', transaction_id)
+      FROM apifull_payment_provider_reconciliation
+      WHERE provider = ${quote(providerName)} AND user_id = ${aUserId.toString()} AND transaction_id = ${quote(transactionId)}
+      LIMIT 1
+    `);
+    if (last != null) return last;
+    await delay(1000);
+  }
+  throw new Error(`payment reconciliation row was not created: ${JSON.stringify(last)}`);
+}
+
+async function sendRefundWebhook(transactionId: string, requestKey: string, eventID: string): Promise<Record<string, unknown>> {
+  const payload = {
+    event_id: eventID,
+    event_type: 'payment.refunded',
+    provider: providerName,
+    user_id: Number(aUserId),
+    request_key: requestKey,
+    transaction_id: transactionId,
+    product: 'premium_subscription',
+    months: 1,
+    stars: 0,
+    occurred_at: Math.floor(Date.now() / 1000),
+    reason: 'acceptance fixture refund',
+  };
+  const body = JSON.stringify(payload);
+  const deadline = Date.now() + Number(process.env.WEBHOOK_CONNECT_TIMEOUT_SECONDS || '60') * 1000;
+  let lastError = '';
+  while (Date.now() < deadline) {
+    try {
+      const response = await fetch(webhookURL, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Teamgram-Payment-Provider-Webhook-Signature': `sha256=${createHmac('sha256', webhookSigningKey).update(body).digest('hex')}`,
+        },
+        body,
+      });
+      const responseBody = await response.text();
+      if (response.status === 202) {
+        return { url: webhookURL, status: response.status, body: responseBody, eventID };
+      }
+      lastError = `HTTP ${response.status}: ${responseBody.slice(0, 300)}`;
+      if (response.status !== 503) break;
+    } catch (error) {
+      lastError = String(error);
+    }
+    await delay(1000);
+  }
+  throw new Error(`payment webhook was not accepted: ${lastError}`);
+}
+
+async function waitForReversal(transactionId: string, eventID: string): Promise<Record<string, unknown>> {
+  const deadline = Date.now() + Number(process.env.WEBHOOK_PROCESS_TIMEOUT_SECONDS || '180') * 1000;
+  let last: Record<string, unknown> | null = null;
+  while (Date.now() < deadline) {
+    last = readReversalEvidence(transactionId, eventID);
+    const activeGrantCount = Number(last.activeGrantCount || 0);
+    if (last.webhookState === 'complete' && Number(last.reversalCount) === 1 &&
+      last.requestState === 'reversed' && Number(last.reversedLedgerCount) === 1 &&
+      last.entitlementState === 'revoked' && Number(last.grantRevokedAt) > 0 &&
+      last.reconciliationState === 'complete' && last.reconciliationStatus === 'revoked' &&
+      (activeGrantCount > 0 ? last.userPremium === true : last.userPremium === false)) {
+      return last;
+    }
+    await delay(1000);
+  }
+  throw new Error(`payment reversal did not converge: ${JSON.stringify(last)}`);
+}
+
 function findTransactionId(): string {
   const result = sqlJson(`
     SELECT json_build_object('transactionId', transaction_id, 'requestId', id, 'requestKey', request_key)
@@ -359,6 +557,13 @@ function findTransactionId(): string {
 }
 
 async function main(): Promise<void> {
+  hydrateComposeProviderEnvironment();
+  webhookSigningKey = (process.env.PAYMENT_WEBHOOK_SIGNING_KEY || process.env.TEAMGRAM_PAYMENT_PROVIDER_WEBHOOK_SIGNING_KEY || '').trim();
+  providerSigningKey = (process.env.TEAMGRAM_PAYMENT_PROVIDER_SIGNING_KEY || '').trim();
+  providerName = (process.env.TEAMGRAM_PAYMENT_PROVIDER_NAME || 'external').trim();
+  requireCondition(webhookSigningKey, 'PAYMENT_WEBHOOK_SIGNING_KEY or TEAMGRAM_PAYMENT_PROVIDER_WEBHOOK_SIGNING_KEY is required');
+  requireCondition(providerSigningKey, 'TEAMGRAM_PAYMENT_PROVIDER_SIGNING_KEY is required for reconciliation');
+  requireCondition(providerName.length > 0 && providerName.length <= 32, 'TEAMGRAM_PAYMENT_PROVIDER_NAME must be 1-32 characters');
   const invoiceSlug = `${invoiceSlugBase}-${Date.now()}-${process.pid}`;
   let pair = await connectPairWithRetry();
   const evidence: Record<string, unknown> = {
@@ -375,7 +580,7 @@ async function main(): Promise<void> {
     evidence.transactionId = transactionId;
     evidence.ledgerBeforeRestart = readLedgerEvidence(transactionId);
     evidence.userRowBeforeRestart = readUserPremiumRow();
-    evidence.sessionsBeforeRestart = await readPremium(pair.a, pair.b, pair.aMe);
+    evidence.sessionsBeforeRestart = await readPremium(pair.a, pair.b, true);
 
     await Promise.all([disconnect(pair.a), disconnect(pair.b)]);
     if (runRestart) {
@@ -384,10 +589,19 @@ async function main(): Promise<void> {
       pair = await connectPairWithRetry();
       evidence.ledgerAfterRestart = readLedgerEvidence(transactionId);
       evidence.userRowAfterRestart = readUserPremiumRow();
-      evidence.sessionsAfterRestart = await readPremium(pair.a, pair.b, pair.aMe);
+      evidence.sessionsAfterRestart = await readPremium(pair.a, pair.b, true);
     } else {
       evidence.restart = 'skipped (RUN_BACKEND_RESTART=0)';
     }
+    const requestKey = String((evidence.ledgerBeforeRestart as Record<string, unknown>).requestKey || '');
+    requireCondition(requestKey, 'settled Premium request key is missing');
+    const webhookEventID = `probe-refund-${Date.now()}-${process.pid}`;
+    evidence.reconciliationSeed = await waitForPaymentReconciliationRow(transactionId);
+    evidence.providerEntitlementRevoked = markProviderEntitlementRevoked(transactionId);
+    evidence.reconciliationArmed = armPaymentReconciliation(transactionId);
+    evidence.refundWebhook = await sendRefundWebhook(transactionId, requestKey, webhookEventID);
+    evidence.refundRevoke = await waitForReversal(transactionId, webhookEventID);
+    evidence.sessionsAfterRevoke = await readPremiumState(pair.a, pair.b, Number((evidence.refundRevoke as Record<string, unknown>).activeGrantCount || 0) > 0);
     console.log(JSON.stringify(evidence));
   } finally {
     await Promise.all([disconnect(pair.a), disconnect(pair.b)]);

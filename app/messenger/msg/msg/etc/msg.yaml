@@ -1,4 +1,5 @@
 Name: messenger.msg
+DeliveryConcurrency: 16
 ListenOn: 127.0.0.1:20380
 Etcd:
   Hosts:

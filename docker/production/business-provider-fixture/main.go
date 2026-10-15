@@ -507,7 +507,8 @@ func (s *server) dispatch(ctx context.Context, request requestEnvelope) (json.Ra
 		"bots.invokeWebViewCustomMethod", "bots.sendCustomRequest",
 		"bots.setCustomVerification", "bots.setJoinChatResults",
 		"bots.updateStarRefProgram", "messages.editInlineBotMessage",
-		"messages.setBotGuestChatResult", "messages.requestChatJoinWebView",
+		"messages.getPaidReactionPrivacy", "messages.setBotGuestChatResult",
+		"messages.requestChatJoinWebView", "messages.togglePaidReactionPrivacy",
 		"messages.setBotShippingResults", "messages.setBotPrecheckoutResults":
 		return s.store.BotOperation(ctx, request.UserID, request.Operation, request.Payload)
 	case "payments.launchPrepaidGiveaway", "payments.getStarGiftUpgradePreview",

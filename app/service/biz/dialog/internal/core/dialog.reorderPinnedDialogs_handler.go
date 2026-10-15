@@ -20,6 +20,12 @@ import (
 // DialogReorderPinnedDialogs
 // dialog.reorderPinnedDialogs user_id:long force:Bool folder_id:int id_list:Vector<long> = Bool;
 func (c *DialogCore) DialogReorderPinnedDialogs(in *dialog.TLDialogReorderPinnedDialogs) (*mtproto.Bool, error) {
+	if in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if in.GetFolderId() < 0 {
+		return nil, mtproto.ErrFolderIdInvalid
+	}
 	store, err := c.pgStore()
 	if err != nil || store.Dialogs == nil || c.svcCtx.Dao.Postgres == nil {
 		return nil, mtproto.ErrMethodNotImpl
@@ -41,7 +47,7 @@ func (c *DialogCore) DialogReorderPinnedDialogs(in *dialog.TLDialogReorderPinned
 				if _, err := store.Dialogs.UpdateUnPinnedNotIdListTx(c.ctx, tx, userId, ids); err != nil {
 					return err
 				}
-			} else if _, err := store.Dialogs.UpdateFolderUnPinnedNotIdListTx(c.ctx, tx, userId, ids); err != nil {
+			} else if _, err := store.Dialogs.UpdateFolderUnPinnedNotIdListForFolderTx(c.ctx, tx, folderId, userId, ids); err != nil {
 				return err
 			}
 		}
@@ -51,7 +57,7 @@ func (c *DialogCore) DialogReorderPinnedDialogs(in *dialog.TLDialogReorderPinned
 				if _, err := store.Dialogs.UpdatePeerDialogListPinnedTx(c.ctx, tx, pinned, userId, []int64{id}); err != nil {
 					return err
 				}
-			} else if _, err := store.Dialogs.UpdateFolderPeerDialogListPinnedTx(c.ctx, tx, pinned, userId, []int64{id}); err != nil {
+			} else if _, err := store.Dialogs.UpdateFolderPeerDialogListPinnedForFolderTx(c.ctx, tx, folderId, pinned, userId, []int64{id}); err != nil {
 				return err
 			}
 			orderPinned--

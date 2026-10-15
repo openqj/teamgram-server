@@ -1,11 +1,9 @@
+import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 
-for (const key of ['TEAMGRAM_GRAMJS_DIR', 'A_AUTH_B64', 'A_USER_ID']) {
-  if (!process.env[key]) throw new Error(`${key} is required`);
-}
-
-const root = process.env.TEAMGRAM_GRAMJS_DIR!;
+const root = process.env.TEAMGRAM_GRAMJS_DIR || '/Users/mac/open/test/telegram-tt-master';
+const userId = process.env.A_USER_ID || '7';
 const dcId = Number(process.env.TG_DC_ID || '2');
 const requireModule = createRequire(import.meta.url);
 const TelegramClient = requireModule(path.join(root, 'src/lib/gramjs/client/TelegramClient.ts')).default;
@@ -18,12 +16,25 @@ globalAny.self ??= globalThis;
 globalAny.addEventListener ??= () => {};
 globalAny.self.addEventListener ??= globalAny.addEventListener;
 
+function loadAuthKey(): string {
+  const output = execFileSync('docker', [
+    'exec', process.env.TEAMGRAM_POSTGRES_CONTAINER || 'teamgram-postgres', 'psql',
+    '-Atq', '-U', 'teamgram', '-d', 'teamgram', '-c',
+    `SELECT encode(k.body, 'base64') FROM auth_users u JOIN auth_keys k USING (auth_key_id)
+     JOIN auth_key_infos i USING (auth_key_id) WHERE u.user_id=${Number(userId)}
+     AND u.state=0 AND NOT u.deleted AND NOT k.deleted AND NOT i.deleted AND i.auth_key_type=0
+     ORDER BY u.date_active DESC,u.id DESC LIMIT 1`,
+  ], { encoding: 'utf8' }).trim();
+  if (!output) throw new Error(`no active production auth key found for user ${userId}`);
+  return output;
+}
+
 const rpcName = (value: any): string => value?.className || value?.constructor?.name || typeof value;
 
 function makeClient(): any {
   const session = new CallbackSession({
     mainDcId: dcId,
-    keys: { [dcId]: Buffer.from(process.env.A_AUTH_B64!, 'base64').toString('hex') },
+    keys: { [dcId]: Buffer.from(process.env.A_AUTH_B64 || loadAuthKey(), 'base64').toString('hex') },
   }, () => {});
   const load = session.load.bind(session);
   session.load = async () => {
@@ -31,7 +42,7 @@ function makeClient(): any {
     (session as any)._serverAddress = process.env.TG_DC_HOST || '127.0.0.1';
     (session as any)._port = Number(process.env.TG_DC_PORT || '11443');
   };
-  return new TelegramClient(session, 1, '0123456789abcdef0123456789abcdef', {
+  const client = new TelegramClient(session, 1, '0123456789abcdef0123456789abcdef', {
     connection: Connection,
     fallbackConnection: Connection,
     shouldAllowHttpTransport: false,
@@ -44,6 +55,9 @@ function makeClient(): any {
     autoReconnect: false,
     baseLogger: quietLogger,
   });
+  (client as any)._borrowExportedSender = async () => undefined;
+  (client as any)._updateLoop = async () => undefined;
+  return client;
 }
 
 function isTrue(value: any): boolean {
@@ -69,7 +83,7 @@ async function main() {
   try {
     await client.connect();
     const me = await client.getMe();
-    if (String(me?.id) !== String(process.env.A_USER_ID)) throw new Error('auth key user mismatch');
+    if (String(me?.id) !== String(userId)) throw new Error('auth key user mismatch');
 
     const before = await client.invoke(new Api.messages.GetSavedReactionTags({ hash: 0n }));
     if (rpcName(before) !== 'messages.SavedReactionTags') throw new Error(`unexpected initial result: ${rpcName(before)}`);

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -15,13 +16,17 @@ import (
 	"github.com/zeromicro/go-zero/core/logx"
 )
 
-const inboxDeliveryPublishTimeout = 30 * time.Second
+const (
+	inboxDeliveryPublishTimeout       = 30 * time.Second
+	defaultDeliveryPublishConcurrency = 16
+)
 
 type inboxDeliveryClaim struct {
-	id       int64
-	token    string
-	attempts int
-	payload  []byte
+	id        int64
+	token     string
+	attempts  int
+	createdAt time.Time
+	payload   []byte
 }
 
 type inboxDeliveryPublication struct {
@@ -29,9 +34,84 @@ type inboxDeliveryPublication struct {
 	err  error
 }
 
+type deliveryPublicationKey struct {
+	owner *Dao
+	key   string
+}
+
 // Entries exist only while a producer call is active. The MQ adapter may
 // ignore context cancellation, so retries must share that one in-flight call.
 var inboxDeliveryPublications sync.Map
+
+func (d *Dao) deliveryConcurrency() int {
+	concurrency := d.DeliveryConcurrency
+	if concurrency <= 0 {
+		concurrency = defaultDeliveryPublishConcurrency
+	}
+	if concurrency > 128 {
+		concurrency = 128
+	}
+	return concurrency
+}
+
+// runDeliveryWorkers claims and publishes independent intents concurrently.
+// The claim queries retain one ordered row per recipient/user, so parallel
+// workers only make progress on independent keys. A bounded worker count keeps
+// broker and PostgreSQL pressure explicit.
+func runDeliveryWorkers[T any](ctx context.Context, limit, concurrency int,
+	claim func(context.Context) (*T, error), dispatch func(context.Context, *T) (int, error)) (int, error) {
+	if limit <= 0 {
+		return 0, nil
+	}
+	if concurrency <= 0 {
+		concurrency = 1
+	}
+	if concurrency > limit {
+		concurrency = limit
+	}
+	var next atomic.Int32
+	var published atomic.Int64
+	var wg sync.WaitGroup
+	var errorsMu sync.Mutex
+	var dispatchErrors []error
+	appendError := func(err error) {
+		if err == nil {
+			return
+		}
+		errorsMu.Lock()
+		dispatchErrors = append(dispatchErrors, err)
+		errorsMu.Unlock()
+	}
+	for i := 0; i < concurrency; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				if ctx.Err() != nil {
+					return
+				}
+				if int(next.Add(1)) > limit {
+					return
+				}
+				item, err := claim(ctx)
+				if err != nil {
+					appendError(err)
+					return
+				}
+				if item == nil {
+					return
+				}
+				count, err := dispatch(ctx, item)
+				published.Add(int64(count))
+				appendError(err)
+			}
+		}()
+	}
+	wg.Wait()
+	errorsMu.Lock()
+	defer errorsMu.Unlock()
+	return int(published.Load()), errors.Join(dispatchErrors...)
+}
 
 // EnqueueInboxDeliveryOn records one recipient intent alongside the sender's
 // message. Only the consumer can acknowledge it after durable processing.
@@ -76,13 +156,24 @@ func (d *Dao) CompleteInboxDelivery(ctx context.Context, senderID, dialogID, rec
 	if d == nil || d.Postgres == nil || d.Postgres.Pool == nil {
 		return errors.New("messenger/msg: inbox delivery store is not configured")
 	}
-	return d.Postgres.InTx(ctx, func(tx pgx.Tx) error {
-		_, err := tx.Exec(ctx, `UPDATE msg_inbox_delivery_outbox
+	var elapsed float64
+	completed := false
+	err := d.Postgres.InTx(ctx, func(tx pgx.Tx) error {
+		err := tx.QueryRow(ctx, `UPDATE msg_inbox_delivery_outbox
 			SET state=1, delivered_at=now(), payload='{}'::jsonb, lease_until=NULL, claim_token=NULL, last_error=''
-			WHERE sender_user_id=$1 AND dialog_message_id=$2 AND recipient_user_id=$3 AND state=0`,
-			senderID, dialogID, recipientID)
+			WHERE sender_user_id=$1 AND dialog_message_id=$2 AND recipient_user_id=$3 AND state=0
+			RETURNING extract(epoch FROM delivered_at-created_at)::double precision`,
+			senderID, dialogID, recipientID).Scan(&elapsed)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		completed = err == nil
 		return err
 	})
+	if err == nil && completed {
+		deliveryCompletion.WithLabelValues("inbox", "consumer_ack").Observe(max(elapsed, 0))
+	}
+	return err
 }
 
 func (d *Dao) claimInboxDelivery(ctx context.Context) (*inboxDeliveryClaim, error) {
@@ -100,8 +191,8 @@ func (d *Dao) claimInboxDelivery(ctx context.Context) (*inboxDeliveryClaim, erro
 		UPDATE msg_inbox_delivery_outbox o
 		SET claim_token=gen_random_uuid(), lease_until=now()+interval '60 seconds', attempts=o.attempts+1
 		FROM due WHERE o.id=due.id
-		RETURNING o.id, o.claim_token::text, o.attempts, o.payload`,
-		).Scan(&row.id, &row.token, &row.attempts, &row.payload)
+			RETURNING o.id, o.claim_token::text, o.attempts, o.created_at, o.payload`,
+		).Scan(&row.id, &row.token, &row.attempts, &row.createdAt, &row.payload)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil
 		}
@@ -111,11 +202,14 @@ func (d *Dao) claimInboxDelivery(ctx context.Context) (*inboxDeliveryClaim, erro
 		claim = row
 		return nil
 	})
+	if err == nil && claim != nil {
+		observeDeliveryClaim("inbox", claim.createdAt)
+	}
 	return claim, err
 }
 
-func (d *Dao) publishInboxDelivery(ctx context.Context, request *inbox.TLInboxSendUserMessageToInboxV2) error {
-	return d.publishMessagePublication(ctx, func() error {
+func (d *Dao) publishInboxDelivery(ctx context.Context, key string, request *inbox.TLInboxSendUserMessageToInboxV2) error {
+	return d.publishMessagePublication(ctx, "inbox", key, func() error {
 		result, err := d.InboxClient.InboxSendUserMessageToInboxV2(ctx, request)
 		if err == nil && result == nil {
 			return errors.New("messenger/msg: inbox publication returned no acknowledgement")
@@ -124,13 +218,14 @@ func (d *Dao) publishInboxDelivery(ctx context.Context, request *inbox.TLInboxSe
 	})
 }
 
-func (d *Dao) publishMessagePublication(ctx context.Context, send func() error) error {
+func (d *Dao) publishMessagePublication(ctx context.Context, queue, key string, send func() error) error {
+	publicationKey := deliveryPublicationKey{owner: d, key: queue + ":" + key}
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 		publication := &inboxDeliveryPublication{done: make(chan struct{})}
-		active, loaded := inboxDeliveryPublications.LoadOrStore(d, publication)
+		active, loaded := inboxDeliveryPublications.LoadOrStore(publicationKey, publication)
 		if loaded {
 			select {
 			case <-ctx.Done():
@@ -140,8 +235,12 @@ func (d *Dao) publishMessagePublication(ctx context.Context, send func() error) 
 			}
 		}
 		go func() {
+			deliveryPublicationInFlight.WithLabelValues(queue).Inc()
+			started := time.Now()
 			publication.err = send()
-			inboxDeliveryPublications.CompareAndDelete(d, publication)
+			observeDeliveryPublicationDuration(queue, started)
+			deliveryPublicationInFlight.WithLabelValues(queue).Dec()
+			inboxDeliveryPublications.CompareAndDelete(publicationKey, publication)
 			close(publication.done)
 		}()
 		select {
@@ -177,8 +276,37 @@ func (d *Dao) releaseInboxDelivery(ctx context.Context, claim *inboxDeliveryClai
 }
 
 // DispatchInboxDeliveries publishes due intents while retaining them until
-// acknowledgement. Claims are taken one at a time so later rows do not spend
-// their lease waiting for an earlier publication.
+// acknowledgement. Claims are taken concurrently, while the claim query keeps
+// later rows for the same recipient behind the earlier row.
+func (d *Dao) dispatchInboxDelivery(ctx context.Context, claim *inboxDeliveryClaim) (int, error) {
+	request := new(inbox.TLInboxSendUserMessageToInboxV2)
+	publishErr := json.Unmarshal(claim.payload, request)
+	if publishErr == nil {
+		publishCtx, cancel := context.WithTimeout(ctx, inboxDeliveryPublishTimeout)
+		publishErr = d.publishInboxDelivery(publishCtx, fmt.Sprintf("%d", claim.id), request)
+		cancel()
+	}
+	observeDeliveryPublication("inbox", publishErr)
+	if errors.Is(publishErr, context.Canceled) || errors.Is(publishErr, context.DeadlineExceeded) {
+		return 0, publishErr
+	}
+	// A completed call releases its lease even if the parent expires before
+	// this follow-up write; ambiguous cancellations retain the lease above.
+	releaseCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	releaseErr := d.releaseInboxDelivery(releaseCtx, claim, publishErr)
+	cancel()
+	if publishErr == nil {
+		if releaseErr != nil {
+			return 1, releaseErr
+		}
+		return 1, nil
+	}
+	if releaseErr != nil {
+		return 0, errors.Join(fmt.Errorf("inbox delivery %d: %w", claim.id, publishErr), releaseErr)
+	}
+	return 0, fmt.Errorf("inbox delivery %d: %w", claim.id, publishErr)
+}
+
 func (d *Dao) DispatchInboxDeliveries(ctx context.Context, limit int) (int, error) {
 	if d == nil || d.Postgres == nil || d.Postgres.Pool == nil {
 		return 0, errors.New("messenger/msg: inbox delivery store is not configured")
@@ -189,66 +317,46 @@ func (d *Dao) DispatchInboxDeliveries(ctx context.Context, limit int) (int, erro
 	if limit <= 0 || limit > 100 {
 		limit = 50
 	}
-	published := 0
-	var dispatchErr error
-	for i := 0; i < limit; i++ {
-		if err := ctx.Err(); err != nil {
-			return published, errors.Join(dispatchErr, err)
-		}
-		claim, err := d.claimInboxDelivery(ctx)
-		if err != nil || claim == nil {
-			return published, errors.Join(dispatchErr, err)
-		}
-		request := new(inbox.TLInboxSendUserMessageToInboxV2)
-		publishErr := json.Unmarshal(claim.payload, request)
-		if publishErr == nil {
-			publishCtx, cancel := context.WithTimeout(ctx, inboxDeliveryPublishTimeout)
-			publishErr = d.publishInboxDelivery(publishCtx, request)
-			cancel()
-		}
-		if errors.Is(publishErr, context.Canceled) || errors.Is(publishErr, context.DeadlineExceeded) {
-			return published, errors.Join(dispatchErr, publishErr)
-		}
-		// A completed call releases its lease even if the parent expires before
-		// this follow-up write; ambiguous cancellations retain the lease above.
-		releaseCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-		releaseErr := d.releaseInboxDelivery(releaseCtx, claim, publishErr)
-		cancel()
-		if publishErr == nil {
-			published++
-		} else {
-			dispatchErr = errors.Join(dispatchErr, fmt.Errorf("inbox delivery %d: %w", claim.id, publishErr))
-		}
-		if releaseErr != nil {
-			return published, errors.Join(dispatchErr, releaseErr)
-		}
-	}
-	return published, dispatchErr
+	return runDeliveryWorkers(ctx, limit, d.deliveryConcurrency(), d.claimInboxDelivery, d.dispatchInboxDelivery)
 }
 
 // StartInboxDeliveryWorker returns a stop function that waits for its current
 // dispatch to finish before the owning service closes the PostgreSQL pool.
 func (d *Dao) StartInboxDeliveryWorker(ctx context.Context) func() {
 	workerCtx, cancel := context.WithCancel(ctx)
+	waitMetrics := d.startDeliveryMetrics(workerCtx)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		ticker := time.NewTicker(time.Second)
-		defer ticker.Stop()
+		timer := time.NewTimer(time.Second)
+		defer timer.Stop()
+		var lastProgress time.Time
 		for {
 			if workerCtx.Err() != nil {
 				return
 			}
-			if _, err := d.DispatchInboxDeliveries(workerCtx, 50); err != nil && workerCtx.Err() == nil {
+			inboxPublished, err := d.DispatchInboxDeliveries(workerCtx, 50)
+			if err != nil && workerCtx.Err() == nil {
 				logx.WithContext(workerCtx).Errorf("inbox delivery worker: %v", err)
 			}
-			if _, err := d.DispatchMessageStateDeliveries(workerCtx, 50); err != nil && workerCtx.Err() == nil {
+			statePublished, err := d.DispatchMessageStateDeliveries(workerCtx, 50)
+			if err != nil && workerCtx.Err() == nil {
 				logx.WithContext(workerCtx).Errorf("message state delivery worker: %v", err)
 			}
+			if inboxPublished+statePublished > 0 {
+				lastProgress = time.Now()
+			}
+			delay := time.Second
+			// Ordered inbox rows wait for the asynchronous consumer ACK. Keep
+			// checking briefly after progress so each row does not add 1s of lag.
+			if time.Since(lastProgress) < time.Second {
+				delay = 25 * time.Millisecond
+			}
+			timer.Reset(delay)
 			select {
 			case <-workerCtx.Done():
 				return
-			case <-ticker.C:
+			case <-timer.C:
 			}
 		}
 	}()
@@ -256,5 +364,6 @@ func (d *Dao) StartInboxDeliveryWorker(ctx context.Context) func() {
 	return func() {
 		stop.Do(cancel)
 		<-done
+		waitMetrics()
 	}
 }

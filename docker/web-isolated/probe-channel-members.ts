@@ -166,6 +166,9 @@ async function run() {
   let bob: Actor | undefined;
   let carol: Actor | undefined;
   let dave: Actor | undefined;
+  let createdChannel: any;
+  let ownerChannel: any;
+  let username = '';
 
   try {
     [alice, bob, carol, dave] = await Promise.all(FIXTURES.map((fixture) => login(gram, fixture)));
@@ -177,12 +180,12 @@ async function run() {
       title,
       about: 'isolated channel membership lifecycle probe',
     }));
-    const createdChannel = chatList(created).find((channel: any) => channel?.title === title);
+    createdChannel = chatList(created).find((channel: any) => channel?.title === title);
     requireCondition(createdChannel, 'channels.createChannel did not return the new public channel');
-    const ownerChannel = inputChannel(Api, createdChannel);
+    ownerChannel = inputChannel(Api, createdChannel);
     console.log(`PASS public channel creation: ${rpcName(created)}`);
 
-    const username = `members_${Date.now()}_${process.pid}`;
+    username = `members_${Date.now()}_${process.pid}`;
     const usernameUpdated = await alice.client.invoke(new Api.channels.UpdateUsername({
       channel: ownerChannel,
       username,
@@ -280,6 +283,19 @@ async function run() {
     requireMembers(restartedMembers, [alice, carol], [bob, dave], 'restarted member roster');
     console.log(`PASS restarted member read: ${rpcName(restartedMembers)}`);
   } finally {
+    if (alice && ownerChannel) {
+      // Release the public username before deleting the probe-owned channel.
+      // This keeps cleanup correct even when an older backend image does not
+      // yet remove username rows as part of channels.deleteChannel.
+      try {
+        if (username) {
+          await alice.client.invoke(new Api.channels.UpdateUsername({ channel: ownerChannel, username: '' }));
+        }
+      } catch {}
+      try {
+        await alice.client.invoke(new Api.channels.DeleteChannel({ channel: ownerChannel }));
+      } catch {}
+    }
     for (const actor of [alice, bob, carol, dave]) actor?.client.destroy();
   }
 }

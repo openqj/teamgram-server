@@ -11,6 +11,9 @@ package server
 
 import (
 	"flag"
+	"os"
+	"strconv"
+	"strings"
 
 	"github.com/pkg/errors"
 	"github.com/teamgram/teamgram-server/app/interface/httpserver/internal/config"
@@ -35,9 +38,12 @@ func New() *Server {
 
 func (s *Server) Initialize() error {
 	var c config.Config
-	conf.MustLoad(*configFile, &c)
+	conf.MustLoad(*configFile, &c, conf.UseEnv())
+	if err := applyPaymentProviderEnvironment(&c); err != nil {
+		return errors.Wrap(err, "load payment provider environment")
+	}
 
-	logx.Infov(c)
+	logx.Infof("httpserver config loaded")
 	ctx, err := svc.NewServiceContext(c)
 	if err != nil {
 		return errors.Wrap(err, "create httpserver service context")
@@ -46,6 +52,23 @@ func (s *Server) Initialize() error {
 	s.httpSrv = http.New(ctx, c.Http)
 	s.ctx = ctx
 
+	return nil
+}
+
+func applyPaymentProviderEnvironment(c *config.Config) error {
+	if value, ok := os.LookupEnv("TEAMGRAM_PAYMENT_PROVIDER_NAME"); ok {
+		c.PaymentProviderName = strings.TrimSpace(value)
+	}
+	if value, ok := os.LookupEnv("TEAMGRAM_PAYMENT_PROVIDER_WEBHOOK_SIGNING_KEY"); ok {
+		c.PaymentProviderWebhookSigningKey = strings.TrimSpace(value)
+	}
+	if value, ok := os.LookupEnv("TEAMGRAM_PAYMENT_PROVIDER_WEBHOOK_MAX_BODY_BYTES"); ok {
+		parsed, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64)
+		if err != nil || parsed <= 0 {
+			return errors.Errorf("TEAMGRAM_PAYMENT_PROVIDER_WEBHOOK_MAX_BODY_BYTES must be a positive integer")
+		}
+		c.PaymentProviderWebhookMaxBodyBytes = parsed
+	}
 	return nil
 }
 

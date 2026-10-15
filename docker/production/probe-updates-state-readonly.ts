@@ -6,7 +6,7 @@ for (const key of ['HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'http_proxy', 'http
   delete process.env[key];
 }
 
-const userId = process.env.UPDATES_STATE_USER_ID || '136907714';
+const userId = process.env.UPDATES_STATE_USER_ID || '1';
 const dcId = Number(process.env.TG_DC_ID || '2');
 const dcHost = process.env.TG_DC_HOST || '127.0.0.1';
 const dcPort = Number(process.env.TG_DC_PORT || '11443');

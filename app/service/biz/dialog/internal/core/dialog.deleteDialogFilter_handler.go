@@ -17,6 +17,9 @@ import (
 // DialogDeleteDialogFilter
 // dialog.deleteDialogFilter user_id:long id:int = Bool;
 func (c *DialogCore) DialogDeleteDialogFilter(in *dialog.TLDialogDeleteDialogFilter) (*mtproto.Bool, error) {
+	if in == nil || in.GetId() < 2 {
+		return nil, mtproto.ErrFilterIdInvalid
+	}
 	if c == nil || c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.Postgres == nil ||
 		c.svcCtx.Dao.Postgres.Store == nil || c.svcCtx.Dao.Postgres.Store.DialogFilters == nil {
 		return nil, mtproto.ErrMethodNotImpl

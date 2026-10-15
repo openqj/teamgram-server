@@ -40,7 +40,9 @@ Gnetway:
     - Proto: http
       Addresses:
         - 0.0.0.0:11443
-  Multicore: false
+  # Keep independent MTProto connections on separate gnet event loops. This
+  # is required for the local 1000-online-session acceptance profile.
+  Multicore: true
   SendBuf: 65536
   ReceiveBuf: 65536
 

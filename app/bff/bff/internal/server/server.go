@@ -158,6 +158,9 @@ func applyProviderEnvironment(c *config.Config) error {
 	if value, ok := os.LookupEnv("TEAMGRAM_PAYMENT_PROVIDER_ENDPOINT"); ok {
 		c.PaymentProviderEndpoint = strings.TrimSpace(value)
 	}
+	if value, ok := os.LookupEnv("TEAMGRAM_PAYMENT_PROVIDER_NAME"); ok {
+		c.PaymentProviderName = strings.TrimSpace(value)
+	}
 	if value, ok := os.LookupEnv("TEAMGRAM_PAYMENT_PROVIDER_KEY"); ok {
 		c.PaymentProviderKey = value
 	}
@@ -170,6 +173,20 @@ func applyProviderEnvironment(c *config.Config) error {
 			return errors.New("TEAMGRAM_PAYMENT_PROVIDER_TIMEOUT_SECONDS must be an integer from 0 to 300")
 		}
 		c.PaymentProviderTimeoutSeconds = timeout
+	}
+	if value, ok := os.LookupEnv("TEAMGRAM_PAYMENT_RECONCILIATION_INTERVAL_SECONDS"); ok {
+		interval, err := strconv.Atoi(strings.TrimSpace(value))
+		if err != nil || interval < 5 || interval > 86400 {
+			return errors.New("TEAMGRAM_PAYMENT_RECONCILIATION_INTERVAL_SECONDS must be an integer from 5 to 86400")
+		}
+		c.PaymentReconciliationIntervalSeconds = interval
+	}
+	if value, ok := os.LookupEnv("TEAMGRAM_PAYMENT_RECONCILIATION_BATCH_SIZE"); ok {
+		batch, err := strconv.Atoi(strings.TrimSpace(value))
+		if err != nil || batch < 1 || batch > 500 {
+			return errors.New("TEAMGRAM_PAYMENT_RECONCILIATION_BATCH_SIZE must be an integer from 1 to 500")
+		}
+		c.PaymentReconciliationBatchSize = batch
 	}
 	for _, override := range []struct {
 		name   string
@@ -803,43 +820,46 @@ func (s *Server) Initialize() error {
 			}))
 
 		apiFull := apifull_helper.New(apifull_helper.Config{
-			RpcServerConf:                  c.RpcServerConf,
-			DcId:                           c.DcId,
-			DialogClient:                   c.BizServiceClient,
-			UserClient:                     c.BizServiceClient,
-			ChatClient:                     c.BizServiceClient,
-			MessageClient:                  c.BizServiceClient,
-			MsgClient:                      c.MsgClient,
-			DfsClient:                      c.DfsClient,
-			SyncClient:                     c.SyncClient,
-			KV:                             c.KV,
-			Code:                           c.Code,
-			PostgresDSN:                    c.PostgresDSN,
-			PaymentProviderEndpoint:        c.PaymentProviderEndpoint,
-			PaymentProviderKey:             c.PaymentProviderKey,
-			PaymentProviderSigningKey:      c.PaymentProviderSigningKey,
-			PaymentProviderTimeoutSeconds:  c.PaymentProviderTimeoutSeconds,
-			AllowInsecureProviderHTTP:      c.ProviderFixtureMode,
-			AIProviderEndpoint:             c.AIProviderEndpoint,
-			AIProviderKey:                  c.AIProviderKey,
-			AIProviderSigningKey:           c.AIProviderSigningKey,
-			AIProviderModel:                c.AIProviderModel,
-			AIProviderTimeoutSeconds:       c.AIProviderTimeoutSeconds,
-			BusinessProviderEndpoint:       c.BusinessProviderEndpoint,
-			BusinessProviderKey:            c.BusinessProviderKey,
-			BusinessProviderSigningKey:     c.BusinessProviderSigningKey,
-			BusinessProviderTimeoutSeconds: c.BusinessProviderTimeoutSeconds,
-			GroupCallMediaEndpoint:         c.GroupCallMediaEndpoint,
-			GroupCallMediaAPIKey:           c.GroupCallMediaAPIKey,
-			GroupCallMediaSigningKey:       c.GroupCallMediaSigningKey,
-			GroupCallMediaRTMPHost:         c.GroupCallMediaRTMPHost,
-			GroupCallMediaTimeoutSeconds:   c.GroupCallMediaTimeoutSeconds,
-			TurnHost:                       c.TurnHost,
-			TurnPort:                       c.TurnPort,
-			TurnUsername:                   c.TurnUsername,
-			TurnPassword:                   c.TurnPassword,
-			TurnSharedSecret:               c.TurnSharedSecret,
-			TurnCredentialTTLSeconds:       c.TurnCredentialTTLSeconds,
+			RpcServerConf:                        c.RpcServerConf,
+			DcId:                                 c.DcId,
+			DialogClient:                         c.BizServiceClient,
+			UserClient:                           c.BizServiceClient,
+			ChatClient:                           c.BizServiceClient,
+			MessageClient:                        c.BizServiceClient,
+			MsgClient:                            c.MsgClient,
+			DfsClient:                            c.DfsClient,
+			SyncClient:                           c.SyncClient,
+			KV:                                   c.KV,
+			Code:                                 c.Code,
+			PostgresDSN:                          c.PostgresDSN,
+			PaymentProviderEndpoint:              c.PaymentProviderEndpoint,
+			PaymentProviderName:                  c.PaymentProviderName,
+			PaymentProviderKey:                   c.PaymentProviderKey,
+			PaymentProviderSigningKey:            c.PaymentProviderSigningKey,
+			PaymentProviderTimeoutSeconds:        c.PaymentProviderTimeoutSeconds,
+			PaymentReconciliationIntervalSeconds: c.PaymentReconciliationIntervalSeconds,
+			PaymentReconciliationBatchSize:       c.PaymentReconciliationBatchSize,
+			AllowInsecureProviderHTTP:            c.ProviderFixtureMode,
+			AIProviderEndpoint:                   c.AIProviderEndpoint,
+			AIProviderKey:                        c.AIProviderKey,
+			AIProviderSigningKey:                 c.AIProviderSigningKey,
+			AIProviderModel:                      c.AIProviderModel,
+			AIProviderTimeoutSeconds:             c.AIProviderTimeoutSeconds,
+			BusinessProviderEndpoint:             c.BusinessProviderEndpoint,
+			BusinessProviderKey:                  c.BusinessProviderKey,
+			BusinessProviderSigningKey:           c.BusinessProviderSigningKey,
+			BusinessProviderTimeoutSeconds:       c.BusinessProviderTimeoutSeconds,
+			GroupCallMediaEndpoint:               c.GroupCallMediaEndpoint,
+			GroupCallMediaAPIKey:                 c.GroupCallMediaAPIKey,
+			GroupCallMediaSigningKey:             c.GroupCallMediaSigningKey,
+			GroupCallMediaRTMPHost:               c.GroupCallMediaRTMPHost,
+			GroupCallMediaTimeoutSeconds:         c.GroupCallMediaTimeoutSeconds,
+			TurnHost:                             c.TurnHost,
+			TurnPort:                             c.TurnPort,
+			TurnUsername:                         c.TurnUsername,
+			TurnPassword:                         c.TurnPassword,
+			TurnSharedSecret:                     c.TurnSharedSecret,
+			TurnCredentialTTLSeconds:             c.TurnCredentialTTLSeconds,
 		})
 		s.apiFullWorkers = apiFull
 		apiFull.StartWorkers()

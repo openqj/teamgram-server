@@ -2,6 +2,7 @@ package core
 
 import (
 	"errors"
+	"os"
 	"testing"
 
 	"github.com/teamgram/proto/mtproto"
@@ -47,6 +48,48 @@ func TestPaidReactionPrivacyRejectsInvalidLocalRequestBeforePersistence(t *testi
 	}
 	if len(store.values) != 0 {
 		t.Fatalf("invalid request wrote local privacy state: %v", store.values)
+	}
+}
+
+func TestPaidReactionPrivacyUsesDurablePostgresStore(t *testing.T) {
+	if os.Getenv("APIFULL_POSTGRES_DSN") == "" || !persist.PostgresEnabled() {
+		t.Skip("APIFULL_POSTGRES_DSN with the APIFull PostgreSQL store is required")
+	}
+	dsn := os.Getenv("APIFULL_POSTGRES_DSN")
+	db, err := persist.OpenPostgresDB(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	const userID int64 = 991991
+	key := paidReactionPrivacyKey(userID)
+	if _, err = db.Exec(`DELETE FROM apifull_kv WHERE k=$1`, key); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _, _ = db.Exec(`DELETE FROM apifull_kv WHERE k=$1`, key) })
+
+	peer := &mtproto.InputPeer{PredicateName: mtproto.Predicate_inputPeerUser, UserId: 992992}
+	privacy := mtproto.MakeTLPaidReactionPrivacyPeer(&mtproto.PaidReactionPrivacy{Peer: peer}).To_PaidReactionPrivacy()
+	core := &ApiFullCore{MD: &metadata.RpcMetadata{UserId: userID}}
+	if result, err := core.MessagesTogglePaidReactionPrivacy(&mtproto.TLMessagesTogglePaidReactionPrivacy{
+		Peer: peer, MsgId: 17, Private_PAIDREACTIONPRIVACY: privacy, Private_BOOL: mtproto.BoolFalse,
+	}); err != nil || result != mtproto.BoolTrue {
+		t.Fatalf("toggle PostgreSQL privacy = (%v, %v), want BoolTrue", result, err)
+	}
+	var raw string
+	if err = db.QueryRow(`SELECT v FROM apifull_kv WHERE k=$1`, key).Scan(&raw); err != nil {
+		t.Fatalf("read durable privacy state: %v", err)
+	}
+	if raw == "" {
+		t.Fatal("durable privacy state is empty")
+	}
+	updates, err := core.MessagesGetPaidReactionPrivacy(&mtproto.TLMessagesGetPaidReactionPrivacy{})
+	if err != nil || updates == nil || updates.GetPredicateName() != mtproto.Predicate_updates || len(updates.GetUpdates()) != 1 {
+		t.Fatalf("get PostgreSQL privacy = (%v, %v), want one canonical update", updates, err)
+	}
+	item := updates.GetUpdates()[0]
+	if item.GetPredicateName() != mtproto.Predicate_updatePaidReactionPrivacy || item.GetPrivate_PAIDREACTIONPRIVACY() == nil || item.GetPrivate_PAIDREACTIONPRIVACY().GetPredicateName() != mtproto.Predicate_paidReactionPrivacyPeer || item.GetPrivate_BOOL() != mtproto.BoolFalse {
+		t.Fatalf("durable privacy update = %v, want peer privacy and BoolFalse", item)
 	}
 }
 

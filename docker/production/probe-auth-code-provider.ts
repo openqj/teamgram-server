@@ -12,7 +12,8 @@ const dcPort = Number(process.env.TG_DC_PORT || '11443');
 const apiId = Number(process.env.TG_API_ID || '1');
 const apiHash = process.env.TG_API_HASH || '0123456789abcdef0123456789abcdef';
 const targetUserId = process.env.TEAMGRAM_AUTH_PROBE_USER_ID || '2';
-const phoneNumber = process.env.TEAMGRAM_AUTH_PROBE_PHONE || '+12025559999';
+const phoneNumber = process.env.TEAMGRAM_AUTH_PROBE_PHONE
+  || `+1202555${String(Date.now() % 10000).padStart(4, '0')}`;
 const providerURL = process.env.TEAMGRAM_CODE_PROVIDER_URL || 'http://127.0.0.1:23193';
 const providerKey = process.env.TEAMGRAM_CODE_PROVIDER_KEY || 'web-e2e-code-key';
 const providerSecret = process.env.TEAMGRAM_CODE_PROVIDER_SECRET || 'web-e2e-code-secret';
@@ -96,6 +97,13 @@ async function latestDelivery(challengeId: string): Promise<any> {
   return response.json();
 }
 
+async function disconnectWithBoundedWait(client: any): Promise<void> {
+  await Promise.race([
+    Promise.resolve(client.disconnect()).catch(() => undefined),
+    new Promise<void>((resolve) => setTimeout(resolve, 2000)),
+  ]);
+}
+
 function sanitizeError(value: unknown): { className: string; message: string } {
   const error = value as any;
   let message = String(error?.message || value || 'unknown error');
@@ -161,11 +169,15 @@ async function main() {
         // The challenge may already have been consumed by a failed RPC.
       }
     }
-    await client.disconnect();
+    await disconnectWithBoundedWait(client);
   }
 }
 
-main().catch((error) => {
-  console.log(JSON.stringify({ ok: false, ...sanitizeError(error), signInCompleted: false }));
-  process.exitCode = 1;
-});
+main()
+  .then(() => {
+    setImmediate(() => process.exit(process.exitCode ?? 0));
+  })
+  .catch((error) => {
+    console.log(JSON.stringify({ ok: false, ...sanitizeError(error), signInCompleted: false }));
+    setImmediate(() => process.exit(1));
+  });

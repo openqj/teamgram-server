@@ -22,6 +22,9 @@ import (
 // DialogInsertOrUpdateDialogFilter
 // dialog.insertOrUpdateDialogFilter user_id:long id:int dialog_filter:DialogFilter = Bool;
 func (c *DialogCore) DialogInsertOrUpdateDialogFilter(in *dialog.TLDialogInsertOrUpdateDialogFilter) (*mtproto.Bool, error) {
+	if in == nil || in.GetId() < 2 || in.GetDialogFilter() == nil {
+		return nil, mtproto.ErrFilterIdInvalid
+	}
 	dialogFilterData, err := jsonx.Marshal(in.GetDialogFilter())
 	isChatlist := in.GetDialogFilter().GetPredicateName() == mtproto.Predicate_dialogFilterChatlist
 

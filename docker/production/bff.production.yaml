@@ -32,9 +32,12 @@ KV:
 PostgresDSN: postgres://teamgram:teamgram@postgres:5432/teamgram?sslmode=disable
 
 PaymentProviderEndpoint: ${TEAMGRAM_PAYMENT_PROVIDER_ENDPOINT:-}
+PaymentProviderName: ${TEAMGRAM_PAYMENT_PROVIDER_NAME:-external}
 PaymentProviderKey: ${TEAMGRAM_PAYMENT_PROVIDER_KEY:-}
 PaymentProviderSigningKey: ${TEAMGRAM_PAYMENT_PROVIDER_SIGNING_KEY:-}
 PaymentProviderTimeoutSeconds: 5
+PaymentReconciliationIntervalSeconds: ${TEAMGRAM_PAYMENT_RECONCILIATION_INTERVAL_SECONDS:-30}
+PaymentReconciliationBatchSize: ${TEAMGRAM_PAYMENT_RECONCILIATION_BATCH_SIZE:-50}
 
 SponsoredProviderEndpoint: ${TEAMGRAM_SPONSORED_PROVIDER_ENDPOINT:-}
 SponsoredProviderKey: ${TEAMGRAM_SPONSORED_PROVIDER_KEY:-}

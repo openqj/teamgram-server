@@ -32,13 +32,17 @@ Session:
   Timeout: 0
 
 Postgres:
-  DSN: postgres://teamgram:teamgram@postgres:5432/teamgram?sslmode=disable
+  DSN: ${TEAMGRAM_POSTGRES_DSN}
   MaxConns: 16
   MinConns: 2
   MaxConnLifetime: 1h
   MaxConnIdleTime: 30m
   HealthCheckPeriod: 1m
   ConnectTimeout: 10s
+
+PaymentProviderName: external
+PaymentProviderWebhookSigningKey: ""
+PaymentProviderWebhookMaxBodyBytes: 1048576
 
 UserClient:
   Etcd:

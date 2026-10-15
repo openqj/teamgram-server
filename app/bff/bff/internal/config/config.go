@@ -44,9 +44,12 @@ type Config struct {
 	StatusClient                              zrpc.RpcClientConf
 	PostgresDSN                               string                          `json:",optional"`
 	PaymentProviderEndpoint                   string                          `json:",optional"`
+	PaymentProviderName                       string                          `json:",optional"`
 	PaymentProviderKey                        string                          `json:",optional"`
 	PaymentProviderSigningKey                 string                          `json:",optional"`
 	PaymentProviderTimeoutSeconds             int                             `json:",optional"`
+	PaymentReconciliationIntervalSeconds      int                             `json:",optional"`
+	PaymentReconciliationBatchSize            int                             `json:",optional"`
 	AIProviderEndpoint                        string                          `json:",optional"`
 	AIProviderKey                             string                          `json:",optional"`
 	AIProviderSigningKey                      string                          `json:",optional"`

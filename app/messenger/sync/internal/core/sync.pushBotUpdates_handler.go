@@ -61,6 +61,9 @@ func (c *SyncCore) SyncPushBotUpdates(in *sync.TLSyncPushBotUpdates) (*mtproto.V
 	if err := requestCore.pushUpdatesToSession(syncTypeUser, in.GetUserId(), 0, nil, nil, nil, in.GetUpdates(), notification); err != nil {
 		return nil, err
 	}
+	if err := requestCore.handleBuiltinBotUpdates(requestCore.ctx, in.GetUserId(), in.GetUpdates()); err != nil {
+		return nil, err
+	}
 
 	return mtproto.EmptyVoid, nil
 }

@@ -17,6 +17,7 @@ COMPOSE_FILES=(
   /tmp/teamgram-production-runtime.yaml
   "$ROOT/docker/production/backend-e2e-provider-fixtures.yaml"
   /tmp/teamgram-passkey-image-userhandle.yaml
+  "$ROOT/docker/production/backend-acceptance-mq-fix.yaml"
 )
 
 get_backend_env() {
@@ -24,7 +25,8 @@ get_backend_env() {
     | awk -F= -v key="$1" '$1 == key {sub(/^[^=]*=/, ""); print; exit}'
 }
 
-export TEAMGRAM_BACKEND_IMAGE="$(docker inspect backend-backend-1 --format '{{.Config.Image}}')"
+export TEAMGRAM_BACKEND_IMAGE=${TEAMGRAM_BACKEND_IMAGE:-teamgram-server-e2e-premium:20261014-mq-fix}
+[[ -n "$TEAMGRAM_BACKEND_IMAGE" ]] || { echo 'TEAMGRAM_BACKEND_IMAGE must be non-empty' >&2; exit 2; }
 export TEAMGRAM_POSTGRES_DSN=${TEAMGRAM_POSTGRES_DSN:-postgres://teamgram:teamgram@postgres:5432/teamgram?sslmode=disable}
 export TEAMGRAM_CODE_PROVIDER_KEY="$(get_backend_env TEAMGRAM_CODE_KEY)"
 export TEAMGRAM_CODE_PROVIDER_SECRET="$(get_backend_env TEAMGRAM_CODE_SECRET)"
@@ -50,6 +52,7 @@ printf -v CLEANUP_COMMAND "printf %%s %q | docker exec -i teamgram-postgres psql
 
 ARGS=(
   --service backend
+  --expected-image "$TEAMGRAM_BACKEND_IMAGE"
   --project-name "$COMPOSE_PROJECT"
   --project-directory "$COMPOSE_DIRECTORY"
   --before-command "$BEFORE_COMMAND"

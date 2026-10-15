@@ -26,6 +26,9 @@ import (
 
 type Dao struct {
 	*Postgres
+	// DeliveryConcurrency bounds independent outbox publications. Ordering is
+	// still enforced per recipient/user by the PostgreSQL claim queries.
+	DeliveryConcurrency int
 	idgen_client.IDGenClient2
 	user_client.UserClient
 	chat_client.ChatClient

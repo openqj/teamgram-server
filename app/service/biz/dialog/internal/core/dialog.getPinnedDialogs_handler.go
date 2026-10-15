@@ -10,12 +10,16 @@
 package core
 
 import (
+	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/service/biz/dialog/dialog"
 )
 
 // DialogGetPinnedDialogs
 // dialog.getPinnedDialogs  user_id:long folder_id:int = Vector<DialogExt>;
 func (c *DialogCore) DialogGetPinnedDialogs(in *dialog.TLDialogGetPinnedDialogs) (*dialog.Vector_DialogExt, error) {
+	if in == nil || in.GetUserId() <= 0 {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
 	var (
 		dlgExtList dialog.DialogExtList
 		folderId   = in.GetFolderId()
@@ -23,6 +27,9 @@ func (c *DialogCore) DialogGetPinnedDialogs(in *dialog.TLDialogGetPinnedDialogs)
 		dIdList    []int64
 		err        error
 	)
+	if folderId < 0 {
+		return nil, mtproto.ErrFolderIdInvalid
+	}
 
 	if folderId == 0 {
 		// dIdList, err = c.svcCtx.Dao.GetPinnedDialogIdList(c.ctx, meId)

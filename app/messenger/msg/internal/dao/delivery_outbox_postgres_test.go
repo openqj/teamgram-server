@@ -437,3 +437,35 @@ func TestInboxDeliveryPostgresWorkerStopsBeforePoolClose(t *testing.T) {
 		t.Fatalf("cancelled worker discarded intent: %v, %v", pending, err)
 	}
 }
+
+func TestInboxDeliveryPostgresWorkerDrainsOrderedRowsAfterAsyncAck(t *testing.T) {
+	d := newInboxDeliveryPostgresFixture(t)
+	ctx := context.Background()
+	if _, err := d.Pool.Exec(ctx, `CREATE TABLE msg_state_delivery_outbox (LIKE public.msg_state_delivery_outbox INCLUDING ALL)`); err != nil {
+		t.Fatal(err)
+	}
+	for id := int64(1); id <= 8; id++ {
+		enqueueInboxDelivery(t, d, inboxDeliveryRequest(101, id, 202))
+	}
+	errorsCh := make(chan error, 8)
+	d.InboxClient = inboxDeliveryTestClient{invoke: func(_ context.Context, in *inbox.TLInboxSendUserMessageToInboxV2) (*mtproto.Void, error) {
+		go func() {
+			time.Sleep(10 * time.Millisecond)
+			errorsCh <- d.CompleteInboxDelivery(ctx, in.FromId, in.BoxList[0].DialogMessageId, in.UserId)
+		}()
+		return mtproto.EmptyVoid, nil
+	}}
+	stop := d.StartInboxDeliveryWorker(ctx)
+	defer stop()
+	deadline := time.After(1500 * time.Millisecond)
+	for i := 0; i < 8; i++ {
+		select {
+		case err := <-errorsCh:
+			if err != nil {
+				t.Fatal(err)
+			}
+		case <-deadline:
+			t.Fatal("ordered rows still incur a one-second poll delay after each consumer ACK")
+		}
+	}
+}

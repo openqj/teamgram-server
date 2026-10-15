@@ -17,8 +17,11 @@ import (
 // DialogGetDialogsCount
 // dialog.getDialogsCount user_id:long exclude_pinned:Bool folder_id:int = Int32;
 func (c *DialogCore) DialogGetDialogsCount(in *dialog.TLDialogGetDialogsCount) (*mtproto.Int32, error) {
-	if in == nil || in.GetUserId() <= 0 || in.GetFolderId() < 0 {
+	if in == nil || in.GetUserId() <= 0 {
 		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if in.GetFolderId() < 0 {
+		return nil, mtproto.ErrFolderIdInvalid
 	}
 	if c == nil || c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.Postgres == nil || c.svcCtx.Dao.Postgres.Store == nil || c.svcCtx.Dao.Postgres.Store.Dialogs == nil {
 		return nil, mtproto.ErrMethodNotImpl
@@ -33,7 +36,11 @@ func (c *DialogCore) DialogGetDialogsCount(in *dialog.TLDialogGetDialogsCount) (
 	excludePinned := mtproto.FromBool(in.GetExcludePinned())
 	count := 0
 	for _, row := range rows {
-		if excludePinned && row.Pinned > 0 {
+		pinned := row.Pinned > 0
+		if in.GetFolderId() > 0 {
+			pinned = row.FolderPinned > 0
+		}
+		if excludePinned && pinned {
 			continue
 		}
 		count++

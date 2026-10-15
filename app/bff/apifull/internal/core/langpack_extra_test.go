@@ -43,7 +43,7 @@ func TestLangpackRequiresAuth(t *testing.T) {
 func TestEmbeddedEnglishLangpack(t *testing.T) {
 	c := &ApiFullCore{MD: &metadata.RpcMetadata{UserId: 81013}}
 	languages, err := c.LangpackGetLanguages(&mtproto.TLLangpackGetLanguages{LangPack: "weba"})
-	if err != nil || languages == nil || len(languages.GetDatas()) != 9 {
+	if err != nil || languages == nil || len(languages.GetDatas()) != 18 {
 		t.Fatalf("languages=(%#v,%v)", languages, err)
 	}
 	if got := languages.GetDatas()[0]; got.GetLangCode() != "en" || got.GetStringsCount() < 3000 || got.GetTranslatedCount() < 3000 {
@@ -88,5 +88,21 @@ func TestEmbeddedLanguagePackSupportsMultipleLanguages(t *testing.T) {
 	}
 	if got, err := c.LangpackGetLanguages(&mtproto.TLLangpackGetLanguages{LangPack: "unsupported"}); got != nil || !sameRPCErrorCode(err, mtproto.ErrLangPackInvalid) {
 		t.Fatalf("invalid langpack=(%#v,%v)", got, err)
+	}
+}
+
+func TestEmbeddedArabicLanguagePackAcceptsArrayPluralValues(t *testing.T) {
+	c := &ApiFullCore{MD: &metadata.RpcMetadata{UserId: 81013}}
+	strings, err := c.LangpackGetStrings(&mtproto.TLLangpackGetStrings{
+		LangPack: "weba",
+		LangCode: "ar",
+		Keys:     []string{"Subscribers"},
+	})
+	if err != nil || strings == nil || len(strings.GetDatas()) != 1 {
+		t.Fatalf("arabic Subscribers=(%#v,%v)", strings, err)
+	}
+	value := strings.GetDatas()[0]
+	if value.GetKey() != "Subscribers" || value.GetPredicateName() != mtproto.Predicate_langPackStringPluralized || value.GetOtherValue() != "مشتركٍ" {
+		t.Fatalf("arabic Subscribers value=%#v", value)
 	}
 }

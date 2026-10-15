@@ -22,7 +22,6 @@ import (
 	"context"
 	"strings"
 
-	kafka "github.com/teamgram/marmota/pkg/mq"
 	"github.com/teamgram/marmota/pkg/net/rpcx"
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/config"
@@ -36,6 +35,7 @@ import (
 	messagepb "github.com/teamgram/teamgram-server/app/service/biz/message/message"
 	user_client "github.com/teamgram/teamgram-server/app/service/biz/user/client"
 	dfs_client "github.com/teamgram/teamgram-server/app/service/dfs/client"
+	"github.com/teamgram/teamgram-server/pkg/mqproducer"
 	"github.com/zeromicro/go-zero/core/logx"
 )
 
@@ -118,6 +118,6 @@ func New(c config.Config) *Dao {
 		PollMessageReader:       messageClient,
 		MessageHistoryReader:    messageClient,
 		MessageListReader:       messageClient,
-		SyncClient:              sync_client.NewSyncMqClient(kafka.MustKafkaProducer(c.SyncClient)),
+		SyncClient:              sync_client.NewSyncMqClient(mqproducer.MustNew(c.SyncClient)),
 	}
 }

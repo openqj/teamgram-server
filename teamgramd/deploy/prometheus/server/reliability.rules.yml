@@ -1,0 +1,35 @@
+groups:
+  - name: teamgram.delivery
+    rules:
+      - alert: TeamgramDeliveryBacklogStalled
+        expr: teamgram_delivery_oldest_pending_seconds > 60
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Message delivery has pending work older than one minute"
+          description: "Queue {{ $labels.queue }} on {{ $labels.instance }} has stopped meeting the local recovery budget. Check consumer health, broker availability and leases."
+      - alert: TeamgramDeliveryPoisonIntent
+        expr: (teamgram_delivery_max_attempts >= 10) and (teamgram_delivery_oldest_pending_seconds > 300)
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Delivery backlog includes old work and repeated failures"
+          description: "Inspect pending intents for their individual age and attempts. Do not discard pending messages to clear this alert."
+      - alert: TeamgramDeliveryMetricsStale
+        expr: (time() - teamgram_delivery_backlog_sample_timestamp_seconds{job="messenger.msg"} > 60) or (up{job="messenger.msg"} unless on(job, instance) teamgram_delivery_backlog_sample_timestamp_seconds{job="messenger.msg"})
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Delivery backlog cannot be observed"
+          description: "The database sampler is stale or missing; the last backlog values must not be interpreted as current health."
+      - alert: TeamgramDeliveryPublishFailures
+        expr: sum by (job, instance, queue) (rate(teamgram_delivery_publications_total{outcome=~"error|timeout"}[5m])) > 0.1
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Message publications repeatedly fail or time out"
+          description: "Check Kafka connectivity and broker acknowledgement latency. Timeout may be an ambiguous send; durable intents must remain retryable."

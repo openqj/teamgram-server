@@ -21,13 +21,13 @@ package dao
 import (
 	"strings"
 
-	kafka "github.com/teamgram/marmota/pkg/mq"
 	"github.com/teamgram/marmota/pkg/net/rpcx"
 	"github.com/teamgram/marmota/pkg/stores/kv"
 	"github.com/teamgram/teamgram-server/app/bff/qrcode/internal/config"
 	sync_client "github.com/teamgram/teamgram-server/app/messenger/sync/client"
 	authsession_client "github.com/teamgram/teamgram-server/app/service/authsession/client"
 	user_client "github.com/teamgram/teamgram-server/app/service/biz/user/client"
+	"github.com/teamgram/teamgram-server/pkg/mqproducer"
 	"github.com/teamgram/teamgram-server/pkg/twofa"
 )
 
@@ -56,6 +56,6 @@ func New(c config.Config) *Dao {
 		passwordStoreErr:  passwordStoreErr,
 		UserClient:        user_client.NewUserClient(rpcx.GetCachedRpcClient(c.UserClient)),
 		AuthsessionClient: authsession_client.NewAuthsessionClient(rpcx.GetCachedRpcClient(c.AuthSessionClient)),
-		SyncClient:        sync_client.NewSyncMqClient(kafka.MustKafkaProducer(c.SyncClient)),
+		SyncClient:        sync_client.NewSyncMqClient(mqproducer.MustNew(c.SyncClient)),
 	}
 }

@@ -4,10 +4,8 @@ import { createRequire } from 'node:module';
 
 const gramjsDir = process.env.TEAMGRAM_GRAMJS_DIR || '/Users/mac/open/test/telegram-tt-master';
 const dcId = Number(process.env.TG_DC_ID || '2');
-const userId = process.env.CHANNEL_PROFILE_TAB_USER_ID || '136907714';
-const channelId = BigInt(process.env.CHANNEL_PROFILE_TAB_ID || '1');
-const accessHash = BigInt(process.env.CHANNEL_PROFILE_TAB_ACCESS_HASH || '7929936340685248899');
-const kvKey = `profile-tab:${channelId}`;
+const userId = process.env.CHANNEL_PROFILE_TAB_USER_ID || '7';
+let kvKey = '';
 const globalAny = globalThis as typeof globalThis & { self?: any; addEventListener?: () => void };
 globalAny.self ??= globalThis;
 globalAny.addEventListener ??= () => {};
@@ -27,8 +25,8 @@ function sqlWrite(query: string): void {
 
 function loadAuthKey(): string {
   const body = sql(`SELECT encode(k.body, 'base64') FROM auth_users u JOIN auth_keys k USING(auth_key_id)
-    JOIN auth_key_infos i USING(auth_key_id) WHERE u.user_id=${userId} AND u.state=0 AND u.deleted=0
-    AND k.deleted=0 AND i.deleted=0 AND i.auth_key_type=0 ORDER BY u.date_active DESC,u.id DESC LIMIT 1`);
+    JOIN auth_key_infos i USING(auth_key_id) WHERE u.user_id=${userId} AND u.state=0 AND NOT u.deleted
+    AND NOT k.deleted AND NOT i.deleted AND i.auth_key_type=0 ORDER BY u.date_active DESC,u.id DESC LIMIT 1`);
   if (!body) throw new Error(`no active production auth key found for user ${userId}`);
   return Buffer.from(body, 'base64').toString('hex');
 }
@@ -77,6 +75,11 @@ function makeClient(authKeyHex: string): any {
 }
 
 async function main() {
+  const channelRow = sql(`SELECT id,access_hash FROM apifull_channel WHERE creator_user_id=${userId} ORDER BY id DESC LIMIT 1`).split('\t');
+  const channelId = BigInt(process.env.CHANNEL_PROFILE_TAB_ID || channelRow[0] || '0');
+  const accessHash = BigInt(process.env.CHANNEL_PROFILE_TAB_ACCESS_HASH || channelRow[1] || '0');
+  if (!channelId || !accessHash) throw new Error(`no channel owned by user ${userId}`);
+  kvKey = `profile-tab:${channelId}`;
   const before = kvSnapshot();
   const client = makeClient(loadAuthKey());
   try {

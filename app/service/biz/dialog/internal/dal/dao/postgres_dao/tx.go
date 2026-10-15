@@ -47,11 +47,17 @@ func (d *DialogsDAO) UpdatePeerDialogListPinnedTx(ctx context.Context, tx DB, pi
 func (d *DialogsDAO) UpdateFolderPeerDialogListPinnedTx(ctx context.Context, tx DB, pinned int64, userID int64, ids []int64) (int64, error) {
 	return (&DialogsDAO{db: tx}).UpdateFolderPeerDialogListPinned(ctx, pinned, userID, ids)
 }
+func (d *DialogsDAO) UpdateFolderPeerDialogListPinnedForFolderTx(ctx context.Context, tx DB, folderID int32, pinned int64, userID int64, ids []int64) (int64, error) {
+	return (&DialogsDAO{db: tx}).UpdateFolderPeerDialogListPinnedForFolder(ctx, folderID, pinned, userID, ids)
+}
 func (d *DialogsDAO) UpdateUnPinnedNotIdListTx(ctx context.Context, tx DB, userID int64, ids []int64) (int64, error) {
 	return (&DialogsDAO{db: tx}).UpdateUnPinnedNotIdList(ctx, userID, ids)
 }
 func (d *DialogsDAO) UpdateFolderUnPinnedNotIdListTx(ctx context.Context, tx DB, userID int64, ids []int64) (int64, error) {
 	return (&DialogsDAO{db: tx}).UpdateFolderUnPinnedNotIdList(ctx, userID, ids)
+}
+func (d *DialogsDAO) UpdateFolderUnPinnedNotIdListForFolderTx(ctx context.Context, tx DB, folderID int32, userID int64, ids []int64) (int64, error) {
+	return (&DialogsDAO{db: tx}).UpdateFolderUnPinnedNotIdListForFolder(ctx, folderID, userID, ids)
 }
 func (d *DialogsDAO) UpdateUnreadCountTx(ctx context.Context, tx DB, unreadCount, unreadMentionsCount, unreadReactionsCount int32, userID int64, peerType int32, peerID int64) (int64, error) {
 	return (&DialogsDAO{db: tx}).UpdateUnreadCount(ctx, unreadCount, unreadMentionsCount, unreadReactionsCount, userID, peerType, peerID)

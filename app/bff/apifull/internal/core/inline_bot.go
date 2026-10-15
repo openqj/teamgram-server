@@ -116,6 +116,19 @@ func (c *ApiFullCore) MessagesGetInlineBotResults(in *mtproto.TLMessagesGetInlin
 			return nil, err
 		}
 	}
+	if !query.Ready {
+		if published, publishErr := publishBuiltinInlineBotResults(*query); publishErr != nil {
+			return nil, publishErr
+		} else if published {
+			query, err = persist.FindInlineBotQuery(botID, uid, peerKey, in.GetQuery(), in.GetOffset())
+			if err != nil {
+				return nil, err
+			}
+			if query == nil {
+				return nil, mtproto.ErrInternalServerError
+			}
+		}
+	}
 	results, err := decodeInlineBotResults(query.Results)
 	if err != nil {
 		return nil, err

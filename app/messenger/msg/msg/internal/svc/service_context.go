@@ -24,7 +24,6 @@ import (
 	"strings"
 	"sync"
 
-	kafka "github.com/teamgram/marmota/pkg/mq"
 	"github.com/teamgram/marmota/pkg/net/rpcx"
 	"github.com/teamgram/marmota/pkg/stores/kv"
 	inbox_client "github.com/teamgram/teamgram-server/app/messenger/msg/inbox/client"
@@ -37,7 +36,9 @@ import (
 	user_client "github.com/teamgram/teamgram-server/app/service/biz/user/client"
 	idgen_client "github.com/teamgram/teamgram-server/app/service/idgen/client"
 	"github.com/teamgram/teamgram-server/pkg/deduplication"
+	"github.com/teamgram/teamgram-server/pkg/mqproducer"
 
+	"github.com/zeromicro/go-zero/core/logx"
 	"github.com/zeromicro/go-zero/core/stores/redis"
 )
 
@@ -54,15 +55,17 @@ func NewServiceContext(c config.Config, plugin plugin.MsgPlugin) *ServiceContext
 	if strings.TrimSpace(c.Postgres.DSN) == "" {
 		panic(errors.New("messenger/msg/msg: Postgres.DSN is required"))
 	}
-	inboxProducer := kafka.MustKafkaProducer(c.InboxClient)
+	inboxProducer := mqproducer.MustNew(c.InboxClient)
+	syncProducer := mqproducer.MustNew(c.SyncClient)
 	daoStore := &dao.Dao{
-		IDGenClient2:       idgen_client.NewIDGenClient2(rpcx.GetCachedRpcClient(c.IdgenClient)),
-		UserClient:         user_client.NewUserClient(rpcx.GetCachedRpcClient(c.UserClient)),
-		InboxClient:        inbox_client.NewInboxMqClient(inboxProducer),
-		ChatClient:         chat_client.NewChatClient(rpcx.GetCachedRpcClient(c.ChatClient)),
-		SyncClient:         sync_client.NewSyncMqClient(kafka.GetCachedMQClient(c.SyncClient)),
-		DialogClient:       dialog_client.NewDialogClient(rpcx.GetCachedRpcClient(c.DialogClient)),
-		MessageDeDuplicate: deduplication.NewMessageDeDuplicate(kv.NewStore(c.KV)),
+		DeliveryConcurrency: c.DeliveryConcurrency,
+		IDGenClient2:        idgen_client.NewIDGenClient2(rpcx.GetCachedRpcClient(c.IdgenClient)),
+		UserClient:          user_client.NewUserClient(rpcx.GetCachedRpcClient(c.UserClient)),
+		InboxClient:         inbox_client.NewInboxMqClient(inboxProducer),
+		ChatClient:          chat_client.NewChatClient(rpcx.GetCachedRpcClient(c.ChatClient)),
+		SyncClient:          sync_client.NewSyncMqClient(syncProducer),
+		DialogClient:        dialog_client.NewDialogClient(rpcx.GetCachedRpcClient(c.DialogClient)),
+		MessageDeDuplicate:  deduplication.NewMessageDeDuplicate(kv.NewStore(c.KV)),
 	}
 	redisConf := c.Redis2
 	if redisConf.Host == "" && len(c.KV) > 0 {
@@ -79,7 +82,7 @@ func NewServiceContext(c config.Config, plugin plugin.MsgPlugin) *ServiceContext
 	// stops startup before serving requests.
 	pg, err := dao.NewPostgres(c.Postgres)
 	if err != nil {
-		_ = inboxProducer.Close()
+		_ = mqproducer.CloseAll(inboxProducer, syncProducer)
 		panic(err)
 	}
 	daoStore.Postgres = pg
@@ -87,7 +90,7 @@ func NewServiceContext(c config.Config, plugin plugin.MsgPlugin) *ServiceContext
 		Config:        c,
 		MsgPlugin:     plugin,
 		Dao:           daoStore,
-		closeProducer: inboxProducer.Close,
+		closeProducer: func() error { return mqproducer.CloseAll(inboxProducer, syncProducer) },
 	}
 
 	if plugin == nil {
@@ -104,7 +107,9 @@ func (s *ServiceContext) Close() {
 			s.stopDelivery()
 		}
 		if s.closeProducer != nil {
-			_ = s.closeProducer()
+			if err := s.closeProducer(); err != nil {
+				logx.Errorf("messenger/msg/msg: Kafka shutdown failed: %v", err)
+			}
 		}
 		if s.Dao != nil && s.Dao.Postgres != nil {
 			s.Dao.Postgres.Close()

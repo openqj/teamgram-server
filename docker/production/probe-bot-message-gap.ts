@@ -106,6 +106,10 @@ function inputBot(): any {
   return new Api.InputUser({ userId: botId, accessHash: botAccessHash });
 }
 
+function inputPeerUser(userId: bigint, accessHash: bigint): any {
+  return new Api.InputPeerUser({ userId, accessHash });
+}
+
 function selfPeer(): any {
   return new Api.InputPeerSelf();
 }
@@ -237,6 +241,28 @@ function seedBotOperations(userCallerId: bigint, botUserId: bigint): BotOperatio
       userId: userCallerId,
       payload: JSON.stringify({ bot_id: Number(botUserId), caller_user_id: Number(userCallerId) }),
       result: JSON.stringify({ users: [], predicate_name: 'users_users' }),
+    },
+    {
+      operation: 'messages.getPaidReactionPrivacy',
+      userId: userCallerId,
+      payload: JSON.stringify({}),
+      result: JSON.stringify({ chats: [], date: 1, predicate_name: 'updates', seq: 0, updates: [], users: [] }),
+    },
+    {
+      operation: 'messages.togglePaidReactionPrivacy',
+      userId: userCallerId,
+      payload: JSON.stringify({
+        enabled: null,
+        msg_id: 3,
+        peer: {
+          predicate_name: 'inputPeerUser',
+          constructor: -571955892,
+          user_id: Number(botUserId),
+          access_hash: Number(botAccessHash),
+        },
+        privacy: { predicate_name: 'paidReactionPrivacyAnonymous', constructor: 520887001 },
+      }),
+      result: JSON.stringify({ value: true }),
     },
     {
       operation: 'bots.getPopularAppBots',
@@ -382,6 +408,14 @@ function rawSetBotGuestChatResult(queryId: bigint): RawRequest {
   return new RawRequest(0xb8f106e3, concatBytes(tlLong(queryId), inputInlineResult().getBytes()), 'messages.setBotGuestChatResult');
 }
 
+function rawTogglePaidReactionPrivacy(): RawRequest {
+  return new RawRequest(
+    0x435885b5,
+    concatBytes(inputPeerUser(botId, botAccessHash).getBytes(), tlInt(3), new Api.PaidReactionPrivacyAnonymous().getBytes()),
+    'messages.togglePaidReactionPrivacy',
+  );
+}
+
 function rawSendCustomRequest(): RawRequest {
   return new RawRequest(0xaa2769ed, concatBytes(tlString('gapStatus'), new Api.DataJSON({ data: '{}' }).getBytes()), 'bots.sendCustomRequest');
 }
@@ -437,6 +471,8 @@ async function main() {
 
     await invoke(userClient, 'bots.checkDownloadFileParams', new Api.bots.CheckDownloadFileParams({ bot: inputBot(), fileName: 'gap.txt', url: 'https://mini.example/gap.txt' }), results);
     await invoke(userClient, 'bots.getBotRecommendations', new Api.bots.GetBotRecommendations({ bot: inputBot() }), results);
+    await invoke(userClient, 'messages.getPaidReactionPrivacy', new Api.messages.GetPaidReactionPrivacy(), results);
+    await invoke(userClient, 'messages.togglePaidReactionPrivacy', rawTogglePaidReactionPrivacy(), results);
     await invoke(userClient, 'bots.getPopularAppBots', new Api.bots.GetPopularAppBots({ offset: '', limit: 20 }), results);
     await invoke(userClient, 'bots.invokeWebViewCustomMethod', new Api.bots.InvokeWebViewCustomMethod({ bot: inputBot(), customMethod: 'gapStatus', params: new Api.DataJSON({ data: '{}' }) }), results);
     await invoke(userClient, 'messages.requestChatJoinWebView', new Api.messages.RequestChatJoinWebView({ queryId: 991001n, platform: 'web' }), results);

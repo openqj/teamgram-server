@@ -22,7 +22,6 @@ import (
 	"flag"
 	"strings"
 
-	kafka "github.com/teamgram/marmota/pkg/mq"
 	"github.com/teamgram/marmota/pkg/net/rpcx"
 	sharedpersist "github.com/teamgram/teamgram-server/app/bff/apifull/persist"
 	"github.com/teamgram/teamgram-server/app/bff/authorization/internal/config"
@@ -33,6 +32,7 @@ import (
 	user_client "github.com/teamgram/teamgram-server/app/service/biz/user/client"
 	status_client "github.com/teamgram/teamgram-server/app/service/status/client"
 	verification "github.com/teamgram/teamgram-server/pkg/code"
+	"github.com/teamgram/teamgram-server/pkg/mqproducer"
 	"github.com/teamgram/teamgram-server/pkg/twofa"
 
 	"github.com/oschwald/geoip2-golang"
@@ -91,7 +91,7 @@ func New(c config.Config) *Dao {
 		UserClient:        user_client.NewUserClient(rpcx.GetCachedRpcClient(c.UserClient)),
 		AuthsessionClient: authsession_client.NewAuthsessionClient(rpcx.GetCachedRpcClient(c.AuthsessionClient)),
 		ChatClient:        chat_client.NewChatClient(rpcx.GetCachedRpcClient(c.ChatClient)),
-		SyncClient:        sync_client.NewSyncMqClient(kafka.MustKafkaProducer(c.SyncClient)),
+		SyncClient:        sync_client.NewSyncMqClient(mqproducer.MustNew(c.SyncClient)),
 		StatusClient:      status_client.NewStatusClient(rpcx.GetCachedRpcClient(c.StatusClient)),
 		MsgClient:         msg_client.NewMsgClient(rpcx.GetCachedRpcClient(c.MsgClient)),
 	}

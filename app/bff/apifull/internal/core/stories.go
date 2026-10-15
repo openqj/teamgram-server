@@ -285,6 +285,28 @@ func (c *ApiFullCore) ownStoryStore(peer *mtproto.InputPeer, user *mtproto.Input
 	return uid, stories, nil
 }
 
+// readStoryStore resolves a user peer for read-only story queries. Story
+// mutations continue to use ownStoryStore so a caller cannot write into
+// another user's local story namespace.
+func (c *ApiFullCore) readStoryStore(peer *mtproto.InputPeer) (int64, *userStoryStore, error) {
+	uid, err := c.requireUserId()
+	if err != nil {
+		return 0, nil, err
+	}
+	targetID := uid
+	if peer != nil && peer.GetPredicateName() != mtproto.Predicate_inputPeerSelf {
+		if peer.GetPredicateName() != mtproto.Predicate_inputPeerUser || peer.GetUserId() <= 0 {
+			return 0, nil, mtproto.ErrMethodNotImpl
+		}
+		targetID = peer.GetUserId()
+	}
+	stories, err := loadUserStories(targetID)
+	if err != nil {
+		return 0, nil, err
+	}
+	return targetID, stories, nil
+}
+
 func storyPage(items []*mtproto.StoryItem, offset, limit int32) []*mtproto.StoryItem {
 	if offset < 0 {
 		offset = 0
@@ -1085,7 +1107,7 @@ func (c *ApiFullCore) StoriesGetPeerStories(in *mtproto.TLStoriesGetPeerStories)
 	if in == nil {
 		return nil, storiesProviderUnavailable(c)
 	}
-	uid, stories, err := c.ownStoryStore(in.GetPeer(), nil)
+	uid, stories, err := c.readStoryStore(in.GetPeer())
 	if err != nil {
 		return nil, err
 	}
@@ -1129,17 +1151,25 @@ func (c *ApiFullCore) StoriesGetPeerMaxIDs78499170(in *mtproto.TLStoriesGetPeerM
 	if in == nil {
 		return nil, storiesProviderUnavailable(c)
 	}
-	uid, stories, err := c.ownStoryStore(nil, nil)
-	if err != nil {
+	if _, err := c.requireUserId(); err != nil {
 		return nil, err
 	}
 	result := make([]*mtproto.RecentStory, 0, len(in.GetId()))
 	for _, peer := range in.GetId() {
-		if !storyPeerOwned(uid, peer) {
-			return nil, mtproto.ErrMethodNotImpl
+		targetID, stories, loadErr := c.readStoryStore(peer)
+		if loadErr != nil {
+			return nil, loadErr
+		}
+		if targetID <= 0 {
+			return nil, mtproto.ErrPeerIdInvalid
+		}
+		maxID := storyMaxID(stories)
+		recent := &mtproto.RecentStory{}
+		if maxID > 0 {
+			recent.MaxId = wrapperspb.Int32(maxID)
 		}
 		result = append(result, mtproto.MakeTLRecentStory(&mtproto.RecentStory{
-			MaxId: wrapperspb.Int32(storyMaxID(stories)),
+			MaxId: recent.MaxId,
 		}).To_RecentStory())
 	}
 	return &mtproto.Vector_RecentStory{Datas: result}, nil

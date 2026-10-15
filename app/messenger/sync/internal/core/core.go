@@ -11,10 +11,12 @@ package core
 
 import (
 	"context"
+	"time"
 
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/proto/mtproto/rpc/metadata"
 	"github.com/teamgram/teamgram-server/app/interface/session/session"
+	"github.com/teamgram/teamgram-server/app/messenger/sync/internal/dao"
 	"github.com/teamgram/teamgram-server/app/messenger/sync/internal/svc"
 	"github.com/teamgram/teamgram-server/app/messenger/sync/sync"
 	"github.com/teamgram/teamgram-server/app/service/status/status"
@@ -151,7 +153,9 @@ func (c *SyncCore) processUpdates(syncType SyncType, userId int64, isBot bool, u
 	return needPush, nil
 }
 
-func (c *SyncCore) pushUpdatesToSession(syncType SyncType, userId, permAuthKeyId int64, hasServerId *wrapperspb.StringValue, authKeyId, sessionId *wrapperspb.Int64Value, pushData *mtproto.Updates, notification bool) error {
+func (c *SyncCore) pushUpdatesToSession(syncType SyncType, userId, permAuthKeyId int64, hasServerId *wrapperspb.StringValue, authKeyId, sessionId *wrapperspb.Int64Value, pushData *mtproto.Updates, notification bool) (err error) {
+	started := time.Now()
+	defer func() { dao.ObserveDeliveryStage("fanout", started, err) }()
 	if c == nil || c.svcCtx == nil || c.svcCtx.Dao == nil {
 		return mtproto.ErrInternalServerError
 	}
@@ -165,7 +169,9 @@ func (c *SyncCore) pushUpdatesToSession(syncType SyncType, userId, permAuthKeyId
 	} else if syncType == syncTypeUserNotMe {
 		excludes = []int64{permAuthKeyId}
 	}
+	prepareStarted := time.Now()
 	prepared, err := c.svcCtx.Dao.PrepareUpdates(c.ctx, userId, pushData, onlyAuthID, excludes)
+	dao.ObserveDeliveryStage("prepare", prepareStarted, err)
 	if err != nil {
 		return err
 	}
@@ -207,9 +213,11 @@ func (c *SyncCore) pushUpdatesToSession(syncType SyncType, userId, permAuthKeyId
 		if c.svcCtx.Dao.StatusClient == nil {
 			return mtproto.ErrInternalServerError
 		}
+		statusStarted := time.Now()
 		statusList, err := c.svcCtx.Dao.StatusClient.StatusGetUserOnlineSessions(c.ctx, &status.TLStatusGetUserOnlineSessions{
 			UserId: userId,
 		})
+		dao.ObserveDeliveryStage("status_lookup", statusStarted, err)
 		if err != nil {
 			return err
 		}
@@ -279,5 +287,8 @@ func (c *SyncCore) pushUpdatesToSession(syncType SyncType, userId, permAuthKeyId
 			}
 		}
 	}
-	return c.svcCtx.Dao.MarkDeliveryComplete(c.ctx, userId)
+	completeStarted := time.Now()
+	err = c.svcCtx.Dao.MarkDeliveryComplete(c.ctx, userId)
+	dao.ObserveDeliveryStage("mark_complete", completeStarted, err)
+	return err
 }

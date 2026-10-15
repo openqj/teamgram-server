@@ -40,6 +40,7 @@ services:
 
   teamgram:
     build: .
+    stop_grace_period: 45s
     depends_on:
       postgres-migrate:
         condition: service_completed_successfully

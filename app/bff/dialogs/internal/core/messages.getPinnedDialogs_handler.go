@@ -51,7 +51,7 @@ func (c *DialogsCore) MessagesGetPinnedDialogs(in *mtproto.TLMessagesGetPinnedDi
 		folderId = in.GetFolderId()
 	)
 
-	if folderId != 0 && folderId != 1 {
+	if folderId < 0 {
 		err = mtproto.ErrFolderIdInvalid
 		c.Logger.Errorf("messages.getPinnedDialogs - error: %v", err)
 		return nil, err

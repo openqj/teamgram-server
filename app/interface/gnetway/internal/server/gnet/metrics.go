@@ -35,6 +35,14 @@ var (
 		Labels:    []string{"proto"},
 	})
 
+	metricConnActive = metric.NewGaugeVec(&metric.GaugeVecOpts{
+		Namespace: namespace,
+		Subsystem: "conn",
+		Name:      "active",
+		Help:      "Current number of open connections.",
+		Labels:    []string{"proto"},
+	})
+
 	metricConnTimeout = metric.NewCounterVec(&metric.CounterVecOpts{
 		Namespace: namespace,
 		Subsystem: "conn",

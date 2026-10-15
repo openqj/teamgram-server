@@ -13,7 +13,6 @@ import (
 	"context"
 	"sync"
 
-	kafka "github.com/teamgram/marmota/pkg/mq"
 	"github.com/teamgram/marmota/pkg/net/rpcx"
 	"github.com/teamgram/proto/mtproto"
 	msg_client "github.com/teamgram/teamgram-server/app/messenger/msg/msg/client"
@@ -24,6 +23,7 @@ import (
 	userpb "github.com/teamgram/teamgram-server/app/service/biz/user/user"
 	idgen_client "github.com/teamgram/teamgram-server/app/service/idgen/client"
 	status_client "github.com/teamgram/teamgram-server/app/service/status/client"
+	"github.com/teamgram/teamgram-server/pkg/mqproducer"
 	"github.com/zeromicro/go-zero/core/stores/kv"
 	"github.com/zeromicro/go-zero/zrpc"
 )
@@ -63,7 +63,7 @@ func New(c config.Config) (*Dao, error) {
 		MsgClient:         msg_client.NewMsgClient(rpcx.GetCachedRpcClient(c.MsgClient)),
 	}
 	if c.PushClient != nil {
-		d.PushClient = sync_client.NewSyncMqClient(kafka.MustKafkaProducer(c.PushClient))
+		d.PushClient = sync_client.NewSyncMqClient(mqproducer.MustNew(c.PushClient))
 	}
 	if d.Postgres != nil && d.Postgres.BotAPI != nil {
 		d.Postgres.BotAPI.SetUserLoader(func(ctx context.Context, userID int64) (*mtproto.ImmutableUser, error) {

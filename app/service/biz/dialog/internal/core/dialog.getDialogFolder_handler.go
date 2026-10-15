@@ -21,10 +21,13 @@ func (c *DialogCore) DialogGetDialogFolder(in *dialog.TLDialogGetDialogFolder) (
 		return nil, mtproto.ErrMethodNotImpl
 	}
 	var (
-		folderId  int32 = 1 // NOTE: force set folder_id = 1
-		meId            = in.GetUserId()
+		folderId  = in.GetFolderId()
+		meId      = in.GetUserId()
 		dialogExt *dialog.DialogExt
 	)
+	if folderId < 0 {
+		return nil, mtproto.ErrFolderIdInvalid
+	}
 
 	rows, err := c.svcCtx.Dao.Postgres.Store.Dialogs.SelectDialogs(c.ctx, meId, folderId)
 	if err != nil {

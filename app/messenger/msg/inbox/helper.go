@@ -40,10 +40,5 @@ func New(c Config) *mqconsumer.Consumer {
 // callers.
 func NewWithContext(c Config) (*mqconsumer.Consumer, func()) {
 	ctx := svc.NewServiceContext(c)
-	closeContext := func() {
-		if ctx.Dao != nil && ctx.Dao.Postgres != nil {
-			ctx.Dao.Postgres.Close()
-		}
-	}
-	return mq.New(ctx, c.InboxConsumer), closeContext
+	return mq.New(ctx, c.InboxConsumer), ctx.Close
 }

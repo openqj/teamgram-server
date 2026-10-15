@@ -1,4 +1,7 @@
 Name: messenger.msg
+Shutdown:
+  WaitTime: 35s
+DeliveryConcurrency: 16
 ListenOn: 0.0.0.0:20030
 Etcd:
   Hosts:

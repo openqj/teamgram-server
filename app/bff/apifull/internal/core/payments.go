@@ -128,6 +128,19 @@ type paymentProviderResponse struct {
 	Verification      string          `json:"verification_url,omitempty"`
 }
 
+const defaultPaymentProviderName = "external"
+
+func configuredPaymentProviderName(raw string) (string, error) {
+	name := strings.TrimSpace(raw)
+	if name == "" {
+		name = defaultPaymentProviderName
+	}
+	if len(name) > 32 {
+		return "", mtproto.ErrPaymentProviderInvalid
+	}
+	return name, nil
+}
+
 type paymentProviderReceiptEnvelope struct {
 	Signature    string `json:"signature"`
 	ResponseBody []byte `json:"response_body"`
@@ -2356,7 +2369,11 @@ func (c *ApiFullCore) PaymentsSendPaymentForm(in *mtproto.TLPaymentsSendPaymentF
 		msgID = in.GetInvoice().GetMsgId()
 	}
 	peerID := payPeerIDForUser(uid, peer)
-	request, err := domain.BeginPaymentRequest(uid, requestKey, "external", fingerprint, currency, amount, peerID, msgID)
+	providerName, err := configuredPaymentProviderName(c.svcCtx.Config.PaymentProviderName)
+	if err != nil {
+		return nil, err
+	}
+	request, err := domain.BeginPaymentRequest(uid, requestKey, providerName, fingerprint, currency, amount, peerID, msgID)
 	if err != nil {
 		return nil, err
 	}

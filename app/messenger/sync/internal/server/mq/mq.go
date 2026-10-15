@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	kafka "github.com/teamgram/marmota/pkg/mq"
 	"github.com/teamgram/proto/mtproto"
@@ -37,7 +38,9 @@ func New(svcCtx *svc.ServiceContext, conf kafka.KafkaConsumerConf) (*mqconsumer.
 	})
 }
 
-func handleMessage(ctx context.Context, svcCtx *svc.ServiceContext, method, key string, value []byte) error {
+func handleMessage(ctx context.Context, svcCtx *svc.ServiceContext, method, key string, value []byte) (err error) {
+	started := time.Now()
+	defer func() { dao.ObserveDeliveryStage("consumer", started, err) }()
 	var request proto.Message
 	switch protoreflect.FullName(method) {
 	case proto.MessageName((*sync.TLSyncUpdatesMe)(nil)):
@@ -61,7 +64,6 @@ func handleMessage(ctx context.Context, svcCtx *svc.ServiceContext, method, key 
 		return err
 	}
 	c := core.New(ctx, svcCtx)
-	var err error
 	switch in := request.(type) {
 	case *sync.TLSyncUpdatesMe:
 		_, err = c.SyncUpdatesMe(in)

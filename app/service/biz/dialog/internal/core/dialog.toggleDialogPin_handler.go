@@ -19,6 +19,9 @@ import (
 // DialogToggleDialogPin
 // dialog.toggleDialogPin user_id:long peer_type:int peer_id:long pinned:Bool = Int32;
 func (c *DialogCore) DialogToggleDialogPin(in *dialog.TLDialogToggleDialogPin) (*mtproto.Int32, error) {
+	if in == nil || in.GetUserId() <= 0 || in.GetPeerId() <= 0 {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
 	var (
 		peerDialogId = mtproto.MakePeerDialogId(in.PeerType, in.PeerId)
 		pinned       int64
@@ -45,7 +48,7 @@ func (c *DialogCore) DialogToggleDialogPin(in *dialog.TLDialogToggleDialogPin) (
 	if folderId == 0 {
 		_, err = store.Dialogs.UpdatePeerDialogListPinned(c.ctx, pinned, in.UserId, []int64{peerDialogId})
 	} else {
-		_, err = store.Dialogs.UpdateFolderPeerDialogListPinned(c.ctx, pinned, in.UserId, []int64{peerDialogId})
+		_, err = store.Dialogs.UpdateFolderPeerDialogListPinnedForFolder(c.ctx, folderId, pinned, in.UserId, []int64{peerDialogId})
 	}
 	if err != nil {
 		return nil, err

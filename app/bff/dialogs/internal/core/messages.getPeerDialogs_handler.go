@@ -99,6 +99,9 @@ func (c *DialogsCore) MessagesGetPeerDialogs(in *mtproto.TLMessagesGetPeerDialog
 		}
 		switch peer.GetPredicateName() {
 		case mtproto.Predicate_inputDialogPeer:
+			if folderId != -1 {
+				return nil, mtproto.ErrFolderIdInvalid
+			}
 			if peer.GetPeer() == nil {
 				return nil, mtproto.ErrInputConstructorInvalid
 			}
@@ -116,15 +119,12 @@ func (c *DialogsCore) MessagesGetPeerDialogs(in *mtproto.TLMessagesGetPeerDialog
 			peerDialogIdList = append(peerDialogIdList, mtproto.MakePeerDialogId(p.PeerType, p.PeerId))
 			peers = append(peers, p)
 		case mtproto.Predicate_inputDialogPeerFolder:
-			// TODO: check folderId == 1
-			if folderId == -1 {
-				folderId = peer.FolderId
-			} else {
-				// if has inputDialogPeerFolder, len(peers) == 1
+			if peer.GetFolderId() < 1 || folderId != -1 || len(peerDialogIdList) > 0 {
 				err := mtproto.ErrFolderIdInvalid
 				c.Logger.Errorf("messages.getPeerDialogs - getPeerDialogs error: %v", err)
 				return nil, err
 			}
+			folderId = peer.GetFolderId()
 		default:
 			err := mtproto.ErrInputConstructorInvalid
 			c.Logger.Errorf("messages.getPeerDialogs - getPeerDialogs error: %v", err)

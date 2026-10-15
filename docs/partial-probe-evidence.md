@@ -47,6 +47,9 @@ after execution. Layered Compose files are supported by repeating
 `--compose-file`; use `--project-name backend --project-directory
 /Users/mac/open/tg/services/backend` (or the corresponding
 `ACCEPTANCE_COMPOSE_*` variables) to target the existing Compose project.
+Execute mode also requires `TEAMGRAM_BACKEND_IMAGE` (or an explicit
+`--expected-image`) and verifies that the expected image matches the rendered
+Compose service and running container before invoking the restart.
 
 The generated `run-restart-probe.sh` adds another explicit guard. Set
 `RUN_RESTART_PROBE=1`, provide `RESTART_BEFORE_COMMAND` and
@@ -57,6 +60,7 @@ The generated `run-restart-probe.sh` adds another explicit guard. Set
 python3 tools/restart_probe.py \
   --compose-file "$ACCEPTANCE_COMPOSE_FILE" \
   --service "$ACCEPTANCE_SERVICE" \
+  --expected-image "$TEAMGRAM_BACKEND_IMAGE" \
   --before-command 'python3 tools/your_tagged_setup.py' \
   --after-command 'python3 tools/your_tagged_reconnect_assertion.py' \
   --cleanup-command 'python3 tools/your_tagged_cleanup.py' \
@@ -69,6 +73,7 @@ The generated wrapper is equivalent to the direct command:
 
 ```sh
 RUN_RESTART_PROBE=1 \
+TEAMGRAM_BACKEND_IMAGE="$TEAMGRAM_BACKEND_IMAGE" \
 RESTART_BEFORE_COMMAND='python3 tools/your_tagged_setup.py' \
 RESTART_AFTER_COMMAND='python3 tools/your_tagged_reconnect_assertion.py' \
 /tmp/teamgram-partial-probes/run-restart-probe.sh \

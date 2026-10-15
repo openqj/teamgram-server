@@ -6,7 +6,7 @@ for (const key of ['HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'http_proxy', 'http
   delete process.env[key];
 }
 
-const userId = '136907714';
+const userId = process.env.CONTACTS_SEARCH_USER_ID || '1';
 const dcId = 2;
 const dcHost = '127.0.0.1';
 const dcPort = 11443;
@@ -36,8 +36,8 @@ function loadAuthKey(): string {
     FROM auth_users u
     JOIN auth_keys k USING (auth_key_id)
     JOIN auth_key_infos i USING (auth_key_id)
-    WHERE u.user_id=${userId} AND u.state=0 AND u.deleted=0
-      AND k.deleted=0 AND i.deleted=0 AND i.auth_key_type=0
+    WHERE u.user_id=${userId} AND u.state=0 AND u.deleted=FALSE
+      AND k.deleted=FALSE AND i.deleted=FALSE AND i.auth_key_type=0
     ORDER BY u.date_active DESC, u.id DESC
     LIMIT 1
   `);
@@ -49,10 +49,11 @@ function loadAuthKey(): string {
 
 function loadSearchSample(): { id: string; query: string; expectedBucket: 'my_results' | 'results' } {
   const row = sql(`
-    SELECT u.id, u.first_name, u.last_name, IF(c.contact_user_id IS NULL, 0, 1)
+    SELECT u.id, u.first_name, u.last_name,
+      CASE WHEN c.contact_user_id IS NULL THEN 0 ELSE 1 END
     FROM users u
-    LEFT JOIN user_contacts c ON c.owner_user_id=${userId} AND c.contact_user_id=u.id AND c.is_deleted=0
-    WHERE u.id<>${userId} AND u.deleted=0
+    LEFT JOIN user_contacts c ON c.owner_user_id=${userId} AND c.contact_user_id=u.id AND c.is_deleted=FALSE
+    WHERE u.id<>${userId} AND u.deleted=FALSE
       AND (CHAR_LENGTH(u.first_name)>=3 OR CHAR_LENGTH(u.last_name)>=3)
     ORDER BY (c.contact_user_id IS NOT NULL) DESC, u.id DESC
     LIMIT 1

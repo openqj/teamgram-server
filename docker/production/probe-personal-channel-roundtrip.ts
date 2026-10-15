@@ -4,8 +4,7 @@ import { createRequire } from 'node:module';
 
 const gramjsDir = process.env.TEAMGRAM_GRAMJS_DIR || '/Users/mac/open/test/telegram-tt-master';
 const dcId = Number(process.env.TG_DC_ID || '2');
-const userId = BigInt(process.env.PERSONAL_CHANNEL_USER_ID || '136907714');
-const channelId = BigInt(process.env.PERSONAL_CHANNEL_ID || '1');
+const userId = BigInt(process.env.PERSONAL_CHANNEL_USER_ID || '7');
 const userCacheKey = `user_data.2#${userId}`;
 const globalAny = globalThis as typeof globalThis & { self?: any; addEventListener?: () => void };
 globalAny.self ??= globalThis;
@@ -38,8 +37,8 @@ function restoreCache(snapshot: CacheSnapshot): void {
 
 function loadAuthKey(): string {
   const body = sql(`SELECT encode(k.body, 'base64') FROM auth_users u JOIN auth_keys k USING(auth_key_id)
-    JOIN auth_key_infos i USING(auth_key_id) WHERE u.user_id=${userId} AND u.state=0 AND u.deleted=0
-    AND k.deleted=0 AND i.deleted=0 AND i.auth_key_type=0 ORDER BY u.date_active DESC,u.id DESC LIMIT 1`);
+    JOIN auth_key_infos i USING(auth_key_id) WHERE u.user_id=${userId} AND u.state=0 AND NOT u.deleted
+    AND NOT k.deleted AND NOT i.deleted AND i.auth_key_type=0 ORDER BY u.date_active DESC,u.id DESC LIMIT 1`);
   if (!body) throw new Error(`no active production auth key found for user ${userId}`);
   return Buffer.from(body, 'base64').toString('hex');
 }
@@ -68,10 +67,15 @@ function makeClient(authKeyHex: string): any {
 }
 
 async function main() {
-  const owner = sql(`SELECT creator_user_id,access_hash FROM channels WHERE id=${channelId} AND deleted=0 LIMIT 1`).split('\t');
+  const configuredChannel = process.env.PERSONAL_CHANNEL_ID || '';
+  const channelRow = configuredChannel
+    ? sql(`SELECT id,creator_user_id,access_hash FROM apifull_channel WHERE id=${configuredChannel} LIMIT 1`).split('\t')
+    : sql(`SELECT id,creator_user_id,access_hash FROM apifull_channel WHERE creator_user_id=${userId} ORDER BY id DESC LIMIT 1`).split('\t');
+  const channelId = BigInt(configuredChannel || channelRow[0] || '0');
+  const owner = channelRow.length >= 3 ? [channelRow[1], channelRow[2]] : [];
   if (owner.length < 2 || owner[0] !== String(userId)) throw new Error(`channel ${channelId} is not owned by user ${userId}`);
   const channelHash = BigInt(owner[1]);
-  const beforeValue = sql(`SELECT personal_channel_id FROM users WHERE id=${userId} AND deleted=0 LIMIT 1`);
+  const beforeValue = sql(`SELECT personal_channel_id FROM users WHERE id=${userId} LIMIT 1`);
   if (!beforeValue) throw new Error(`user ${userId} not found`);
   const before = BigInt(beforeValue);
   const beforeCache = cacheSnapshot();

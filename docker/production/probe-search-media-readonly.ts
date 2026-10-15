@@ -2,8 +2,10 @@ import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 
-const userId = '136907714';
-const channelId = '3';
+const userId = process.env.SEARCH_MEDIA_USER_ID || '1';
+const peerUserId = process.env.SEARCH_MEDIA_PEER_USER_ID || '2';
+const dialogId1 = BigInt(userId) <= BigInt(peerUserId) ? userId : peerUserId;
+const dialogId2 = BigInt(userId) <= BigInt(peerUserId) ? peerUserId : userId;
 const gramjsDir = process.env.TEAMGRAM_GRAMJS_DIR || '/Users/mac/open/test/telegram-tt-master';
 const dcId = Number(process.env.TG_DC_ID || '2');
 const dcHost = process.env.TG_DC_HOST || '127.0.0.1';
@@ -112,30 +114,45 @@ async function main() {
     FROM auth_users u
     JOIN auth_keys k USING (auth_key_id)
     JOIN auth_key_infos i USING (auth_key_id)
-    WHERE u.user_id=${userId} AND u.state=0 AND u.deleted=0
-      AND k.deleted=0 AND i.deleted=0 AND i.auth_key_type=0
+    WHERE u.user_id=${userId} AND u.state=0 AND u.deleted=FALSE
+      AND k.deleted=FALSE AND i.deleted=FALSE AND i.auth_key_type=0
     ORDER BY u.date_active DESC,u.id DESC
     LIMIT 1
   `, 'active production auth key');
-  const channelAccessHash = requiredValue(
-    `SELECT access_hash FROM channels WHERE id=${channelId} AND deleted=0 LIMIT 1`,
-    'production channel access hash',
+  const peerAccessHash = requiredValue(
+    `SELECT access_hash FROM users WHERE id=${peerUserId} AND deleted=FALSE LIMIT 1`,
+    'production peer user access hash',
   );
   const expectedCounter = Number(postgres(`
     SELECT COUNT(*) FROM messages
-    WHERE user_id=${userId} AND dialog_id1=-4 AND dialog_id2=${channelId}
-      AND message_filter_type=7 AND deleted=0
+    WHERE user_id=${userId} AND dialog_id1=${dialogId1} AND dialog_id2=${dialogId2}
+      AND message_filter_type=7 AND deleted=FALSE
   `));
   const expectedPositions = Number(postgres(`
     SELECT COUNT(*) FROM messages
-    WHERE user_id=${userId} AND dialog_id1=${userId} AND dialog_id2=${userId}
-      AND message_filter_type IN (0,7,8) AND deleted=0
+    WHERE user_id=${userId} AND dialog_id1=${dialogId1} AND dialog_id2=${dialogId2}
+      AND message_filter_type=7 AND deleted=FALSE
   `));
   const expectedSent = Number(postgres(`
     SELECT COUNT(*) FROM messages
     WHERE user_id=${userId} AND sender_user_id=${userId}
-      AND message_filter_type=7 AND deleted=0
+      AND message_filter_type=7 AND deleted=FALSE
   `));
+  const expectedPositionIds = postgres(`
+    SELECT user_message_box_id FROM messages
+    WHERE user_id=${userId} AND dialog_id1=${dialogId1} AND dialog_id2=${dialogId2}
+      AND message_filter_type=7 AND deleted=FALSE
+    ORDER BY user_message_box_id DESC LIMIT 10
+  `).split('\n').filter(Boolean).map(Number);
+  const mediaSnapshotQuery = `
+    SELECT COALESCE(string_agg(
+      id::text || ':' || user_message_box_id::text || ':' || md5(COALESCE(message_data, '')),
+      ',' ORDER BY id
+    ), '')
+    FROM messages
+    WHERE user_id=${userId} AND message_filter_type=7 AND deleted=FALSE
+  `;
+  const beforeMediaSnapshot = postgres(mediaSnapshotQuery);
   if (![expectedCounter, expectedPositions, expectedSent].every(Number.isSafeInteger)) {
     throw new Error('production media count query returned invalid values');
   }
@@ -147,11 +164,10 @@ async function main() {
     if (String(me?.id) !== userId) throw new Error('auth key user mismatch');
 
     const photoFilter = new Api.InputMessagesFilterPhotos();
-    const channel = new Api.InputPeerChannel({ channelId: BigInt(channelId), accessHash: BigInt(channelAccessHash) });
-    const self = new Api.InputPeerSelf();
+    const peer = new Api.InputPeerUser({ userId: BigInt(peerUserId), accessHash: BigInt(peerAccessHash) });
     const counters = await client.invoke(rawRequest(0x1bbcf300, 'messages.GetSearchCounters', [
       intBytes(0),
-      channel.getBytes(),
+      peer.getBytes(),
       intBytes(0x1cb5c415),
       intBytes(1),
       photoFilter.getBytes(),
@@ -165,16 +181,18 @@ async function main() {
 
     const positions = await client.invoke(rawRequest(0x9c7f2f10, 'messages.GetSearchResultsPositions', [
       intBytes(0),
-      self.getBytes(),
+      peer.getBytes(),
       photoFilter.getBytes(),
       intBytes(0),
       intBytes(10),
     ]));
+    const positionItems = Array.isArray(positions?.positions) ? positions.positions : [];
+    const positionIds = positionItems.map((item: any) => Number(item?.msgId));
     if (!isType(positions, 'SearchResultsPositions')
       || Number(positions.count) !== expectedPositions
-      || !Array.isArray(positions.positions)
-      || positions.positions.length !== Math.min(expectedPositions, 10)) {
-      throw new Error(`getSearchResultsPositions malformed or mismatched: type=${rpcName(positions)}, count=${String(positions?.count)}, positions=${positions?.positions?.length}, db=${expectedPositions}`);
+      || positionItems.length !== Math.min(expectedPositions, 10)
+      || positionIds.some((id: number, index: number) => id !== expectedPositionIds[index])) {
+      throw new Error(`getSearchResultsPositions malformed or mismatched: type=${rpcName(positions)}, count=${String(positions?.count)}, positions=${positionItems.length}, ids=${positionIds.join(',')}, db=${expectedPositions}`);
     }
 
     const sentMedia = await client.invoke(rawRequest(0x107e31a0, 'messages.SearchSentMedia', [
@@ -186,9 +204,14 @@ async function main() {
     if (!isType(sentMedia, 'Messages') || sentMessages.length !== Math.min(expectedSent, 50)) {
       throw new Error(`searchSentMedia malformed or mismatched: type=${rpcName(sentMedia)}, messages=${sentMessages.length}, db=${expectedSent}`);
     }
+    const afterMediaSnapshot = postgres(mediaSnapshotQuery);
+    if (afterMediaSnapshot !== beforeMediaSnapshot) {
+      throw new Error('read-only media search changed the persisted PostgreSQL media rows');
+    }
 
     console.log(JSON.stringify({
       userId: String(me.id),
+      peerUserId,
       transport: `DC${dcId} WebSocket -> gateway -> session -> BFF`,
       getSearchCounters: {
         type: rpcName(counters),
@@ -200,7 +223,8 @@ async function main() {
       getSearchResultsPositions: {
         type: rpcName(positions),
         count: Number(positions.count),
-        positions: positions.positions.length,
+        positions: positionItems.length,
+        messageIds: positionIds,
         postgresCount: expectedPositions,
       },
       searchSentMedia: {
@@ -209,6 +233,7 @@ async function main() {
         postgresCount: expectedSent,
         messageIds: sentMessages.map((item: any) => Number(item?.id)),
       },
+      persistedMediaUnchanged: true,
       writes: 0,
     }));
   } finally {

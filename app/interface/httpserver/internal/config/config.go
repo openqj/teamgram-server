@@ -16,14 +16,17 @@ import (
 )
 
 type Config struct {
-	Http           rest.RestConf
-	Session        zrpc.RpcClientConf
-	UserClient     zrpc.RpcClientConf
-	ChatClient     zrpc.RpcClientConf
-	MsgClient      zrpc.RpcClientConf
-	BffClient      zrpc.RpcClientConf `json:",optional"`
-	DfsClient      zrpc.RpcClientConf `json:",optional"`
-	Postgres       postgres.Config
-	KeyFile        string
-	KeyFingerprint string
+	Http                               rest.RestConf
+	Session                            zrpc.RpcClientConf
+	UserClient                         zrpc.RpcClientConf
+	ChatClient                         zrpc.RpcClientConf
+	MsgClient                          zrpc.RpcClientConf
+	BffClient                          zrpc.RpcClientConf `json:",optional"`
+	DfsClient                          zrpc.RpcClientConf `json:",optional"`
+	Postgres                           postgres.Config
+	PaymentProviderName                string `json:",optional"`
+	PaymentProviderWebhookSigningKey   string `json:",optional"`
+	PaymentProviderWebhookMaxBodyBytes int64  `json:",optional"`
+	KeyFile                            string
+	KeyFingerprint                     string
 }

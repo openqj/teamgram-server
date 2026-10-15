@@ -19,6 +19,12 @@ import (
 // DialogEditPeerFolders
 // dialog.editPeerFolders user_id:long peer_dialog_list:Vector<long> folder_id:int = Vector<DialogPinnedExt>;
 func (c *DialogCore) DialogEditPeerFolders(in *dialog.TLDialogEditPeerFolders) (*dialog.Vector_DialogPinnedExt, error) {
+	if in == nil || in.GetUserId() <= 0 {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if in.GetFolderId() < 0 {
+		return nil, mtproto.ErrFolderIdInvalid
+	}
 	store, err := c.pgStore()
 	if err != nil || store.Dialogs == nil {
 		return nil, mtproto.ErrMethodNotImpl

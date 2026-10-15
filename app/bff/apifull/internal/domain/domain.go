@@ -700,6 +700,10 @@ func DeleteChannel(userID, channelID int64) error {
 		return err
 	}
 	for _, stmt := range []string{
+		// Public channel usernames are owned by the biz/user aggregate but live
+		// in the same PostgreSQL schema. Remove editable rows in this transaction
+		// so a deleted channel cannot keep its username occupied.
+		`DELETE FROM username WHERE peer_type=? AND peer_id=? AND editable=TRUE`,
 		`DELETE FROM apifull_community_dialog_state WHERE community_id=?`,
 		`DELETE FROM apifull_community_peer WHERE community_id=?`,
 		`DELETE FROM apifull_community WHERE community_id=?`,
@@ -733,6 +737,12 @@ func DeleteChannel(userID, channelID int64) error {
 		`DELETE FROM apifull_channel WHERE id=?`,
 	} {
 		if stmt == `DELETE FROM apifull_boost_target WHERE peer_type=? AND peer_id=?` {
+			if _, err = tx.Exec(stmt, 4, channelID); err != nil {
+				return err
+			}
+			continue
+		}
+		if stmt == `DELETE FROM username WHERE peer_type=? AND peer_id=? AND editable=TRUE` {
 			if _, err = tx.Exec(stmt, 4, channelID); err != nil {
 				return err
 			}

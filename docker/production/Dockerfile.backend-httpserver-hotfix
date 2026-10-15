@@ -1,0 +1,6 @@
+# Temporary local acceptance image: replace only the HTTP server binary.
+ARG BASE_IMAGE=teamgram-server-e2e-premium:bing-menu-20261014-r2
+FROM ${BASE_IMAGE}
+COPY --from=patch teamgram-httpserver-new /app/bin/httpserver
+COPY --from=patch teamgram-bff-new /app/bin/bff
+COPY --from=patch teamgram-httpserver.yaml-new /app/etc2/httpserver.yaml

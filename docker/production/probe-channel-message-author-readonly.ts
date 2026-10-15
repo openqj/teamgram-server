@@ -3,7 +3,7 @@ import path from 'node:path';
 import { createRequire } from 'node:module';
 
 const gramjsDir = process.env.TEAMGRAM_GRAMJS_DIR || '/Users/mac/open/test/telegram-tt-master';
-const userId = process.env.MESSAGE_AUTHOR_USER_ID || '136907714';
+const userId = process.env.MESSAGE_AUTHOR_USER_ID || '7';
 const dcId = Number(process.env.TG_DC_ID || '2');
 const dcHost = process.env.TG_DC_HOST || '127.0.0.1';
 const dcPort = Number(process.env.TG_DC_PORT || '11443');
@@ -14,7 +14,6 @@ globalAny.addEventListener ??= () => {};
 globalAny.self.addEventListener ??= globalAny.addEventListener;
 
 type Fixture = {
-  messageBoxId: number;
   channelMessageId: number;
   channelId: string;
   channelAccessHash: string;
@@ -31,35 +30,25 @@ function sql(query: string): string {
 
 function loadAuthKey(): string {
   const body = sql(`SELECT encode(k.body, 'base64') FROM auth_users u JOIN auth_keys k USING(auth_key_id)
-    JOIN auth_key_infos i USING(auth_key_id) WHERE u.user_id=${userId} AND u.state=0 AND u.deleted=0
-    AND k.deleted=0 AND i.deleted=0 AND i.auth_key_type=0 ORDER BY u.date_active DESC,u.id DESC LIMIT 1`);
+    JOIN auth_key_infos i USING(auth_key_id) WHERE u.user_id=${userId} AND u.state=0 AND u.deleted=FALSE
+    AND k.deleted=FALSE AND i.deleted=FALSE AND i.auth_key_type=0 ORDER BY u.date_active DESC,u.id DESC LIMIT 1`);
   if (!body) throw new Error(`no active production auth key found for user ${userId}`);
   return Buffer.from(body, 'base64').toString('hex');
 }
 
 function loadFixture(): Fixture {
   const raw = sql(`SELECT json_build_object(
-      'messageBoxId', m.user_message_box_id,
-      'channelMessageId', (m.message_data::jsonb->>'id')::bigint,
-      'channelId', m.peer_id::text,
+      'channelMessageId', cm.message_id,
+      'channelId', c.id::text,
       'channelAccessHash', c.access_hash::text,
-      'senderUserId', m.sender_user_id::text)
-    FROM messages m
-    JOIN channels c ON c.id=m.peer_id AND c.deleted=0
-    JOIN channel_messages cm ON cm.channel_id=m.peer_id
-      AND cm.dialog_message_id=m.dialog_message_id
-      AND cm.message_id=(m.message_data::jsonb->>'id')::bigint
-      AND cm.deleted=0
-    WHERE m.user_id=${userId} AND m.peer_type=4 AND m.deleted=0
-      AND m.user_message_box_id<>(m.message_data::jsonb->>'id')::bigint
-      AND NOT EXISTS (SELECT 1 FROM channel_messages other
-        WHERE other.channel_id=m.peer_id AND other.message_id=m.user_message_box_id AND other.deleted=0)
-      AND m.message_data::jsonb #>> '{peer_id,predicate_name}'='peerChannel'
-      AND m.message_data::jsonb #>> '{from_id,predicate_name}'='peerUser'
-    ORDER BY m.user_message_box_id LIMIT 1`);
+      'senderUserId', cm.sender_user_id::text)
+    FROM apifull_channel c
+    JOIN apifull_channel_message cm ON cm.channel_id=c.id
+    WHERE c.creator_user_id=${userId} AND cm.message_id > 0
+    ORDER BY c.id, cm.message_id LIMIT 1`);
   if (!raw) throw new Error(`no owned production channel message found for user ${userId}`);
   const fixture = JSON.parse(raw) as Fixture;
-  if (!Number.isSafeInteger(fixture.messageBoxId) || !Number.isSafeInteger(fixture.channelMessageId)) {
+  if (!Number.isSafeInteger(fixture.channelMessageId)) {
     throw new Error('production channel message IDs are invalid');
   }
   return fixture;
@@ -67,16 +56,13 @@ function loadFixture(): Fixture {
 
 function postgresSnapshot(fixture: Fixture): string {
   const raw = sql(`SELECT json_build_object(
-      'message', encode(digest(CONCAT_WS('|',m.user_id,m.user_message_box_id,m.dialog_message_id,m.sender_user_id,
-        m.peer_type,m.peer_id,m.message_data,m.deleted,cm.channel_id,cm.message_id,cm.dialog_message_id,
-        cm.sender_user_id,cm.deleted)::text, 'sha256'), 'hex'),
-      'channel', encode(digest(CONCAT_WS('|',c.id,c.access_hash,c.creator_user_id,c.title,c.deleted)::text, 'sha256'), 'hex'))
-    FROM messages m
-    JOIN channel_messages cm ON cm.channel_id=m.peer_id AND cm.dialog_message_id=m.dialog_message_id
-      AND cm.message_id=(m.message_data::jsonb->>'id')::bigint
-    JOIN channels c ON c.id=m.peer_id AND c.deleted=0
-    WHERE m.user_id=${userId} AND m.user_message_box_id=${fixture.messageBoxId}
-      AND m.peer_id=${fixture.channelId} AND m.deleted=0 LIMIT 1`);
+      'message', encode(digest(CONCAT_WS('|',cm.channel_id,cm.message_id,cm.sender_user_id,
+        cm.date,cm.message,cm.edited,cm.edited_at,cm.reply_to_msg_id,cm.reply_to_top_id,
+        cm.content_json,cm.pinned)::text, 'sha256'), 'hex'),
+      'channel', encode(digest(CONCAT_WS('|',c.id,c.access_hash,c.creator_user_id,c.title,c.username)::text, 'sha256'), 'hex'))
+    FROM apifull_channel_message cm
+    JOIN apifull_channel c ON c.id=cm.channel_id
+    WHERE cm.channel_id=${fixture.channelId} AND cm.message_id=${fixture.channelMessageId} LIMIT 1`);
   if (!raw) throw new Error('production message/channel snapshot could not be read back');
   return raw;
 }
@@ -152,10 +138,11 @@ async function main() {
       throw new Error(`native channel message ID returned ${resultType} id=${String(result?.id)}`);
     }
 
-    const boxIDResult = await client.invoke(makeGetMessageAuthorRequest(inputChannel, fixture.messageBoxId));
+    const missingMessageId = fixture.channelMessageId + 1000000;
+    const boxIDResult = await client.invoke(makeGetMessageAuthorRequest(inputChannel, missingMessageId));
     const boxIDResultType = rpcName(boxIDResult);
     if (boxIDResultType !== 'UserEmpty') {
-      throw new Error(`user message-box ID returned ${boxIDResultType}, expected UserEmpty`);
+      throw new Error(`missing native message ID returned ${boxIDResultType}, expected UserEmpty`);
     }
 
     let accessError = '';
@@ -177,12 +164,12 @@ async function main() {
       userId: String(me.id),
       rpc: 'channels.getMessageAuthor#ece2a0e6',
       productionChannelId: fixture.channelId,
-      userMessageBoxId: fixture.messageBoxId,
       channelMessageId: fixture.channelMessageId,
+      missingMessageId,
       senderUserId: fixture.senderUserId,
       resultType,
       resultUserId: String(result.id),
-      wrongUserMessageBoxIdResultType: boxIDResultType,
+      missingMessageIdResultType: boxIDResultType,
       invalidAccessHashError: accessError,
       postgresReadbackSha256: JSON.parse(after),
       writes: 0,

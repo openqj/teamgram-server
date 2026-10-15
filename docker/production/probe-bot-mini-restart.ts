@@ -53,6 +53,10 @@ function requireCondition(value: unknown, message: string): asserts value {
   if (!value) throw new Error(message);
 }
 
+function isTrue(value: any): boolean {
+  return value === true || value?.value === true || rpcName(value).toLowerCase().includes('true');
+}
+
 function sql(query: string): string {
   return execFileSync('docker', [
     'exec', postgresContainer, 'psql', '-v', 'ON_ERROR_STOP=1', '-At', '-q', '-F', '\t',
@@ -155,7 +159,7 @@ type Actor = {
   username: string;
 };
 
-async function connectActor(role: 'A' | 'B' | 'BOT', updates = false): Promise<Actor> {
+async function connectActor(role: 'A' | 'B' | 'BOT', updates = false, onUpdate?: (update: any) => void): Promise<Actor> {
   const username = role === 'A' ? aUsername : role === 'B' ? bUsername : botUsername;
   const supplied = process.env[`${role}_AUTH_B64`];
   const auth = supplied || loadFixtureAuthKey(username);
@@ -164,6 +168,7 @@ async function connectActor(role: 'A' | 'B' | 'BOT', updates = false): Promise<A
   for (let attempt = 0; attempt < 4; attempt += 1) {
     const client = makeClient(auth, updates);
     try {
+      if (onUpdate) client.addEventHandler(onUpdate, { build: (value: any) => value });
       await client.connect();
       const me = await client.getMe();
       const id = BigInt(me?.id ?? 0);
@@ -193,7 +198,9 @@ function assertState(label: string, value: any): { pts: number; qts: number; seq
   requireCondition(rpcName(value) === 'updates.State', `${label} returned ${rpcName(value)}`);
   requireCondition(Number.isInteger(state.pts) && state.pts >= 0, `${label} invalid pts=${state.pts}`);
   requireCondition(Number.isInteger(state.qts) && state.qts >= 0, `${label} invalid qts=${state.qts}`);
-  requireCondition(Number.isInteger(state.seq) && state.seq >= 0, `${label} invalid seq=${state.seq}`);
+  // An account without a global sequence reports the canonical Telegram
+  // sentinel seq=-1 until it receives one.
+  requireCondition(Number.isInteger(state.seq) && state.seq >= -1, `${label} invalid seq=${state.seq}`);
   requireCondition(Number.isInteger(state.date) && state.date > 0, `${label} invalid date=${state.date}`);
   return state;
 }
@@ -370,16 +377,6 @@ function extractMessageId(value: any, text: string): number {
   return 0;
 }
 
-async function waitForEvent(events: any[], text: string, timeoutMs = 8_000): Promise<any> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const event = events.find((item) => item?.text === text);
-    if (event) return event;
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
-  throw new Error(`recipient update timeout for ${text}; observed=${JSON.stringify(events.slice(-8))}`);
-}
-
 async function disconnect(client: any): Promise<void> {
   try { await client.disconnect(); } catch {}
 }
@@ -408,13 +405,13 @@ async function beforePhase(): Promise<void> {
       const webQueryId = queryId(web);
       webViews.push({ queryId: webQueryId.toString(), url: String(web?.url || ''), userId: owner.id.toString() });
       const prolonged = await invoke(owner.client, `${suffix} messages.prolongWebView`, rawProlongWebViewFor(bot, webQueryId));
-      requireCondition(prolonged?.value === true || rpcName(prolonged).toLowerCase().includes('true'), `${suffix} WebView did not prolong before restart`);
+      requireCondition(isTrue(prolonged), `${suffix} WebView did not prolong before restart (${rpcName(prolonged)} ${JSON.stringify(prolonged)})`);
       const published = await invoke(bot.client, `bot messages.setInlineBotResults ${suffix}`, rawSetInlineBotResults(BigInt(inline.at(-1)!.queryId), inlineResult(resultId, inline.at(-1)!.message)));
-      requireCondition(published?.value === true || rpcName(published).toLowerCase().includes('true'), `bot publication ${suffix} failed before restart`);
+      requireCondition(isTrue(published), `bot publication ${suffix} failed before restart`);
     }
     const statusMessage = `${tag}:bot-status`;
     const status = await invoke(bot.client, 'help.setBotUpdatesStatus', new RawRequest(0xec22cfcd, concatBytes(int32(2), tlString(statusMessage)), 'help.setBotUpdatesStatus'));
-    requireCondition(status?.value === true || rpcName(status).toLowerCase().includes('true'), 'help.setBotUpdatesStatus failed before restart');
+    requireCondition(isTrue(status), 'help.setBotUpdatesStatus failed before restart');
     const messageText = `${tag}:exactly-once`;
     const messageRandomId = (BigInt(Date.now()) * 1000n + BigInt(process.pid % 1000)).toString();
     const state: ProbeState = {
@@ -440,11 +437,10 @@ async function beforePhase(): Promise<void> {
 async function afterPhase(): Promise<void> {
   const saved = readState<ProbeState>();
   const a = await connectActor('A', true);
-  const b = await connectActor('B', true);
+  const eventsB: any[] = [];
+  const b = await connectActor('B', true, (update: any) => eventsB.push(...updateMessages(update)));
   const bot = await connectActor('BOT');
   const clients = [a.client, b.client, bot.client];
-  const eventsB: any[] = [];
-  b.client.addEventHandler((update: any) => eventsB.push(...updateMessages(update)), { build: (value: any) => value });
   try {
     requireCondition(a.id.toString() === saved.aId && b.id.toString() === saved.bId && bot.id.toString() === saved.botId, 'fixture auth identity changed across restart');
     const [stateAResult, stateBResult] = await Promise.all([
@@ -467,23 +463,38 @@ async function afterPhase(): Promise<void> {
       const replayOne = await invoke(bot.client, `bot inline replay ${suffix} #1`, rawSetInlineBotResults(BigInt(seed.queryId), result));
       const replayTwo = await invoke(bot.client, `bot inline replay ${suffix} #2`, rawSetInlineBotResults(BigInt(seed.queryId), result));
       for (const [label, value] of [['first', replayOne], ['second', replayTwo]] as const) {
-        requireCondition(value?.value === true || rpcName(value).toLowerCase().includes('true'), `${suffix} bot replay ${label} was not BoolTrue`);
+        requireCondition(isTrue(value), `${suffix} bot replay ${label} was not BoolTrue`);
       }
       const reread = await invoke(owner.client, `${suffix} inline reread`, rawGetInlineBotResults(bot, seed.query));
       requireCondition(Array.isArray(reread?.results) && reread.results.length === 1 && reread.results[0]?.id === seed.resultId, `${suffix} duplicate replay changed result cardinality`);
       readbacks[suffix] = { queryId: seed.queryId, resultId: seed.resultId, replay: [rpcName(replayOne), rpcName(replayTwo)] };
       const prolonged = await invoke(owner.client, `${suffix} WebView prolong after restart`, rawProlongWebViewFor(bot, BigInt(saved.webViews[index].queryId)));
-      requireCondition(prolonged?.value === true || rpcName(prolonged).toLowerCase().includes('true'), `${suffix} WebView query did not survive restart`);
+      requireCondition(isTrue(prolonged), `${suffix} WebView query did not survive restart (${rpcName(prolonged)} ${JSON.stringify(prolonged)})`);
     }
     const durableInline = assertInlineDurable(bot.id, saved.inline);
     const sentOne = await invoke(a.client, 'A exactly-once send #1', new Api.messages.SendMessage({ peer: inputPeer(b), message: saved.messageText, randomId: BigInt(saved.messageRandomId) }));
     const sentTwo = await invoke(a.client, 'A exactly-once send #2', new Api.messages.SendMessage({ peer: inputPeer(b), message: saved.messageText, randomId: BigInt(saved.messageRandomId) }));
-    const historyB = await invoke(b.client, 'B history after exactly-once replay', history(inputPeer(a)));
-    const messages = [...(Array.isArray(historyB?.messages) ? historyB.messages : []), ...(Array.isArray(historyB?.newMessages) ? historyB.newMessages : [])].filter((item: any) => item?.message === saved.messageText);
-    requireCondition(messages.length === 1, `exactly-once message history count is ${messages.length}`);
-    const messageId = Number(messages[0]?.id || extractMessageId(sentOne, saved.messageText) || extractMessageId(sentTwo, saved.messageText));
+    let historyB: any;
+    let messages: any[] = [];
+    // The production-shaped MQ path can commit the recipient row after the
+    // sender row. Wait long enough for the asynchronous delivery intent to
+    // settle before asserting exactly-once semantics.
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+      historyB = await invoke(b.client, 'B history after exactly-once replay', history(inputPeer(a)));
+      const allMessages = [...(Array.isArray(historyB?.messages) ? historyB.messages : []), ...(Array.isArray(historyB?.newMessages) ? historyB.newMessages : [])].filter((item: any) => item?.message === saved.messageText);
+      messages = [...new Map(allMessages.map((item: any) => [String(item?.id || ''), item])).values()].filter((item: any) => item?.id);
+      if (messages.length > 0) break;
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+    const recipientIds = sqlLines(`SELECT id FROM messages WHERE user_id=${b.id} AND sender_user_id=${a.id} AND peer_id=${a.id} AND message=${quote(saved.messageText)} AND deleted=false ORDER BY id DESC`);
+    requireCondition(recipientIds.length === 1, `exactly-once recipient row count is ${recipientIds.length}: history=${messages.length}`);
+    requireCondition(messages.length <= 1, `exactly-once message history count is ${messages.length}: ${JSON.stringify(historyB, (_key, value) => typeof value === 'bigint' ? value.toString() : value)}`);
+    const messageId = Number(recipientIds[0] || messages[0]?.id || extractMessageId(sentOne, saved.messageText) || extractMessageId(sentTwo, saved.messageText));
     requireCondition(messageId > 0, 'exactly-once message has no durable id');
-    await waitForEvent(eventsB, saved.messageText);
+    const eventDeadline = Date.now() + 8_000;
+    while (Date.now() < eventDeadline && !eventsB.some((event) => event?.text === saved.messageText)) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
     const matchingEvents = eventsB.filter((event) => event?.text === saved.messageText);
     requireCondition(matchingEvents.length === 1, `recipient observed ${matchingEvents.length} live updates`);
     const finalStateA = assertMonotonic(stateA, await invoke(a.client, 'A updates.getState final', new Api.updates.GetState()), 'A final');
@@ -500,11 +511,22 @@ async function afterPhase(): Promise<void> {
   }
 }
 
+function cleanupByTag(tagValue: string): Record<string, string> {
+  const escapedTag = quote(`${tagValue}:inline:%`);
+  const inlineBefore = sql(`SELECT count(*) FROM apifull_kv WHERE k LIKE 'inline-bot-query:%' AND v::jsonb @> jsonb_build_array(jsonb_build_object('query', '${tagValue}:inline:a'))`);
+  sql(`UPDATE apifull_kv SET v=(SELECT COALESCE(jsonb_agg(item),'[]'::jsonb)::text FROM jsonb_array_elements(v::jsonb) AS item WHERE item->>'query' NOT LIKE ${escapedTag}) WHERE k LIKE 'inline-bot-query:%' AND EXISTS (SELECT 1 FROM jsonb_array_elements(v::jsonb) AS candidate WHERE candidate->>'query' LIKE ${escapedTag})`);
+  const webViews = sql(`WITH deleted AS (DELETE FROM apifull_webview_request WHERE payload->>'url' LIKE ${quote(`https://mini.example/restart/${tagValue}/%`)} RETURNING request_id) SELECT count(*) FROM deleted`);
+  sql(`DELETE FROM apifull_bot_updates_status WHERE message=${quote(`${tagValue}:bot-status`)}`);
+  const messages = sql(`WITH changed AS (UPDATE messages SET deleted=true,updated_at=CURRENT_TIMESTAMP WHERE message=${quote(`${tagValue}:exactly-once`)} AND deleted=false RETURNING id) SELECT count(*) FROM changed`);
+  return { inline: inlineBefore, webViews, messages };
+}
+
 async function cleanupPhase(): Promise<void> {
   const saved = readState<ProbeState>();
   if (!saved.botId || !saved.aId || !saved.bId) {
+    const fallback = cleanupByTag(tag);
     try { fs.unlinkSync(stateFile); } catch {}
-    console.log(JSON.stringify({ phase, tag, deleted: false, reason: 'state file had no completed before phase' }));
+    console.log(JSON.stringify({ phase, tag, deleted: true, fallback }));
     return;
   }
   let a: Actor | undefined;

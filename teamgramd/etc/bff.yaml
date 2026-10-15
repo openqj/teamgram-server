@@ -31,6 +31,7 @@ SearchPostsFlood:
   TotalDaily: 10
 
 PaymentProviderEndpoint: ""
+PaymentProviderName: external
 PaymentProviderKey: ""
 PaymentProviderSigningKey: ""
 PaymentProviderTimeoutSeconds: 5

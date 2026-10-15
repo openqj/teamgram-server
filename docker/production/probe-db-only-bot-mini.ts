@@ -363,13 +363,21 @@ async function main(): Promise<void> {
     cleanupState();
   }
 
+  const remainingWebViews = sqlLines(`SELECT request_id FROM apifull_webview_request WHERE user_id=${userId} AND bot_id=${botId} AND kind IN ('requestWebView','requestSimpleWebView','requestWebViewButton')`);
+  const beforeWebViews = new Set(webViewBefore);
+  const unexpectedWebViews = remainingWebViews.filter((id) => !beforeWebViews.has(id));
+  const remainingStatus = sql(`SELECT count(*) FROM apifull_bot_updates_status WHERE bot_user_id=${botId}`);
+  const expectedStatus = statusBefore === undefined ? '0' : '1';
   const remaining = {
     prepared: sql(`SELECT count(*) FROM apifull_kv WHERE k=${quote(preparedKey)}`),
-    status: sql(`SELECT count(*) FROM apifull_bot_updates_status WHERE bot_user_id=${botId}`),
-    webview: sql(`SELECT count(*) FROM apifull_webview_request WHERE user_id=${userId} AND bot_id=${botId} AND kind IN ('requestWebView','requestSimpleWebView','requestWebViewButton')`),
+    status: remainingStatus,
+    webview: String(remainingWebViews.length),
     messages: sql(`SELECT count(*) FROM messages WHERE user_id=${userId} AND sender_user_id=${userId} AND random_id=${sendRandomId} AND deleted=false`),
   };
-  if (Object.values(remaining).some((value) => value !== '0')) throw new Error(`cleanup incomplete: ${JSON.stringify(remaining)}`);
+  if (remaining.prepared !== '0' || remaining.status !== expectedStatus || remaining.messages !== '0'
+    || remainingWebViews.length !== beforeWebViews.size || unexpectedWebViews.length > 0) {
+    throw new Error(`cleanup incomplete: ${JSON.stringify({ remaining, beforeWebViews: [...beforeWebViews], unexpectedWebViews })}`);
+  }
   console.log(JSON.stringify({
     transport: `DC${dcId} TCPObfuscated -> gateway -> session -> APIFull/PostgreSQL`,
     userId: userId.toString(), botId: botId.toString(), results, remaining,
@@ -385,4 +393,5 @@ main().then(() => {
   cleanupState();
   console.error(`db-only bot/mini probe failed: ${error instanceof Error ? error.stack || error.message : String(error)}`);
   process.exitCode = 1;
+  setTimeout(() => process.exit(1), 250);
 });

@@ -29,6 +29,10 @@ Postgres:
   HealthCheckPeriod: 1m
   ConnectTimeout: 10s
 
+PaymentProviderName: external
+PaymentProviderWebhookSigningKey: ""
+PaymentProviderWebhookMaxBodyBytes: 1048576
+
 UserClient:
   Etcd:
     Hosts:

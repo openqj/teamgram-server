@@ -733,3 +733,15 @@ func (d *Dao) GrantUserPremium(ctx context.Context, id int64, months int32, prov
 	}
 	return true, nil
 }
+
+// RevokeUserPremium removes exactly one provider transaction. It is separate
+// from UpdateUserPremium(false), which is the administrative full-disable path.
+func (d *Dao) RevokeUserPremium(ctx context.Context, id int64, provider, transactionID string) (bool, error) {
+	if id <= 0 || provider == "" || len(provider) > 32 || transactionID == "" || len(transactionID) > 191 {
+		return false, mtproto.ErrInputRequestInvalid
+	}
+	if err := d.pgRevokePremium(ctx, id, provider, transactionID); err != nil {
+		return false, err
+	}
+	return true, nil
+}

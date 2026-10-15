@@ -72,3 +72,51 @@ canonical Layer 229 `Updates`; `payments.canPurchaseStore` and
 users, failed verification, malformed TL values, and provider errors fail
 closed. Assignment retries use the same idempotency key and must not grant an
 entitlement twice.
+
+## Refund and recovery
+
+Providers deliver refund and revoke notifications to
+`POST /payment/provider/webhook`. The body is signed byte-for-byte with the
+dedicated `TEAMGRAM_PAYMENT_PROVIDER_WEBHOOK_SIGNING_KEY` using
+`X-Teamgram-Payment-Provider-Webhook-Signature: sha256=<digest>` (the existing
+provider response signature header is accepted during rollout). A notification
+has this shape:
+
+```json
+{
+  "event_id": "provider-event-id",
+  "event_type": "payment.refunded",
+  "provider": "external",
+  "user_id": 123,
+  "request_key": "premium:123:offer:1",
+  "transaction_id": "provider-transaction-id",
+  "product": "premium_subscription",
+  "months": 1,
+  "stars": 0,
+  "occurred_at": 1760000000,
+  "reason": "chargeback"
+}
+```
+
+The HTTP endpoint acknowledges a verified, schema-valid event only after it is
+durably inserted in PostgreSQL and returns `202`. Reusing an event ID with a
+different payload is a conflict. APIFull workers claim events with a lease,
+apply the local ledger reversal exactly once, revoke the matching Premium
+transaction or debit the matching Stars credit, and retry failed user-service
+calls after a restart. Bot invoices are recorded as reversed but never create
+an account entitlement.
+
+The provider also supports the signed `get_payment_status` operation. The
+request contains `user_id`, `provider`, `request_key`, `transaction_id`, and
+`product`; the signed response contains `verified`, matching identity fields,
+and `status` (`settled`, `refunded`, `revoked`, `pending`, or `not_found`). A
+reconciliation worker polls settled local receipts, treats `pending` and
+`not_found` as retryable, keeps settled rows on a periodic poll so a later
+refund is still detected, and routes `refunded`/`revoked` through the same
+webhook state machine. Provider outages never manufacture a local refund.
+
+`provider` is the canonical provider identity stored with the local receipt.
+For Premium and Stars, it defaults to `external` and can be changed with
+`TEAMGRAM_PAYMENT_PROVIDER_NAME`; settlement, status polling, and webhook
+payloads must use the same value. Bot invoice events keep the provider name
+from the invoice itself.
