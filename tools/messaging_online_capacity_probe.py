@@ -13,6 +13,7 @@ from pathlib import Path
 import secrets
 import time
 
+import messaging_reliability_probe
 from messaging_reliability_probe import ROOT, prometheus_query, seed_accounts, validate_ports, wait_backend, wait_kafka
 import messaging_capacity_probe as message_capacity
 from postgres_recovery_probe import Lab, ProbeError, redact
@@ -49,7 +50,7 @@ def seed_online_accounts(lab: Lab, count: int, output: Path, *, base_user_id: in
     return sessions
 
 
-def evaluate(value: dict, requested_users: int, reconnect_count: int) -> dict:
+def evaluate(value: dict, requested_users: int, reconnect_count: int, replica_count: int = 1) -> dict:
     online = value.get("online", {})
     connect = online.get("connect", {})
     hold = online.get("hold", {})
@@ -59,21 +60,33 @@ def evaluate(value: dict, requested_users: int, reconnect_count: int) -> dict:
     minimum = hold.get("minConnected")
     reconnect_ok = reconnect.get("connected")
     gauge_min = hold.get("serverGaugeMin", gauge.get("min"))
+    replica_gauge_mins = hold.get("serverGaugeByReplicaMin", {})
+    expected_replica_counts = {
+        f"backend-{index + 1}": requested_users // replica_count + (index < requested_users % replica_count)
+        for index in range(replica_count)
+    }
     checks = {
         "allConnectionsAuthenticated": connected == requested_users,
         "allConnectionsHeld": minimum == requested_users,
         "reconnectSample": reconnect_ok == reconnect_count,
         "serverActiveGauge": bool(gauge.get("observed")) and isinstance(gauge_min, (int, float)) and gauge_min >= requested_users,
         "connectionCleanup": gauge.get("cleanupObserved") is True,
+        "allReplicasServeExpectedConnections": all(
+            replica_gauge_mins.get(replica, -1) >= count
+            for replica, count in expected_replica_counts.items()
+        ),
         "probeOk": online.get("ok") is True,
     }
     return {"status": "PASS" if all(checks.values()) else "FAIL", "checks": checks,
             "requestedUsers": requested_users, "connected": connected,
-            "minimumHeld": minimum, "reconnected": reconnect_ok, "serverGaugeMin": gauge_min}
+            "minimumHeld": minimum, "reconnected": reconnect_ok, "serverGaugeMin": gauge_min,
+            "expectedReplicaConnections": expected_replica_counts,
+            "minimumReplicaGauge": replica_gauge_mins}
 
 
-def evaluate_mixed(online: dict, load: dict, users: int, reconnect_count: int) -> dict:
-    online_result = evaluate({"online": online}, users, reconnect_count)
+def evaluate_mixed(online: dict, load: dict, users: int, reconnect_count: int,
+                   replica_count: int = 1) -> dict:
+    online_result = evaluate({"online": online}, users, reconnect_count, replica_count)
     load_result = message_capacity.evaluate(load)
     checks = {"onlineSessions": online_result["status"] == "PASS",
               "messageLoad": load_result["status"] == "PASS"}
@@ -106,8 +119,21 @@ def online_probe_command(lab: Lab, executable: Path, args: argparse.Namespace, s
         "TG_DC_HOST": "127.0.0.1",
         "TG_DC_PORT": str(args.mt_port),
         "METRICS_PORT": str(args.metrics_port),
+        "ONLINE_ENDPOINTS": json.dumps([
+            {"host": "127.0.0.1", "port": args.mt_port, "replica": "backend-1"},
+            *([{"host": "127.0.0.1", "port": args.mt_port_2, "replica": "backend-2"}]
+              if args.backend_instances == 2 else []),
+        ]),
     })
     return [str(executable), str(ROOT / "docker/production/probe-online-sessions.ts")]
+
+
+def postgres_connection_snapshot(lab: Lab) -> dict:
+    return json.loads(lab.sql("postgres", """SELECT json_build_object(
+        'maxConnections',(SELECT setting::integer FROM pg_settings WHERE name='max_connections'),
+        'clientConnections',(SELECT count(*) FROM pg_stat_activity WHERE backend_type='client backend'),
+        'remainingConfiguredSlots',(SELECT setting::integer FROM pg_settings WHERE name='max_connections')
+          -(SELECT count(*) FROM pg_stat_activity WHERE backend_type='client backend'));"""))
 
 
 def parse_online_result(result) -> dict:
@@ -137,8 +163,8 @@ def experiment(lab: Lab, args: argparse.Namespace, report: dict) -> None:
     wait_kafka(lab)
     for topic in ("Inbox-T", "Sync-T", "BotFather-T", "reliability-producer-acceptance"):
         lab.compose("exec", "-T", "kafka", "/opt/kafka/bin/kafka-topics.sh", "--bootstrap-server", "kafka:9092",
-                    "--create", "--if-not-exists", "--topic", topic, "--partitions", "3", "--replication-factor", "1")
-    if args.mix_rate is not None:
+                    "--create", "--if-not-exists", "--topic", topic, "--partitions", "6", "--replication-factor", "1")
+    if args.mix_rate is not None or args.backend_instances == 2:
         seed_accounts(lab)
     session_file = args.output.parent / f"{lab.run_id}-online-sessions.json"
     report["seed"] = {"users": args.users, "baseUserId": args.base_user_id,
@@ -148,8 +174,11 @@ def experiment(lab: Lab, args: argparse.Namespace, report: dict) -> None:
                                                (args.base_user_id, args.base_user_id + args.users)))
     if report["seed"]["authRows"] != args.users:
         raise ProbeError("online account seeding did not create the requested auth rows")
-    lab.start("backend", "prometheus")
+    services = ["backend"] + (["backend-2"] if args.backend_instances == 2 else []) + ["prometheus"]
+    lab.start(*services)
     wait_backend(lab)
+    if args.backend_instances == 2:
+        wait_backend(lab, "backend-2")
     command = online_probe_command(lab, executable, args, session_file)
     if args.mix_rate is not None:
         with ThreadPoolExecutor(max_workers=1) as executor:
@@ -161,7 +190,8 @@ def experiment(lab: Lab, args: argparse.Namespace, report: dict) -> None:
                     lab, args.metrics_port, args.users, future)}
                 load_evidence, pending = message_capacity.run_profile(
                     lab, gramjs, args.mix_rate, args.mix_seconds, args.mix_max_inflight,
-                    args.output.parent / f"{lab.run_id}-mixed-capacity-state.json", args.metrics_port)
+                    args.output.parent / f"{lab.run_id}-mixed-capacity-state.json", args.metrics_port,
+                    actor_ports=(args.mt_port, args.mt_port_2) if args.backend_instances == 2 else None)
                 report["mixedLoad"].update({"pendingAfterDrain": pending, "evidence": load_evidence})
             finally:
                 result = future.result()
@@ -179,21 +209,58 @@ def experiment(lab: Lab, args: argparse.Namespace, report: dict) -> None:
             detail = redact((result.stderr or result.stdout)[-5000:], lab.secret_values)
             raise ProbeError(f"{error}: {detail}") from None
     report["online"] = evidence
-    report["acceptance"] = evaluate(report, args.users, args.reconnect_count)
+    report["acceptance"] = evaluate(report, args.users, args.reconnect_count, args.backend_instances)
     if (report.get("onlineProbeError") or report["acceptance"]["status"] != "PASS"):
         raise ProbeError(f"{args.users}-online-session acceptance budget was not met")
     if args.mix_rate is not None:
         report["mixedLoadAcceptance"] = evaluate_mixed(
-            evidence, load_evidence, args.users, args.reconnect_count)
+            evidence, load_evidence, args.users, args.reconnect_count, args.backend_instances)
         if report["mixedLoadAcceptance"]["status"] != "PASS":
             report["status"] = "MIXED_LOAD_BUDGET_EXCEEDED"
+    report["postgresDuringLoad"] = postgres_connection_snapshot(lab)
+    if args.backend_instances == 2:
+        state_file = args.output.parent / f"{lab.run_id}-replica-failover-state.json"
+        try:
+            lab.env["TEAMGRAM_RELIABILITY_MT_PORT"] = str(args.mt_port_2)
+            before = messaging_reliability_probe.probe(lab, gramjs, "before", state_file, 1)
+            if messaging_reliability_probe.evaluate(before).get("status") != "PRE_RESTART_ONLY":
+                raise ProbeError("replica failover pre-state did not pass Layer 229 checks")
+            pending = lab.wait_sql("postgres", "SELECT (SELECT count(*) FROM msg_inbox_delivery_outbox WHERE state=0)+(SELECT count(*) FROM msg_state_delivery_outbox WHERE state=0);", "0")
+            second = lab.container("backend-2")
+            lab.compose("stop", "--timeout", "45", "backend-2")
+            stopped = lab.container("backend-2")
+            if stopped["State"]["Running"] or stopped["HostConfig"]["RestartPolicy"]["Name"] not in {"", "no"}:
+                raise ProbeError("backend-2 did not remain stopped; refusing survivor recovery test")
+            lab.env["TEAMGRAM_RELIABILITY_MT_PORT"] = str(args.mt_port)
+            after = messaging_reliability_probe.probe(lab, gramjs, "after", state_file, 1)
+            if messaging_reliability_probe.evaluate(after).get("status") != "RESTART_RECOVERY_ONLY":
+                raise ProbeError("surviving backend did not recover the saved Layer 229 update state")
+            remaining = lab.wait_sql("postgres", "SELECT (SELECT count(*) FROM msg_inbox_delivery_outbox WHERE state=0)+(SELECT count(*) FROM msg_state_delivery_outbox WHERE state=0);", "0")
+            report["replicaFailover"] = {
+                "status": "PASS", "failedReplica": "backend-2", "survivor": "backend-1",
+                "failedContainerId": second["Id"], "stoppedContainerId": stopped["Id"],
+                "backend2Stopped": True, "restartDisabled": True,
+                "preFailurePending": int(pending), "postRecoveryPending": int(remaining),
+                "before": before, "after": after,
+                "routing": "probe reconnected directly to the surviving local endpoint",
+            }
+        finally:
+            state_file.unlink(missing_ok=True)
+    report["postgresAtCompletion"] = postgres_connection_snapshot(lab)
     report["dependencies_at_completion"] = {}
-    for service in ("postgres", "kafka", "redis", "etcd", "minio", "backend", "prometheus"):
+    services = ["postgres", "kafka", "redis", "etcd", "minio", "backend", "prometheus"]
+    if args.backend_instances == 2:
+        services.append("backend-2")
+    for service in services:
         state = lab.container(service)["State"]
         health = state.get("Health", {}).get("Status")
-        if not state["Running"] or health not in (None, "healthy"):
+        expected_stopped = service == "backend-2" and args.backend_instances == 2
+        if expected_stopped:
+            if state["Running"]:
+                raise ProbeError(f"capacity dependency {service} unexpectedly restarted")
+        elif not state["Running"] or health not in (None, "healthy"):
             raise ProbeError(f"capacity dependency {service} is not healthy")
-        report["dependencies_at_completion"][service] = {"running": True, "health": health}
+        report["dependencies_at_completion"][service] = {"running": state["Running"], "health": health}
     if report["status"] != "MIXED_LOAD_BUDGET_EXCEEDED":
         report["status"] = "PASS"
     session_file.unlink(missing_ok=True)
@@ -203,6 +270,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--execute", action="store_true")
     parser.add_argument("--users", type=int, default=1000)
+    parser.add_argument("--backend-instances", type=int, choices=(1, 2), default=1)
     parser.add_argument("--hold-seconds", type=int, default=20)
     parser.add_argument("--batch-size", type=int, default=50)
     parser.add_argument("--reconnect-count", type=int, default=10)
@@ -216,13 +284,14 @@ def main() -> int:
     parser.add_argument("--output", type=Path, default=Path("/tmp/teamgram-online-capacity.json"))
     parser.add_argument("--postgres-port", type=int, default=55439)
     parser.add_argument("--mt-port", type=int, default=21545)
+    parser.add_argument("--mt-port-2", type=int, default=21546)
     parser.add_argument("--kafka-port", type=int, default=19096)
     parser.add_argument("--metrics-port", type=int, default=19092)
     args = parser.parse_args()
     report = {"status": "PLAN", "scope": "local seeded Layer 229 concurrent online sessions",
               "productionCapacityAccepted": False, "requested": {"users": args.users,
               "holdSeconds": args.hold_seconds, "batchSize": args.batch_size,
-              "reconnectCount": args.reconnect_count},
+              "reconnectCount": args.reconnect_count, "backendInstances": args.backend_instances},
               "started_at": dt.datetime.now(dt.timezone.utc).isoformat()}
     lab = None
     try:
@@ -239,11 +308,16 @@ def main() -> int:
                                                "maxInflight": args.mix_max_inflight,
                                                "effectiveHoldSeconds": args.effective_hold_seconds}
                                               if args.mix_rate is not None else None)
-        validate_ports([args.postgres_port, args.mt_port, args.kafka_port, args.metrics_port])
+        ports = [args.postgres_port, args.mt_port, args.kafka_port, args.metrics_port]
+        if args.backend_instances == 2:
+            ports.append(args.mt_port_2)
+        validate_ports(ports)
         lab = Lab("teamgram-reliability-online-" + secrets.token_hex(6), port=args.postgres_port, timeout=600, wait=180,
                   profiles=["messaging", "backend", "monitoring"], env={
                       "TEAMGRAM_RELIABILITY_IMAGE": args.image,
                       "TEAMGRAM_RELIABILITY_MT_PORT": str(args.mt_port),
+                      "TEAMGRAM_RELIABILITY_MT_PORT_2": str(args.mt_port_2),
+                      "TEAMGRAM_RELIABILITY_PG_MAX_CONNECTIONS": "300",
                       "TEAMGRAM_RELIABILITY_KAFKA_PORT": str(args.kafka_port),
                       "TEAMGRAM_RELIABILITY_METRICS_PORT": str(args.metrics_port)})
         report["project"] = lab.project

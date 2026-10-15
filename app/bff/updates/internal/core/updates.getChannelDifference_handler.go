@@ -33,7 +33,7 @@ func (c *UpdatesCore) UpdatesGetChannelDifference(in *mtproto.TLUpdatesGetChanne
 		c.Logger.Errorf("updates.getChannelDifference - error: channel invalid")
 		return nil, mtproto.ErrChannelInvalid
 	}
-	if _, err := channelview.ValidateInputChannel(c.MD.UserId, channel); err != nil {
+	if _, err := channelview.ValidateChannelDifferenceInputChannel(c.MD.UserId, channel); err != nil {
 		return nil, err
 	}
 
@@ -61,10 +61,18 @@ func (c *UpdatesCore) UpdatesGetChannelDifference(in *mtproto.TLUpdatesGetChanne
 		return nil, mtproto.ErrInternalServerError
 	}
 
-	return mtproto.MakeTLUpdatesChannelDifference(&mtproto.Updates_ChannelDifference{
+	return channelDifferenceResponse(diff), nil
+}
+
+func channelDifferenceResponse(diff *updates.ChannelDifference) *mtproto.Updates_ChannelDifference {
+	result := &mtproto.Updates_ChannelDifference{
 		Final:        diff.GetFinal(),
 		Pts:          diff.GetPts(),
 		NewMessages:  diff.GetNewMessages(),
 		OtherUpdates: diff.GetOtherUpdates(),
-	}).To_Updates_ChannelDifference(), nil
+	}
+	if len(result.GetNewMessages()) == 0 && len(result.GetOtherUpdates()) == 0 {
+		return mtproto.MakeTLUpdatesChannelDifferenceEmpty(result).To_Updates_ChannelDifference()
+	}
+	return mtproto.MakeTLUpdatesChannelDifference(result).To_Updates_ChannelDifference()
 }

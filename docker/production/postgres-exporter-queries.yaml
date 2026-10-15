@@ -1,0 +1,98 @@
+# Custom postgres_exporter collectors for the production database runbook.
+# Keep this file read-only: values are diagnostics, never a cleanup command.
+pg_lock_waits:
+  query: |
+    SELECT count(*)::double precision AS waiting
+    FROM pg_stat_activity
+    WHERE wait_event_type = 'Lock'
+  metrics:
+    - waiting:
+        usage: "GAUGE"
+        description: "Sessions currently waiting on a PostgreSQL lock"
+pg_wal:
+  query: |
+    SELECT wal_records::double precision, wal_fpi::double precision,
+           wal_bytes::double precision, stats_reset
+    FROM pg_stat_wal
+  metrics:
+    - wal_records:
+        usage: "COUNTER"
+        description: "WAL records generated"
+    - wal_fpi:
+        usage: "COUNTER"
+        description: "Full page images written to WAL"
+    - wal_bytes:
+        usage: "COUNTER"
+        description: "WAL bytes generated"
+    - stats_reset:
+        usage: "GAUGE"
+        description: "PostgreSQL WAL statistics reset timestamp"
+pg_checkpointer:
+  query: |
+    SELECT num_timed::double precision AS checkpoints_timed,
+           num_requested::double precision AS checkpoints_requested,
+           write_time::double precision AS checkpoint_write_time,
+           sync_time::double precision AS checkpoint_sync_time,
+           buffers_written::double precision AS buffers_checkpoint,
+           extract(epoch FROM stats_reset)::double precision AS stats_reset
+    FROM pg_stat_checkpointer
+  metrics:
+    - checkpoints_timed:
+        usage: "COUNTER"
+        description: "Scheduled checkpoints"
+    - checkpoints_requested:
+        usage: "COUNTER"
+        description: "Requested checkpoints"
+    - checkpoint_write_time:
+        usage: "COUNTER"
+        description: "Checkpoint write time in milliseconds"
+    - checkpoint_sync_time:
+        usage: "COUNTER"
+        description: "Checkpoint fsync time in milliseconds"
+    - buffers_checkpoint:
+        usage: "COUNTER"
+        description: "Buffers written during checkpoints"
+    - stats_reset:
+        usage: "GAUGE"
+        description: "PostgreSQL background writer statistics reset timestamp"
+pg_slow_activity:
+  query: |
+    SELECT count(*)::double precision AS slow_queries
+    FROM pg_stat_activity
+    WHERE state = 'active' AND query_start < now() - interval '1 second'
+      AND query NOT ILIKE '%pg_stat_activity%'
+  metrics:
+    - slow_queries:
+        usage: "GAUGE"
+        description: "Active queries running longer than one second"
+pg_wal_directory:
+  query: |
+    SELECT COALESCE(sum(size), 0)::double precision AS bytes
+    FROM pg_ls_waldir()
+  metrics:
+    - bytes:
+        usage: "GAUGE"
+        description: "Bytes currently occupied by WAL files"
+pg_archiver:
+  query: |
+    SELECT archived_count::double precision, failed_count::double precision,
+           COALESCE(extract(epoch FROM last_failed_time), 0)::double precision AS last_failed_timestamp
+    FROM pg_stat_archiver
+  metrics:
+    - archived_count:
+        usage: "COUNTER"
+        description: "Successfully archived WAL files"
+    - failed_count:
+        usage: "COUNTER"
+        description: "WAL archive failures"
+    - last_failed_timestamp:
+        usage: "GAUGE"
+        description: "Unix timestamp of the last WAL archive failure"
+pg_replication:
+  query: |
+    SELECT COALESCE(max(pg_wal_lsn_diff(pg_current_wal_lsn(), replay_lsn)), 0)::double precision AS max_lag_bytes
+    FROM pg_stat_replication
+  metrics:
+    - max_lag_bytes:
+        usage: "GAUGE"
+        description: "Maximum byte lag among connected PostgreSQL standbys"

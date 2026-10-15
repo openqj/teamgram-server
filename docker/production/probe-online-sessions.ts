@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
-import { performance } from 'node:perf_hooks';
+import { monitorEventLoopDelay, performance } from 'node:perf_hooks';
 
 // Local Layer 229 capacity probe. The session file is generated in the
 // disposable PostgreSQL lab and contains only synthetic auth keys.
@@ -15,11 +15,34 @@ const dcId = Number(process.env.TG_DC_ID || '2');
 const dcHost = process.env.TG_DC_HOST || '127.0.0.1';
 const dcPort = Number(process.env.TG_DC_PORT || '11443');
 const metricsPort = Number(process.env.METRICS_PORT || '19090');
+const endpoints: { host: string; port: number; replica: string }[] = JSON.parse(
+  process.env.ONLINE_ENDPOINTS || JSON.stringify([{ host: dcHost, port: dcPort, replica: 'backend-1' }]),
+);
 const apiLayer = 229;
 let Api: any;
 let TelegramClient: any;
 let CallbackSession: any;
 let Connection: any;
+let runtimePhase = 'configuration';
+const eventLoopDelay = monitorEventLoopDelay({ resolution: 20 });
+eventLoopDelay.enable();
+const runtimeStartedAt = performance.now();
+let eventLoopUtilizationBase = performance.eventLoopUtilization();
+const runtimeSamples: any[] = [];
+const runtimeCpuStarted = process.cpuUsage();
+const runtimeSampleTimer = setInterval(() => {
+  const utilization = performance.eventLoopUtilization(eventLoopUtilizationBase);
+  eventLoopUtilizationBase = performance.eventLoopUtilization();
+  runtimeSamples.push({
+    elapsedMs: performance.now() - runtimeStartedAt,
+    phase: runtimePhase,
+    eventLoopUtilization: utilization.utilization,
+    eventLoopDelayP95Ms: eventLoopDelay.percentile(95) / 1e6,
+    eventLoopDelayMaxMs: eventLoopDelay.max / 1e6,
+  });
+  eventLoopDelay.reset();
+}, 1000);
+runtimeSampleTimer.unref();
 
 type Seed = { userId: string; accessHash: string; authB64: string };
 type ClientRow = { seed: Seed; client: any; index: number };
@@ -35,7 +58,7 @@ const report: any = {
   reconnectCount,
   ok: false,
   connect: { requested: requestedUsers, connected: 0, failed: 0, failures: [], batches: [] },
-  hold: { samples: [], minConnected: 0, maxConnected: 0, serverGaugeMin: null },
+  hold: { samples: [], minConnected: 0, maxConnected: 0, serverGaugeMin: null, serverGaugeByReplicaMin: {} },
   reconnect: { requested: reconnectCount, connected: 0, failures: [] },
   serviceGauge: { samples: [], min: null, max: null, observed: false },
 };
@@ -82,6 +105,24 @@ async function queryActive(): Promise<number | null> {
   }
 }
 
+async function queryActiveByReplica(): Promise<Record<string, number>> {
+  try {
+    const query = encodeURIComponent('sum by (replica) (gnetway_conn_active{job="interface.gateway"})');
+    const response = await fetch(`http://127.0.0.1:${metricsPort}/api/v1/query?query=${query}`);
+    if (!response.ok) return {};
+    const body: any = await response.json();
+    const result: Record<string, number> = {};
+    for (const row of body?.data?.result || []) {
+      const name = row?.metric?.replica;
+      const value = Number(row?.value?.[1]);
+      if (typeof name === 'string' && Number.isFinite(value)) result[name] = value;
+    }
+    return result;
+  } catch {
+    return {};
+  }
+}
+
 function updateGauge(value: number | null, elapsedMs: number): void {
   report.serviceGauge.samples.push({ elapsedMs, active: value });
   if (value === null) return;
@@ -115,6 +156,7 @@ async function waitForGaugeAtMost(expected: number, started: number): Promise<nu
 }
 
 function makeClient(seed: Seed, index: number): any {
+  const endpoint = endpoints[index % endpoints.length];
   const session = new CallbackSession({
     mainDcId: dcId,
     keys: { [dcId]: Buffer.from(seed.authB64, 'base64').toString('hex') },
@@ -122,8 +164,8 @@ function makeClient(seed: Seed, index: number): any {
   const load = session.load.bind(session);
   session.load = async () => {
     await load();
-    session._serverAddress = dcHost;
-    session._port = dcPort;
+    session._serverAddress = endpoint.host;
+    session._port = endpoint.port;
   };
   const client = new TelegramClient(session, Number(process.env.TG_API_ID || '1'),
     process.env.TG_API_HASH || '0123456789abcdef0123456789abcdef', {
@@ -238,6 +280,7 @@ async function holdClients(clients: ClientRow[], started: number): Promise<void>
   let min = Number.POSITIVE_INFINITY;
   let max = 0;
   let gaugeMin: number | null = null;
+  const replicaGaugeMins: Record<string, number> = {};
   while (performance.now() < deadline) {
     const connected = clients.reduce((count, row) => count + (row.client.isConnected() ? 1 : 0), 0);
     min = Math.min(min, connected);
@@ -246,11 +289,21 @@ async function holdClients(clients: ClientRow[], started: number): Promise<void>
     const active = await queryActive();
     updateGauge(active, performance.now() - started);
     if (active !== null) gaugeMin = gaugeMin === null ? active : Math.min(gaugeMin, active);
+    const byReplica = await queryActiveByReplica();
+    for (const endpoint of endpoints) {
+      const replicaActive = byReplica[endpoint.replica];
+      if (typeof replicaActive === 'number' && Number.isFinite(replicaActive)) {
+        const previous = replicaGaugeMins[endpoint.replica];
+        replicaGaugeMins[endpoint.replica] = previous === undefined
+          ? replicaActive : Math.min(previous, replicaActive);
+      }
+    }
     await sleep(Math.min(1000, Math.max(50, deadline - performance.now())));
   }
   report.hold.minConnected = Number.isFinite(min) ? min : 0;
   report.hold.maxConnected = max;
   report.hold.serverGaugeMin = gaugeMin;
+  report.hold.serverGaugeByReplicaMin = replicaGaugeMins;
 }
 
 async function reconnectSample(clients: ClientRow[]): Promise<void> {
@@ -281,10 +334,18 @@ async function main(): Promise<void> {
     check(Number.isInteger(reconnectCount) && reconnectCount >= 0 && reconnectCount <= requestedUsers, 'INVALID_RECONNECT_COUNT');
     check(Number.isInteger(timeoutMs) && timeoutMs >= 1000 && timeoutMs <= 60000, 'INVALID_ONLINE_TIMEOUT');
     check(Number.isInteger(dcId) && dcId > 0 && Number.isInteger(dcPort) && dcPort > 0 && dcPort < 65536, 'INVALID_DC_ENDPOINT');
+    check(endpoints.length >= 1 && endpoints.length <= 2
+      && endpoints.every((endpoint) => typeof endpoint.host === 'string' && endpoint.host.length > 0
+        && Number.isInteger(endpoint.port) && endpoint.port > 0 && endpoint.port < 65536
+        && /^backend-[1-2]$/.test(endpoint.replica)), 'INVALID_ONLINE_ENDPOINTS');
     const seeds: Seed[] = JSON.parse(fs.readFileSync(sessionFile, 'utf8'));
     check(Array.isArray(seeds) && seeds.length === requestedUsers, 'ONLINE_SESSION_COUNT_MISMATCH');
     check(seeds.every((seed) => /^\d+$/.test(seed.userId) && /^-?\d+$/.test(seed.accessHash)
       && Buffer.from(seed.authB64, 'base64').length === 256), 'INVALID_ONLINE_SESSION_SEED');
+    report.connect.replicaRequested = Object.fromEntries(endpoints.map((endpoint, replicaIndex) => [
+      endpoint.replica, seeds.reduce((count, _seed, index) => count + (index % endpoints.length === replicaIndex ? 1 : 0), 0),
+    ]));
+    report.endpoints = endpoints.map(({ host, port, replica }) => ({ host, port, replica }));
     const globalAny = globalThis as any;
     globalAny.self ??= globalThis;
     globalAny.addEventListener ??= () => {};
@@ -297,11 +358,14 @@ async function main(): Promise<void> {
     Api = requireModule(path.join(gramjsDir!, 'src/lib/gramjs/tl/index.ts')).Api;
     Connection = requireModule(path.join(gramjsDir!, 'src/lib/gramjs/network/connection/TCPObfuscated.ts')).ConnectionTCPObfuscated;
     configured = true;
+    runtimePhase = 'connect';
     const connected = await connectBatches(seeds);
     clients.push(...connected);
     const holdStarted = performance.now();
+    runtimePhase = 'hold';
     if (connected.length === requestedUsers) await waitForGaugeAtLeast(requestedUsers, holdStarted);
     await holdClients(connected, holdStarted);
+    runtimePhase = 'reconnect';
     await reconnectSample(connected);
     report.ok = report.connect.connected === requestedUsers
       && report.hold.minConnected === requestedUsers
@@ -311,11 +375,25 @@ async function main(): Promise<void> {
   } catch (error) {
     report.error = { code: errorCode(error) };
   } finally {
+    runtimePhase = 'cleanup';
     for (const row of clients) await disconnect(row);
     report.serviceGauge.afterDisconnect = await waitForGaugeAtMost(0, performance.now());
     report.serviceGauge.cleanupObserved = report.serviceGauge.afterDisconnect === 0;
     report.durationMs = performance.now() - started;
     report.processMemory = process.memoryUsage();
+    clearInterval(runtimeSampleTimer);
+    eventLoopDelay.disable();
+    const runtimeCPU = process.cpuUsage(runtimeCpuStarted);
+    report.runtime = {
+      samples: runtimeSamples,
+      eventLoopDelayMs: {
+        mean: eventLoopDelay.mean / 1e6,
+        max: eventLoopDelay.max / 1e6,
+        p95: eventLoopDelay.percentile(95) / 1e6,
+        p99: eventLoopDelay.percentile(99) / 1e6,
+      },
+      cpuUsageMs: { user: runtimeCPU.user / 1000, system: runtimeCPU.system / 1000 },
+    };
     report.configured = configured;
     process.stdout.write(`${JSON.stringify(report)}\n`);
   }

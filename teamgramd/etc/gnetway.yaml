@@ -40,6 +40,18 @@ Gnetway:
   Multicore: false
   SendBuf: 65536
   ReceiveBuf: 65536
+  MaxConnections: 10000
+  MaxConnectionsPerIP: 0
+  ConnectionRatePerIP: 0
+  ConnectionBurstPerIP: 0
+  MaxConnectionsPerAuthKey: 0
+  MaxHandshakesInFlight: 512
+  HandshakeRatePerIP: 0
+  HandshakeBurstPerIP: 0
+  WorkerPoolSize: 512
+  WebsocketMaxMessageBytes: 16777216
+  TCPKeepAliveSeconds: 60
+  TCPNoDelay: true
 
 Session:
   Etcd:

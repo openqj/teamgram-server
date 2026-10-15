@@ -1,0 +1,25 @@
+[Unit]
+Description=Collect one Teamgram Layer 229 messaging SLO minute
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=teamgram-slo
+Group=teamgram-slo
+SupplementaryGroups=node_exporter
+WorkingDirectory=/opt/teamgram-server
+EnvironmentFile=/etc/teamgram/messaging-slo.env
+UMask=0027
+ExecStart=/usr/bin/python3 /opt/teamgram-server/tools/messaging_slo_production_collector.py
+TimeoutStartSec=75s
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+ReadWritePaths=/var/lib/teamgram/slo /var/lib/node_exporter/textfile_collector
+

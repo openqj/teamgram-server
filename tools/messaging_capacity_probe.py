@@ -20,14 +20,30 @@ from postgres_recovery_probe import Lab, ProbeError, redact
 STAGE_METRICS = {
     "deliveryClaimWaitCount": 'teamgram_delivery_claim_wait_seconds_count{job="messenger.msg"}',
     "deliveryClaimWaitSum": 'teamgram_delivery_claim_wait_seconds_sum{job="messenger.msg"}',
+    "deliveryClaimWaitBucket": 'teamgram_delivery_claim_wait_seconds_bucket{job="messenger.msg"}',
     "deliveryPublicationCount": 'teamgram_delivery_publication_seconds_count{job="messenger.msg"}',
     "deliveryPublicationSum": 'teamgram_delivery_publication_seconds_sum{job="messenger.msg"}',
+    "deliveryPublicationBucket": 'teamgram_delivery_publication_seconds_bucket{job="messenger.msg"}',
     "deliveryCompletionCount": 'teamgram_delivery_completion_seconds_count{job="messenger.msg"}',
     "deliveryCompletionSum": 'teamgram_delivery_completion_seconds_sum{job="messenger.msg"}',
+    "deliveryCompletionBucket": 'teamgram_delivery_completion_seconds_bucket{job="messenger.msg"}',
     "deliveryResults": 'teamgram_delivery_publications_total{job="messenger.msg"}',
     "syncDeliveryCount": 'teamgram_sync_delivery_seconds_count{job="messenger.sync"}',
     "syncDeliverySum": 'teamgram_sync_delivery_seconds_sum{job="messenger.sync"}',
+    "syncDeliveryBucket": 'teamgram_sync_delivery_seconds_bucket{job="messenger.sync"}',
     "syncResults": 'teamgram_sync_delivery_total{job="messenger.sync"}',
+    "gatewayWriteQueueWaitCount": 'gnetway_gateway_write_queue_wait_ms_count{job="interface.gateway"}',
+    "gatewayWriteQueueWaitSum": 'gnetway_gateway_write_queue_wait_ms_sum{job="interface.gateway"}',
+    "gatewayWriteQueueWaitBucket": 'gnetway_gateway_write_queue_wait_ms_bucket{job="interface.gateway"}',
+    "gatewayWriteRejected": 'gnetway_gateway_write_rejected_total{job="interface.gateway"}',
+    "gatewayWriteFailed": 'gnetway_gateway_write_failed_total{job="interface.gateway"}',
+    "consumerRecordAgeCount": 'mqconsumer_record_age_seconds_count{job="messenger.sync"}',
+    "consumerRecordAgeSum": 'mqconsumer_record_age_seconds_sum{job="messenger.sync"}',
+    "consumerRecordAgeBucket": 'mqconsumer_record_age_seconds_bucket{job="messenger.sync"}',
+    "consumerOffsetCommitCount": 'mqconsumer_offset_commit_seconds_count{job="messenger.sync"}',
+    "consumerOffsetCommitSum": 'mqconsumer_offset_commit_seconds_sum{job="messenger.sync"}',
+    "consumerOffsetCommitBucket": 'mqconsumer_offset_commit_seconds_bucket{job="messenger.sync"}',
+    "consumerHandlerRetries": 'mqconsumer_handler_retries_total{job="messenger.sync"}',
 }
 
 
@@ -61,14 +77,51 @@ def stage_metric_delta(before: dict, after: dict) -> dict:
     return delta
 
 
-def settled_stage_metrics(port: int, before: dict, timeout: float = 15) -> dict:
-    """Allow the 5-second scrape interval to observe the async sync consumer."""
+def consumer_age_snapshot(port: int) -> list[dict] | dict:
+    """Sample active Sync record ages while load and Kafka work drain."""
+    try:
+        rows = prometheus_query(port, 'mqconsumer_oldest_uncommitted_seconds{job="messenger.sync"}')
+        return [{"labels": {key: value for key, value in row["metric"].items() if key != "__name__"},
+                 "value": float(row["value"][1])} for row in rows]
+    except (OSError, ProbeError, ValueError, KeyError, TypeError):
+        return {"error": "unavailable"}
+
+
+def _metric_fingerprint(snapshot: dict) -> tuple:
+    return tuple(sorted(
+        (name, json.dumps(row.get("labels", {}), sort_keys=True), row.get("value", 0))
+        for name, rows in snapshot.items() if isinstance(rows, list)
+        for row in rows if isinstance(row, dict)
+    ))
+
+
+def _has_positive_delta(before: dict, after: dict) -> bool:
+    return any(row["value"] > 0 for rows in stage_metric_delta(before, after).values()
+               for row in rows if isinstance(row.get("value"), (int, float)))
+
+
+def settled_stage_metrics(port: int, before: dict, timeout: float = 30, quiet_samples: int = 6) -> dict:
+    """Wait through the Prometheus scrape cadence for consumer metrics to settle."""
+    if "error" in before:
+        return stage_metric_snapshot(port)
     deadline = time.monotonic() + timeout
-    latest = {}
+    latest = before
+    previous = _metric_fingerprint(before)
+    progressed = False
+    stable_samples = 0
     while time.monotonic() < deadline:
         latest = stage_metric_snapshot(port)
-        if latest.get("syncDeliveryCount") or latest.get("syncResults"):
+        current = _metric_fingerprint(latest)
+        if current != previous:
+            progressed = progressed or _has_positive_delta(before, latest)
+            stable_samples = 0
+        elif progressed:
+            stable_samples += 1
+            if stable_samples >= quiet_samples:
+                return latest
+        if "error" in latest:
             return latest
+        previous = current
         time.sleep(1)
     return latest
 
@@ -86,7 +139,8 @@ def evaluate(value: dict, *, ack_ms: float = 1000, live_ms: float = 2000) -> dic
         raise ValueError("every scheduled slot must be present in the denominator")
     ack, live, ack_dispatch, live_dispatch = [], [], [], []
     counts = dict(planned=planned, dispatched=0, dropped=0, acked=0, delivered=0,
-                  ack_on_time=0, live_on_time=0, ack_within_window=0, live_within_window=0)
+                  ack_on_time=0, live_on_time=0, ack_within_window=0, live_within_window=0,
+                  live_late=0)
     dropped_reasons: dict[str, int] = {}
     for index, row in enumerate(samples):
         if (row.get("slot") != index or row.get("direction") != ("B-to-A" if index % 2 else "A-to-B")
@@ -117,8 +171,11 @@ def evaluate(value: dict, *, ack_ms: float = 1000, live_ms: float = 2000) -> dic
             counts[count_key] += 1
             counts[f"{kind}_on_time"] += elapsed <= budget
             counts[f"{kind}_within_window"] += timestamp <= duration
+            if kind == "live" and row.get("liveLate") is True:
+                counts["live_late"] += 1
             scheduled_values.append(elapsed)
             dispatch_values.append(timestamp - dispatched)
+    counts["live_unobserved"] = max(0, planned - counts["dropped"] - counts["delivered"])
     checks = value.get("checks", {})
     consistent = (value.get("schemaVersion") == 1 and value.get("phase") == "capacity"
                   and value.get("evidenceClass") == "local_probe" and value.get("productionSloEvidence") is False
@@ -131,6 +188,8 @@ def evaluate(value: dict, *, ack_ms: float = 1000, live_ms: float = 2000) -> dic
             "productionCapacityAccepted": False, "offeredMessagesPerSecond": rate, "durationSeconds": duration / 1000,
             "counts": counts, "consistency": consistent, "budgetsMs": {"scheduledToAck": ack_ms, "scheduledToLive": live_ms},
             "generatorDroppedReasons": dropped_reasons,
+            "completeDelivery": counts["dropped"] == 0 and counts["delivered"] == planned,
+            "deliveryCompletenessRatio": counts["delivered"] / planned,
             "ackSuccessRatio": counts["acked"] / planned, "liveSuccessRatio": counts["delivered"] / planned,
             "ackOnTimeRatio": counts["ack_on_time"] / planned, "liveOnTimeRatio": counts["live_on_time"] / planned,
             "windowAckGoodput": counts["ack_within_window"] * 1000 / duration,
@@ -154,7 +213,7 @@ def start_lab(lab: Lab, args: argparse.Namespace, report: dict) -> Path:
     wait_kafka(lab)
     for topic in ("Inbox-T", "Sync-T", "BotFather-T"):
         lab.compose("exec", "-T", "kafka", "/opt/kafka/bin/kafka-topics.sh", "--bootstrap-server", "kafka:9092",
-                    "--create", "--if-not-exists", "--topic", topic, "--partitions", "3", "--replication-factor", "1")
+                    "--create", "--if-not-exists", "--topic", topic, "--partitions", "6", "--replication-factor", "1")
     seed_accounts(lab)
     lab.start("backend", "prometheus")
     wait_backend(lab)
@@ -162,7 +221,8 @@ def start_lab(lab: Lab, args: argparse.Namespace, report: dict) -> Path:
 
 
 def run_profile(lab: Lab, gramjs: Path, rate: int, seconds: int, max_inflight: int,
-                state_file: Path, metrics_port: int) -> tuple[dict, int]:
+                state_file: Path, metrics_port: int,
+                actor_ports: tuple[int, int] | None = None) -> tuple[dict, int]:
     lab.env.update(LOAD_RATE=str(rate), LOAD_SECONDS=str(seconds), LOAD_MAX_INFLIGHT=str(max_inflight))
     with tempfile.TemporaryDirectory(prefix=f"{lab.project}-capacity-") as temporary, ThreadPoolExecutor(max_workers=1) as executor:
         directory = Path(temporary)
@@ -171,19 +231,35 @@ def run_profile(lab: Lab, gramjs: Path, rate: int, seconds: int, max_inflight: i
             metrics_before = stage_metric_snapshot(metrics_port)
         except (OSError, ProbeError, ValueError):
             metrics_before = {"error": "unavailable"}
-        future = executor.submit(probe, lab, gramjs, "capacity", state_file, 1, require_success=False)
+        future = executor.submit(probe, lab, gramjs, "capacity", state_file, 1,
+                                 require_success=False, actor_ports=actor_ports)
         backlog = []
+
+        def sample_backlog(phase: str) -> dict:
+            snapshot = json.loads(lab.sql("postgres", """SELECT json_build_object(
+                'pending',(SELECT count(*) FROM msg_inbox_delivery_outbox WHERE state=0)+(SELECT count(*) FROM msg_state_delivery_outbox WHERE state=0),
+                'oldestSeconds',(SELECT coalesce(max(extract(epoch from now()-created_at)),0) FROM msg_inbox_delivery_outbox WHERE state=0));"""))
+            backlog.append({"elapsedSeconds": round(time.monotonic() - started, 3), "phase": phase,
+                            **snapshot, "consumerOldestUncommitted": consumer_age_snapshot(metrics_port)})
+            return snapshot
+
         try:
             started = time.monotonic()
             while not (directory / "sent.json").exists() and not future.done():
-                snapshot = json.loads(lab.sql("postgres", """SELECT json_build_object(
-                    'pending',(SELECT count(*) FROM msg_inbox_delivery_outbox WHERE state=0)+(SELECT count(*) FROM msg_state_delivery_outbox WHERE state=0),
-                    'oldestSeconds',(SELECT coalesce(max(extract(epoch from now()-created_at)),0) FROM msg_inbox_delivery_outbox WHERE state=0));"""))
-                backlog.append({"elapsedSeconds": round(time.monotonic()-started, 3), **snapshot})
+                sample_backlog("load")
                 if time.monotonic() - started > seconds + 120:
                     raise ProbeError("capacity drain milestone exceeded deadline")
-                time.sleep(2)
+                time.sleep(1)
             wait_control(lab, directory, "sent", future)
+            drain_deadline = time.monotonic() + 120
+            zero_samples = 0
+            while zero_samples < 2:
+                snapshot = sample_backlog("drain")
+                zero_samples = zero_samples + 1 if snapshot["pending"] == 0 else 0
+                if time.monotonic() >= drain_deadline:
+                    raise ProbeError("capacity outbox did not remain drained")
+                if zero_samples < 2:
+                    time.sleep(1)
             pending = lab.wait_sql("postgres", "SELECT (SELECT count(*) FROM msg_inbox_delivery_outbox WHERE state=0)+(SELECT count(*) FROM msg_state_delivery_outbox WHERE state=0);", "0")
         finally:
             fault_control(lab, directory, "restored")

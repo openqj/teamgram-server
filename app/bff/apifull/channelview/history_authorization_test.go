@@ -116,13 +116,46 @@ func TestHistoryAndEditDataCheckInputPeerAuthorization(t *testing.T) {
 	if _, err = GetMessageEditData(owner, badHash, 1); !errors.Is(err, mtproto.ErrChannelInvalid) {
 		t.Fatalf("bad edit-data access hash: got %v", err)
 	}
-	if _, err = HistoryForInputPeer(outsider, input, 0, 20); !errors.Is(err, mtproto.ErrUserNotParticipant) {
-		t.Fatalf("non-member history: got %v", err)
+	if _, err = HistoryForInputPeer(outsider, input, 0, 20); !errors.Is(err, mtproto.ErrChannelPrivate) {
+		t.Fatalf("private non-member history: got %v", err)
 	}
-	if _, err = SearchForInputPeer(outsider, input, "stored", 0, 0, 0, 0, 0, 0, 0, 20); !errors.Is(err, mtproto.ErrUserNotParticipant) {
-		t.Fatalf("non-member search: got %v", err)
+	if _, err = SearchForInputPeer(outsider, input, "stored", 0, 0, 0, 0, 0, 0, 0, 20); !errors.Is(err, mtproto.ErrChannelPrivate) {
+		t.Fatalf("private non-member search: got %v", err)
 	}
 	if _, err = GetMessageEditData(outsider, input, 1); !errors.Is(err, mtproto.ErrUserNotParticipant) {
 		t.Fatalf("non-member edit data: got %v", err)
+	}
+	if _, err = ValidateInputPeer(outsider, input); !errors.Is(err, mtproto.ErrUserNotParticipant) {
+		t.Fatalf("strict member validation for non-member: got %v", err)
+	}
+
+	if err = domain.SaveChannel(domain.Channel{
+		ID: channelID, AccessHash: channelID, Creator: owner, Title: "history-auth-test", Broadcast: true, Username: "public-history-auth-test",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	publicHistory, err := HistoryForInputPeer(outsider, input, 0, 20)
+	if err != nil || len(publicHistory.GetMessages()) != 2 || !publicHistory.GetChats()[0].GetLeft() {
+		t.Fatalf("public non-member history: messages=%d chats=%+v err=%v", len(publicHistory.GetMessages()), publicHistory.GetChats(), err)
+	}
+	publicSearch, err := SearchForInputPeer(outsider, input, "stored", 0, 0, 0, 0, 0, 0, 0, 20)
+	if err != nil || len(publicSearch.GetMessages()) != 1 || !publicSearch.GetChats()[0].GetLeft() {
+		t.Fatalf("public non-member search: messages=%d chats=%+v err=%v", len(publicSearch.GetMessages()), publicSearch.GetChats(), err)
+	}
+	if err = ValidateChannelMessageWrite(outsider, input); !errors.Is(err, mtproto.ErrUserNotParticipant) {
+		t.Fatalf("public non-member write validation: got %v", err)
+	}
+	if _, err = ReadHistoryForInputPeer(outsider, input, 1); !errors.Is(err, mtproto.ErrUserNotParticipant) {
+		t.Fatalf("public non-member read-history: got %v", err)
+	}
+	if _, err = MessageViewsForInputPeer(outsider, input, []int32{1}, false); !errors.Is(err, mtproto.ErrUserNotParticipant) {
+		t.Fatalf("public non-member message views: got %v", err)
+	}
+
+	if err = domain.EditChannelBanned(channelID, owner, outsider, &domain.ChannelBannedRights{ViewMessages: true}, time.Now().Unix()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = HistoryForInputPeer(outsider, input, 0, 20); !errors.Is(err, mtproto.ErrUserBannedInChannel) {
+		t.Fatalf("public channel banned non-member history: got %v", err)
 	}
 }

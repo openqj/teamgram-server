@@ -284,6 +284,12 @@ func (c *MessagesCore) validateForwardChannelPeer(input *mtproto.InputPeer, requ
 	if input == nil || input.GetChannelId() <= 0 || input.GetAccessHash() == 0 {
 		return mtproto.ErrChannelInvalid
 	}
+	// Public history is readable without joining, while forwarding still needs
+	// an authenticated channel membership check in this implementation. Keep
+	// the read-only exception from widening this mutation/copy path.
+	if _, err := channelview.ValidateInputPeer(c.MD.UserId, input); err != nil {
+		return err
+	}
 	history, err := channelview.HistoryForInputPeer(c.MD.UserId, input, 0, 1)
 	if err != nil {
 		return err

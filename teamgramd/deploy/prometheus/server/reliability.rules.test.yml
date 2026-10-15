@@ -1,5 +1,6 @@
 rule_files:
   - reliability.rules.yml
+  - slo-recording.rules.yml
 evaluation_interval: 1m
 tests:
   - interval: 1m
@@ -88,3 +89,148 @@ tests:
             exp_annotations:
               summary: "Delivery backlog cannot be observed"
               description: "The database sampler is stale or missing; the last backlog values must not be interpreted as current health."
+  - interval: 1m
+    input_series:
+      - series: 'teamgram_slo_ack_eligible_total{environment="production",region="test-1",source="synthetic-layer229"}'
+        values: '0 2 4 6 8 10 12 14 16 18 20'
+      - series: 'teamgram_slo_ack_good_total{environment="production",region="test-1",source="synthetic-layer229"}'
+        values: '0 2 4 6 8 10 12 14 16 18 20'
+      - series: 'teamgram_slo_live_eligible_total{environment="production",region="test-1",source="synthetic-layer229"}'
+        values: '0 2 4 6 8 10 12 14 16 18 20'
+      - series: 'teamgram_slo_live_good_total{environment="production",region="test-1",source="synthetic-layer229"}'
+        values: '0 2 4 6 8 10 12 14 16 18 20'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: TeamgramMessagingAckErrorBudgetBurn
+        exp_alerts: []
+      - eval_time: 10m
+        alertname: TeamgramMessagingLiveErrorBudgetBurn
+        exp_alerts: []
+  - interval: 1m
+    input_series:
+      - series: 'teamgram_slo_ack_eligible_total{environment="production",region="test-1",source="synthetic-layer229"}'
+        values: '0 100 200 300 400 500 600 700 800 900 1000'
+      - series: 'teamgram_slo_ack_good_total{environment="production",region="test-1",source="synthetic-layer229"}'
+        values: '0 90 180 270 360 450 540 630 720 810 900'
+      - series: 'teamgram_slo_live_eligible_total{environment="production",region="test-1",source="synthetic-layer229"}'
+        values: '0 100 200 300 400 500 600 700 800 900 1000'
+      - series: 'teamgram_slo_live_good_total{environment="production",region="test-1",source="synthetic-layer229"}'
+        values: '0 90 180 270 360 450 540 630 720 810 900'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: TeamgramMessagingAckErrorBudgetBurn
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              region: test-1
+            exp_annotations:
+              summary: "Messaging ACK error budget is burning rapidly"
+              description: "The SLO collector reports more than 1% ACK failures over five minutes. Compare ACK and live delivery evidence before declaring a backend fault."
+      - eval_time: 10m
+        alertname: TeamgramMessagingLiveErrorBudgetBurn
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              region: test-1
+            exp_annotations:
+              summary: "Messaging live-delivery error budget is burning rapidly"
+              description: "The SLO collector reports more than 1% live-delivery failures over five minutes. Inspect sync fan-out, gateway push and client receipt evidence."
+  - interval: 1m
+    input_series:
+      - series: 'pg_lock_waits_waiting{job="postgres-exporter",instance="postgres:5432"}'
+        values: '1 1 1 1'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: TeamgramPostgresLockWaits
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: postgres-exporter
+              instance: postgres:5432
+            exp_annotations:
+              summary: "PostgreSQL sessions are waiting on locks"
+              description: "Inspect pg_stat_activity blockers and transaction age before changing query or pool limits."
+  - interval: 1m
+    input_series:
+      - series: 'teamgram_slo_connection_eligible_total{environment="production",region="test-1",source="synthetic-layer229"}'
+        values: '0 100 200 300 400 500 600 700 800 900 1000'
+      - series: 'teamgram_slo_connection_good_total{environment="production",region="test-1",source="synthetic-layer229"}'
+        values: '0 90 180 270 360 450 540 630 720 810 900'
+      - series: 'teamgram_slo_measurement_complete{environment="production",region="test-1",source="synthetic-layer229",sli="connection"}'
+        values: '0 0 0 0 0 0 0 0'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: TeamgramMessagingConnectionErrorBudgetBurn
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              region: test-1
+            exp_annotations:
+              summary: "Messaging canary connections are dropping"
+              description: "The 5-minute connection sample failure ratio exceeds 1%; inspect gateway sessions, transport resets and reconnect diagnostics."
+      - eval_time: 7m
+        alertname: TeamgramMessagingSloMeasurementIncomplete
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              sli: connection
+              region: test-1
+            exp_annotations:
+              summary: "Messaging SLO measurement is incomplete"
+              description: "The connection measurement is missing or incomplete in retained evidence. Repair collection; do not convert missing samples into healthy data."
+  - interval: 1m
+    input_series:
+      - series: 'teamgram_slo_integrity_eligible_total{environment="production",region="test-1",source="synthetic-layer229"}'
+        values: '0 2 4 6 8 10 12 14'
+      - series: 'teamgram_slo_message_loss_total{environment="production",region="test-1",source="synthetic-layer229"}'
+        values: '0 0 1 1 1 1 1 1'
+      - series: 'teamgram_slo_recovery_seconds_bucket{environment="production",region="test-1",source="synthetic-layer229",le="60"}'
+        values: '0 1 2 3 4 5 6 7 8 9 9 9 9 9 9 9 9'
+      - series: 'teamgram_slo_recovery_seconds_count{environment="production",region="test-1",source="synthetic-layer229"}'
+        values: '0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16'
+    promql_expr_test:
+      - expr: teamgram_slo_recovery_rto_error_ratio_30d
+        eval_time: 16m
+        exp_samples:
+          - labels: '{__name__="teamgram_slo_recovery_rto_error_ratio_30d",region="test-1"}'
+            value: 0.4375
+      - expr: (teamgram_slo_recovery_rto_error_ratio_30d > 0.05) and (sum by (region) (increase(teamgram_slo_recovery_seconds_count{environment="production",source="synthetic-layer229"}[30d])) >= 1)
+        eval_time: 16m
+        exp_samples:
+          - labels: '{__name__="teamgram_slo_recovery_rto_error_ratio_30d",region="test-1"}'
+            value: 0.4375
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: TeamgramMessagingMessageLoss
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              region: test-1
+            exp_annotations:
+              summary: "A Layer 229 canary message is missing"
+              description: "Recipient history is missing an eligible logical message. Check ACK, outbox age, live delivery and update-state continuity."
+      - eval_time: 16m
+        alertname: TeamgramMessagingRecoveryRtoBudgetBurn
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              region: test-1
+            exp_annotations:
+              summary: "Messaging recovery time exceeded the candidate 60-second budget"
+              description: "More than 5% of recorded recovery events exceeded 60 seconds in 30 days. Check detected-to-verified recovery timestamps and drill follow-ups."
+  - interval: 1m
+    input_series:
+      - series: 'teamgram_slo_evidence_latest_timestamp_seconds{environment="production",region="test-1",source="synthetic-layer229"}'
+        values: '0 0 0 0 0 0 0'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: TeamgramMessagingSloEvidenceStale
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              environment: production
+              region: test-1
+              source: synthetic-layer229
+            exp_annotations:
+              summary: "Messaging SLO evidence has stopped advancing"
+              description: "The durable-evidence exporter has not observed a new minute or recovery event recently; verify the writer, textfile rebuild and Prometheus scrape path."

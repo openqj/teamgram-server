@@ -39,6 +39,23 @@ func TestHandleMessageDispatchesPushVariants(t *testing.T) {
 	}
 }
 
+func TestSafeCommitBatchPolicyIsLimitedToReceiptBackedSyncPushUpdates(t *testing.T) {
+	method := string(proto.MessageName((*sync.TLSyncPushUpdates)(nil)))
+	if !safeToBatchCommit("Sync-T", method) {
+		t.Fatal("receipt-backed Sync-T updates should allow bounded offset batching")
+	}
+	ifNotMethod := string(proto.MessageName((*sync.TLSyncPushUpdatesIfNot)(nil)))
+	if !safeToBatchCommit("Sync-T", ifNotMethod) {
+		t.Fatal("receipt-backed Sync-T pushUpdatesIfNot should allow bounded offset batching")
+	}
+	for _, item := range [][2]string{{"BotFather-T", method}, {"Sync-T", "TLSyncPushRpcResult"},
+		{"Inbox-T", method}, {"BotFather-T", ifNotMethod}, {"Sync-T", "unknown"}} {
+		if safeToBatchCommit(item[0], item[1]) {
+			t.Fatalf("unexpected batching policy for topic=%q method=%q", item[0], item[1])
+		}
+	}
+}
+
 func TestPermanentAuthKeyFailureIsConsumed(t *testing.T) {
 	if !errors.Is(mtproto.ErrAuthKeyUnregistered, mtproto.ErrAuthKeyUnregistered) {
 		t.Fatal("auth key error must be comparable with errors.Is")

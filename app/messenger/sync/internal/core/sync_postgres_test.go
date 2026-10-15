@@ -99,6 +99,37 @@ func TestPostgresSyncFailedPushReplaysCommittedSeq(t *testing.T) {
 	}
 }
 
+func TestPostgresSyncPushUpdatesIfNotReceiptMakesOffsetReplayIdempotent(t *testing.T) {
+	c, statusStub := newSyncPostgresCore(t)
+	request := &sync.TLSyncPushUpdatesIfNot{
+		UserId:  7,
+		Updates: mtproto.MakeUpdatesByUpdates(coreSeqUpdate()),
+	}
+	if reply, err := c.SyncPushUpdatesIfNot(request); err != nil || reply == nil {
+		t.Fatalf("first delivery reply=%v error=%v", reply, err)
+	}
+	if statusStub.calls != 1 {
+		t.Fatalf("first delivery status lookups=%d, want 1", statusStub.calls)
+	}
+	var receiptRows, delivered, updateRows, maxSeq int
+	if err := c.svcCtx.Dao.Pool.QueryRow(context.Background(), `SELECT count(*),count(*) FILTER (WHERE delivered)
+ FROM sync_delivery_receipts`).Scan(&receiptRows, &delivered); err != nil || receiptRows != 1 || delivered != 1 {
+		t.Fatalf("receipt rows=%d delivered=%d error=%v", receiptRows, delivered, err)
+	}
+	if err := c.svcCtx.Dao.Pool.QueryRow(context.Background(), `SELECT count(*),max(seq) FROM auth_seq_updates WHERE user_id=7`).Scan(&updateRows, &maxSeq); err != nil || updateRows != 2 || maxSeq != 1 {
+		t.Fatalf("initial seq rows=%d max=%d error=%v", updateRows, maxSeq, err)
+	}
+	if reply, err := c.SyncPushUpdatesIfNot(request); err != nil || reply == nil {
+		t.Fatalf("receipt replay reply=%v error=%v", reply, err)
+	}
+	if statusStub.calls != 1 {
+		t.Fatalf("completed receipt replay performed another status lookup: %d", statusStub.calls)
+	}
+	if err := c.svcCtx.Dao.Pool.QueryRow(context.Background(), `SELECT count(*),max(seq) FROM auth_seq_updates WHERE user_id=7`).Scan(&updateRows, &maxSeq); err != nil || updateRows != 2 || maxSeq != 1 {
+		t.Fatalf("replayed seq rows=%d max=%d error=%v", updateRows, maxSeq, err)
+	}
+}
+
 func TestPostgresSyncNotMeExcludesPermanentAuthorization(t *testing.T) {
 	c, _ := newSyncPostgresCore(t)
 	if _, err := c.SyncUpdatesNotMe(&sync.TLSyncUpdatesNotMe{UserId: 7, PermAuthKeyId: 91, Updates: mtproto.MakeUpdatesByUpdates(coreSeqUpdate())}); err != nil {

@@ -1,0 +1,29 @@
+# The production SLO collector must export these counters from its durable,
+# append-only evidence store. Recording rules keep alert evaluation independent
+# from the collector's scrape interval and preserve separate ACK/live SLIs.
+groups:
+  - name: teamgram.messaging.slo
+    interval: 1m
+    rules:
+      - record: teamgram_slo_ack_eligible_rate_5m
+        expr: sum by (region) (rate(teamgram_slo_ack_eligible_total{environment="production",source="synthetic-layer229"}[5m]))
+      - record: teamgram_slo_ack_error_ratio_5m
+        expr: 1 - (sum by (region) (rate(teamgram_slo_ack_good_total{environment="production",source="synthetic-layer229"}[5m])) / clamp_min(sum by (region) (rate(teamgram_slo_ack_eligible_total{environment="production",source="synthetic-layer229"}[5m])), 1e-9))
+      - record: teamgram_slo_live_eligible_rate_5m
+        expr: sum by (region) (rate(teamgram_slo_live_eligible_total{environment="production",source="synthetic-layer229"}[5m]))
+      - record: teamgram_slo_live_error_ratio_5m
+        expr: 1 - (sum by (region) (rate(teamgram_slo_live_good_total{environment="production",source="synthetic-layer229"}[5m])) / clamp_min(sum by (region) (rate(teamgram_slo_live_eligible_total{environment="production",source="synthetic-layer229"}[5m])), 1e-9))
+      - record: teamgram_slo_connection_eligible_rate_5m
+        expr: sum by (region) (rate(teamgram_slo_connection_eligible_total{environment="production",source="synthetic-layer229"}[5m]))
+      - record: teamgram_slo_connection_error_ratio_5m
+        expr: 1 - (sum by (region) (rate(teamgram_slo_connection_good_total{environment="production",source="synthetic-layer229"}[5m])) / clamp_min(sum by (region) (rate(teamgram_slo_connection_eligible_total{environment="production",source="synthetic-layer229"}[5m])), 1e-9))
+      - record: teamgram_slo_reconnect_eligible_rate_5m
+        expr: sum by (region) (rate(teamgram_slo_reconnect_eligible_total{environment="production",source="synthetic-layer229"}[5m]))
+      - record: teamgram_slo_reconnect_error_ratio_5m
+        expr: 1 - (sum by (region) (rate(teamgram_slo_reconnect_good_total{environment="production",source="synthetic-layer229"}[5m])) / clamp_min(sum by (region) (rate(teamgram_slo_reconnect_eligible_total{environment="production",source="synthetic-layer229"}[5m])), 1e-9))
+      - record: teamgram_slo_message_loss_ratio_5m
+        expr: sum by (region) (rate(teamgram_slo_message_loss_total{environment="production",source="synthetic-layer229"}[5m])) / clamp_min(sum by (region) (rate(teamgram_slo_integrity_eligible_total{environment="production",source="synthetic-layer229"}[5m])), 1e-9)
+      - record: teamgram_slo_message_duplicate_ratio_5m
+        expr: sum by (region) (rate(teamgram_slo_message_duplicates_total{environment="production",source="synthetic-layer229"}[5m])) / clamp_min(sum by (region) (rate(teamgram_slo_integrity_eligible_total{environment="production",source="synthetic-layer229"}[5m])), 1e-9)
+      - record: teamgram_slo_recovery_rto_error_ratio_30d
+        expr: 1 - (sum by (region) (increase(teamgram_slo_recovery_seconds_bucket{environment="production",source="synthetic-layer229",le="60"}[30d])) / clamp_min(sum by (region) (increase(teamgram_slo_recovery_seconds_count{environment="production",source="synthetic-layer229"}[30d])), 1))

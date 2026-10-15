@@ -165,11 +165,91 @@ python3 tools/messaging_online_capacity_probe.py --execute \
   --output /tmp/teamgram-online-mixed-5000-10s-20261015.json
 ```
 
-报告 `/tmp/teamgram-online-mixed-5000-10s-20261015.json` 通过：连接保持阶段服务端 gauge 为 5000，200 条计划消息全部 ACK 和实时送达，无压测端丢弃；ACK p95 为 25.5ms，实时送达 p95 为 533.1ms，`pts` 连续、历史与实时 ID 一致、outbox 排空。以上仍是本地单实例结果，不能直接作为生产容量或长期 SLO 承诺；20/s、频道 fan-out、多副本和跨故障域仍需单独验收。
+早期报告 `/tmp/teamgram-online-mixed-5000-10s-20261015.json` 通过：5000 连接保持、200 条计划消息全部 ACK 和实时送达，实时送达 p95 为 533.1ms。分区拓扑调整后，报告 `/tmp/teamgram-online-mixed-5000-10s-sixpart-r5b-20261015.json` 再次通过：5000/5000 连接保持，20/20 重连，200/200 消息 ACK 与实时送达，ACK p95 为 31.8ms、实时送达 p95 为 86.2ms，最大 outbox pending 为 2，`pts` 连续、历史与实时 ID 一致并排空。两次都是本地单实例合成验收，不能直接作为生产容量或长期 SLO 承诺；频道 fan-out、多副本和跨故障域仍需单独验收。
+
+### 双副本 5000 在线 + 20/s 回归
+
+相同的 5000 在线、双后端各 2500 连接、20/s × 20 秒负载连续运行三轮：
+
+| 轮次 | 镜像 | 最终送达 | ≤2s 实时送达 | 实时 p95 / p99 |
+| --- | --- | ---: | ---: | ---: |
+| r6 | `teamgram-reliability:20261015-dual-backend-commit-metrics-r6` | 400/400 | 384/400 | 1,328ms / 6,868ms |
+| r7 | `teamgram-reliability:20261015-dual-backend-commit-metrics-r7` | 400/400 | 386/400 | 1,569ms / 6,371ms |
+| r8 | `teamgram-reliability:20261015-dual-backend-safe-commit-batch-r8` | 400/400 | 400/400 | 500ms / 756ms |
+
+r6 报告为 `/tmp/teamgram-online-dual-5000-20s-20261015-r6.json`，r7 报告为 `/tmp/teamgram-online-dual-5000-20s-20261015-r7.json`，r8 报告为 `/tmp/teamgram-online-dual-5000-20s-20261015-r8.json`。三轮均通过 5000 会话保持、2500/2500 副本分布、20/20 抽样重连和 400/400 最终送达；r6、r7 因部分实时更新超过 2 秒而未通过消息时延预算。
+
+r7 的分区指标显示 `Sync-T` consumer 每条记录同步提交 offset：810 次提交的平均耗时约 61ms，分区 p95 桶分别为 128ms 和 512ms；记录进入 handler 时的 p95 桶为 2.048s。r8 仅对有 Kafka offset/request hash 持久化 receipt、且重放复用已准备 seq/date 的 `Sync-T` `TLSyncPushUpdates` 启用有界 offset 合批：每分区最多 8 条或 250ms 提交一次。其他 Sync 方法、`BotFather-T` 和 Inbox 仍逐条同步提交；rebalance 取消时未提交的批次保持未确认。r8 提交数降为 513 次，平均约 48ms、两个分区 p95 桶均为 128ms；record age p95 桶降至 16ms。测试覆盖安全消息合批、遇到非安全消息时提交已处理前缀，以及窗口到期提交。
+
+本地 r8 命令：
+
+```sh
+python3 tools/messaging_online_capacity_probe.py --execute \
+  --image teamgram-reliability:20261015-dual-backend-safe-commit-batch-r8 \
+  --users 5000 --backend-instances 2 --hold-seconds 20 --batch-size 50 \
+  --reconnect-count 20 --timeout-ms 60000 --mix-rate 20 --mix-seconds 20 \
+  --mix-max-inflight 256 \
+  --output /tmp/teamgram-online-dual-5000-20s-20261015-r8.json
+```
+
+r8 通过全部 400 条消息的 1s ACK、2s 实时送达预算，`pts` 连续、历史与实时 ID 一致、outbox 排空且隔离资源清理通过。该结果是单 Kafka broker、单 PostgreSQL、两个合成私聊用户和本地双后端的短时验收；它不证明生产容量、Kafka 多副本耐久性、长期 SLO、群组 fan-out 或自动跨故障域 HA。
+
+### 5000 人频道与超级群组 fan-out
+
+`tools/messaging_group_channel_fanout_probe.py` 在新的隔离环境创建一个广播频道和一个 megagroup，为每个目标加入 5000 个合成用户；5000 个 Layer 229 客户端保持实时更新订阅，双后端各承载 2500 个客户端，然后分别向两个目标发布一条消息。消息必须由每个客户端实时收到，且目标客户端可读取历史；采样 ACK 预算为 1 秒，计划发送到实时更新的预算为 2 秒。基础 group-chat 在 Telegram 语义中有成员上限，本档以可容纳 5000 成员的超级群组（megagroup）作为群组广播验收对象。
+
+复跑报告 `/tmp/teamgram-group-channel-fanout-5000-20261015-rerun.json`：5000/5000 客户端认证、订阅并保持在线，两个后端各 2500；频道与超级群组分别 5000/5000 唯一收件、零重复、历史可读、频道 `pts` 有效，两个投递 outbox 最终均完成，连接清理和隔离资源清理通过。但该负载未通过时延预算：频道 ACK 5,029ms、实时 p95/p99 19,575/20,283ms；超级群组 ACK 5,008ms、实时 p95/p99 18,444/19,119ms。2 秒内收到的收件者分别为 333/5000 和 660/5000。报告判定 `BUDGET_EXCEEDED`，不是完整送达失败。
+
+下一轮复测 `/tmp/teamgram-group-channel-fanout-5000-20261015.json` 也观测到两类目标完整送达且零重复，实时 p95 分别为 15,086ms 和 16,265ms；首次运行的连接清理 gauge 判定有探针错误，因此以修正 gauge 后的复跑作为验收结论。复跑客户端进程 RSS 约 1.43GiB、事件循环 p95 约 22ms；PostgreSQL 观测连接为 156/300。该探针只发一条频道消息和一条超级群组消息，是本地短时容量样本，不等于群组持续消息吞吐、频道长期负载或生产容量。
+
+实现路径包含两个成本段：频道消息事务同步写入成员 recipient 快照后才返回；异步投递再做资格检查、调用 Sync 并持久化完成状态。对应实现位于 `app/bff/apifull/internal/domain/channel_delivery_outbox.go` 和 `app/bff/apifull/channelview/delivery.go`。资格批查与有界 fan-out 已实现，但不能单凭路径推断它们是当前实时尾延迟根因；下面的分阶段计时显示，5000 人档中 APIFull 到 Sync 的 RPC 大多很快返回，而 Sync Kafka handler 开始处理前已有显著排队年龄。
+
+批量资格查询后的 100 人回归报告 `/tmp/teamgram-fanout-100-channel-batch-20261015-r3.json` 仍为 `BUDGET_EXCEEDED`。两后端各保持 50 条会话；频道与超级群组均完成 100/100 唯一收件（98 条在线实时收件，2 条断线后通过差量恢复），无重复、`pts` 连续、历史可读、outbox 排空。ACK 为 89.7/66.0ms，离线恢复 p95 为 27.7/24.5ms；但实时 p95 为 5,672.8/5,627.6ms，2 秒内分别只有 49/98 和 51/98 条实时收件。与前序 100 人基线约 5.16-5.18 秒相比没有收益，因此没有把这版外推到 5000 人验收。探针侧 Node event-loop p95 为 21.7ms、p99 为 24.6ms，PostgreSQL 连接为 145/300；现有报告没有 APIFull 收件资格查询、Sync RPC 推送、网关写出和回执持久化的分阶段耗时，不能据此归因尾延迟。下一步应补充这些阶段的计时/追踪，再按同一负载定位瓶颈，不继续盲目调高并发或数据库连接数。
+
+在该 100 人复测基础上加入 APIFull 分阶段观测后的报告 `/tmp/teamgram-fanout-100-channel-stage-r4-20261016.json` 仍未通过 2 秒实时预算：频道实时 p95/p99 为 5,678/6,180ms，超级群组为 4,638/5,641ms；ACK 为 106/93ms，两类目标各 98/98 在线收件，完整送达、恢复、PTS、outbox 和资源清理均通过。两目标资格查询总耗时约 4.3ms、回执持久化约 15.0ms，APIFull 到 Sync 的 RPC 等待总计约 952ms（202 次调用）；Sync `consumer` handler 总计约 4.09s，gateway 写队列等待总计约 653ms。该报告只有阶段计数和总和，不能由聚合值推断 p95，也未覆盖 Kafka record age。
+
+R5 报告 `/tmp/teamgram-fanout-100-channel-stage-r5-20261016.json` 增加直方图后，频道与超级群组实时 p95/p99 分别为 5,172/6,184ms 和 5,641/7,157ms，98/98 在线收件最终完整，无重复；ACK 为 105/79ms。资格查询、回执持久化均远低于毫秒级累计成本，Sync RPC 的 99% 以上调用在 25ms 内返回。`mqconsumer_record_age_seconds` 的 95 分位落在 4.096-8.192 秒桶，Sync handler 的 95 分位不超过 25ms，offset commit 的 95 分位落在 256-512ms 桶。这把主要延迟缩小到 Kafka 记录进入 handler 之前的等待和提交，但当时仍是 100 人小档。
+
+将有界 offset 合批从已带持久化回执的 `TLSyncPushUpdates` 扩展到 `TLSyncPushUpdatesIfNot` 后，增加了 PostgreSQL 回放测试：相同 offset 重放不重复增加 `seq`，也不重复查询在线会话。6 分区 r6 的 100 人报告 `/tmp/teamgram-fanout-100-channel-stage-r6-20261016.json` 显著改善为频道实时 p95 1,613ms、超级群组 1,102ms，ACK 93/86ms；最终完整送达、无重复、PTS 连续、恢复和清理均通过。但频道只有 96/98 在线收件在 2 秒内完成，未满足“全员 2 秒”门槛，所以仍是 `BUDGET_EXCEEDED`。这一轮说明安全 offset 合批有收益，不表示 5000 人已经通过。
+
+同一 r6 镜像（`sha256:d3d8a25934b56ac64e309882dc44b4bc7e0c910ac5afe8da1abe13e792a24b14`）的 5000 人、双后端、每目标 100 人离线恢复报告 `/tmp/teamgram-group-channel-fanout-5000-20261016-r6.json`：频道和超级群组各有 4900/4900 在线收件、100/100 差量恢复、零重复、PTS 连续且 outbox 排空；但 ACK 为 1,903/2,089ms，实时 p95/p99 为频道 30,933/37,354ms、超级群组 27,773/32,281ms。离线恢复 p95 为 246/324ms，资源清理通过。Sync Kafka record age 的全局样本 p95 位于 16.384-32.768 秒边界之间，offset commit 的全局样本 p95 位于 256-512ms 之间；Sync handler 大多数不超过 25-50ms。与此同时，APIFull `sync_rpc` 直方图中 99% 以上调用不超过 25ms。因此该档的主要积压发生在 broker 接受记录之后、Sync handler 持续消费之前，而非资格 SQL 或单次 gateway push。
+
+分区数对照没有找到可接受的加分区解法。48 分区报告 `/tmp/teamgram-group-channel-fanout-5000-20261016-r7-48part.json` 判定 `FAIL`：频道有 6 个重复更新，超级群组在线实时收件少 64 个并有 6 个重复；实时 p95 为 12,881/80,031ms，ACK 为 5,041/5,088ms。record age 的 95 分位高于 32.768 秒桶，两个 backend 在负载期间约 100% CPU。12 分区报告 `/tmp/teamgram-group-channel-fanout-5000-20261016-r8-12part.json` 也判定 `FAIL`：频道/超级群组在线实时缺少 42/47 个收件者，虽无重复，实时 p95 仍为 32,132/28,726ms，ACK 为 3,061/3,082ms；离线 cohort 最终可恢复，outbox 和资源清理通过。其 record age 的 95 分位仍在 16.384-32.768 秒桶。48 分区时两个消费者组在每个分区仍只能各有一个 owner，扩大分区也同时增加调度与服务 CPU 开销；该本地实验不构成生产 topic 扩分区建议。
+
+目前的 5000 人档均未通过时延验收；r7/r8 还出现实时重复或缺收，必须作为硬失败处理，即使离线 difference 最终能够补齐。下一步应对 Sync handler 队列建立可复现的分区/consumer 并发剖析，并追踪每条回执从入队、处理、gateway ack 到客户端观察的对应关系，再做更小范围的负载回归。不要再仅凭分区数或 worker 并发调整宣称容量改善。
+
+### 频道更新缺口恢复验收
+
+`tools/messaging_channel_recovery_probe.py` 使用两个 Layer 229 账号创建隔离频道：成员 B 读取基准 `pts` 后断开，A 连续发布 5 条消息，B 重连并从旧 `pts` 调用 `updates.getChannelDifference`，页大小为 2。复测报告 `/tmp/teamgram-channel-difference-recovery-20261015-offline-gap.json` 为 `PASS`：B 在离线期间错过 5/5 条实时更新，随后按 `pts=2/4/5`、2/2/1 条恢复全部内容，最终页为 `final=true`；追平后返回 `updates.channelDifferenceEmpty`，频道历史与恢复内容一致。非成员返回 `USER_NOT_PARTICIPANT`，错误 access hash 返回 `CHANNEL_INVALID`；临时频道数据库行和隔离容器、网络、卷均清理为 0。
+
+```sh
+python3 tools/messaging_channel_recovery_probe.py --execute \
+  --image teamgram-reliability:20261015-channel-recovery \
+  --probe-timeout 60 \
+  --output /tmp/teamgram-channel-difference-recovery-20261015-offline-gap.json
+```
+
+这是单频道、单成员的本地协议与离线缺口验收，不测 5000 人 fan-out 的时延/容量，也不覆盖网关进程故障、TCP 分区或生产 SLO。后续仍需把相同缺口恢复检查并入 5000 成员压测及传输层故障演练。
+
+### Telegram 官方公开语义
+
+Telegram 没有公开服务端代码，因此不能据此断言其内部队列、数据库或 fan-out 实现。公开协议规定频道和超级群组各有独立的 `pts` 更新序列；客户端用 `pts`/`pts_count` 去重并检测缺口，再通过 `updates.getChannelDifference` 分页补齐。超级群组在协议中也是带 `megagroup` 标志的 channel。当前项目已把频道事件与消息/`pts` 在同一事务中持久化，并实现该差量接口；本地离线探针已验证旧 `pts` 分页恢复及成员权限边界。该证据不代表大规模 fan-out 或生产故障恢复。参考 [Working with Updates](https://core.telegram.org/api/updates)、[updates.getChannelDifference](https://core.telegram.org/method/updates.getChannelDifference)、[Channels and supergroups](https://core.telegram.org/api/channel) 与 [Telegram FAQ](https://telegram.org/faq)。
+
+公开浏览与成员订阅是不同权限。Telegram FAQ 说明公开群组可供任何人查看历史；API 邀请文档还定义 `chatInvitePeek`，允许未加入用户在预览有效期内通过 `updates`、`messages.getHistory` 和 `channels.getMessages` 读取超级群组或频道内容。参考 [Telegram FAQ: Public groups](https://telegram.org/faq#q-what-39s-the-difference-between-groups-and-channels)、[Invite links: Public usernames and previews](https://core.telegram.org/api/invites)。APIFull 现在允许持有有效频道 access hash 的用户读取公开用户名频道/超级群组的历史、按 ID 取消息和搜索结果；返回的 `Chat.left` 表示尚未加入。私有频道仍返回 `CHANNEL_PRIVATE`，活跃的 view-messages 封禁仍拒绝读取；发送、转发、回复引用、成员管理、消息浏览计数和已读状态继续要求成员资格。私有超级群组/频道通过 `messages.checkChatInvite` 成功检查后返回 `chatInvitePeek`，授权写入 PostgreSQL 并在 1 小时或邀请自身更早过期时失效；有效期内的 `messages.getHistory`、`channels.getMessages`、搜索和 `updates.getChannelDifference` 均可读，过期后恢复原有权限错误。本节 fan-out 探针仍只覆盖已加入成员的实时推送。
+
+复跑命令：
+
+```sh
+python3 tools/messaging_group_channel_fanout_probe.py --execute \
+  --image teamgram-reliability:20261016-channel-stage-r6 \
+  --users 5000 --backend-instances 2 --sync-partitions 48 --batch-size 50 \
+  --timeout-ms 60000 --delivery-timeout-seconds 180 \
+  --output /tmp/teamgram-group-channel-fanout-5000-20261016-r7-48part.json
+```
 
 ## 固定速率容量验收
 
-`tools/messaging_capacity_probe.py` 使用相同的全新隔离栈，按绝对计划时间交替双向发送。默认每档 60 秒、5/10/20 条每秒、最多 32 个等待 ACK/实时送达的调用；每档使用同一对账号的私聊，不能换算成多用户、群组或生产最大容量。
+`tools/messaging_capacity_probe.py` 使用相同的全新隔离栈，按绝对计划时间交替双向发送。默认每档 60 秒、5/10/20 条每秒、最多 32 个等待 ACK/实时送达的调用；隔离 Kafka topic 使用 6 个分区。种子用户 `910001` 与 `910002` 在 3 分区配置下会落到同一分区，使双向消息被一个 consumer 串行处理；6 分区配置将它们分开。该调整只校准本地双账号压测拓扑，不能换算成多用户、群组或生产最大容量。
 
 ```sh
 python3 tools/messaging_capacity_probe.py --execute \
@@ -186,11 +266,30 @@ python3 tools/messaging_capacity_probe.py --execute \
 | 10/s | 600 | 600 | 600 | 600 | 600 | PASS |
 | 20/s | 1,200 | 900 | 900 | 900 | 509 | BUDGET_EXCEEDED |
 
-完整镜像的 20/s 档有 300 个压测端 `MAX_INFLIGHT` 丢弃槽位，已观察实时送达 p95 约 2.646 秒；这证明该压测配置在该负载下超出预算，不能直接推导服务端容量上限或数据丢失。报告 `highestPassingTestedRate=10`，`capacityCeilingFound=false`。
+早期完整镜像的 20/s 档有 300 个压测端 `MAX_INFLIGHT` 丢弃槽位，已观察实时送达 p95 约 2.646 秒；这证明当时的压测配置超出预算，不能直接推导服务端容量上限或数据丢失。报告 `highestPassingTestedRate=10`，`capacityCeilingFound=false`。
 
 独立数据库积压采样分别记录 27、27、28 个样本，观测到的最大 pending 为 3、7、64；每档排空后的 SQL pending 都为 0，清理屏障和资源清理均通过。
 
-为区分压测端限制，另以 `max-inflight=128` 重跑 20/s，报告 `/tmp/teamgram-capacity-20s-inflight128-20261015.json` 为 `PROFILE_FAILED`：145 个 `MAX_INFLIGHT`、1,055 个 ACK、620 个实时事件，实时送达 p95 约 7.868 秒，pending 峰值约 317，并触发 `pts` 间隔/重复一致性检查。该结果说明扩大客户端并发会暴露实时投递队列瓶颈，应先按发布、消费者确认、sync update 和 gateway 写出阶段定位，再决定 worker、Kafka 分区和服务副本的扩容方式。
+早期三分区拓扑的 20/s 报告 `/tmp/teamgram-capacity-20s-20sec-queuedgateway-r4-20261015.json` 为 `PROFILE_FAILED`：400/400 ACK、364/400 实时送达、实时 p95 约 7.41 秒、pending 峰值 236，且检查到 `pts` 间隔。种子用户 `910001` 与 `910002` 的 Kafka hash 都落在分区 2；两个方向因此由同一个 Inbox consumer 串行处理。阶段指标印证积压发生在前段：outbox claim 等待累计约 3007 秒/701 次，而 gateway 写队列等待累计约 32ms、无拒绝；sync gateway push 累计约 0.59 秒。
+
+固定速率探针改用 6 分区并合并网关 WebSocket 批量写出后，镜像 `teamgram-reliability:20261015-stage-r5b`（`sha256:938f54f39b801bd27fc325d5eb89442d31abae47edfdffdbdd734bc515028a15`）以 20/s、20 秒、`max-inflight=256` 复测通过，报告 `/tmp/teamgram-capacity-20s-20sec-sixpart-r5b-20261015.json`：400/400 ACK 和实时送达，全部在 1 秒/2 秒预算内，实时 p95 334ms、p99 631ms，无生成器丢弃，`pts`/历史一致，pending 峰值 2、最终为 0。claim 等待累计约 38 秒/730 次，gateway 写队列等待累计约 34ms，无拒绝。10/s 回归报告 `/tmp/teamgram-capacity-10s-20sec-sixpart-r5b-20261015.json` 也是 200/200，实时 p95 143ms。
+
+加入网关写失败计数和失败时关闭连接的 r5c 镜像 `teamgram-reliability:20261015-stage-r5c`（`sha256:61ea91e4a02b668e7dc5e9206f0f2c6326f4a7205bf94190a9d2c4222669f881`）再次按 20/s、20 秒、`max-inflight=256` 验收：
+
+```sh
+python3 tools/messaging_capacity_probe.py --execute \
+  --image teamgram-reliability:20261015-stage-r5c \
+  --rates 20 --seconds 20 --max-inflight 256 \
+  --output /tmp/teamgram-capacity-20s-20sec-sixpart-r5c-20261015.json
+```
+
+报告 `/tmp/teamgram-capacity-20s-20sec-sixpart-r5c-20261015.json` 为 `PASS`：400/400 ACK、400/400 实时送达，400 条均分别在 1 秒和 2 秒预算内，无生成器丢弃；计划时刻到实时送达 p95 为 272ms、p99 为 582ms，ACK p95 为 16.5ms；`pts` 与历史一致，采样 pending 峰值 2、排空后为 0，资源清理通过。claim 等待累计约 34.6 秒/800 次，gateway 写队列等待累计约 36.5ms/854 次，本窗口未观测到写失败或队列拒绝。
+
+该结果说明此前 7.41 秒尾延迟的直接原因是两个固定账号在三分区下落到同一个 Inbox 分区、导致双向消费串行；改用能分散这两个 key 的隔离拓扑后，本地实测 p95 降至 272ms，400/400 实时送达。它不能据此归因或排除生产 PostgreSQL、Kafka broker 等其他负载问题，也不代表已找到生产容量上限。生产环境需要核实 `Inbox-T`、`Sync-T` 的实际分区数、key 分布、每分区 consumer lag 和副本数；按真实消息速率与故障恢复预算做容量规划，同时保持同一用户更新的分区顺序。隔离验收的 6 分区只是为这两个固定 key 解开碰撞，不是生产推荐值。
+
+在较新的 fan-out r10 镜像上复跑 60 秒 20/s，报告 `/tmp/teamgram-capacity-20s-telegram-learn-r12-20261015.json` 为 `PASS`：1200/1200 ACK、1200/1200 实时送达、零生成器丢弃；计划时刻到 ACK p95/p99 为 16.9/87.7ms，实时送达 p95/p99 为 114.3/406.5ms；`pts` 连续、历史与实时一致、outbox 排空、隔离资源清理通过。gateway 写队列未观测到拒绝或写失败。该结果仅覆盖本地双账号私聊链路，不能解释或替代 5000 成员频道/超级群组的 APIFull fan-out 验收，也不代表生产容量。
+
+网关批量编码或 socket 写出失败时会记录 `gnetway_gateway_write_failed_total{reason}` 并关闭连接，避免静默丢弃已出队更新；客户端重连后的 `pts` difference 是恢复路径。`TestFlushGatewayWritesClosesConnectionOnSocketWriteFailure` 使用已关闭对端的 `net.Pipe` 分别注入 TCP 和 WebSocket 写失败，并验证 gateway 关闭连接；这验证了本地写错误处理分支，不等同于容器网络切断、客户端自动重连和 MTProto difference 的端到端故障演练。
 
 每个计划槽都保留在分母。压测端迟到超过 100ms、并发占满、RPC 错误和送达超时均保留失败；不降低速率补发。报告区分计划到 ACK/送达、实际发出到 ACK/送达、窗口内 goodput 与窗口后排空。百分位明确只来自已观察结果，验收同时要求全部计划消息在 ACK 1 秒、在线送达 2 秒内完成。未达到预算或一致性检查失败不会标成已找到系统容量上限。
 

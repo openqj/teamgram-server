@@ -1,0 +1,11 @@
+[Unit]
+Description=Schedule Teamgram's production messaging SLO canary every minute
+
+[Timer]
+OnCalendar=*-*-* *:*:00
+AccuracySec=1s
+Persistent=false
+Unit=teamgram-messaging-slo.service
+
+[Install]
+WantedBy=timers.target

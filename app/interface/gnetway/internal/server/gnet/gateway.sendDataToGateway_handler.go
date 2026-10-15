@@ -21,15 +21,13 @@ import (
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/interface/gnetway/gateway"
 
-	"github.com/panjf2000/gnet/v2"
-	"github.com/zeromicro/go-zero/core/contextx"
 	"github.com/zeromicro/go-zero/core/logx"
 )
 
 // GatewaySendDataToGateway
 // gateway.sendDataToGateway auth_key_id:long session_id:long payload:bytes = Bool;
 func (s *Server) GatewaySendDataToGateway(ctx context.Context, in *gateway.TLGatewaySendDataToGateway) (reply *mtproto.Bool, err error) {
-	logx.WithContext(ctx).Infof("ReceiveData - request: {kId: %d, sessionId: %d, payloadLen: %d}", in.AuthKeyId, in.SessionId, len(in.Payload))
+	logx.WithContext(ctx).Debugf("ReceiveData - request: {kId: %d, sessionId: %d, payloadLen: %d}", in.AuthKeyId, in.SessionId, len(in.Payload))
 
 	authKey, connIdList := s.authSessionMgr.FoundSessionConnId(in.AuthKeyId, in.SessionId)
 	if len(connIdList) == 0 {
@@ -39,7 +37,6 @@ func (s *Server) GatewaySendDataToGateway(ctx context.Context, in *gateway.TLGat
 		logx.WithContext(ctx).Debugf("found: {k: %v, idList: %v}", in.AuthKeyId, connIdList)
 	}
 
-	ctx = contextx.ValueOnlyFrom(ctx)
 	msgKey, mtpRawData, _ := authKey.AesIgeEncrypt(in.Payload)
 	payload := func() []byte {
 		x := mtproto.GetEncodeBuf()
@@ -51,29 +48,17 @@ func (s *Server) GatewaySendDataToGateway(ctx context.Context, in *gateway.TLGat
 	}()
 	msg := &mtproto.MTPRawMessage{Payload: payload}
 
-	_ = s.pool.Submit(func() {
-		for _, connId := range connIdList {
-			s.eng.Trigger(connId, func(c gnet.Conn) {
-				connCtx, _ := c.Context().(*connContext)
-				if connCtx == nil {
-					logx.WithContext(ctx).Errorf("invalid state - conn(%s) Context() is nil", c)
-					return
-				}
-
-				if in.AuthKeyId != connCtx.getAuthKey().AuthKeyId() {
-					logx.WithContext(ctx).Errorf("invalid state - conn(%s) c.keyId(%d) != in.keyId(%d) is nil", authKey.AuthKeyId(), in.AuthKeyId)
-					return
-				}
-
-				err2 := UnThreadSafeWrite(c, msg)
-				if err2 != nil {
-					logx.WithContext(ctx).Errorf("sendToClient error: %v", err2)
-				} else {
-					logx.WithContext(ctx).Debugf("sendToConn: %v", connId)
-				}
-			})
+	accepted := true
+	for _, connId := range connIdList {
+		if !s.enqueueGatewayWrite(connId, msg) {
+			accepted = false
+			metricGatewayWriteRejected.Inc("queue_or_connection")
+			logx.WithContext(ctx).Errorf("gateway write queue full or connection closed: connId=%d", connId)
 		}
-	})
+	}
+	if !accepted {
+		return mtproto.BoolFalse, nil
+	}
 
 	return mtproto.BoolTrue, nil
 }

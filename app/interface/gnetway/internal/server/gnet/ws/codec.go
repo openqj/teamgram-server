@@ -18,16 +18,35 @@ import (
 	"github.com/zeromicro/go-zero/core/logx"
 )
 
+const DefaultMaxMessageBytes = 16 * 1024 * 1024
+
+var ErrMessageTooLarge = errors.New("websocket message exceeds configured limit")
+
 type WsCodec struct {
-	upgraded bool         // 链接是否升级
-	Buf      bytes.Buffer // 从实际socket中读取到的数据缓存
-	wsMsgBuf wsMessageBuf // ws 消息缓存
-	Conn     WsConn
+	upgraded        bool         // 链接是否升级
+	Buf             bytes.Buffer // 从实际socket中读取到的数据缓存
+	wsMsgBuf        wsMessageBuf // ws 消息缓存
+	Conn            WsConn
+	MaxMessageBytes int
 }
 
 type wsMessageBuf struct {
 	curHeader *ws.Header
 	cachedBuf bytes.Buffer
+}
+
+func NewCodec(maxMessageBytes int) *WsCodec {
+	if maxMessageBytes <= 0 {
+		maxMessageBytes = DefaultMaxMessageBytes
+	}
+	return &WsCodec{MaxMessageBytes: maxMessageBytes}
+}
+
+func (w *WsCodec) maxMessageBytes() int {
+	if w.MaxMessageBytes <= 0 {
+		return DefaultMaxMessageBytes
+	}
+	return w.MaxMessageBytes
 }
 
 type readWrite struct {
@@ -101,6 +120,9 @@ func (w *WsCodec) Upgrade(c gnet.Conn) (ok bool, action gnet.Action) {
 
 func (w *WsCodec) ReadBufferBytes(c gnet.Conn) gnet.Action {
 	size := c.InboundBuffered()
+	if size > w.maxMessageBytes() || w.Buf.Len()+size > w.maxMessageBytes() {
+		return gnet.Close
+	}
 	buf := make([]byte, size)
 	read, err := c.Read(buf)
 	if err != nil {
@@ -177,6 +199,9 @@ func (w *WsCodec) readWsMessages() (messages []wsutil.Message, err error) {
 			}
 		}
 		dataLen := (int)(msgBuf.curHeader.Length)
+		if dataLen > w.maxMessageBytes() || msgBuf.cachedBuf.Len()+dataLen > w.maxMessageBytes() {
+			return nil, ErrMessageTooLarge
+		}
 		// 从 in 中读出 data，并将 data bytes 写入 msgBuf.cachedBuf
 		if dataLen > 0 {
 			if in.Len() < dataLen { //数据不完整

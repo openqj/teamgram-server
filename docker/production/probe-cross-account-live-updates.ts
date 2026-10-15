@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { randomBytes } from 'node:crypto';
-import { performance } from 'node:perf_hooks';
+import { monitorEventLoopDelay, performance } from 'node:perf_hooks';
 
 // Local Layer 229 acceptance: SLO_SAMPLES counts sequential sends in EACH
 // direction. Fresh clients reuse the auth keys; they do not register new keys.
@@ -15,12 +15,15 @@ const timeoutMs = Number(process.env.LIVE_UPDATE_TIMEOUT_MS || '8000');
 const dcId = Number(process.env.TG_DC_ID || '2');
 const dcHost = process.env.TG_DC_HOST || '127.0.0.1';
 const dcPort = Number(process.env.TG_DC_PORT || '11443');
+const actorPorts = ['A', 'B'].map((name) => Number(process.env[`${name}_TG_DC_PORT`] || dcPort));
 const stateFile = process.env.PROBE_STATE_FILE || `/tmp/teamgram-${tag}.json`;
 const controlDir = process.env.PROBE_CONTROL_DIR || '';
 const loadRate = Number(process.env.LOAD_RATE || '10');
 const loadSeconds = Number(process.env.LOAD_SECONDS || '60');
 const loadInflight = Number(process.env.LOAD_MAX_INFLIGHT || '32');
 const loadLagMs = Number(process.env.LOAD_MAX_LAG_MS || '100');
+const sloConnectionHoldMs = Number(process.env.SLO_CONNECTION_HOLD_MS || '10000');
+const measureSlo = process.env.PROBE_SLO_METRICS === '1';
 const apiLayer = 229;
 const sendMessageConstructorId = 0xfef48f62;
 let Api: any;
@@ -28,9 +31,30 @@ let TelegramClient: any;
 let CallbackSession: any;
 let Connection: any;
 let stage = 'configuration';
+const eventLoopDelay = monitorEventLoopDelay({ resolution: 20 });
+eventLoopDelay.enable();
+const runtimeStartedAt = performance.now();
+let eventLoopUtilizationBase = performance.eventLoopUtilization();
+const runtimeSamples: any[] = [];
+const runtimeCpuStarted = process.cpuUsage();
+const runtimeSampleTimer = setInterval(() => {
+  const utilization = performance.eventLoopUtilization(eventLoopUtilizationBase);
+  eventLoopUtilizationBase = performance.eventLoopUtilization();
+  runtimeSamples.push({
+    elapsedMs: performance.now() - runtimeStartedAt,
+    stage,
+    eventLoopUtilization: utilization.utilization,
+    eventLoopDelayP95Ms: eventLoopDelay.percentile(95) / 1e6,
+    eventLoopDelayMaxMs: eventLoopDelay.max / 1e6,
+  });
+  eventLoopDelay.reset();
+}, 1000);
+runtimeSampleTimer.unref();
 type State = { pts: number; qts: number; seq: number; date: number };
 type Actor = { name: 'A' | 'B'; id: bigint; hash: bigint; client: any; events: any[] };
 type MessageSpec = { sender: 'A' | 'B'; text: string; randomId: string; ids?: Record<string, number> };
+const integrity = { eligible: new Set<string>(), observed: new Set<string>(), lost: new Set<string>(), duplicates: new Set<string>() };
+let stopConnectionObserver: (() => void) | undefined;
 const report: any = {
   schemaVersion: 1, probe: 'messaging.cross-account-live-updates',
   evidenceClass: 'local_probe', productionSloEvidence: false, phase, tag,
@@ -105,11 +129,13 @@ async function disconnect(actor?: Actor): Promise<void> {
 }
 
 async function connectActor(name: 'A' | 'B'): Promise<Actor> {
+  const actorHost = process.env[`${name}_TG_DC_HOST`] || dcHost;
+  const actorPort = Number(process.env[`${name}_TG_DC_PORT`] || dcPort);
   const session = new CallbackSession({
     mainDcId: dcId, keys: { [dcId]: Buffer.from(process.env[`${name}_AUTH_B64`]!, 'base64').toString('hex') },
   }, () => {});
   const load = session.load.bind(session);
-  session.load = async () => { await load(); session._serverAddress = dcHost; session._port = dcPort; };
+  session.load = async () => { await load(); session._serverAddress = actorHost; session._port = actorPort; };
   const client = new TelegramClient(session, Number(process.env.TG_API_ID || '1'),
     process.env.TG_API_HASH || '0123456789abcdef0123456789abcdef', {
       connection: Connection, fallbackConnection: Connection,
@@ -203,12 +229,39 @@ async function readTagged(actor: Actor, other: Actor): Promise<any[]> {
 }
 
 async function verifyHistory(a: Actor, b: Actor, messages: MessageSpec[]): Promise<void> {
+  let historyValid = true;
   for (const [actor, other] of [[a, b], [b, a]]) {
     const history = await readTagged(actor, other);
-    check(history.length === messages.length, 'HISTORY_MESSAGE_COUNT_MISMATCH');
+    if (measureSlo && ['capacity', 'slo'].includes(phase)) {
+      for (const expected of messages.filter((message) => message.sender !== actor.name)) {
+        const found = history.filter((message: any) => message.message === expected.text);
+        if (actor.events.filter((value) => value.text === expected.text).length > 1) {
+          integrity.duplicates.add(expected.text);
+        }
+        integrity.eligible.add(expected.text);
+        integrity.observed.add(expected.text);
+        if (!found.length) integrity.lost.add(expected.text);
+        else integrity.lost.delete(expected.text);
+        if (found.length > 1) integrity.duplicates.add(expected.text);
+      }
+      report.messageIntegrity = {
+        eligible: integrity.eligible.size,
+        lost: integrity.lost.size,
+        duplicates: integrity.duplicates.size,
+        complete: integrity.eligible.size > 0 && integrity.observed.size === integrity.eligible.size,
+      };
+    }
+    if (history.length !== messages.length) {
+      historyValid = false;
+      if (phase !== 'slo') check(false, 'HISTORY_MESSAGE_COUNT_MISMATCH');
+    }
     for (const expected of messages) {
       const found = history.filter((message: any) => message.message === expected.text);
-      check(found.length === 1 && Number(found[0].id) > 0, 'HISTORY_MISSING_OR_DUPLICATE');
+      if (found.length !== 1 || Number(found[0]?.id) <= 0) {
+        historyValid = false;
+        if (phase !== 'slo') check(false, 'HISTORY_MISSING_OR_DUPLICATE');
+        continue;
+      }
       const id = Number(found[0].id);
       check(!expected.ids?.[actor.name] || expected.ids[actor.name] === id, 'HISTORY_MESSAGE_ID_CHANGED');
       const live = report.deliverySamples.find((sample: any) => sample.text === expected.text);
@@ -216,7 +269,41 @@ async function verifyHistory(a: Actor, b: Actor, messages: MessageSpec[]): Promi
       expected.ids = { ...expected.ids, [actor.name]: id };
     }
   }
-  report.checks.historiesUnique = true;
+  report.checks.historiesUnique = historyValid;
+}
+
+function observeConnections(a: Actor, b: Actor): () => void {
+  let eligible = 0;
+  let good = 0;
+  let samples = 0;
+  const sample = () => {
+    samples += 1;
+    eligible += 2;
+    good += Number(a.client.isConnected()) + Number(b.client.isConnected());
+  };
+  sample();
+  const timer = setInterval(sample, 1000);
+  let stopped = false;
+  return () => {
+    if (stopped) return;
+    stopped = true;
+    clearInterval(timer);
+    sample();
+    report.connectionObservation = { eligible, good, samples, intervalMs: 1000 };
+  };
+}
+
+async function reconnectSloSample(actor: Actor): Promise<{ eligible: number; good: number; elapsedMs: number }> {
+  const started = performance.now();
+  try {
+    await bounded(Promise.resolve(actor.client.disconnect()));
+    await bounded(actor.client.connect());
+    const me: any = await bounded(actor.client.getMe());
+    check(String(me?.id) === actor.id.toString() && actor.client.isConnected(), 'RECONNECT_AUTH_FAILED');
+    return { eligible: 1, good: 1, elapsedMs: performance.now() - started };
+  } catch {
+    return { eligible: 1, good: 0, elapsedMs: performance.now() - started };
+  }
 }
 
 async function sendMessage(sender: Actor, recipient: Actor, spec: MessageSpec, fresh = false): Promise<void> {
@@ -272,9 +359,9 @@ async function capacityMessages(a: Actor, b: Actor, messages: MessageSpec[]): Pr
     slot: index, direction: index % 2 ? 'B-to-A' : 'A-to-B', scheduledAtMs: index * 1000 / loadRate,
   }));
   const evidence: any = { rate: loadRate, durationMs, maxInflight: loadInflight, maxScheduleLagMs: loadLagMs,
-    planned: samples.length, samples, before, after: {} };
+    planned: samples.length, samples, before, after: {}, startedAtMs: performance.now() };
   report.capacity = evidence;
-  const started = performance.now();
+  const started = evidence.startedAtMs;
   const active = new Set<Promise<void>>();
   const send = async (row: any, sender: Actor, recipient: Actor, spec: MessageSpec) => {
     try {
@@ -303,7 +390,10 @@ async function capacityMessages(a: Actor, b: Actor, messages: MessageSpec[]): Pr
       const event = events[0];
       row.liveAtMs = event.receivedAtMs - started;
       row.live = { id: event.id, pts: event.pts, ptsCount: event.ptsCount, date: event.date };
-    } else row.liveError = events.length ? 'DUPLICATE_LIVE_UPDATE' : 'LIVE_UPDATE_TIMEOUT';
+    } else {
+      row.liveError = events.length ? 'DUPLICATE_LIVE_UPDATE' : 'LIVE_UPDATE_TIMEOUT';
+      if (measureSlo && events.length > 1) integrity.duplicates.add(spec.text);
+    }
   };
   for (const row of samples) {
     const delay = started + row.scheduledAtMs - performance.now();
@@ -326,28 +416,85 @@ async function capacityMessages(a: Actor, b: Actor, messages: MessageSpec[]): Pr
   if (remaining > 0) await sleep(remaining);
   await Promise.all(active);
   report.loadDurationMs = performance.now() - started;
-  // State/history reads begin only after the fixed schedule and live drain.
+}
+
+async function verifyCapacityAfterDrain(a: Actor, b: Actor, messages: MessageSpec[], barrierAt: number): Promise<void> {
+  const evidence = report.capacity;
+  const samples = evidence.samples.filter((row: any) => row.dispatchedAtMs !== undefined);
+  const timedOut = samples.filter((row: any) => row.liveError === 'LIVE_UPDATE_TIMEOUT');
+  const observationMs = 10000;
+  const deadline = performance.now() + observationMs;
+  const missing = () => timedOut.filter((row: any) => {
+    const recipient = row.direction.endsWith('A') ? a : b;
+    return !recipient.events.some((event) => event.text === row.text);
+  });
+  while (missing().length > 0 && performance.now() < deadline) await sleep(20);
+
+  for (const row of samples) {
+    const recipient = row.direction.endsWith('A') ? a : b;
+    const events = recipient.events.filter((event) => event.text === row.text);
+    if (events.length !== 1) {
+      if (events.length > 1) row.liveError = 'DUPLICATE_LIVE_UPDATE';
+      else if (row.liveError === 'LIVE_UPDATE_TIMEOUT') row.lateUnobserved = true;
+      continue;
+    }
+    const event = events[0];
+    if (row.liveError === 'LIVE_UPDATE_TIMEOUT') {
+      row.liveDeadlineError = row.liveError;
+      delete row.liveError;
+      row.liveLate = true;
+      row.lateObservedAfterDrainMs = Math.max(0, event.receivedAtMs - barrierAt);
+    }
+    row.liveAtMs = event.receivedAtMs - evidence.startedAtMs;
+    row.live = { id: event.id, pts: event.pts, ptsCount: event.ptsCount, date: event.date };
+  }
+  evidence.lateDelivery = {
+    observationMs,
+    deadlineMissed: timedOut.length,
+    observedLate: samples.filter((row: any) => row.liveLate).length,
+    observedAfterDrain: samples.filter((row: any) => row.liveLate && row.lateObservedAfterDrainMs > 0).length,
+    unobservedAfterWindow: samples.filter((row: any) => row.lateUnobserved).length,
+  };
+
   evidence.after = await states(a, b);
+  let ptsContinuity = true;
   for (const actor of [a, b]) {
-    assertMonotonic(before[actor.name], evidence.after[actor.name]);
-    const intervals = samples.filter((row) => row.dispatchedAtMs !== undefined).map((row) =>
-      row.direction.startsWith(actor.name) ? row.ack : row.live).sort((x, y) => (x?.pts || 0) - (y?.pts || 0));
-    let pts = before[actor.name].pts;
+    try {
+      assertMonotonic(evidence.before[actor.name], evidence.after[actor.name]);
+    } catch {
+      ptsContinuity = false;
+    }
+    const intervals = samples.map((row: any) =>
+      row.direction.startsWith(actor.name) ? row.ack : row.live).sort((x: any, y: any) => (x?.pts || 0) - (y?.pts || 0));
+    let pts = evidence.before[actor.name].pts;
     for (const interval of intervals) {
-      check(interval?.id > 0 && interval.ptsCount === 1 && interval.pts === pts + 1, 'CAPACITY_PTS_GAP_OR_DUPLICATE');
+      if (!(interval?.id > 0 && interval.ptsCount === 1 && interval.pts === pts + 1)) {
+        ptsContinuity = false;
+        continue;
+      }
       pts = interval.pts;
     }
-    check(evidence.after[actor.name].pts === pts, 'CAPACITY_FINAL_PTS_MISMATCH');
+    if (evidence.after[actor.name].pts !== pts) ptsContinuity = false;
   }
-  report.checks.ptsContinuity = true;
-  await verifyHistory(a, b, messages);
-  for (const row of samples.filter((value) => value.dispatchedAtMs !== undefined)) {
+  report.checks.ptsContinuity = ptsContinuity;
+  let historiesUnique = true;
+  try {
+    await verifyHistory(a, b, messages);
+  } catch {
+    historiesUnique = false;
+  }
+  report.checks.historiesUnique = historiesUnique;
+  let liveMatchesHistory = true;
+  for (const row of samples) {
     const recipient = row.direction.endsWith('A') ? a : b;
     const spec = messages.find((value) => value.text === row.text)!;
-    check(recipient.events.filter((value) => value.text === row.text).length === 1
-      && row.live?.id === spec.ids?.[recipient.name], 'CAPACITY_LIVE_HISTORY_MISMATCH');
+    if (recipient.events.filter((value) => value.text === row.text).length !== 1
+      || row.live?.id !== spec.ids?.[recipient.name]) liveMatchesHistory = false;
   }
-  report.checks.liveMatchesHistory = true;
+  report.checks.liveMatchesHistory = liveMatchesHistory;
+  if (!ptsContinuity) throw Object.assign(new Error('CAPACITY_PTS_GAP_OR_DUPLICATE'), { probeCode: 'CAPACITY_PTS_GAP_OR_DUPLICATE' });
+  if (!historiesUnique) throw Object.assign(new Error('CAPACITY_HISTORY_MISMATCH'), { probeCode: 'CAPACITY_HISTORY_MISMATCH' });
+  if (!liveMatchesHistory) throw Object.assign(new Error('CAPACITY_LIVE_HISTORY_MISMATCH'), { probeCode: 'CAPACITY_LIVE_HISTORY_MISMATCH' });
 }
 
 function writeMilestone(name: 'ready' | 'sent', payload: any): void {
@@ -537,7 +684,10 @@ async function main(): Promise<void> {
     check(Number.isInteger(sampleCount) && sampleCount >= 1 && sampleCount <= 200, 'INVALID_SLO_SAMPLES');
     check(Number.isInteger(timeoutMs) && timeoutMs >= 1000 && timeoutMs <= 60000, 'INVALID_TIMEOUT');
     check(Number.isInteger(dcId) && dcId > 0 && Number.isInteger(dcPort) && dcPort > 0 && dcPort < 65536, 'INVALID_DC_ENDPOINT');
-    check(['single', 'before', 'after', 'fault', 'capacity', 'cleanup'].includes(phase) && /^[A-Za-z0-9_-]{1,100}$/.test(tag), 'INVALID_PHASE_OR_TAG');
+    check(actorPorts.every((port) => Number.isInteger(port) && port > 0 && port < 65536), 'INVALID_ACTOR_DC_ENDPOINT');
+    check(['single', 'before', 'after', 'fault', 'capacity', 'cleanup', 'slo'].includes(phase) && /^[A-Za-z0-9_-]{1,100}$/.test(tag), 'INVALID_PHASE_OR_TAG');
+    check(phase !== 'slo' || (measureSlo && Number.isInteger(sloConnectionHoldMs)
+      && sloConnectionHoldMs >= 1000 && sloConnectionHoldMs <= 30000), 'INVALID_SLO_PROFILE');
     if (phase === 'capacity') {
       check([loadRate, loadSeconds, loadInflight, loadLagMs].every(Number.isInteger)
         && loadRate > 0 && loadSeconds > 0 && loadRate * loadSeconds <= 20000
@@ -582,11 +732,63 @@ async function main(): Promise<void> {
       for (const actor of [a, b]) assertMonotonic(stateFields(saved.state[actor.name]), report.state.before[actor.name]);
       await verifyHistory(a, b, messages);
       report.checks.savedStateReadback = true;
+    } else if (phase === 'slo') {
+      stage = 'minute-slo-canary';
+      check((await readTagged(a, b)).length === 0 && (await readTagged(b, a)).length === 0, 'PROBE_TAG_ALREADY_EXISTS');
+      ownsTag = true;
+      stopConnectionObserver = observeConnections(a, b);
+      await sleep(sloConnectionHoldMs);
+      stopConnectionObserver();
+      stopConnectionObserver = undefined;
+      let canaryFailure = false;
+      for (const [sender, recipient] of [[a, b], [b, a]]) {
+        const spec: MessageSpec = {
+          sender: sender.name, text: `${tag}:${sender.name}:0`,
+          randomId: (BigInt(`0x${randomBytes(8).toString('hex')}`) & ((1n << 63n) - 1n)).toString(),
+        };
+        messages.push(spec);
+        try {
+          await sendMessage(sender, recipient, spec);
+        } catch {
+          canaryFailure = true;
+        }
+      }
+      try {
+        await verifyHistory(a, b, messages);
+      } catch {
+        canaryFailure = true;
+      }
+      try {
+        report.state.after = await states(a, b);
+      } catch {
+        canaryFailure = true;
+      }
+      const reconnects = await Promise.all([reconnectSloSample(a), reconnectSloSample(b)]);
+      report.reconnectSample = {
+        eligible: reconnects.reduce((sum, value) => sum + value.eligible, 0),
+        good: reconnects.reduce((sum, value) => sum + value.good, 0),
+        durationsMs: reconnects.map((value) => value.elapsedMs),
+      };
+      report.checks.sloCanary = true;
+      if (canaryFailure) report.error = { stage: 'minute-slo-canary', code: 'CANARY_CHECK_FAILED' };
+      success = true;
+      return;
     } else if (phase === 'capacity') {
       stage = 'fixed-rate-capacity';
       check((await readTagged(a, b)).length === 0 && (await readTagged(b, a)).length === 0, 'PROBE_TAG_ALREADY_EXISTS');
       ownsTag = true;
+      if (measureSlo) stopConnectionObserver = observeConnections(a, b);
       await capacityMessages(a, b, messages);
+      if (measureSlo) {
+        stopConnectionObserver?.();
+        stopConnectionObserver = undefined;
+        const reconnects = await Promise.all([reconnectSloSample(a), reconnectSloSample(b)]);
+        report.reconnectSample = {
+          eligible: reconnects.reduce((sum, value) => sum + value.eligible, 0),
+          good: reconnects.reduce((sum, value) => sum + value.good, 0),
+          durationsMs: reconnects.map((value) => value.elapsedMs),
+        };
+      }
       success = true;
       return;
     } else if (phase === 'fault') {
@@ -659,17 +861,45 @@ async function main(): Promise<void> {
         writeMilestone('sent', { purpose: 'capacity-drain' });
         await waitMilestone('restored');
         report.checks.outboxDrainedBeforeCleanup = true;
+        if (report.capacity && a && b) {
+          stage = 'capacity-late-delivery-observation';
+          await verifyCapacityAfterDrain(a, b, messages, performance.now());
+        }
       } catch (error) {
-        report.error = { stage: 'capacity-drain-barrier', code: errorCode(error) };
+        report.error = { stage, code: errorCode(error) };
         success = false;
       }
     }
+    stopConnectionObserver?.();
     await disconnect(a);
     await disconnect(b);
     if (configured && ownsTag && (phase !== 'before' || !success)) {
       try { await cleanupTagged(); } catch (error) { report.cleanup = { ok: false, code: errorCode(error) }; success = false; }
     }
+    if (phase === 'slo') {
+      const directions = new Set(report.deliverySamples.map((sample: any) => sample.direction));
+      report.collectionComplete = report.checks.sloCanary === true
+        && directions.size === 2 && directions.has('A-to-B') && directions.has('B-to-A')
+        && Number.isInteger(report.connectionObservation?.eligible) && report.connectionObservation.eligible > 0
+        && report.reconnectSample?.eligible === 2
+        && report.messageIntegrity?.complete === true
+        && report.cleanup?.ok === true && report.cleanup?.remaining === 0;
+    }
     report.durationMs = performance.now() - started;
+    clearInterval(runtimeSampleTimer);
+    eventLoopDelay.disable();
+    const runtimeCPU = process.cpuUsage(runtimeCpuStarted);
+    report.runtime = {
+      samples: runtimeSamples,
+      eventLoopDelayMs: {
+        mean: eventLoopDelay.mean / 1e6,
+        max: eventLoopDelay.max / 1e6,
+        p95: eventLoopDelay.percentile(95) / 1e6,
+        p99: eventLoopDelay.percentile(99) / 1e6,
+      },
+      cpuUsageMs: { user: runtimeCPU.user / 1000, system: runtimeCPU.system / 1000 },
+      memory: process.memoryUsage(),
+    };
     const deliveries = report.deliverySamples.filter((value: any) => value.ok);
     const load = deliveries.filter((value: any) => !value.freshSession);
     report.stats = {

@@ -20,6 +20,11 @@ func TestChannelsGetMessagesAuthorization(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() {
+		if err := domain.DeleteChannel(owner, channelID); err != nil {
+			t.Errorf("clean get-messages fixture: %v", err)
+		}
+	})
 	if err := domain.JoinChannel(channelID, memberID); err != nil {
 		t.Fatal(err)
 	}
@@ -43,13 +48,23 @@ func TestChannelsGetMessagesAuthorization(t *testing.T) {
 		}
 	}
 	outsider := &ApiFullCore{MD: &metadata.RpcMetadata{UserId: outsiderID}}
-	if _, err := outsider.ChannelsGetMessages(request(inputChannel)); !errors.Is(err, mtproto.ErrUserNotParticipant) {
-		t.Fatalf("outsider read: got %v", err)
+	if _, err := outsider.ChannelsGetMessages(request(inputChannel)); !errors.Is(err, mtproto.ErrChannelPrivate) {
+		t.Fatalf("private outsider read: got %v", err)
 	}
 	badHash := mtproto.MakeTLInputChannel(&mtproto.InputChannel{
 		ChannelId: channelID, AccessHash: channelID + 1,
 	}).To_InputChannel()
 	if _, err := (&ApiFullCore{MD: &metadata.RpcMetadata{UserId: memberID}}).ChannelsGetMessages(request(badHash)); !errors.Is(err, mtproto.ErrChannelInvalid) {
 		t.Fatalf("bad-hash read: got %v", err)
+	}
+	if err := domain.SaveChannel(domain.Channel{
+		ID: channelID, AccessHash: channelID, Creator: owner, Title: "get-messages-auth-test", Megagroup: true, Username: "get-messages-auth-public",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := outsider.ChannelsGetMessages(request(inputChannel))
+	if err != nil || got == nil || len(got.GetMessages()) != 1 || got.GetMessages()[0].GetMessage() != "member-only message" ||
+		len(got.GetChats()) != 1 || !got.GetChats()[0].GetLeft() {
+		t.Fatalf("public outsider read: result=%+v err=%v", got, err)
 	}
 }

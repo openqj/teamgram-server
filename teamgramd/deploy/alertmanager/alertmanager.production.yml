@@ -1,0 +1,19 @@
+# Production Alertmanager template. Render the webhook URL into a private file
+# with docker/production/render_alertmanager_config.py before starting Alertmanager.
+# The local development config intentionally keeps a null receiver; production
+# must use this file so an alert has an actual notification path.
+global:
+  resolve_timeout: 5m
+
+route:
+  group_by: ['alertname', 'service', 'queue']
+  group_wait: 10s
+  group_interval: 5m
+  repeat_interval: 2h
+  receiver: teamgram-oncall-webhook
+
+receivers:
+  - name: teamgram-oncall-webhook
+    webhook_configs:
+      - url: '${TEAMGRAM_ALERT_WEBHOOK_URL}'
+        send_resolved: true

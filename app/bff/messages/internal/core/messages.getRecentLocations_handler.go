@@ -178,7 +178,7 @@ func (c *MessagesCore) getRecentLocationMessageBoxes(peer *mtproto.PeerUtil, lim
 }
 
 func (c *MessagesCore) getRecentChannelLocations(peer *mtproto.InputPeer) (*mtproto.Messages_Messages, error) {
-	if _, err := channelview.HistoryForInputPeer(c.MD.UserId, peer, 0, 1); err != nil {
+	if _, err := channelview.ValidateInputPeer(c.MD.UserId, peer); err != nil {
 		c.Logger.Errorf("messages.getRecentLocations - error: %v", err)
 		return nil, err
 	}

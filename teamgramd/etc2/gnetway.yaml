@@ -45,9 +45,24 @@ Gnetway:
   Multicore: true
   SendBuf: 65536
   ReceiveBuf: 65536
+  # Process-local admission and asynchronous work budgets. Account quotas must
+  # be coordinated by the session service when multiple gateways are active.
+  MaxConnections: 10000
+  MaxConnectionsPerIP: 0
+  ConnectionRatePerIP: 0
+  ConnectionBurstPerIP: 0
+  MaxConnectionsPerAuthKey: 0
+  MaxHandshakesInFlight: 512
+  HandshakeRatePerIP: 0
+  HandshakeBurstPerIP: 0
+  WorkerPoolSize: 512
+  WebsocketMaxMessageBytes: 16777216
+  TCPKeepAliveSeconds: 60
+  TCPNoDelay: true
 
 Session:
   Etcd:
     Hosts:
       - etcd:2379
     Key: interface.session
+UseStreamSession: true

@@ -21,6 +21,7 @@ package dao
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -73,6 +74,25 @@ func isSessionConnError(err error) bool {
 		return true
 	}
 	return false
+}
+
+// sessionRedirectTarget extracts the authoritative session shard from the
+// redirect returned by a session node. A sync worker can observe a slightly
+// stale consistent-hash view while session nodes are joining or leaving; the
+// redirect is safe to follow because the rejected request has not mutated
+// session state yet.
+func sessionRedirectTarget(err error) (string, bool) {
+	status, ok := grpcStatus.FromError(err)
+	if !ok || status.Code() != codes.Code(700) {
+		return "", false
+	}
+	const prefix = "REDIRECT_TO_"
+	message := status.Message()
+	if !strings.HasPrefix(message, prefix) {
+		return "", false
+	}
+	target := strings.TrimSpace(strings.TrimPrefix(message, prefix))
+	return target, target != ""
 }
 
 // process
@@ -260,44 +280,47 @@ func (d *Dao) watch(c zrpc.RpcClientConf) {
 func (d *Dao) PushUpdatesToSession(ctx context.Context, serverId string, msg *session.TLSessionPushUpdatesData) (err error) {
 	started := time.Now()
 	defer func() { ObserveDeliveryStage("gateway_push", started, err) }()
-	d.mu.RLock()
-	pusher, ok := d.sessionServers[serverId]
-	d.mu.RUnlock()
-
-	if ok {
+	return d.pushToSession(ctx, serverId, func(pusher SessionPusher) error {
 		return pusher.PushUpdates(ctx, msg)
-	}
-	logx.WithContext(ctx).Errorf("PushUpdatesToSession - stale gateway, serverId %s not in active sessions (permAuthKeyId:%d)",
-		serverId, msg.PermAuthKeyId)
-	return fmt.Errorf("stale gateway %s", serverId)
+	}, msg.PermAuthKeyId)
 }
 
 func (d *Dao) PushSessionUpdatesToSession(ctx context.Context, serverId string, msg *session.TLSessionPushSessionUpdatesData) (err error) {
 	started := time.Now()
 	defer func() { ObserveDeliveryStage("gateway_push", started, err) }()
-	d.mu.RLock()
-	pusher, ok := d.sessionServers[serverId]
-	d.mu.RUnlock()
-
-	if ok {
+	return d.pushToSession(ctx, serverId, func(pusher SessionPusher) error {
 		return pusher.PushSessionUpdates(ctx, msg)
-	}
-	logx.WithContext(ctx).Errorf("PushSessionUpdatesToSession - stale gateway, serverId %s not in active sessions (permAuthKeyId:%d)",
-		serverId, msg.PermAuthKeyId)
-	return fmt.Errorf("stale gateway %s", serverId)
+	}, msg.PermAuthKeyId)
 }
 
 func (d *Dao) PushRpcResultToSession(ctx context.Context, serverId string, msg *session.TLSessionPushRpcResultData) (err error) {
 	started := time.Now()
 	defer func() { ObserveDeliveryStage("gateway_push", started, err) }()
+	return d.pushToSession(ctx, serverId, func(pusher SessionPusher) error {
+		return pusher.PushRpcResult(ctx, msg)
+	}, msg.PermAuthKeyId)
+}
+
+func (d *Dao) pushToSession(ctx context.Context, serverId string, push func(SessionPusher) error, permAuthKeyID int64) error {
 	d.mu.RLock()
 	pusher, ok := d.sessionServers[serverId]
 	d.mu.RUnlock()
-
-	if ok {
-		return pusher.PushRpcResult(ctx, msg)
+	if !ok {
+		logx.WithContext(ctx).Errorf("pushToSession - stale session node %s (permAuthKeyId:%d)", serverId, permAuthKeyID)
+		return fmt.Errorf("stale session node %s", serverId)
 	}
-	logx.WithContext(ctx).Errorf("PushRpcResultToSession - stale gateway, serverId %s not in active sessions (permAuthKeyId:%d)",
-		serverId, msg.PermAuthKeyId)
-	return fmt.Errorf("stale gateway %s", serverId)
+
+	err := push(pusher)
+	target, redirected := sessionRedirectTarget(err)
+	if !redirected || target == serverId {
+		return err
+	}
+
+	d.mu.RLock()
+	redirectedPusher, ok := d.sessionServers[target]
+	d.mu.RUnlock()
+	if !ok {
+		return err
+	}
+	return push(redirectedPusher)
 }

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import fcntl
 import hashlib
 import json
 import os
@@ -13,7 +14,8 @@ import time
 
 from messaging_capacity_probe import ROOT, evaluate, run_profile, start_lab
 from messaging_reliability_probe import validate_ports
-from messaging_slo_window import DEFINITION, UTC
+from messaging_slo_metrics import write_metrics
+from messaging_slo_window import DEFINITION, SCHEMA_VERSION, UTC
 from postgres_recovery_probe import Lab, ProbeError, redact
 
 
@@ -35,13 +37,16 @@ def observe(lab: Lab, args: argparse.Namespace, report: dict) -> None:
         bucket_start = first + minute * 60
         wait_until(bucket_start)
         lateness = time.time() - bucket_start
-        row = {"schemaVersion": 1, "type": "messaging.slo.minute", "environment": "local-isolated", "region": "local",
+        row = {"schemaVersion": SCHEMA_VERSION, "type": "messaging.slo.minute", "environment": "local-isolated", "region": "local",
                "source": "synthetic-layer229", "apiLayer": 229, "definition": DEFINITION, "shard": "pair-1",
                "bucketStart": dt.datetime.fromtimestamp(bucket_start, UTC).isoformat(), "bucketSeconds": 60,
                "planned": 2, "eligible": 2, "ackGood": 0, "liveGood": 0, "counterReset": False,
-               "collectorComplete": False, "run": lab.run_id, "startLatenessSeconds": round(lateness, 3)}
+               "collectorComplete": False, "measurements": {"connection": {"complete": False},
+                   "reconnect": {"complete": False}, "messageIntegrity": {"complete": False}},
+               "run": lab.run_id, "startLatenessSeconds": round(lateness, 3)}
         if lateness <= 5:
             try:
+                lab.env["PROBE_SLO_METRICS"] = "1"
                 evidence, pending = run_profile(lab, gramjs, 1, 2, 32, raw_dir / "unused-state.json", args.metrics_port)
                 raw = json.dumps(evidence, sort_keys=True) + "\n"
                 raw_path = raw_dir / f"{minute:06d}.json"
@@ -49,6 +54,20 @@ def observe(lab: Lab, args: argparse.Namespace, report: dict) -> None:
                 summary = evaluate(evidence)
                 row.update(rawEvidence=str(raw_path), rawSha256=hashlib.sha256(raw.encode()).hexdigest(),
                            pendingAfterDrain=pending, collectorComplete=True)
+                connection = evidence.get("connectionObservation", {})
+                reconnect = evidence.get("reconnectSample", {})
+                integrity = evidence.get("messageIntegrity", {})
+                if all(isinstance(connection.get(key), int) and not isinstance(connection.get(key), bool)
+                       for key in ("eligible", "good")) and connection.get("eligible", 0) > 0:
+                    row["measurements"]["connection"] = {"complete": True, "eligible": connection["eligible"], "good": connection["good"]}
+                if all(isinstance(reconnect.get(key), int) and not isinstance(reconnect.get(key), bool)
+                       for key in ("eligible", "good")) and reconnect.get("eligible", 0) > 0:
+                    row["measurements"]["reconnect"] = {"complete": True, "eligible": reconnect["eligible"], "good": reconnect["good"]}
+                if (integrity.get("complete") is True and integrity.get("eligible") == 2
+                        and all(isinstance(integrity.get(key), int) and not isinstance(integrity.get(key), bool)
+                                for key in ("lost", "duplicates"))):
+                    row["measurements"]["messageIntegrity"] = {"complete": True, "eligible": 2,
+                        "lost": integrity["lost"], "duplicates": integrity["duplicates"]}
                 # Consistency failure is a failed logical message, not a retry
                 # that can replace the original outcome or enlarge its count.
                 if summary["consistency"]:
@@ -62,9 +81,13 @@ def observe(lab: Lab, args: argparse.Namespace, report: dict) -> None:
         # O_EXCL prevents two runs from appending conflicting evidence. Each
         # settled record is fsynced; interruption leaves absent minutes visible.
         with args.evidence.open("a") as output:
+            fcntl.flock(output.fileno(), fcntl.LOCK_EX)
             output.write(json.dumps(row, sort_keys=True) + "\n")
             output.flush()
             os.fsync(output.fileno())
+            fcntl.flock(output.fileno(), fcntl.LOCK_UN)
+        if args.metrics_output:
+            write_metrics(args.evidence, args.metrics_output)
         report["buckets_written"] += 1
     report["status"] = "COLLECTED"
 
@@ -76,6 +99,7 @@ def main() -> int:
     parser.add_argument("--image", default="teamgram-reliability:20261015")
     parser.add_argument("--gramjs-dir", type=Path, default=ROOT.parent / "telegram-tt-master")
     parser.add_argument("--evidence", type=Path, default=Path("/tmp/teamgram-messaging-slo-minutes.jsonl"))
+    parser.add_argument("--metrics-output", type=Path, help="Prometheus textfile collector output rebuilt from the durable evidence")
     parser.add_argument("--output", type=Path, default=Path("/tmp/teamgram-messaging-observation.json"))
     parser.add_argument("--postgres-port", type=int, default=55440)
     parser.add_argument("--mt-port", type=int, default=21545)
@@ -96,8 +120,13 @@ def main() -> int:
         report["project"] = lab.project
         if args.execute:
             args.evidence.parent.mkdir(parents=True, exist_ok=True)
-            with args.evidence.open("x"):
-                pass
+            with args.evidence.open("x") as output:
+                os.fchmod(output.fileno(), 0o600)
+            directory = os.open(args.evidence.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
             observe(lab, args, report)
     except (ProbeError, OSError, ValueError, KeyboardInterrupt) as error:
         report.update(status="FAIL", reason=redact(str(error), lab.secret_values if lab else []))

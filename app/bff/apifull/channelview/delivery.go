@@ -2,14 +2,22 @@ package channelview
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/domain"
-	"github.com/zeromicro/go-zero/core/logx"
 )
 
 type ChannelDeliveryPush func(context.Context, int64, []int64, *mtproto.Updates) error
+
+const (
+	// Keep recipient pushes concurrent so a large channel does not make the
+	// sender RPC wait behind a long serial tail. Per-recipient completion is
+	// still persisted in bounded batches and the outbox remains retryable.
+	channelDeliveryFanoutConcurrency = 16
+	channelDeliveryStateBatchSize    = 64
+)
 
 func DeliveryKeyFromUpdates(updates *mtproto.Updates) (domain.ChannelDeliveryKey, error) {
 	var key domain.ChannelDeliveryKey
@@ -105,13 +113,17 @@ func DeliverPendingChannelUpdates(ctx context.Context, key domain.ChannelDeliver
 	if dueOnly {
 		wait = 0
 	}
+	stageStarted := time.Now()
 	release, acquired, err := domain.LockChannelDelivery(ctx, key, wait)
+	observeChannelDeliveryStage("lock", stageStarted, err)
 	if err != nil || !acquired {
 		return false, err
 	}
 	defer release()
 
+	stageStarted = time.Now()
 	payload, found, err := domain.LoadChannelDelivery(ctx, key)
+	observeChannelDeliveryStage("event_load", stageStarted, err)
 	if err != nil || !found {
 		return found, err
 	}
@@ -127,81 +139,164 @@ func DeliverPendingChannelUpdates(ctx context.Context, key domain.ChannelDeliver
 	if len(messageIDs) == 0 {
 		return true, mtproto.ErrInputRequestInvalid
 	}
+	stageStarted = time.Now()
 	recipients, err := domain.ListChannelDeliveryRecipients(ctx, key, dueOnly)
+	observeChannelDeliveryStage("recipient_load", stageStarted, err)
 	if err != nil {
 		return true, err
 	}
+	stageStarted = time.Now()
+	channel, channelFound, err := domain.LoadChannel(key.ChannelID)
+	observeChannelDeliveryStage("channel_load", stageStarted, err)
+	if err != nil {
+		return true, err
+	}
+	if !channelFound {
+		for offset := 0; offset < len(recipients); offset += channelDeliveryStateBatchSize {
+			end := min(offset+channelDeliveryStateBatchSize, len(recipients))
+			batch := make([]domain.ChannelDeliveryRecipientResult, 0, end-offset)
+			for _, recipient := range recipients[offset:end] {
+				batch = append(batch, domain.ChannelDeliveryRecipientResult{UserID: recipient.UserID, State: domain.ChannelDeliveryRecipientSkipped})
+			}
+			if err = recordChannelDeliveryRecipientResults(ctx, key, batch); err != nil {
+				return true, err
+			}
+		}
+		return true, nil
+	}
+	if len(recipients) == 0 {
+		return true, nil
+	}
+	dispatchCtx, cancelDispatch := context.WithCancel(ctx)
+	defer cancelDispatch()
+	workerCount := min(len(recipients), channelDeliveryFanoutConcurrency)
+	jobs := make(chan domain.ChannelDeliveryRecipient, workerCount)
+	results := make(chan domain.ChannelDeliveryRecipientResult, workerCount)
+	var workers sync.WaitGroup
+	workers.Add(workerCount)
+	for i := 0; i < workerCount; i++ {
+		go func() {
+			defer workers.Done()
+			for recipient := range jobs {
+				results <- deliverChannelDeliveryRecipient(dispatchCtx, key, payload, channel, messageIDs, recipient, push)
+			}
+		}()
+	}
+	go func() {
+		for offset := 0; offset < len(recipients); offset += channelDeliveryStateBatchSize {
+			if dispatchCtx.Err() != nil {
+				break
+			}
+			end := min(offset+channelDeliveryStateBatchSize, len(recipients))
+			batch := recipients[offset:end]
+			stageStarted := time.Now()
+			canReceive, checkErr := domain.ChannelDeliveryRecipientsCanReceive(dispatchCtx, key.ChannelID, channel.Creator, batch, messageIDs)
+			observeChannelDeliveryStage("eligibility_query", stageStarted, checkErr)
+			if checkErr != nil {
+				for _, recipient := range recipients[offset:] {
+					select {
+					case results <- domain.ChannelDeliveryRecipientResult{UserID: recipient.UserID, State: domain.ChannelDeliveryRecipientRetry, Err: checkErr}:
+					case <-dispatchCtx.Done():
+						close(jobs)
+						workers.Wait()
+						close(results)
+						return
+					}
+				}
+				break
+			}
+			for _, recipient := range batch {
+				if !canReceive[recipient.UserID] {
+					select {
+					case results <- domain.ChannelDeliveryRecipientResult{UserID: recipient.UserID, State: domain.ChannelDeliveryRecipientSkipped}:
+					case <-dispatchCtx.Done():
+						close(jobs)
+						workers.Wait()
+						close(results)
+						return
+					}
+					continue
+				}
+				select {
+				case jobs <- recipient:
+				case <-dispatchCtx.Done():
+					close(jobs)
+					workers.Wait()
+					close(results)
+					return
+				}
+			}
+		}
+		close(jobs)
+		workers.Wait()
+		close(results)
+	}()
+
 	var firstErr error
-	for _, recipient := range recipients {
-		if err = ctx.Err(); err != nil {
-			scheduleChannelDeliveryRetry(key, recipient.UserID, err)
-			if firstErr == nil {
-				firstErr = err
-			}
-			break
+	var persistErr error
+	batch := make([]domain.ChannelDeliveryRecipientResult, 0, channelDeliveryStateBatchSize)
+	for result := range results {
+		if result.Err != nil && firstErr == nil {
+			firstErr = result.Err
 		}
-		canReceive, checkErr := domain.ChannelDeliveryRecipientCanReceive(ctx, key.ChannelID, recipient.UserID, messageIDs)
-		if checkErr != nil {
-			scheduleChannelDeliveryRetry(key, recipient.UserID, checkErr)
-			if firstErr == nil {
-				firstErr = checkErr
-			}
+		if persistErr != nil {
 			continue
 		}
-		if !canReceive {
-			if err = completeChannelDeliveryRecipient(key, recipient.UserID, "skipped"); err != nil && firstErr == nil {
-				firstErr = err
-			}
-			continue
-		}
-		chat, chatErr := ChatForUpdates(recipient.UserID, key.ChannelID)
-		if chatErr != nil {
-			scheduleChannelDeliveryRetry(key, recipient.UserID, chatErr)
-			if firstErr == nil {
-				firstErr = chatErr
-			}
-			continue
-		}
-		updates, updatesErr := channelDeliveryUpdates(payload, key, recipient.UserID)
-		if updatesErr != nil {
-			scheduleChannelDeliveryRetry(key, recipient.UserID, updatesErr)
-			if firstErr == nil {
-				firstErr = updatesErr
-			}
-			continue
-		}
-		updates.Chats = []*mtproto.Chat{chat}
-		var excludes []int64
-		if payload.ExcludeAuthKeyID != 0 {
-			excludes = []int64{payload.ExcludeAuthKeyID}
-		}
-		if pushErr := push(ctx, recipient.UserID, excludes, updates); pushErr != nil {
-			scheduleChannelDeliveryRetry(key, recipient.UserID, pushErr)
-			if firstErr == nil {
-				firstErr = pushErr
-			}
-			continue
-		}
-		if err = completeChannelDeliveryRecipient(key, recipient.UserID, "delivered"); err != nil {
-			scheduleChannelDeliveryRetry(key, recipient.UserID, err)
-			if firstErr == nil {
-				firstErr = err
+		batch = append(batch, result)
+		if len(batch) == channelDeliveryStateBatchSize {
+			persistErr = recordChannelDeliveryRecipientResults(ctx, key, batch)
+			if persistErr != nil {
+				firstErr = persistErr
+				cancelDispatch()
+				batch = nil
+			} else {
+				batch = batch[:0]
 			}
 		}
+	}
+	if persistErr == nil && len(batch) > 0 {
+		if persistErr = recordChannelDeliveryRecipientResults(ctx, key, batch); persistErr != nil {
+			firstErr = persistErr
+		}
+	}
+	if firstErr == nil {
+		firstErr = ctx.Err()
 	}
 	return true, firstErr
 }
 
-func completeChannelDeliveryRecipient(key domain.ChannelDeliveryKey, userID int64, state string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+func recordChannelDeliveryRecipientResults(ctx context.Context, key domain.ChannelDeliveryKey, results []domain.ChannelDeliveryRecipientResult) error {
+	writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
 	defer cancel()
-	return domain.CompleteChannelDeliveryRecipient(ctx, key, userID, state)
+	started := time.Now()
+	err := domain.RecordChannelDeliveryRecipientResults(writeCtx, key, results)
+	observeChannelDeliveryStage("receipt_persist", started, err)
+	return err
 }
 
-func scheduleChannelDeliveryRetry(key domain.ChannelDeliveryKey, userID int64, cause error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	if err := domain.RetryChannelDeliveryRecipient(ctx, key, userID, cause); err != nil {
-		logx.Errorf("channel delivery retry scheduling failed for channel %d pts %d-%d user %d: %v", key.ChannelID, key.PTSFrom, key.PTSTo, userID, err)
+func deliverChannelDeliveryRecipient(ctx context.Context, key domain.ChannelDeliveryKey, payload domain.ChannelDeliveryPayload, channel domain.Channel, messageIDs []int32, recipient domain.ChannelDeliveryRecipient, push ChannelDeliveryPush) domain.ChannelDeliveryRecipientResult {
+	result := domain.ChannelDeliveryRecipientResult{UserID: recipient.UserID, State: domain.ChannelDeliveryRecipientRetry}
+	if err := ctx.Err(); err != nil {
+		result.Err = err
+		return result
 	}
+	updates, err := channelDeliveryUpdates(payload, key, recipient.UserID)
+	if err != nil {
+		result.Err = err
+		return result
+	}
+	updates.Chats = []*mtproto.Chat{Chat(channel, channel.Creator == recipient.UserID)}
+	var excludes []int64
+	if payload.ExcludeAuthKeyID != 0 {
+		excludes = []int64{payload.ExcludeAuthKeyID}
+	}
+	pushStarted := time.Now()
+	if err = push(ctx, recipient.UserID, excludes, updates); err != nil {
+		observeChannelDeliveryStage("sync_rpc", pushStarted, err)
+		result.Err = err
+		return result
+	}
+	observeChannelDeliveryStage("sync_rpc", pushStarted, nil)
+	result.State = domain.ChannelDeliveryRecipientDelivered
+	return result
 }

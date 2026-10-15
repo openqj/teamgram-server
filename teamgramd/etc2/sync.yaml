@@ -2,6 +2,7 @@ Name: messenger.sync
 Shutdown:
   WaitTime: 35s
 ListenOn: 0.0.0.0:20420
+UseStreamSession: true
 Etcd:
   Hosts:
     - etcd:2379

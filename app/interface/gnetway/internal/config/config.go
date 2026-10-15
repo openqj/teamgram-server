@@ -42,6 +42,57 @@ type GnetwayConfig struct {
 	SendBuf       int
 	ReceiveBuf    int
 	AuthKeyCacheM int `json:",default=10"`
+	// Admission and worker limits are process-local. Account quotas must still
+	// be enforced by the authoritative session service when more than one
+	// gateway replica is serving the same account.
+	MaxConnections           int     `json:",default=10000"`
+	MaxConnectionsPerIP      int     `json:",default=0"`
+	ConnectionRatePerIP      float64 `json:",default=0"`
+	ConnectionBurstPerIP     int     `json:",default=0"`
+	MaxConnectionsPerAuthKey int     `json:",default=0"`
+	MaxHandshakesInFlight    int     `json:",default=512"`
+	HandshakeRatePerIP       float64 `json:",default=0"`
+	HandshakeBurstPerIP      int     `json:",default=0"`
+	WorkerPoolSize           int     `json:",default=512"`
+	WebsocketMaxMessageBytes int     `json:",default=16777216"`
+	TCPKeepAliveSeconds      int     `json:",default=60"`
+	TCPNoDelay               bool    `json:",default=true"`
+}
+
+// Normalize applies the resource-control defaults even when the config is
+// constructed directly in tests or by a caller that bypasses go-zero's YAML
+// default handling.
+func (c *GnetwayConfig) Normalize() {
+	if c == nil {
+		return
+	}
+	if c.MaxConnections <= 0 {
+		c.MaxConnections = 10000
+	}
+	if c.MaxHandshakesInFlight <= 0 {
+		c.MaxHandshakesInFlight = 512
+	}
+	if c.WorkerPoolSize <= 0 {
+		c.WorkerPoolSize = 512
+	}
+	if c.WebsocketMaxMessageBytes <= 0 {
+		c.WebsocketMaxMessageBytes = 16 * 1024 * 1024
+	}
+	if c.TCPKeepAliveSeconds < 0 {
+		c.TCPKeepAliveSeconds = 0
+	}
+	if c.ConnectionRatePerIP > 0 && c.ConnectionBurstPerIP <= 0 {
+		c.ConnectionBurstPerIP = int(c.ConnectionRatePerIP)
+		if c.ConnectionBurstPerIP < 1 {
+			c.ConnectionBurstPerIP = 1
+		}
+	}
+	if c.HandshakeRatePerIP > 0 && c.HandshakeBurstPerIP <= 0 {
+		c.HandshakeBurstPerIP = int(c.HandshakeRatePerIP)
+		if c.HandshakeBurstPerIP < 1 {
+			c.HandshakeBurstPerIP = 1
+		}
+	}
 }
 
 func (c GnetwayConfig) IsWebsocket(addr string) bool {

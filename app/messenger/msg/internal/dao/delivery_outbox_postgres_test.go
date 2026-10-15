@@ -134,6 +134,83 @@ func TestInboxDeliveryPostgresEnqueueRollsBackAndDeduplicates(t *testing.T) {
 	}
 }
 
+func TestInboxDeliveryPostgresMaxAttemptsDeadLettersAndPreservesPayload(t *testing.T) {
+	d := newInboxDeliveryPostgresFixture(t)
+	ctx := context.Background()
+	enqueueInboxDelivery(t, d, inboxDeliveryRequest(101, 7001, 202))
+	var id int64
+	if err := d.Pool.QueryRow(ctx, `SELECT id FROM msg_inbox_delivery_outbox`).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	const staleToken = "00000000-0000-0000-0000-000000000001"
+	if _, err := d.Pool.Exec(ctx, `UPDATE msg_inbox_delivery_outbox
+		SET attempts=max_attempts, claim_token=$2::uuid, lease_until=now()-interval '1 second'
+		WHERE id=$1`, id, staleToken); err != nil {
+		t.Fatal(err)
+	}
+	claim, err := d.claimInboxDelivery(ctx)
+	if err != nil || claim != nil {
+		t.Fatalf("claim after max attempts = %v, %v", claim, err)
+	}
+	var state, attempts int
+	var terminalReason string
+	var payloadPreserved bool
+	if err := d.Pool.QueryRow(ctx, `SELECT state, attempts, terminal_reason, payload <> '{}'::jsonb
+		FROM msg_inbox_delivery_outbox WHERE id=$1`, id).Scan(&state, &attempts, &terminalReason, &payloadPreserved); err != nil {
+		t.Fatal(err)
+	}
+	if state != 2 || attempts != 10 || terminalReason != "max_attempts_exceeded" || !payloadPreserved {
+		t.Fatalf("dead-letter state=%d attempts=%d reason=%q payloadPreserved=%v", state, attempts, terminalReason, payloadPreserved)
+	}
+	result, err := d.Pool.Exec(ctx, `UPDATE msg_inbox_delivery_outbox SET state=1 WHERE id=$1 AND claim_token=$2::uuid AND state=0`, id, staleToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.RowsAffected() != 0 {
+		t.Fatalf("stale lease update rows=%d, want 0", result.RowsAffected())
+	}
+}
+
+func TestDeliveryDeadLetterReplayIsAuditedAndRetainsPayload(t *testing.T) {
+	d := newInboxDeliveryPostgresFixture(t)
+	ctx := context.Background()
+	unique := time.Now().UnixNano()
+	var id int64
+	err := d.Pool.QueryRow(ctx, `INSERT INTO public.msg_inbox_delivery_outbox
+		(sender_user_id, sender_message_id, dialog_message_id, peer_type, peer_id, recipient_user_id,
+		 payload, state, attempts, max_attempts, dead_lettered_at, terminal_reason)
+		VALUES ($1, 7, $2, 1, $3, $3, '{"message":"retained"}'::jsonb, 2, 10, 10, now(), 'test failure')
+		RETURNING id`, unique, unique, unique).Scan(&id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = d.Pool.Exec(context.Background(), `DELETE FROM public.msg_delivery_outbox_replay_audit WHERE queue_name='inbox' AND outbox_id=$1`, id)
+		_, _ = d.Pool.Exec(context.Background(), `DELETE FROM public.msg_inbox_delivery_outbox WHERE id=$1`, id)
+	})
+	if _, err := d.Pool.Exec(ctx, `SELECT public.replay_teamgram_delivery('inbox', $1, 'test-operator', 'INC-TEST', 'dependency restored')`, id); err != nil {
+		t.Fatal(err)
+	}
+	var state, attempts int
+	var payloadPreserved, leaseCleared, deadLetterCleared bool
+	if err := d.Pool.QueryRow(ctx, `SELECT state, attempts, payload='{"message":"retained"}'::jsonb,
+		lease_until IS NULL AND claim_token IS NULL, dead_lettered_at IS NULL
+		FROM public.msg_inbox_delivery_outbox WHERE id=$1`, id).Scan(&state, &attempts, &payloadPreserved, &leaseCleared, &deadLetterCleared); err != nil {
+		t.Fatal(err)
+	}
+	if state != 0 || attempts != 0 || !payloadPreserved || !leaseCleared || !deadLetterCleared {
+		t.Fatalf("replay state=%d attempts=%d payload=%v lease=%v deadLetter=%v", state, attempts, payloadPreserved, leaseCleared, deadLetterCleared)
+	}
+	var auditCount int
+	if err := d.Pool.QueryRow(ctx, `SELECT count(*) FROM public.msg_delivery_outbox_replay_audit
+		WHERE queue_name='inbox' AND outbox_id=$1 AND operator_name='test-operator' AND ticket_ref='INC-TEST'`, id).Scan(&auditCount); err != nil {
+		t.Fatal(err)
+	}
+	if auditCount != 1 {
+		t.Fatalf("replay audit rows = %d, want 1", auditCount)
+	}
+}
+
 func TestInboxDeliveryPostgresPublishWaitsForConsumerAck(t *testing.T) {
 	d := newInboxDeliveryPostgresFixture(t)
 	ctx := context.Background()

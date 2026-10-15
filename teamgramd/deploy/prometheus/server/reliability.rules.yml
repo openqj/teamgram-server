@@ -33,3 +33,139 @@ groups:
         annotations:
           summary: "Message publications repeatedly fail or time out"
           description: "Check Kafka connectivity and broker acknowledgement latency. Timeout may be an ambiguous send; durable intents must remain retryable."
+      - alert: TeamgramDeliveryDeadLettered
+        expr: sum by (job, instance, queue) (increase(teamgram_delivery_dead_letter_total[5m])) > 0 or teamgram_delivery_dead_letter_pending > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Durable delivery entered dead-letter state"
+          description: "Inspect terminal_reason, payload hash and lease history. Replay only through an authenticated, idempotent operator workflow; do not delete rows to clear this alert."
+      - alert: TeamgramDeliveryExpiredLeases
+        expr: teamgram_delivery_expired_leases > 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Delivery leases are expiring before completion"
+          description: "Check worker health, PostgreSQL lock waits, broker latency and recovery_seconds before changing retry limits."
+      - alert: TeamgramPostgresPoolSaturated
+        expr: (teamgram_postgres_pool_connections{state="acquired"} / clamp_min(teamgram_postgres_pool_max_connections, 1)) > 0.8
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Message service PostgreSQL pool is near capacity"
+          description: "Inspect pool acquire wait, lock waits and slow queries. Increase pool size only after the database connection budget is recalculated."
+      - alert: TeamgramPostgresLockWaits
+        expr: pg_lock_waits_waiting > 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "PostgreSQL sessions are waiting on locks"
+          description: "Inspect pg_stat_activity blockers and transaction age before changing query or pool limits."
+      - alert: TeamgramPostgresSlowQueries
+        expr: pg_slow_activity_slow_queries > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "PostgreSQL has long-running active queries"
+          description: "Review query plans and lock waits; do not terminate work solely to silence the alert."
+      - alert: TeamgramPostgresWalArchiveFailures
+        expr: increase(pg_archiver_failed_count[10m]) > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "PostgreSQL WAL archiving has failed"
+          description: "Check archive storage and PostgreSQL archiver logs; recovery objectives may be at risk."
+      - alert: TeamgramMessagingAckErrorBudgetBurn
+        expr: (teamgram_slo_ack_error_ratio_5m > 0.01) and (teamgram_slo_ack_eligible_rate_5m > 0)
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Messaging ACK error budget is burning rapidly"
+          description: "The SLO collector reports more than 1% ACK failures over five minutes. Compare ACK and live delivery evidence before declaring a backend fault."
+      - alert: TeamgramMessagingLiveErrorBudgetBurn
+        expr: (teamgram_slo_live_error_ratio_5m > 0.01) and (teamgram_slo_live_eligible_rate_5m > 0)
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Messaging live-delivery error budget is burning rapidly"
+          description: "The SLO collector reports more than 1% live-delivery failures over five minutes. Inspect sync fan-out, gateway push and client receipt evidence."
+      - alert: TeamgramMessagingSloCollectorMissing
+        expr: absent(teamgram_slo_ack_eligible_total{environment="production",source="synthetic-layer229"}) or absent(teamgram_slo_live_eligible_total{environment="production",source="synthetic-layer229"}) or absent(teamgram_slo_connection_eligible_total{environment="production",source="synthetic-layer229"}) or absent(teamgram_slo_reconnect_eligible_total{environment="production",source="synthetic-layer229"}) or absent(teamgram_slo_integrity_eligible_total{environment="production",source="synthetic-layer229"})
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Messaging SLO collector is missing"
+          description: "One or more production SLI evidence streams are unavailable; missing telemetry is not healthy traffic and cannot pass a 30-day window."
+      - alert: TeamgramMessagingSloEvidenceStale
+        expr: time() - teamgram_slo_evidence_latest_timestamp_seconds{environment="production",source="synthetic-layer229"} > 180
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Messaging SLO evidence has stopped advancing"
+          description: "The durable-evidence exporter has not observed a new minute or recovery event recently; verify the writer, textfile rebuild and Prometheus scrape path."
+      - alert: TeamgramMessagingSloMeasurementIncomplete
+        expr: min by (sli, region) (teamgram_slo_measurement_complete{environment="production",source="synthetic-layer229",sli=~"connection|reconnect|messageIntegrity"}) == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Messaging SLO measurement is incomplete"
+          description: "The {{ $labels.sli }} measurement is missing or incomplete in retained evidence. Repair collection; do not convert missing samples into healthy data."
+      - alert: TeamgramMessagingConnectionErrorBudgetBurn
+        expr: (teamgram_slo_connection_error_ratio_5m > 0.01) and (teamgram_slo_connection_eligible_rate_5m > 0)
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Messaging canary connections are dropping"
+          description: "The 5-minute connection sample failure ratio exceeds 1%; inspect gateway sessions, transport resets and reconnect diagnostics."
+      - alert: TeamgramMessagingReconnectErrorBudgetBurn
+        expr: (teamgram_slo_reconnect_error_ratio_5m > 0.01) and (teamgram_slo_reconnect_eligible_rate_5m > 0)
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Messaging reconnect attempts are failing"
+          description: "More than 1% of sampled reconnects failed over five minutes. Inspect gateway admission, reconnect storms and session recovery."
+      - alert: TeamgramMessagingMessageLoss
+        expr: teamgram_slo_message_loss_ratio_5m > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "A Layer 229 canary message is missing"
+          description: "Recipient history is missing an eligible logical message. Check ACK, outbox age, live delivery and update-state continuity."
+      - alert: TeamgramMessagingMessageDuplicates
+        expr: teamgram_slo_message_duplicate_ratio_5m > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "A Layer 229 canary message was duplicated"
+          description: "A recipient observed duplicate live updates or history rows. Preserve evidence and inspect idempotency and retry paths."
+      - alert: TeamgramMessagingRecoveryRtoBudgetBurn
+        expr: (teamgram_slo_recovery_rto_error_ratio_30d > 0.05) and (sum by (region) (increase(teamgram_slo_recovery_seconds_count{environment="production",source="synthetic-layer229"}[30d])) >= 1)
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Messaging recovery time exceeded the candidate 60-second budget"
+          description: "More than 5% of recorded recovery events exceeded 60 seconds in 30 days. Check detected-to-verified recovery timestamps and drill follow-ups."
+      - alert: TeamgramMessagingRecoveryEvidenceMissing
+        expr: sum(increase(teamgram_slo_recovery_seconds_count{environment="production",source="synthetic-layer229"}[30d])) < 1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "No messaging recovery event is recorded in 30 days"
+          description: "The recovery SLI has no measured incident or manual drill evidence. Run and record a recovery drill before accepting the 30-day window."

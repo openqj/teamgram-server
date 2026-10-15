@@ -63,8 +63,11 @@ func (r *ChannelBannedRights) Active(now int64) bool {
 	return r.UntilDate == 0 || int64(r.UntilDate) >= now
 }
 
-func (r *ChannelBannedRights) Kicks(_ int64) bool {
-	return r != nil && r.ViewMessages
+func (r *ChannelBannedRights) Kicks(now int64) bool {
+	if r == nil || !r.ViewMessages {
+		return false
+	}
+	return r.UntilDate == 0 || now <= int64(r.UntilDate)
 }
 
 // ChannelAdminRights is the persisted subset of Telegram's channel admin

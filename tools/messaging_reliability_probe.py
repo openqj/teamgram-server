@@ -39,15 +39,15 @@ def validate_ports(ports: list[int]) -> None:
         raise ProbeError("lab ports must be distinct and within 1024..65535")
 
 
-def wait_backend(lab: Lab) -> None:
+def wait_backend(lab: Lab, service: str = "backend") -> None:
     deadline = time.monotonic() + lab.wait
     while time.monotonic() < deadline:
-        item = lab.container("backend")
+        item = lab.container(service)
         if item["State"].get("Health", {}).get("Status") == "healthy":
             # Process existence can precede the gateway callback RPC listener.
             # Sync is a Kafka consumer and does not open its configured RPC port.
             # Its delivery readiness is exercised by the protocol probe below.
-            readiness = lab.run(lab.command("exec", "-T", "backend", "bash", "-c",
+            readiness = lab.run(lab.command("exec", "-T", service, "bash", "-c",
                 "for port in 20010 20030 20120 20110 11443; do timeout 1 bash -c 'exec 3<>/dev/tcp/127.0.0.1/$1' probe \"$port\" || exit 1; done"),
                 check=False, timeout=10)
             if readiness.returncode == 0:
@@ -57,9 +57,9 @@ def wait_backend(lab: Lab) -> None:
             lines = [line for line in (logs.stdout + logs.stderr).splitlines()
                      if re.search(r"panic|fatal|error|failed|missing|refusing|exited|bind|in use", line, re.I)]
             detail = redact("\n".join(lines)[:7000], lab.secret_values)
-            raise ProbeError(f"isolated backend exited before becoming healthy: {detail}")
+            raise ProbeError(f"isolated {service} exited before becoming healthy: {detail}")
         time.sleep(1)
-    raise ProbeError("isolated backend did not become healthy before its deadline")
+    raise ProbeError(f"isolated {service} did not become healthy before its deadline")
 
 
 def seed_accounts(lab: Lab) -> None:
@@ -84,11 +84,18 @@ def seed_accounts(lab: Lab) -> None:
     lab.sql("postgres", "\n".join(statements))
 
 
-def probe(lab: Lab, gramjs: Path, phase: str, state_file: Path, samples: int, *, require_success: bool = True) -> dict:
+def probe(lab: Lab, gramjs: Path, phase: str, state_file: Path, samples: int, *,
+          require_success: bool = True, actor_ports: tuple[int, int] | None = None) -> dict:
     executable = gramjs / "node_modules/.bin/tsx"
     lab.env.update({"TEAMGRAM_GRAMJS_DIR": str(gramjs), "TG_DC_ID": "2", "TG_DC_HOST": "127.0.0.1",
                     "TG_DC_PORT": lab.env["TEAMGRAM_RELIABILITY_MT_PORT"], "SLO_SAMPLES": str(samples),
                     "PROBE_PHASE": phase, "PROBE_TAG": lab.run_id, "PROBE_STATE_FILE": str(state_file)})
+    if actor_ports:
+        lab.env.update({"A_TG_DC_HOST": "127.0.0.1", "A_TG_DC_PORT": str(actor_ports[0]),
+                        "B_TG_DC_HOST": "127.0.0.1", "B_TG_DC_PORT": str(actor_ports[1])})
+    else:
+        for key in ("A_TG_DC_HOST", "A_TG_DC_PORT", "B_TG_DC_HOST", "B_TG_DC_PORT"):
+            lab.env.pop(key, None)
     result = lab.run([str(executable), str(ROOT / "docker/production/probe-cross-account-live-updates.ts")],
                      timeout=max(lab.timeout, samples * 12 + 120, int(lab.env.get("LOAD_SECONDS", "0")) + 180), check=False)
     evidence = None
@@ -153,7 +160,14 @@ def wait_control(lab: Lab, directory: Path, stage: str, future, *, timeout: floa
                 raise ProbeError("Kafka fault control did not match this lab run")
             return value
         if future.done():
-            future.result()
+            evidence = future.result()
+            failure = evidence.get("error") if isinstance(evidence, dict) else None
+            if isinstance(failure, dict):
+                probe_stage = failure.get("stage")
+                code = failure.get("code")
+                if (isinstance(probe_stage, str) and re.fullmatch(r"[a-z][a-z0-9-]{0,63}", probe_stage)
+                        and isinstance(code, str) and re.fullmatch(r"[A-Z][A-Z0-9_]{0,79}", code)):
+                    raise ProbeError(f"messaging probe exited before {stage}: {probe_stage}/{code}")
             raise ProbeError(f"Kafka fault probe exited before {stage}")
         time.sleep(.1)
     raise ProbeError(f"Kafka fault probe did not reach {stage} before its deadline")

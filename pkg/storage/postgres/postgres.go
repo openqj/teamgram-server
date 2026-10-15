@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -28,6 +29,10 @@ type Config struct {
 	MaxConnIdleTime   time.Duration
 	HealthCheckPeriod time.Duration
 	ConnectTimeout    time.Duration
+	StatementTimeout  time.Duration `json:",optional"`
+	LockTimeout       time.Duration `json:",optional"`
+	IdleInTxTimeout   time.Duration `json:",optional"`
+	ApplicationName   string        `json:",optional"`
 }
 
 // withDefaults applies conservative service-local pool defaults. The limits
@@ -56,6 +61,18 @@ func (c Config) withDefaults() Config {
 	if c.ConnectTimeout <= 0 {
 		c.ConnectTimeout = 10 * time.Second
 	}
+	if c.StatementTimeout <= 0 {
+		c.StatementTimeout = 30 * time.Second
+	}
+	if c.LockTimeout <= 0 {
+		c.LockTimeout = 5 * time.Second
+	}
+	if c.IdleInTxTimeout <= 0 {
+		c.IdleInTxTimeout = 60 * time.Second
+	}
+	if strings.TrimSpace(c.ApplicationName) == "" {
+		c.ApplicationName = "teamgram-service"
+	}
 	return c
 }
 
@@ -78,6 +95,14 @@ func NewPool(ctx context.Context, cfg Config) (*pgxpool.Pool, error) {
 	poolConfig.MaxConnIdleTime = cfg.MaxConnIdleTime
 	poolConfig.HealthCheckPeriod = cfg.HealthCheckPeriod
 	poolConfig.ConnConfig.ConnectTimeout = cfg.ConnectTimeout
+	poolConfig.ConnConfig.RuntimeParams["application_name"] = cfg.ApplicationName
+	// PostgreSQL accepts duration values such as "60s", but Go's
+	// time.Duration.String uses forms like "1m0s" that PostgreSQL rejects.
+	// Runtime timeout parameters are expressed in milliseconds to keep the
+	// wire value unambiguous for every configured duration.
+	poolConfig.ConnConfig.RuntimeParams["statement_timeout"] = timeoutMillis(cfg.StatementTimeout)
+	poolConfig.ConnConfig.RuntimeParams["lock_timeout"] = timeoutMillis(cfg.LockTimeout)
+	poolConfig.ConnConfig.RuntimeParams["idle_in_transaction_session_timeout"] = timeoutMillis(cfg.IdleInTxTimeout)
 
 	pool, err := pgxpool.NewWithConfig(ctx, poolConfig)
 	if err != nil {
@@ -97,6 +122,14 @@ func NewPool(ctx context.Context, cfg Config) (*pgxpool.Pool, error) {
 		return nil, err
 	}
 	return pool, nil
+}
+
+func timeoutMillis(value time.Duration) string {
+	ms := value.Milliseconds()
+	if ms < 1 {
+		ms = 1
+	}
+	return strconv.FormatInt(ms, 10)
 }
 
 // VerifySchema checks required columns before a service starts accepting work.

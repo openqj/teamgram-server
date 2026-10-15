@@ -1,5 +1,6 @@
 import copy
 import unittest
+from unittest import mock
 
 import messaging_capacity_probe as capacity
 
@@ -21,6 +22,18 @@ class CapacityTests(unittest.TestCase):
         delta = capacity.stage_metric_delta(before, after)
         self.assertEqual(delta["metric"][0]["value"], 5)
 
+    def test_settled_stage_metrics_waits_for_this_profile(self):
+        before = {"syncDeliveryCount": [{"labels": {"stage": "update_prepare"}, "value": 7}],
+                  "syncResults": [{"labels": {"stage": "update_prepare", "outcome": "ok"}, "value": 7}]}
+        stale = copy.deepcopy(before)
+        advanced = {"syncDeliveryCount": [{"labels": {"stage": "update_prepare"}, "value": 8}],
+                    "syncResults": [{"labels": {"stage": "update_prepare", "outcome": "ok"}, "value": 8}]}
+        with mock.patch.object(capacity, "stage_metric_snapshot", side_effect=[stale, advanced, advanced, advanced]), \
+                mock.patch.object(capacity.time, "sleep") as sleep:
+            result = capacity.settled_stage_metrics(19091, before, timeout=1, quiet_samples=2)
+        self.assertEqual(result, advanced)
+        self.assertEqual(sleep.call_count, 3)
+
     def test_every_planned_slot_stays_in_denominator(self):
         value = fixture()
         self.assertEqual(capacity.evaluate(value)["status"], "PASS")
@@ -40,6 +53,17 @@ class CapacityTests(unittest.TestCase):
         self.assertEqual(report["counts"]["delivered"], 2)
         self.assertEqual(report["counts"]["live_within_window"], 1)
         self.assertEqual(report["counts"]["live_on_time"], 1)
+        self.assertEqual(report["status"], "FAIL")
+
+    def test_late_delivery_counts_as_complete_but_misses_latency_budget(self):
+        value = fixture()
+        value["capacity"]["samples"][0].update(liveAtMs=8500, liveLate=True)
+        report = capacity.evaluate(value)
+        self.assertTrue(report["completeDelivery"])
+        self.assertEqual(report["counts"]["live_late"], 1)
+        self.assertEqual(report["counts"]["live_unobserved"], 0)
+        self.assertEqual(report["liveSuccessRatio"], 1)
+        self.assertEqual(report["liveOnTimeRatio"], .5)
         self.assertEqual(report["status"], "FAIL")
 
     def test_cleanup_and_consistency_are_required(self):

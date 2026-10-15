@@ -284,7 +284,7 @@ func (c *ApiFullCore) channelReplies(in *mtproto.TLMessagesGetReplies) (*mtproto
 	if in == nil || in.GetPeer() == nil || in.GetPeer().GetPredicateName() != mtproto.Predicate_inputPeerChannel {
 		return nil, mtproto.ErrChannelInvalid
 	}
-	channelID, err := channelview.ValidateInputPeer(uid, in.GetPeer())
+	channelID, err := channelview.ValidateReadInputPeer(uid, in.GetPeer())
 	if err != nil {
 		return nil, err
 	}
@@ -293,6 +293,9 @@ func (c *ApiFullCore) channelReplies(in *mtproto.TLMessagesGetReplies) (*mtproto
 	}
 	targetID, err := channelReplyTarget(channelID)
 	if err != nil {
+		return nil, err
+	}
+	if err = channelview.ValidateReadChannel(uid, targetID); err != nil {
 		return nil, err
 	}
 	rows, count, err := domain.ChannelMessageReplies(uid, targetID, in.GetMsgId(), in.GetOffsetId(), in.GetOffsetDate(), in.GetAddOffset(), in.GetMinId(), in.GetMaxId(), in.GetLimit())
@@ -323,7 +326,7 @@ func (c *ApiFullCore) channelDiscussionMessage(in *mtproto.TLMessagesGetDiscussi
 	if in == nil || in.GetPeer() == nil || in.GetPeer().GetPredicateName() != mtproto.Predicate_inputPeerChannel {
 		return nil, mtproto.ErrChannelInvalid
 	}
-	channelID, err := channelview.ValidateInputPeer(uid, in.GetPeer())
+	channelID, err := channelview.ValidateReadInputPeer(uid, in.GetPeer())
 	if err != nil {
 		return nil, err
 	}
@@ -336,6 +339,9 @@ func (c *ApiFullCore) channelDiscussionMessage(in *mtproto.TLMessagesGetDiscussi
 	}
 	targetID, err := channelReplyTarget(channelID)
 	if err != nil {
+		return nil, err
+	}
+	if err = channelview.ValidateReadChannel(uid, targetID); err != nil {
 		return nil, err
 	}
 	maxID, err := domain.TopChannelMessage(targetID)

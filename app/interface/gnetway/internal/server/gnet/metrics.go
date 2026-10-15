@@ -43,6 +43,54 @@ var (
 		Labels:    []string{"proto"},
 	})
 
+	metricConnPending = metric.NewGaugeVec(&metric.GaugeVecOpts{
+		Namespace: namespace,
+		Subsystem: "conn",
+		Name:      "pending",
+		Help:      "Connections accepted by the socket but not yet assigned a transport.",
+		Labels:    []string{},
+	})
+
+	metricAdmissionRejected = metric.NewCounterVec(&metric.CounterVecOpts{
+		Namespace: namespace,
+		Subsystem: "admission",
+		Name:      "rejected_total",
+		Help:      "Connections or authenticated sessions rejected by a resource limit.",
+		Labels:    []string{"reason"},
+	})
+
+	metricHandshakeInFlight = metric.NewGaugeVec(&metric.GaugeVecOpts{
+		Namespace: namespace,
+		Subsystem: "handshake",
+		Name:      "in_flight",
+		Help:      "Handshake entrypoints currently holding an admission slot.",
+		Labels:    []string{},
+	})
+
+	metricHandshakeRejected = metric.NewCounterVec(&metric.CounterVecOpts{
+		Namespace: namespace,
+		Subsystem: "handshake",
+		Name:      "rejected_total",
+		Help:      "Handshake attempts rejected by rate or concurrency limits.",
+		Labels:    []string{"reason"},
+	})
+
+	metricWorkerRejected = metric.NewCounterVec(&metric.CounterVecOpts{
+		Namespace: namespace,
+		Subsystem: "worker",
+		Name:      "rejected_total",
+		Help:      "Asynchronous gateway tasks rejected because the bounded worker pool is full.",
+		Labels:    []string{},
+	})
+
+	metricDrain = metric.NewGaugeVec(&metric.GaugeVecOpts{
+		Namespace: namespace,
+		Subsystem: "server",
+		Name:      "draining",
+		Help:      "Whether the gateway is draining connections for graceful shutdown.",
+		Labels:    []string{},
+	})
+
 	metricConnTimeout = metric.NewCounterVec(&metric.CounterVecOpts{
 		Namespace: namespace,
 		Subsystem: "conn",
@@ -82,5 +130,29 @@ var (
 		Name:      "decode_errors_total",
 		Help:      "Total number of MTProto codec decode errors, labeled by transport and reason.",
 		Labels:    []string{"proto", "reason"}, // proto: tcp, websocket; reason: bad_magic, bad_len, bad_crc, bad_seq, decrypt, transport_unsupported, unexpected_eof, other
+	})
+
+	metricGatewayWriteQueueWait = metric.NewHistogramVec(&metric.HistogramVecOpts{
+		Namespace: namespace,
+		Subsystem: "gateway_write",
+		Name:      "queue_wait_ms",
+		Help:      "Time spent waiting in a connection's bounded gateway write queue.",
+		Labels:    []string{"proto"},
+		Buckets:   []float64{1, 5, 10, 25, 50, 100, 250, 500, 1000, 2000, 5000, 10000},
+	})
+
+	metricGatewayWriteRejected = metric.NewCounterVec(&metric.CounterVecOpts{
+		Namespace: namespace,
+		Subsystem: "gateway_write",
+		Name:      "rejected_total",
+		Help:      "Gateway writes rejected because the per-connection queue was unavailable or full.",
+		Labels:    []string{"reason"},
+	})
+	metricGatewayWriteFailed = metric.NewCounterVec(&metric.CounterVecOpts{
+		Namespace: namespace,
+		Subsystem: "gateway_write",
+		Name:      "failed_total",
+		Help:      "Gateway write batches that failed and caused the connection to close.",
+		Labels:    []string{"reason"},
 	})
 )

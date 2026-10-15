@@ -67,6 +67,21 @@ class MessagingRunnerTests(unittest.TestCase):
             with self.subTest(change=change, code=code), patch.object(self.lab, "run", return_value=subprocess.CompletedProcess([], code, json.dumps(value), "")), self.assertRaises(probe.ProbeError):
                 probe.probe(self.lab, Path("/fake/gramjs"), "single", Path("/tmp/state"), 20)
 
+    def test_probe_can_route_two_accounts_to_distinct_gateways(self):
+        evidence = {"probe": "messaging.cross-account-live-updates", "phase": "capacity", "tag": self.lab.run_id, "ok": True}
+        result = subprocess.CompletedProcess([], 0, json.dumps(evidence), "")
+        with patch.object(self.lab, "run", return_value=result):
+            probe.probe(self.lab, Path("/fake/gramjs"), "capacity", Path("/tmp/state"), 1,
+                        actor_ports=(21543, 21544))
+        self.assertEqual(self.lab.env["A_TG_DC_PORT"], "21543")
+        self.assertEqual(self.lab.env["B_TG_DC_PORT"], "21544")
+        with patch.object(self.lab, "run", return_value=subprocess.CompletedProcess(
+                [], 0, json.dumps({"probe": "messaging.cross-account-live-updates", "phase": "single",
+                                   "tag": self.lab.run_id, "ok": True}), "")):
+            probe.probe(self.lab, Path("/fake/gramjs"), "single", Path("/tmp/state"), 20)
+        self.assertNotIn("A_TG_DC_PORT", self.lab.env)
+        self.assertNotIn("B_TG_DC_PORT", self.lab.env)
+
     def test_raw_sdk_error_cannot_enter_failure_reason(self):
         error = probe.MessagingProbeError("single", {"error": {"code": "request includes secret"}})
         self.assertNotIn("secret", str(error))
@@ -84,6 +99,14 @@ class MessagingRunnerTests(unittest.TestCase):
             future.set_result({"ok": True})
             with self.assertRaises(probe.ProbeError):
                 probe.wait_control(self.lab, path, "sent", future)
+
+    def test_control_reports_fixed_probe_failure_stage(self):
+        future = Future()
+        future.set_result({"phase": "capacity", "error": {
+            "stage": "fixed-rate-capacity", "code": "CAPACITY_PTS_GAP_OR_DUPLICATE"}})
+        with tempfile.TemporaryDirectory() as directory, self.assertRaisesRegex(
+                probe.ProbeError, "fixed-rate-capacity/CAPACITY_PTS_GAP_OR_DUPLICATE"):
+            probe.wait_control(self.lab, Path(directory), "sent", future)
 
     def test_outage_requires_both_commits_and_retained_delivery_intents(self):
         self.lab.env.update(A_USER_ID="910001", B_USER_ID="910002")

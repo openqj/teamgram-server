@@ -15,6 +15,7 @@ import (
 	"errors"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -26,8 +27,9 @@ import (
 const channelDifferenceMaxLimit int32 = 100
 
 type persistedChannelState struct {
-	CreatorUserID int64 `db:"creator_user_id"`
-	Pts           int32 `db:"pts"`
+	CreatorUserID int64  `db:"creator_user_id"`
+	Username      string `db:"username"`
+	Pts           int32  `db:"pts"`
 }
 
 type persistedChannelMember struct {
@@ -67,7 +69,8 @@ type channelDifferenceItem struct {
 }
 
 type channelBannedRights struct {
-	ViewMessages bool `json:"view_messages"`
+	ViewMessages bool  `json:"view_messages"`
+	UntilDate    int64 `json:"until_date"`
 }
 
 // UpdatesGetChannelDifferenceV2
@@ -236,17 +239,17 @@ func missingChannelEventTable(err error) bool {
 func loadChannelDataPostgres(ctx context.Context, pool *pgxpool.Pool, channelID, userID int64, pts, limit int32) (
 	persistedChannelState, []persistedChannelMessage, []persistedChannelEvent, []int32, error) {
 	var state persistedChannelState
-	if err := pool.QueryRow(ctx, `SELECT c.creator_user_id,
+	if err := pool.QueryRow(ctx, `SELECT c.creator_user_id, c.username,
 		COALESCE(s.pts, (SELECT COALESCE(MAX(m.message_id), 0) FROM apifull_channel_message m WHERE m.channel_id=c.id)) AS pts
 		FROM apifull_channel c
 		LEFT JOIN apifull_channel_message_seq s ON s.channel_id=c.id
-		WHERE c.id = $1`, channelID).Scan(&state.CreatorUserID, &state.Pts); err != nil {
+		WHERE c.id = $1`, channelID).Scan(&state.CreatorUserID, &state.Username, &state.Pts); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return persistedChannelState{}, nil, nil, nil, mtproto.ErrChannelInvalid
 		}
 		return persistedChannelState{}, nil, nil, nil, err
 	}
-	if err := ensureChannelMemberPostgres(ctx, pool, channelID, userID, state.CreatorUserID); err != nil {
+	if err := ensureChannelMemberPostgres(ctx, pool, channelID, userID, state.CreatorUserID, state.Username); err != nil {
 		return persistedChannelState{}, nil, nil, nil, err
 	}
 
@@ -328,13 +331,31 @@ func loadChannelDataPostgres(ctx context.Context, pool *pgxpool.Pool, channelID,
 	return state, rows, events, hiddenIDs, nil
 }
 
-func ensureChannelMemberPostgres(ctx context.Context, pool *pgxpool.Pool, channelID, userID, creatorID int64) error {
+func ensureChannelMemberPostgres(ctx context.Context, pool *pgxpool.Pool, channelID, userID, creatorID int64, username string) error {
 	if userID == creatorID {
 		return nil
 	}
 	var bannedRights string
 	err := pool.QueryRow(ctx, `SELECT banned_rights FROM apifull_channel_member WHERE channel_id = $1 AND user_id = $2`, channelID, userID).Scan(&bannedRights)
 	if errors.Is(err, pgx.ErrNoRows) {
+		if username != "" {
+			return nil
+		}
+		var peekActive bool
+		peekErr := pool.QueryRow(ctx, `SELECT EXISTS(
+			SELECT 1 FROM apifull_channel_peek_access
+			WHERE channel_id = $1 AND user_id = $2
+			  AND expires_at > EXTRACT(EPOCH FROM CURRENT_TIMESTAMP)::bigint
+		)`, channelID, userID).Scan(&peekActive)
+		if peekErr != nil {
+			if strings.Contains(strings.ToLower(peekErr.Error()), "apifull_channel_peek_access") && strings.Contains(strings.ToLower(peekErr.Error()), "does not exist") {
+				return mtproto.ErrUserNotParticipant
+			}
+			return peekErr
+		}
+		if peekActive {
+			return nil
+		}
 		return mtproto.ErrUserNotParticipant
 	}
 	if err != nil {
@@ -347,7 +368,7 @@ func ensureChannelMemberPostgres(ctx context.Context, pool *pgxpool.Pool, channe
 	if err := json.Unmarshal([]byte(bannedRights), &rights); err != nil {
 		return err
 	}
-	if rights.ViewMessages {
+	if rights.ViewMessages && (rights.UntilDate == 0 || rights.UntilDate >= time.Now().Unix()) {
 		return mtproto.ErrUserNotParticipant
 	}
 	return nil

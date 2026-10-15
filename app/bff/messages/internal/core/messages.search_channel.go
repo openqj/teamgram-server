@@ -35,7 +35,7 @@ func (c *MessagesCore) searchChannel(in *mtproto.TLMessagesSearch, offsetID, lim
 		}
 		return box, nil
 	case mtproto.FilterPinned:
-		channelID, err := channelview.ValidateInputPeer(c.MD.UserId, in.GetPeer())
+		channelID, err := channelview.ValidateReadInputPeer(c.MD.UserId, in.GetPeer())
 		if err != nil {
 			c.Logger.Errorf("messages.search - error: %v", err)
 			return nil, err
@@ -50,7 +50,7 @@ func (c *MessagesCore) searchChannel(in *mtproto.TLMessagesSearch, offsetID, lim
 		mtproto.FilterUrl, mtproto.FilterGif, mtproto.FilterVoice, mtproto.FilterMusic, mtproto.FilterChatPhotos,
 		mtproto.FilterPhoneCalls, mtproto.FilterRoundVoice, mtproto.FilterRoundVideo, mtproto.FilterMyMentions,
 		mtproto.FilterGeo, mtproto.FilterContacts:
-		channelID, err := channelview.ValidateInputPeer(c.MD.UserId, in.GetPeer())
+		channelID, err := channelview.ValidateReadInputPeer(c.MD.UserId, in.GetPeer())
 		if err != nil {
 			c.Logger.Errorf("messages.search - error: %v", err)
 			return nil, err

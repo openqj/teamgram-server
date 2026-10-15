@@ -36,6 +36,16 @@ services:
   backend:
     image: "${TEAMGRAM_BACKEND_IMAGE:?TEAMGRAM_BACKEND_IMAGE is required}"
     build: !reset null
+    ulimits:
+      nofile:
+        soft: 131072
+        hard: 131072
+    pids_limit: 8192
+    cpus: "${TEAMGRAM_CPU_LIMIT:-4.0}"
+    mem_limit: "${TEAMGRAM_MEMORY_LIMIT:-8g}"
+    sysctls:
+      net.core.somaxconn: "65535"
+      net.ipv4.tcp_max_syn_backlog: "65535"
     depends_on:
       postgres-migrate:
         condition: service_completed_successfully
@@ -46,6 +56,10 @@ services:
     # PostgreSQL-only runtime contract even when TEAMGRAM_POSTGRES_DSN is set.
     environment: !override
       TEAMGRAM_POSTGRES_DSN: "${TEAMGRAM_POSTGRES_DSN:?TEAMGRAM_POSTGRES_DSN is required}"
+      TEAMGRAM_KAFKA_DLQ_TOPIC: "${TEAMGRAM_KAFKA_DLQ_TOPIC:?Pre-create a Kafka dead-letter topic}"
+      TEAMGRAM_KAFKA_MAX_HANDLER_ATTEMPTS: "${TEAMGRAM_KAFKA_MAX_HANDLER_ATTEMPTS:-10}"
+      TEAMGRAM_KAFKA_RETRY_DELAY_MS: "${TEAMGRAM_KAFKA_RETRY_DELAY_MS:-1000}"
+      TEAMGRAM_KAFKA_HANDLER_CONCURRENCY: "${TEAMGRAM_KAFKA_HANDLER_CONCURRENCY:-64}"
       TEAMGRAM_APIFULL_SCHEMA_READONLY: "true"
       S3_ENDPOINT: "${S3_ENDPOINT:-seaweedfs:8333}"
       S3_ACCESS_KEY: "${S3_ACCESS_KEY:-seaweedfs}"
@@ -131,6 +145,64 @@ services:
       retries: 12
       start_period: 30s
 
+  postgres-exporter:
+    image: prometheuscommunity/postgres-exporter:v0.17.1
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATA_SOURCE_URI: "postgres:5432/${POSTGRES_DB:?POSTGRES_DB is required}?sslmode=disable"
+      DATA_SOURCE_USER: "${POSTGRES_USER:?POSTGRES_USER is required}"
+      DATA_SOURCE_PASS: "${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}"
+      PG_EXPORTER_EXTEND_QUERY_PATH: /etc/postgres_exporter/queries.yaml
+    volumes:
+      - ./docker/production/postgres-exporter-queries.yaml:/etc/postgres_exporter/queries.yaml:ro
+    networks:
+      - teamgram_net
+    restart: unless-stopped
+
+  node-exporter:
+    image: prom/node-exporter:v1.8.2
+    command:
+      - --collector.textfile.directory=/textfile
+    volumes:
+      - "${TEAMGRAM_SLO_TEXTFILE_DIR:?Set the SLO textfile directory}:/textfile:ro"
+    networks:
+      - teamgram_net
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+    volumes:
+      - ./docker/production/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./teamgramd/deploy/prometheus/server/reliability.rules.yml:/etc/prometheus/reliability.rules.yml:ro
+      - ./teamgramd/deploy/prometheus/server/slo-recording.rules.yml:/etc/prometheus/slo-recording.rules.yml:ro
+      - prometheus_data:/prometheus
+    depends_on:
+      alertmanager:
+        condition: service_started
+      backend:
+        condition: service_started
+    networks:
+      - teamgram_net
+    restart: unless-stopped
+
+  alertmanager:
+    image: prom/alertmanager:v0.28.1
+    user: "${TEAMGRAM_ALERTMANAGER_UID:?Set to the rendered config owner UID}:${TEAMGRAM_ALERTMANAGER_GID:?Set to the rendered config owner GID}"
+    command:
+      - --config.file=/etc/alertmanager/alertmanager.yml
+      - --storage.path=/alertmanager/data
+    volumes:
+      - "${TEAMGRAM_ALERTMANAGER_CONFIG:?Render the production Alertmanager config first}:/etc/alertmanager/alertmanager.yml:ro"
+      - "${TEAMGRAM_ALERTMANAGER_DATA_DIR:?Set the persistent Alertmanager data directory}:/alertmanager/data"
+    networks:
+      - teamgram_net
+    restart: unless-stopped
+
   # If this overlay is applied to a legacy Compose project, remove its MySQL
   # service instead of leaving a second production database running.
   mysql: !reset null
@@ -141,3 +213,4 @@ networks:
 
 volumes:
   postgres_data:
+  prometheus_data:

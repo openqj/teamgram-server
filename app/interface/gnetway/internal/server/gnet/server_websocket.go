@@ -19,26 +19,33 @@ import (
 )
 
 func (s *Server) onWebsocketData(ctx *connContext, c gnet.Conn) (action gnet.Action) {
-	ws := ctx.wsCodec
-	if ws.ReadBufferBytes(c) == gnet.Close {
+	wsCodec := ctx.wsCodec
+	if c.InboundBuffered() > wsCodec.MaxMessageBytes && wsCodec.MaxMessageBytes > 0 {
+		metricAdmissionRejected.Inc("websocket_buffer_limit")
 		return gnet.Close
 	}
-	ok, action := ws.Upgrade(c)
+	if wsCodec.ReadBufferBytes(c) == gnet.Close {
+		return gnet.Close
+	}
+	ok, action := wsCodec.Upgrade(c)
 	if !ok {
 		return
 	}
 
-	if ws.Buf.Len() <= 0 {
+	if wsCodec.Buf.Len() <= 0 {
 		return gnet.None
 	}
-	messages, err := ws.Decode(c)
+	messages, err := wsCodec.Decode(c)
 	if err != nil {
+		if errors.Is(err, ws.ErrMessageTooLarge) {
+			metricAdmissionRejected.Inc("websocket_message_limit")
+		}
 		return gnet.Close
 	}
 	if messages == nil {
 		return
 	}
-	bufferWebsocketMessages(&ws.Conn, messages)
+	bufferWebsocketMessages(&wsCodec.Conn, messages)
 
 	if ctx.codec == nil {
 		ctx.codec, err = codec.CreateCodec(&ctx.wsCodec.Conn)
@@ -58,7 +65,7 @@ func (s *Server) onWebsocketData(ctx *connContext, c gnet.Conn) (action gnet.Act
 	}
 
 	for {
-		needAck, frame, err := ctx.codec.Decode(&ws.Conn)
+		needAck, frame, err := ctx.codec.Decode(&wsCodec.Conn)
 		if err != nil {
 			if errors.Is(err, codec.ErrUnexpectedEOF) {
 				metricCodecDecodeError.Inc("websocket", classifyCodecError(err))

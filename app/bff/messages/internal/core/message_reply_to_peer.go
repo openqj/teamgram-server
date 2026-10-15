@@ -148,7 +148,9 @@ func (c *MessagesCore) resolveMessageReplyPeer(sendPeer *mtproto.PeerUtil, reply
 			return nil, mtproto.ErrPeerIdInvalid
 		}
 	case mtproto.Predicate_inputPeerChannel:
-		if _, err = channelview.HistoryForInputPeer(c.MD.UserId, inputPeer, 0, 1); err != nil {
+		// A public channel can expose history to a non-member, but replying to
+		// one of its posts is a member-only write/reference operation here.
+		if _, err = channelview.ValidateInputPeer(c.MD.UserId, inputPeer); err != nil {
 			return nil, err
 		}
 		found, err := channelview.PresentIDs(c.MD.UserId, inputPeer.GetChannelId(), []int32{replyToMsgId})

@@ -8,6 +8,7 @@ x-postgres-environment: &postgres-environment
   POSTGRES_PASSWORD: "${TEAMGRAM_RELIABILITY_DB_PASSWORD:?A disposable database password is required}"
   TEAMGRAM_REPLICATION_PASSWORD: "${TEAMGRAM_RELIABILITY_REPLICATION_PASSWORD:?A disposable replication password is required}"
   TEAMGRAM_RECOVERY_TIMEOUT: "${TEAMGRAM_RELIABILITY_RECOVERY_TIMEOUT:-120}"
+  TEAMGRAM_RELIABILITY_PG_MAX_CONNECTIONS: "${TEAMGRAM_RELIABILITY_PG_MAX_CONNECTIONS:-100}"
 
 services:
   postgres:
@@ -145,7 +146,7 @@ services:
       retries: 60
     restart: "no"
 
-  backend:
+  backend: &backend
     image: "${TEAMGRAM_RELIABILITY_IMAGE:-teamgram-reliability-image-required}"
     profiles: [backend]
     labels: *lab-labels
@@ -162,6 +163,7 @@ services:
         condition: service_healthy
     environment:
       TEAMGRAM_POSTGRES_DSN: "postgresql://teamgram_reliability:${TEAMGRAM_RELIABILITY_DB_PASSWORD:?A disposable database password is required}@postgres:5432/teamgram_reliability?sslmode=disable"
+      TEAMGRAM_KAFKA_HANDLER_CONCURRENCY: "${TEAMGRAM_KAFKA_HANDLER_CONCURRENCY:-64}"
       TEAMGRAM_APIFULL_SCHEMA_READONLY: "true"
       S3_ENDPOINT: minio:8333
       S3_ACCESS_KEY: ""
@@ -178,6 +180,11 @@ services:
     stop_grace_period: 45s
     restart: "no"
 
+  backend-2:
+    <<: *backend
+    ports:
+      - "127.0.0.1:${TEAMGRAM_RELIABILITY_MT_PORT_2:-21544}:11443"
+
   prometheus:
     image: prom/prometheus:v3.5.0
     profiles: [monitoring]
@@ -188,7 +195,24 @@ services:
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ../../teamgramd/deploy/prometheus/server/reliability.rules.yml:/etc/prometheus/reliability.rules.yml:ro
+      - ../../teamgramd/deploy/prometheus/server/slo-recording.rules.yml:/etc/prometheus/slo-recording.rules.yml:ro
       - prometheus_data:/prometheus
+    restart: "no"
+
+  postgres-exporter:
+    image: prometheuscommunity/postgres-exporter:v0.17.1
+    profiles: [monitoring]
+    labels: *lab-labels
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATA_SOURCE_URI: "postgres:5432/${TEAMGRAM_RELIABILITY_DB:-teamgram_reliability}?sslmode=disable"
+      DATA_SOURCE_USER: teamgram_reliability
+      DATA_SOURCE_PASS: "${TEAMGRAM_RELIABILITY_DB_PASSWORD:?A disposable database password is required}"
+      PG_EXPORTER_EXTEND_QUERY_PATH: /etc/postgres_exporter/queries.yaml
+    volumes:
+      - ../production/postgres-exporter-queries.yaml:/etc/postgres_exporter/queries.yaml:ro
     restart: "no"
 
 volumes:

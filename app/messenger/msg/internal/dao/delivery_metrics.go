@@ -22,6 +22,15 @@ var (
 	deliveryAttempts = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "teamgram_delivery_max_attempts", Help: "Highest attempt count among pending intents.",
 	}, []string{"queue"})
+	deliveryDeadLetterPending = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "teamgram_delivery_dead_letter_pending", Help: "Durable dead-lettered intents retained for diagnosis or replay.",
+	}, []string{"queue"})
+	deliveryDeadLetters = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "teamgram_delivery_dead_letter_total", Help: "Intents moved to terminal dead-letter state.",
+	}, []string{"queue"})
+	deliveryRetries = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "teamgram_delivery_retries_total", Help: "Retry releases for durable delivery intents.",
+	}, []string{"queue"})
 	deliverySampleTime = promauto.NewGauge(prometheus.GaugeOpts{
 		Name: "teamgram_delivery_backlog_sample_timestamp_seconds", Help: "Time of the last successful database backlog sample.",
 	})
@@ -46,24 +55,41 @@ var (
 		Name: "teamgram_delivery_completion_seconds", Help: "Time from durable enqueue to consumer or broker acknowledgement.",
 		Buckets: []float64{0.05, 0.1, 0.25, 0.5, 1, 2, 5, 15, 30, 60, 120, 300, 600},
 	}, []string{"queue", "stage"})
+	deliveryRecovery = promauto.NewHistogramVec(prometheus.HistogramOpts{
+		Name: "teamgram_delivery_recovery_seconds", Help: "Time from enqueue until a retrying intent reaches an acknowledgement or terminal state.",
+		Buckets: []float64{0.05, 0.1, 0.25, 0.5, 1, 2, 5, 15, 30, 60, 120, 300, 600, 1800},
+	}, []string{"queue"})
+	deliverySampleDuration = promauto.NewHistogram(prometheus.HistogramOpts{
+		Name: "teamgram_delivery_backlog_sample_seconds", Help: "Duration of a durable delivery backlog sample query.",
+		Buckets: []float64{0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2, 5},
+	})
+	deliveryPool = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "teamgram_postgres_pool_connections", Help: "PostgreSQL pool connections by state.",
+	}, []string{"state"})
+	deliveryPoolMax = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "teamgram_postgres_pool_max_connections", Help: "Configured maximum connections for the message service PostgreSQL pool.",
+	})
+	deliveryPoolAcquireWait = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "teamgram_postgres_pool_acquire_wait_seconds_total", Help: "Cumulative time spent waiting to acquire PostgreSQL pool connections.",
+	})
 )
 
 type deliveryBacklog struct {
-	queue                         string
-	pending, expired, maxAttempts int64
-	oldest                        float64
+	queue                               string
+	pending, expired, maxAttempts, dead int64
+	oldest                              float64
 }
 
 func (d *Dao) readDeliveryBacklog(ctx context.Context) ([]deliveryBacklog, error) {
-	rows, err := d.Pool.Query(ctx, `SELECT 'inbox', count(*),
-		COALESCE(extract(epoch FROM now()-min(created_at)),0)::double precision,
-		count(*) FILTER (WHERE lease_until<=now()), COALESCE(max(attempts),0)
-		FROM msg_inbox_delivery_outbox WHERE state=0
+	rows, err := d.Pool.Query(ctx, `SELECT 'inbox', count(*) FILTER (WHERE state=0),
+		COALESCE(extract(epoch FROM now()-min(created_at) FILTER (WHERE state=0)),0)::double precision,
+		count(*) FILTER (WHERE state=0 AND lease_until<=now()), COALESCE(max(attempts) FILTER (WHERE state=0),0), count(*) FILTER (WHERE state=2)
+		FROM msg_inbox_delivery_outbox WHERE state IN (0,2)
 		UNION ALL
-		SELECT 'state', count(*),
-		COALESCE(extract(epoch FROM now()-min(created_at)),0)::double precision,
-		count(*) FILTER (WHERE lease_until<=now()), COALESCE(max(attempts),0)
-		FROM msg_state_delivery_outbox WHERE state=0`)
+		SELECT 'state', count(*) FILTER (WHERE state=0),
+		COALESCE(extract(epoch FROM now()-min(created_at) FILTER (WHERE state=0)),0)::double precision,
+		count(*) FILTER (WHERE state=0 AND lease_until<=now()), COALESCE(max(attempts) FILTER (WHERE state=0),0), count(*) FILTER (WHERE state=2)
+		FROM msg_state_delivery_outbox WHERE state IN (0,2)`)
 	if err != nil {
 		return nil, err
 	}
@@ -71,7 +97,7 @@ func (d *Dao) readDeliveryBacklog(ctx context.Context) ([]deliveryBacklog, error
 	var result []deliveryBacklog
 	for rows.Next() {
 		var sample deliveryBacklog
-		if err := rows.Scan(&sample.queue, &sample.pending, &sample.oldest, &sample.expired, &sample.maxAttempts); err != nil {
+		if err := rows.Scan(&sample.queue, &sample.pending, &sample.oldest, &sample.expired, &sample.maxAttempts, &sample.dead); err != nil {
 			return nil, err
 		}
 		result = append(result, sample)
@@ -89,16 +115,28 @@ func (d *Dao) startDeliveryMetrics(ctx context.Context) func() {
 		defer ticker.Stop()
 		for {
 			sampleCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			started := time.Now()
 			samples, err := d.readDeliveryBacklog(sampleCtx)
 			cancel()
+			deliverySampleDuration.Observe(max(time.Since(started).Seconds(), 0))
 			if err == nil {
 				for _, sample := range samples {
 					deliveryPending.WithLabelValues(sample.queue).Set(float64(sample.pending))
 					deliveryOldest.WithLabelValues(sample.queue).Set(max(sample.oldest, 0))
 					deliveryExpired.WithLabelValues(sample.queue).Set(float64(sample.expired))
 					deliveryAttempts.WithLabelValues(sample.queue).Set(float64(sample.maxAttempts))
+					deliveryDeadLetterPending.WithLabelValues(sample.queue).Set(float64(sample.dead))
 				}
 				deliverySampleTime.Set(float64(time.Now().Unix()))
+				if d.Postgres != nil && d.Postgres.Pool != nil {
+					stats := d.Postgres.Pool.Stat()
+					deliveryPool.WithLabelValues("acquired").Set(float64(stats.AcquiredConns()))
+					deliveryPool.WithLabelValues("idle").Set(float64(stats.IdleConns()))
+					deliveryPool.WithLabelValues("total").Set(float64(stats.TotalConns()))
+					deliveryPool.WithLabelValues("constructing").Set(float64(stats.ConstructingConns()))
+					deliveryPoolMax.Set(float64(stats.MaxConns()))
+					deliveryPoolAcquireWait.Set(stats.AcquireDuration().Seconds())
+				}
 			} else if ctx.Err() == nil {
 				deliverySampleErrors.Inc()
 			}

@@ -26,7 +26,7 @@ import (
 )
 
 func New(svcCtx *svc.ServiceContext, conf kafka.KafkaConsumerConf) (*mqconsumer.Consumer, error) {
-	return mqconsumer.New(conf, func(ctx context.Context, method, key string, value []byte) error {
+	return mqconsumer.NewWithSafeCommitBatch(conf, func(ctx context.Context, method, key string, value []byte) error {
 		if metadata, ok := mqconsumer.MetadataFromContext(ctx); ok {
 			hash := sha256.Sum256(append(append([]byte(method), 0), value...))
 			ctx = dao.WithDeliveryReceipt(ctx, dao.DeliveryReceipt{
@@ -35,7 +35,20 @@ func New(svcCtx *svc.ServiceContext, conf kafka.KafkaConsumerConf) (*mqconsumer.
 			})
 		}
 		return handleMessage(ctx, svcCtx, method, key, value)
-	})
+	}, safeToBatchCommit)
+}
+
+func safeToBatchCommit(topic, method string) bool {
+	if topic != "Sync-T" {
+		return false
+	}
+	switch method {
+	case string(proto.MessageName((*sync.TLSyncPushUpdates)(nil))),
+		string(proto.MessageName((*sync.TLSyncPushUpdatesIfNot)(nil))):
+		return true
+	default:
+		return false
+	}
 }
 
 func handleMessage(ctx context.Context, svcCtx *svc.ServiceContext, method, key string, value []byte) (err error) {

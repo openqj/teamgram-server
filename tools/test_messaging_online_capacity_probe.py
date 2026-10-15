@@ -12,7 +12,7 @@ class OnlineCapacityEvaluationTest(unittest.TestCase):
         online = {
             "ok": True,
             "connect": {"connected": 1000},
-            "hold": {"minConnected": 1000},
+            "hold": {"minConnected": 1000, "serverGaugeByReplicaMin": {"backend-1": 1000}},
             "reconnect": {"connected": 10},
             "serviceGauge": {"observed": True, "min": 1000, "cleanupObserved": True},
         }
@@ -37,6 +37,15 @@ class OnlineCapacityEvaluationTest(unittest.TestCase):
         result = probe.evaluate(self._evidence(serviceGauge={"observed": True, "min": 1000, "cleanupObserved": False}), 1000, 10)
         self.assertEqual(result["status"], "FAIL")
         self.assertFalse(result["checks"]["connectionCleanup"])
+
+    def test_dual_backend_requires_both_replicas_to_hold_their_share(self):
+        online = self._evidence()["online"]
+        online["hold"]["serverGaugeByReplicaMin"] = {"backend-1": 500, "backend-2": 500}
+        self.assertEqual(probe.evaluate({"online": online}, 1000, 10, 2)["status"], "PASS")
+        online["hold"]["serverGaugeByReplicaMin"]["backend-2"] = 499
+        result = probe.evaluate({"online": online}, 1000, 10, 2)
+        self.assertEqual(result["status"], "FAIL")
+        self.assertFalse(result["checks"]["allReplicasServeExpectedConnections"])
 
     def test_mixed_acceptance_requires_both_online_and_message_budgets(self):
         load = {"schemaVersion": 1, "phase": "capacity", "evidenceClass": "local_probe",

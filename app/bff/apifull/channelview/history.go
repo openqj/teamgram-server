@@ -221,6 +221,85 @@ func ValidateInputPeer(userID int64, peer *mtproto.InputPeer) (int64, error) {
 	return ch.ID, nil
 }
 
+// ValidateReadInputPeer allows non-members to read channels with a public
+// username while keeping private-channel reads and banned users restricted.
+func ValidateReadInputPeer(userID int64, peer *mtproto.InputPeer) (int64, error) {
+	if peer == nil || peer.GetPredicateName() != mtproto.Predicate_inputPeerChannel {
+		return 0, mtproto.ErrChannelInvalid
+	}
+	ch, ok, err := domain.LoadChannel(peer.GetChannelId())
+	if err != nil {
+		return 0, stored(err)
+	}
+	if !ok || ch.AccessHash != peer.GetAccessHash() {
+		return 0, mtproto.ErrChannelInvalid
+	}
+	if err = validateChannelReadAccess(userID, ch); err != nil {
+		return 0, err
+	}
+	return ch.ID, nil
+}
+
+func ValidateReadInputChannel(userID int64, input *mtproto.InputChannel) (int64, error) {
+	if input == nil || input.GetPredicateName() == mtproto.Predicate_inputChannelEmpty || input.GetChannelId() <= 0 || input.GetAccessHash() == 0 {
+		return 0, mtproto.ErrChannelInvalid
+	}
+	peer := mtproto.MakeTLInputPeerChannel(&mtproto.InputPeer{
+		ChannelId:  input.GetChannelId(),
+		AccessHash: input.GetAccessHash(),
+	}).To_InputPeer()
+	return ValidateReadInputPeer(userID, peer)
+}
+
+// ValidateChannelDifferenceInputChannel preserves Telegram's member error for
+// an ordinary private channel while allowing the public and chatInvitePeek
+// read paths used by updates.getChannelDifference.
+func ValidateChannelDifferenceInputChannel(userID int64, input *mtproto.InputChannel) (int64, error) {
+	channelID, err := ValidateReadInputChannel(userID, input)
+	if errors.Is(err, mtproto.ErrChannelPrivate) {
+		return 0, mtproto.ErrUserNotParticipant
+	}
+	return channelID, err
+}
+
+func ValidateReadChannel(userID, channelID int64) error {
+	ch, ok, err := domain.LoadChannel(channelID)
+	if err != nil {
+		return stored(err)
+	}
+	if !ok {
+		return mtproto.ErrChannelInvalid
+	}
+	return validateChannelReadAccess(userID, ch)
+}
+
+func validateChannelReadAccess(userID int64, ch domain.Channel) error {
+	if ch.Creator == userID {
+		return nil
+	}
+	member, found, err := domain.LoadChannelMember(ch.ID, userID)
+	if err != nil {
+		return stored(err)
+	}
+	if found {
+		if member.BannedRights.Kicks(time.Now().Unix()) {
+			return mtproto.ErrUserBannedInChannel
+		}
+		return nil
+	}
+	if ch.Username != "" {
+		return nil
+	}
+	activePeek, err := domain.ChannelPeekAccessActive(ch.ID, userID, time.Now().Unix())
+	if err != nil {
+		return stored(err)
+	}
+	if activePeek {
+		return nil
+	}
+	return mtproto.ErrChannelPrivate
+}
+
 func ValidateChannelMessageWrite(userID int64, peer *mtproto.InputPeer) error {
 	channelID, err := ValidateInputPeer(userID, peer)
 	if err != nil {
@@ -240,10 +319,10 @@ func ValidateInputChannel(userID int64, channel *mtproto.InputChannel) (int64, e
 	return ValidateInputPeer(userID, peer)
 }
 
-// HistoryForInputPeer verifies the supplied channel access hash and membership
+// HistoryForInputPeer verifies the supplied channel access hash and read access
 // before exposing APIFull's local channel messages.
 func HistoryForInputPeer(userID int64, peer *mtproto.InputPeer, offsetID, limit int32) (*mtproto.Messages_Messages, error) {
-	channelID, err := ValidateInputPeer(userID, peer)
+	channelID, err := ValidateReadInputPeer(userID, peer)
 	if err != nil {
 		return nil, err
 	}
@@ -283,7 +362,7 @@ func PostForInputPeerWithReplyAndRandomIDForDelivery(userID int64, peer *mtproto
 			targetID = linkedID
 		}
 	}
-	row, err := domain.InsertChannelMessageWithReplyAndRandomID(targetID, userID, when, text, replyToMsgID, replyToTopID, randomID)
+	row, err := domain.InsertChannelMessageWithReplyAndRandomIDForDelivery(targetID, userID, when, text, replyToMsgID, replyToTopID, randomID, excludeAuthKeyID)
 	if err != nil {
 		return nil, mapDomain(err)
 	}
@@ -575,7 +654,10 @@ func ChannelMessageAuthor(userID int64, input *mtproto.InputChannel, id int32) (
 // is true, it first advances the caller's persisted read cursor to the highest
 // requested message ID.
 func MessageViewsForInputPeer(userID int64, peer *mtproto.InputPeer, ids []int32, increment bool) ([]*mtproto.MessageViews, error) {
-	if _, err := HistoryForInputPeer(userID, peer, 0, 1); err != nil {
+	// View counters and the optional read cursor are member-only operations.
+	// Do not use the public-history validator here: a public channel may be
+	// browsed without joining, but getMessagesViews can mutate per-user state.
+	if _, err := ValidateInputPeer(userID, peer); err != nil {
 		return nil, err
 	}
 	if _, err := MessagesBox(userID, peer.GetChannelId(), ids); err != nil {
@@ -670,10 +752,10 @@ func Search(userID, channelID int64, q string, sender int64, beforeID, addOffset
 	return box, nil
 }
 
-// SearchForInputPeer verifies the supplied channel access hash and membership
+// SearchForInputPeer verifies the supplied channel access hash and read access
 // before exposing APIFull's local channel message search.
 func SearchForInputPeer(userID int64, peer *mtproto.InputPeer, q string, sender int64, beforeID, addOffset, minDate, maxDate, minID, maxID, limit int32) (*mtproto.Messages_Messages, error) {
-	channelID, err := ValidateInputPeer(userID, peer)
+	channelID, err := ValidateReadInputPeer(userID, peer)
 	if err != nil {
 		return nil, err
 	}
@@ -738,10 +820,18 @@ func messageBox(ch domain.Channel, userID int64, rows []domain.ChannelMessage) (
 	if err != nil {
 		return nil, err
 	}
+	chat := Chat(ch, ch.Creator == userID)
+	if ch.Creator != userID {
+		member, err := domain.ChannelIsMember(ch.ID, userID)
+		if err != nil {
+			return nil, stored(err)
+		}
+		chat.Left = !member
+	}
 	return mtproto.MakeTLMessagesMessages(&mtproto.Messages_Messages{
 		Messages: msgs,
 		Topics:   []*mtproto.ForumTopic{},
-		Chats:    []*mtproto.Chat{Chat(ch, ch.Creator == userID)},
+		Chats:    []*mtproto.Chat{chat},
 		Users:    []*mtproto.User{},
 	}).To_Messages_Messages(), nil
 }

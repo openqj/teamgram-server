@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/messenger/msg/inbox/inbox"
 	"github.com/zeromicro/go-zero/core/logx"
@@ -22,11 +23,12 @@ const (
 )
 
 type inboxDeliveryClaim struct {
-	id        int64
-	token     string
-	attempts  int
-	createdAt time.Time
-	payload   []byte
+	id          int64
+	token       string
+	attempts    int
+	maxAttempts int
+	createdAt   time.Time
+	payload     []byte
 }
 
 type inboxDeliveryPublication struct {
@@ -180,9 +182,17 @@ func (d *Dao) claimInboxDelivery(ctx context.Context) (*inboxDeliveryClaim, erro
 	var claim *inboxDeliveryClaim
 	err := d.Postgres.InTx(ctx, func(tx pgx.Tx) error {
 		row := new(inboxDeliveryClaim)
-		err := tx.QueryRow(ctx, `WITH due AS (
+		err := tx.QueryRow(ctx, `WITH terminalized AS (
+			UPDATE msg_inbox_delivery_outbox
+			SET state=2, dead_lettered_at=COALESCE(dead_lettered_at, now()),
+				terminal_reason=CASE WHEN terminal_reason='' THEN 'max_attempts_exceeded' ELSE terminal_reason END,
+				last_error=CASE WHEN last_error='' THEN 'max_attempts_exceeded' ELSE last_error END,
+				lease_until=NULL, claim_token=NULL
+			WHERE state=0 AND attempts>=max_attempts AND (lease_until IS NULL OR lease_until<=now())
+			RETURNING id
+		), due AS (
 			SELECT o.id FROM msg_inbox_delivery_outbox o
-			WHERE o.state=0 AND o.available_at<=now() AND (o.lease_until IS NULL OR o.lease_until<=now())
+			WHERE o.state=0 AND o.attempts<o.max_attempts AND o.available_at<=now() AND (o.lease_until IS NULL OR o.lease_until<=now())
 			AND NOT EXISTS (
 				SELECT 1 FROM msg_inbox_delivery_outbox prior
 				WHERE prior.recipient_user_id=o.recipient_user_id AND prior.state=0 AND prior.id<o.id)
@@ -191,8 +201,8 @@ func (d *Dao) claimInboxDelivery(ctx context.Context) (*inboxDeliveryClaim, erro
 		UPDATE msg_inbox_delivery_outbox o
 		SET claim_token=gen_random_uuid(), lease_until=now()+interval '60 seconds', attempts=o.attempts+1
 		FROM due WHERE o.id=due.id
-			RETURNING o.id, o.claim_token::text, o.attempts, o.created_at, o.payload`,
-		).Scan(&row.id, &row.token, &row.attempts, &row.createdAt, &row.payload)
+			RETURNING o.id, o.claim_token::text, o.attempts, o.max_attempts, o.created_at, o.payload`,
+		).Scan(&row.id, &row.token, &row.attempts, &row.maxAttempts, &row.createdAt, &row.payload)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil
 		}
@@ -266,13 +276,39 @@ func (d *Dao) releaseInboxDelivery(ctx context.Context, claim *inboxDeliveryClai
 		}
 		detail = strings.ToValidUTF8(detail, "")
 	}
-	return d.Postgres.InTx(ctx, func(tx pgx.Tx) error {
-		_, err := tx.Exec(ctx, `UPDATE msg_inbox_delivery_outbox
-			SET lease_until=NULL, claim_token=NULL, available_at=now()+($3::double precision * interval '1 second'), last_error=$4
-			WHERE id=$1 AND claim_token=$2::uuid AND state=0`,
-			claim.id, claim.token, delay.Seconds(), detail)
-		return err
+	maxAttempts := claim.maxAttempts
+	if maxAttempts <= 0 {
+		maxAttempts = 10
+	}
+	deadLetter := cause != nil && claim.attempts >= maxAttempts
+	updated := false
+	err := d.Postgres.InTx(ctx, func(tx pgx.Tx) error {
+		var result pgconn.CommandTag
+		var err error
+		if deadLetter {
+			result, err = tx.Exec(ctx, `UPDATE msg_inbox_delivery_outbox
+				SET state=2, dead_lettered_at=now(), terminal_reason=$3, last_error=$3,
+					lease_until=NULL, claim_token=NULL, available_at=now()
+				WHERE id=$1 AND claim_token=$2::uuid AND state=0`, claim.id, claim.token, detail)
+		} else {
+			result, err = tx.Exec(ctx, `UPDATE msg_inbox_delivery_outbox
+				SET lease_until=NULL, claim_token=NULL, available_at=now()+($3::double precision * interval '1 second'), last_error=$4
+				WHERE id=$1 AND claim_token=$2::uuid AND state=0`, claim.id, claim.token, delay.Seconds(), detail)
+		}
+		if err != nil {
+			return err
+		}
+		updated = result.RowsAffected() == 1
+		return nil
 	})
+	if err == nil && updated {
+		if deadLetter {
+			deliveryDeadLetters.WithLabelValues("inbox").Inc()
+		} else if cause != nil {
+			deliveryRetries.WithLabelValues("inbox").Inc()
+		}
+	}
+	return err
 }
 
 // DispatchInboxDeliveries publishes due intents while retaining them until
@@ -298,6 +334,9 @@ func (d *Dao) dispatchInboxDelivery(ctx context.Context, claim *inboxDeliveryCla
 	if publishErr == nil {
 		if releaseErr != nil {
 			return 1, releaseErr
+		}
+		if claim.attempts > 1 {
+			deliveryRecovery.WithLabelValues("inbox").Observe(max(time.Since(claim.createdAt).Seconds(), 0))
 		}
 		return 1, nil
 	}

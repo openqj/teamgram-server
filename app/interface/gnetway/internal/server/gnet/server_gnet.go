@@ -50,7 +50,9 @@ func (s *Server) asyncRunIfError(connId int64, msgId int64, execb func() error, 
 			})
 		}
 	}); err != nil {
+		metricWorkerRejected.Inc()
 		logx.Errorf("asyncRunIfError - pool.Submit error: %v, connId: %d", err, connId)
+		s.eng.Trigger(connId, func(c gnet.Conn) { _ = c.Close() })
 	}
 }
 
@@ -62,7 +64,9 @@ func (s *Server) asyncRun(connId int64, execb func() error, retcb func(c gnet.Co
 			})
 		}
 	}); err != nil {
+		metricWorkerRejected.Inc()
 		logx.Errorf("asyncRun - pool.Submit error: %v, connId: %d", err, connId)
+		s.eng.Trigger(connId, func(c gnet.Conn) { _ = c.Close() })
 	}
 }
 
@@ -79,7 +83,9 @@ func (s *Server) asyncRun2(
 			retcb(c, needAck, mmsg, r, err)
 		})
 	}); err != nil {
+		metricWorkerRejected.Inc()
 		logx.Errorf("asyncRun2 - pool.Submit error: %v, connId: %d, keyId: %d", err, connId, kId)
+		s.eng.Trigger(connId, func(c gnet.Conn) { _ = c.Close() })
 	}
 }
 
@@ -102,6 +108,10 @@ func (s *Server) OnShutdown(eng gnet.Engine) {
 // The parameter out is the return value which is going to be sent back to the peer.
 func (s *Server) OnOpen(c gnet.Conn) (out []byte, action gnet.Action) {
 	logx.Debugf("onNewConn - conn(%s)", c)
+	if s.draining.Load() {
+		metricAdmissionRejected.Inc("draining")
+		return nil, gnet.Close
+	}
 
 	ctx := newConnContext()
 	if host, _, err := net.SplitHostPort(c.RemoteAddr().String()); err == nil {
@@ -109,6 +119,17 @@ func (s *Server) OnOpen(c gnet.Conn) (out []byte, action gnet.Action) {
 	} else {
 		ctx.setClientIp(c.RemoteAddr().String())
 	}
+	if ok, reason := s.admission.acquireConnection(ctx.clientIp); !ok {
+		metricAdmissionRejected.Inc(reason)
+		return nil, gnet.Close
+	}
+	ctx.admitted = true
+	ctx.admissionIP = ctx.clientIp
+	ctx.pendingMetric = true
+	metricConnPending.Inc()
+	s.writeMu.Lock()
+	s.writeQueues[c.ConnId()] = new(gatewayWriteQueue)
+	s.writeMu.Unlock()
 	ctx.ppv1 = s.c.Gnetway.IsProxyProtocolV1(c.LocalAddr().String())
 	ctx.tcp = s.c.Gnetway.IsTcp(c.LocalAddr().String())
 	ctx.websocket = s.c.Gnetway.IsWebsocket(c.LocalAddr().String())
@@ -136,13 +157,17 @@ func (s *Server) setConnTransport(ctx *connContext, http, websocket bool) {
 	ctx.websocket = websocket
 	ctx.transportSelected = true
 	if websocket && ctx.wsCodec == nil {
-		ctx.wsCodec = new(ws.WsCodec)
+		ctx.wsCodec = ws.NewCodec(s.c.Gnetway.WebsocketMaxMessageBytes)
 	}
 	if http && ctx.httpCodec == nil {
 		ctx.httpCodec = new(httpcodec.HttpCodec)
 	}
 	if ctx.metricOpened {
 		return
+	}
+	if ctx.pendingMetric {
+		metricConnPending.Dec()
+		ctx.pendingMetric = false
 	}
 	proto := "tcp"
 	if websocket {
@@ -206,6 +231,9 @@ func (s *Server) OnClose(c gnet.Conn, err error) (action gnet.Action) {
 	}
 
 	defer func() {
+		s.writeMu.Lock()
+		delete(s.writeQueues, c.ConnId())
+		s.writeMu.Unlock()
 		s.timeoutWheel.Remove(c.ConnId(), ctx.closeDate)
 		if ctx.wsCodec != nil {
 			ctx.wsCodec.Conn.Release()
@@ -221,6 +249,18 @@ func (s *Server) OnClose(c gnet.Conn, err error) (action gnet.Action) {
 			}
 			metricConnClose.Inc(proto)
 			metricConnActive.Dec(proto)
+		}
+		if ctx.pendingMetric {
+			metricConnPending.Dec()
+			ctx.pendingMetric = false
+		}
+		if ctx.authQuotaHeld {
+			s.admission.releaseAuth(ctx.authQuotaKey)
+			ctx.authQuotaHeld = false
+		}
+		if ctx.admitted {
+			s.admission.releaseConnection(ctx.admissionIP)
+			ctx.admitted = false
 		}
 
 		c.SetContext(nil)
@@ -263,6 +303,88 @@ func (s *Server) OnClose(c gnet.Conn, err error) (action gnet.Action) {
 	}
 
 	return
+}
+
+func (s *Server) enqueueGatewayWrite(connId int64, msg *mtproto.MTPRawMessage) bool {
+	s.writeMu.Lock()
+	q, ok := s.writeQueues[connId]
+	if !ok {
+		s.writeMu.Unlock()
+		return false
+	}
+	schedule, accepted := q.enqueue(gatewayWriteItem{msg: msg, queuedAt: time.Now()})
+	s.writeMu.Unlock()
+	if schedule {
+		s.eng.Trigger(connId, func(c gnet.Conn) {
+			s.flushGatewayWrites(c, connId)
+		})
+	}
+	return accepted
+}
+
+func (s *Server) flushGatewayWrites(c gnet.Conn, connId int64) {
+	s.writeMu.Lock()
+	q := s.writeQueues[connId]
+	s.writeMu.Unlock()
+	if q == nil {
+		return
+	}
+	items := q.take(gatewayWriteBatchSize)
+	if len(items) == 0 {
+		if q.reschedule() {
+			s.eng.Trigger(connId, func(c gnet.Conn) { s.flushGatewayWrites(c, connId) })
+		}
+		return
+	}
+
+	ctx, ok := c.Context().(*connContext)
+	if !ok || ctx == nil || ctx.codec == nil {
+		metricGatewayWriteFailed.Inc("codec_unavailable")
+		_ = c.Close()
+		return
+	}
+	proto := "tcp"
+	if ctx.websocket {
+		proto = "websocket"
+	} else if ctx.http {
+		proto = "http"
+	}
+
+	// Encode each MTProto packet in order, then write the batch as one
+	// transport operation. The encrypted transport state must advance once per
+	// packet, but WebSocket/TCP do not require a one-frame/one-packet mapping.
+	// Coalescing keeps a burst from creating one WebSocket callback per update
+	// in the client runtime while preserving packet boundaries in the
+	// concatenated payload.
+	var encoded bytes.Buffer
+	for _, item := range items {
+		metricGatewayWriteQueueWait.ObserveFloat(time.Since(item.queuedAt).Seconds()*1000, proto)
+		data, err := ctx.codec.Encode(c, item.msg)
+		if err != nil {
+			metricGatewayWriteFailed.Inc("encode")
+			logx.Errorf("sendToClient error: %v", err)
+			_ = c.Close()
+			return
+		}
+		_, _ = encoded.Write(data)
+	}
+	if encoded.Len() > 0 {
+		var err error
+		if ctx.websocket {
+			err = wsutil.WriteServerBinary(c, encoded.Bytes())
+		} else {
+			_, err = c.Write(encoded.Bytes())
+		}
+		if err != nil {
+			metricGatewayWriteFailed.Inc("write")
+			logx.Errorf("sendToClient batch error: %v", err)
+			_ = c.Close()
+			return
+		}
+	}
+	if q.reschedule() {
+		s.eng.Trigger(connId, func(c gnet.Conn) { s.flushGatewayWrites(c, connId) })
+	}
 }
 
 // OnTraffic fires when a local socket receives data from the peer.
@@ -338,6 +460,7 @@ func (s *Server) OnTick() (delay time.Duration, action gnet.Action) {
 	delay = time.Second * 1
 	now := time.Now().Unix()
 	s.cachedNow.Store(now)
+	s.admission.cleanup(time.Unix(now, 0))
 
 	// Use time wheel to expire only connections in the current slot
 	// instead of iterating all connections.
@@ -536,6 +659,15 @@ func (s *Server) GetConnCounts() int {
 
 func (s *Server) onMTPRawMessage(ctx *connContext, c gnet.Conn, authKeyId int64, needAck bool, msg2 []byte) (action gnet.Action) {
 	if authKeyId == 0 {
+		if !s.admission.acquireHandshake(ctx.clientIp) {
+			metricHandshakeRejected.Inc("overload")
+			return gnet.Close
+		}
+		metricHandshakeInFlight.Inc()
+		defer func() {
+			s.admission.releaseHandshake()
+			metricHandshakeInFlight.Dec()
+		}()
 		out, err := s.onHandshake(c, msg2)
 		if err != nil {
 			logx.Errorf("conn(%s) onHandshake - error: %v", c, err)
@@ -561,6 +693,14 @@ func (s *Server) onMTPRawMessage(ctx *connContext, c gnet.Conn, authKeyId int64,
 		}
 
 		if authKey != nil {
+			if !ctx.authQuotaHeld && !s.admission.attachAuth(authKey.PermAuthKeyId()) {
+				metricAdmissionRejected.Inc("auth_key_limit")
+				return gnet.Close
+			}
+			if !ctx.authQuotaHeld && authKey.PermAuthKeyId() > 0 {
+				ctx.authQuotaKey = authKey.PermAuthKeyId()
+				ctx.authQuotaHeld = true
+			}
 			err := s.onEncryptedMessage(c, ctx, authKey, needAck, msg2)
 			if err != nil {
 				logx.Errorf("conn(%s) onEncryptedMessage - error: %v ", c, err)
@@ -613,6 +753,15 @@ func (s *Server) onMTPRawMessage(ctx *connContext, c gnet.Conn, authKeyId int64,
 					} else {
 						authKey2 := in.(*authKeyUtil)
 						ctx2 := c2.Context().(*connContext)
+						if !ctx2.authQuotaHeld && !s.admission.attachAuth(authKey2.PermAuthKeyId()) {
+							metricAdmissionRejected.Inc("auth_key_limit")
+							_ = c2.Close()
+							return
+						}
+						if !ctx2.authQuotaHeld && authKey2.PermAuthKeyId() > 0 {
+							ctx2.authQuotaKey = authKey2.PermAuthKeyId()
+							ctx2.authQuotaHeld = true
+						}
 						ctx2.putAuthKey(authKey2)
 						err = s.onEncryptedMessage(c2, ctx2, authKey2, needAck2, mmsg)
 						if err != nil {

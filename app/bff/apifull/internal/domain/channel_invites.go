@@ -613,7 +613,7 @@ func loadChannelInviteTx(tx *sql.Tx, hash string) (ChannelInvite, error) {
 }
 
 func validateChannelInvite(invite ChannelInvite, channel Channel, now int64) error {
-	if invite.Revoked || (invite.ExpireDate != 0 && invite.ExpireDate < now) {
+	if invite.Revoked || (invite.ExpireDate != 0 && invite.ExpireDate <= now) {
 		return ErrChannelInviteExpired
 	}
 	if invite.UsageLimit > 0 {
@@ -637,7 +637,7 @@ func validateChannelInvite(invite ChannelInvite, channel Channel, now int64) err
 }
 
 func validateChannelInviteTx(tx *sql.Tx, invite ChannelInvite, channel Channel, now int64) error {
-	if invite.Revoked || (invite.ExpireDate != 0 && invite.ExpireDate < now) {
+	if invite.Revoked || (invite.ExpireDate != 0 && invite.ExpireDate <= now) {
 		return ErrChannelInviteExpired
 	}
 	if invite.UsageLimit > 0 {

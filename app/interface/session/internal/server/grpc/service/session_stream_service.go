@@ -8,27 +8,137 @@ package service
 
 import (
 	"context"
+	"fmt"
+	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/teamgram/teamgram-server/app/interface/session/internal/core"
 	"github.com/teamgram/teamgram-server/app/interface/session/session"
+	"github.com/teamgram/teamgram-server/pkg/keyedexecutor"
 
 	"github.com/zeromicro/go-zero/core/logx"
 	"google.golang.org/grpc"
 )
 
+// A single session stream serves all auth keys assigned to one session node.
+// Keep the stream bounded while preserving the order of updates for one
+// permanent auth key. Unrelated users continue concurrently.
+const sessionStreamHandlerConcurrency = 128
+
+func sessionStreamRequestKey(req *session.SessionStreamRequest) string {
+	permAuthKeyID := func(value int64) string {
+		if value == 0 {
+			return ""
+		}
+		return "perm:" + strconv.FormatInt(value, 10)
+	}
+	authKeyID := func(value int64) string {
+		if value == 0 {
+			return ""
+		}
+		return "auth:" + strconv.FormatInt(value, 10)
+	}
+
+	var key string
+	switch payload := req.GetPayload().(type) {
+	case *session.SessionStreamRequest_SendData:
+		if payload.SendData != nil {
+			key = permAuthKeyID(payload.SendData.GetData().GetPermAuthKeyId())
+		}
+	case *session.SessionStreamRequest_CreateSession:
+		if payload.CreateSession != nil {
+			key = permAuthKeyID(payload.CreateSession.GetClient().GetPermAuthKeyId())
+		}
+	case *session.SessionStreamRequest_CloseSession:
+		if payload.CloseSession != nil {
+			key = permAuthKeyID(payload.CloseSession.GetClient().GetPermAuthKeyId())
+		}
+	case *session.SessionStreamRequest_QueryAuthKey:
+		if payload.QueryAuthKey != nil {
+			key = authKeyID(payload.QueryAuthKey.GetAuthKeyId())
+		}
+	case *session.SessionStreamRequest_SetAuthKey:
+		if payload.SetAuthKey != nil {
+			if authKey := payload.SetAuthKey.GetAuthKey(); authKey != nil {
+				if authKey.GetPermAuthKeyId() != 0 {
+					key = permAuthKeyID(authKey.GetPermAuthKeyId())
+				} else {
+					key = authKeyID(authKey.GetAuthKeyId())
+				}
+			}
+		}
+	case *session.SessionStreamRequest_PushUpdates:
+		if payload.PushUpdates != nil {
+			key = permAuthKeyID(payload.PushUpdates.GetPermAuthKeyId())
+		}
+	case *session.SessionStreamRequest_PushSessionUpdates:
+		if payload.PushSessionUpdates != nil {
+			key = permAuthKeyID(payload.PushSessionUpdates.GetPermAuthKeyId())
+		}
+	case *session.SessionStreamRequest_PushRpcResult:
+		if payload.PushRpcResult != nil {
+			key = permAuthKeyID(payload.PushRpcResult.GetPermAuthKeyId())
+		}
+	}
+	if key != "" {
+		return key
+	}
+	if requestID := req.GetRequestId(); requestID != "" {
+		return "request:" + requestID
+	}
+	return fmt.Sprintf("request:%p", req)
+}
+
 func (s *Service) SessionDataStream(stream grpc.BidiStreamingServer[session.SessionStreamRequest, session.SessionStreamResponse]) error {
+	var (
+		sendMu  sync.Mutex
+		sendErr error
+		errMu   sync.Mutex
+	)
+	recordSendError := func(err error) {
+		if err == nil {
+			return
+		}
+		errMu.Lock()
+		if sendErr == nil {
+			sendErr = err
+		}
+		errMu.Unlock()
+	}
+	firstSendError := func() error {
+		errMu.Lock()
+		defer errMu.Unlock()
+		return sendErr
+	}
+	executor := keyedexecutor.New(stream.Context(), sessionStreamHandlerConcurrency,
+		func(ctx context.Context, req *session.SessionStreamRequest) {
+			resp := s.handleStreamRequest(ctx, req)
+			sendMu.Lock()
+			err := stream.Send(resp)
+			sendMu.Unlock()
+			recordSendError(err)
+		})
+	defer executor.Wait()
+
 	for {
+		if err := firstSendError(); err != nil {
+			logx.Errorf("SessionDataStream Send error: %v", err)
+			return err
+		}
 		req, err := stream.Recv()
 		if err != nil {
+			executor.Wait()
+			if sendErr := firstSendError(); sendErr != nil {
+				logx.Errorf("SessionDataStream Send error: %v", sendErr)
+				return sendErr
+			}
 			logx.Errorf("SessionDataStream Recv error: %v", err)
 			return err
 		}
-
-		resp := s.handleStreamRequest(stream.Context(), req)
-		if err := stream.Send(resp); err != nil {
-			logx.Errorf("SessionDataStream Send error: %v", err)
-			return err
+		if !executor.Submit(sessionStreamRequestKey(req), req) {
+			executor.Wait()
+			return stream.Context().Err()
 		}
 	}
 }

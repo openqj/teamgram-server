@@ -40,3 +40,23 @@ func TestCommonChannelIDsIncludesActiveMembers(t *testing.T) {
 		t.Fatalf("outsider common channels: got %v", ids)
 	}
 }
+
+func TestChannelBannedRightsKicksHonorsExpiry(t *testing.T) {
+	now := time.Now().Unix()
+	for name, tc := range map[string]struct {
+		rights *ChannelBannedRights
+		want   bool
+	}{
+		"nil":       {nil, false},
+		"no-view":   {&ChannelBannedRights{SendMessages: true}, false},
+		"permanent": {&ChannelBannedRights{ViewMessages: true}, true},
+		"active":    {&ChannelBannedRights{ViewMessages: true, UntilDate: int32(now + 60)}, true},
+		"expired":   {&ChannelBannedRights{ViewMessages: true, UntilDate: int32(now - 60)}, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := tc.rights.Kicks(now); got != tc.want {
+				t.Fatalf("Kicks(%d) = %v, want %v", now, got, tc.want)
+			}
+		})
+	}
+}

@@ -49,10 +49,15 @@ type connContext struct {
 	wsCodec           *ws.WsCodec
 	httpCodec         *httpcodec.HttpCodec
 	logx.Logger
-	newSession bool
-	nextSeqNo  int32
-	closeDate  int64
-	ppv1       bool
+	newSession    bool
+	nextSeqNo     int32
+	closeDate     int64
+	ppv1          bool
+	admitted      bool
+	admissionIP   string
+	pendingMetric bool
+	authQuotaKey  int64
+	authQuotaHeld bool
 }
 
 func newConnContext() *connContext {

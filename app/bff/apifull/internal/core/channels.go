@@ -260,14 +260,11 @@ func (c *ApiFullCore) ChannelsGetMessages(in *mtproto.TLChannelsGetMessages) (*m
 			ids = append(ids, item.GetId())
 		}
 	}
-	ch, err := c.resolveMemberChannel(userId, inputChannel, inputChannelID(inputChannel))
+	channelID, err := channelview.ValidateReadInputChannel(userId, inputChannel)
 	if err != nil {
 		return nil, err
 	}
-	if err = c.requireChannelMember(userId, ch.ID); err != nil {
-		return nil, err
-	}
-	return channelview.MessagesBox(userId, ch.ID, ids)
+	return channelview.MessagesBox(userId, channelID, ids)
 }
 
 func (c *ApiFullCore) ChannelsGetParticipants(in *mtproto.TLChannelsGetParticipants) (*mtproto.Channels_ChannelParticipants, error) {

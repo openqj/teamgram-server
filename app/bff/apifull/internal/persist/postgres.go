@@ -45,6 +45,7 @@ var requiredReadOnlyPostgresMigrations = []string{
 	"089_apifull_forum_topic_icon_color",
 	"096_user_premium_payment_recovery",
 	"097_apifull_payment_recovery",
+	"101_apifull_channel_peek_access",
 }
 
 var requiredReadOnlyPostgresSchemaQueries = []string{
@@ -73,6 +74,7 @@ var requiredReadOnlyPostgresSchemaQueries = []string{
 	`SELECT event_id, event_type, provider, user_id, transaction_id, product, state, claim_token FROM apifull_payment_provider_webhook LIMIT 0`,
 	`SELECT provider, user_id, transaction_id, product, state FROM apifull_payment_provider_reversal LIMIT 0`,
 	`SELECT provider, user_id, transaction_id, product, state, claim_token FROM apifull_payment_provider_reconciliation LIMIT 0`,
+	`SELECT channel_id, user_id, expires_at, granted_at FROM apifull_channel_peek_access LIMIT 0`,
 }
 
 func (s *postgresStore) Get(key string) (string, error) {

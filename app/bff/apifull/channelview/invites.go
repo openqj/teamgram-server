@@ -26,6 +26,11 @@ type InviteUpdate struct {
 	Title         *string
 }
 
+// Telegram keeps private channel previews deliberately short-lived. The
+// expiry is returned in chatInvitePeek and is also enforced by every read
+// entry point through the shared channelview validator.
+const channelPeekAccessTTL = int64(60 * 60)
+
 // ValidateInputChannelInviteAdmin reports whether input names an APIFull
 // channel. When it does, it validates both the access hash and invite-admin
 // rights; callers can retain their basic-chat path when handled is false.
@@ -341,6 +346,33 @@ func CheckInvite(userID int64, hash string) (*mtproto.ChatInvite, error) {
 	if alreadyMember {
 		return mtproto.MakeTLChatInviteAlready(&mtproto.ChatInvite{
 			Chat: Chat(channel, channel.Creator == userID),
+		}).To_ChatInvite(), nil
+	}
+	// Telegram exposes a temporary read-only preview for private
+	// supergroups/channels. Public usernames already have durable read access
+	// and continue to use chatInvite with the normal join flow.
+	if channel.Username == "" && (channel.Broadcast || channel.Megagroup) {
+		now := time.Now().Unix()
+		if member, found, memberErr := domain.LoadChannelMember(channel.ID, userID); memberErr != nil {
+			return nil, inviteError(memberErr)
+		} else if found && member.BannedRights.Kicks(now) {
+			return nil, inviteError(domain.ErrChannelInviteBanned)
+		}
+		expiresAt := now + channelPeekAccessTTL
+		if invite.ExpireDate > 0 && invite.ExpireDate < expiresAt {
+			expiresAt = invite.ExpireDate
+		}
+		if expiresAt <= now {
+			return nil, mtproto.ErrInviteHashExpired
+		}
+		if err = domain.GrantChannelPeekAccess(channel.ID, userID, expiresAt); err != nil {
+			return nil, inviteError(err)
+		}
+		peekChat := Chat(channel, false)
+		peekChat.Left = true
+		return mtproto.MakeTLChatInvitePeek(&mtproto.ChatInvite{
+			Chat:    peekChat,
+			Expires: int32(expiresAt),
 		}).To_ChatInvite(), nil
 	}
 	members, err := domain.ListChannelMembers(channel.ID)

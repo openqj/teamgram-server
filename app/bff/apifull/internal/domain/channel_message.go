@@ -85,6 +85,10 @@ func InsertChannelMessageWithReplyAndRandomID(channelID, sender, date int64, tex
 	return insertChannelMessage(channelID, sender, date, text, replyToMsgID, replyToTopID, randomID, ChannelMessageContent{}, "", 0)
 }
 
+func InsertChannelMessageWithReplyAndRandomIDForDelivery(channelID, sender, date int64, text string, replyToMsgID, replyToTopID int32, randomID, excludeAuthKeyID int64) (ChannelMessage, error) {
+	return insertChannelMessage(channelID, sender, date, text, replyToMsgID, replyToTopID, randomID, ChannelMessageContent{}, "", excludeAuthKeyID)
+}
+
 func InsertChannelMessageWithContentAndRandomID(channelID, sender, date int64, text string, replyToMsgID, replyToTopID int32, randomID int64, content ChannelMessageContent, requestFingerprint string) (ChannelMessage, error) {
 	return insertChannelMessage(channelID, sender, date, text, replyToMsgID, replyToTopID, randomID, content, requestFingerprint, 0)
 }

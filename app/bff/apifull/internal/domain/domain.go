@@ -712,6 +712,7 @@ func DeleteChannel(userID, channelID int64) error {
 		`UPDATE apifull_channel SET discussion_group_id=NULL WHERE discussion_group_id=?`,
 		`DELETE FROM apifull_channel_delivery_recipient WHERE delivery_id IN (SELECT id FROM apifull_channel_delivery_outbox WHERE channel_id=?)`,
 		`DELETE FROM apifull_channel_delivery_outbox WHERE channel_id=?`,
+		`DELETE FROM apifull_channel_peek_access WHERE channel_id=?`,
 		`DELETE FROM apifull_channel_event WHERE channel_id=?`,
 		`DELETE FROM apifull_channel_message_request WHERE channel_id=?`,
 		`DELETE FROM apifull_channel_message_hidden WHERE channel_id=?`,

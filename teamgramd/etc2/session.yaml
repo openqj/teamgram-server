@@ -1,6 +1,7 @@
 Name: interface.session
 ListenOn: 0.0.0.0:20120
 PostgresDSN: ${TEAMGRAM_POSTGRES_DSN}
+UseStreamGateway: true
 Etcd:
   Hosts:
     - etcd:2379

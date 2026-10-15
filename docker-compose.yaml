@@ -41,6 +41,16 @@ services:
   teamgram:
     build: .
     stop_grace_period: 45s
+    ulimits:
+      nofile:
+        soft: 131072
+        hard: 131072
+    pids_limit: 8192
+    cpus: "${TEAMGRAM_CPU_LIMIT:-4.0}"
+    mem_limit: "${TEAMGRAM_MEMORY_LIMIT:-8g}"
+    sysctls:
+      net.core.somaxconn: "65535"
+      net.ipv4.tcp_max_syn_backlog: "65535"
     depends_on:
       postgres-migrate:
         condition: service_completed_successfully

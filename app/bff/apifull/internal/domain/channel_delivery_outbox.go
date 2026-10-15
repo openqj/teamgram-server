@@ -36,6 +36,18 @@ type ChannelDeliveryRecipient struct {
 	UserID int64
 }
 
+type ChannelDeliveryRecipientResult struct {
+	UserID int64
+	State  string
+	Err    error
+}
+
+const (
+	ChannelDeliveryRecipientDelivered = "delivered"
+	ChannelDeliveryRecipientSkipped   = "skipped"
+	ChannelDeliveryRecipientRetry     = "retry"
+)
+
 func insertChannelDeliveryTx(tx *sql.Tx, channelID, senderID, excludeAuthKeyID int64, rows []ChannelMessage) error {
 	if len(rows) == 0 {
 		return ErrInvalidMessageID
@@ -224,39 +236,89 @@ func ChannelDeliveryRecipientCanReceive(ctx context.Context, channelID, userID i
 	if err != nil {
 		return false, err
 	}
-	if creatorID != userID {
-		var rawBanned string
-		err = db.QueryRowContext(ctx, `SELECT banned_rights FROM apifull_channel_member WHERE channel_id=? AND user_id=?`, channelID, userID).Scan(&rawBanned)
-		if err == sql.ErrNoRows {
-			return false, nil
+	results, err := ChannelDeliveryRecipientsCanReceive(ctx, channelID, creatorID, []ChannelDeliveryRecipient{{UserID: userID}}, messageIDs)
+	if err != nil {
+		return false, err
+	}
+	return results[userID], nil
+}
+
+func ChannelDeliveryRecipientsCanReceive(ctx context.Context, channelID, creatorID int64, recipients []ChannelDeliveryRecipient, messageIDs []int32) (map[int64]bool, error) {
+	allowed := make(map[int64]bool, len(recipients))
+	if db == nil {
+		return nil, errors.New("domain PostgreSQL is not open")
+	}
+	if channelID <= 0 || creatorID <= 0 || len(messageIDs) == 0 {
+		return nil, ErrInvalidMessageID
+	}
+	if len(recipients) == 0 {
+		return allowed, nil
+	}
+
+	users := make([]string, 0, len(recipients))
+	args := make([]interface{}, 0, 2+len(recipients)+len(messageIDs))
+	seen := make(map[int64]struct{}, len(recipients))
+	for _, recipient := range recipients {
+		if recipient.UserID <= 0 {
+			return nil, errors.New("invalid channel delivery recipient")
 		}
-		if err != nil {
-			return false, err
+		if _, ok := seen[recipient.UserID]; ok {
+			return nil, errors.New("duplicate channel delivery recipient")
+		}
+		seen[recipient.UserID] = struct{}{}
+		users = append(users, "(CAST(? AS BIGINT))")
+	}
+	messagePlaceholders := make([]string, 0, len(messageIDs))
+	for range messageIDs {
+		messagePlaceholders = append(messagePlaceholders, "?")
+	}
+	args = append(args, channelID)
+	for _, messageID := range messageIDs {
+		args = append(args, messageID)
+	}
+	for _, recipient := range recipients {
+		args = append(args, recipient.UserID)
+	}
+	args = append(args, channelID, creatorID)
+	query := `SELECT requested.user_id, COALESCE(member.banned_rights,''), EXISTS (
+			SELECT 1 FROM apifull_channel_message_hidden hidden
+			WHERE hidden.user_id=requested.user_id AND hidden.channel_id=?
+			AND hidden.message_id IN (` + strings.Join(messagePlaceholders, ",") + `))
+		FROM (VALUES ` + strings.Join(users, ",") + `) AS requested(user_id)
+		LEFT JOIN apifull_channel_member member
+			ON member.channel_id=? AND member.user_id=requested.user_id
+		WHERE requested.user_id=? OR member.user_id IS NOT NULL`
+	rows, err := db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	now := time.Now().Unix()
+	for rows.Next() {
+		var userID int64
+		var rawBanned string
+		var hidden bool
+		if err = rows.Scan(&userID, &rawBanned, &hidden); err != nil {
+			return nil, err
+		}
+		if hidden {
+			continue
 		}
 		if rawBanned != "" {
 			var banned ChannelBannedRights
 			if err = json.Unmarshal([]byte(rawBanned), &banned); err != nil {
-				return false, err
+				return nil, err
 			}
-			if banned.Active(time.Now().Unix()) && banned.Kicks(time.Now().Unix()) {
-				return false, nil
+			if banned.Active(now) && banned.Kicks(now) {
+				continue
 			}
 		}
+		allowed[userID] = true
 	}
-	if len(messageIDs) == 0 {
-		return false, ErrInvalidMessageID
+	if err = rows.Err(); err != nil {
+		return nil, err
 	}
-	query := `SELECT COUNT(*) FROM apifull_channel_message_hidden WHERE user_id=? AND channel_id=? AND message_id IN (` + strings.TrimRight(strings.Repeat("?,", len(messageIDs)), ",") + `)`
-	args := make([]interface{}, 0, len(messageIDs)+2)
-	args = append(args, userID, channelID)
-	for _, id := range messageIDs {
-		args = append(args, id)
-	}
-	var hidden int
-	if err = db.QueryRowContext(ctx, query, args...).Scan(&hidden); err != nil {
-		return false, err
-	}
-	return hidden == 0, nil
+	return allowed, nil
 }
 
 func CompleteChannelDeliveryRecipient(ctx context.Context, key ChannelDeliveryKey, userID int64, state string) error {
@@ -296,6 +358,94 @@ func CompleteChannelDeliveryRecipient(ctx context.Context, key ChannelDeliveryKe
 		if _, err = tx.ExecContext(ctx, `UPDATE apifull_channel_delivery_outbox
 			SET state='completed', payload='', exclude_auth_key_id=0
 			WHERE id=$1`, deliveryID); err != nil {
+			return err
+		}
+		if _, err = tx.ExecContext(ctx, `DELETE FROM apifull_channel_delivery_recipient WHERE delivery_id=$1`, deliveryID); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+func RecordChannelDeliveryRecipientResults(ctx context.Context, key ChannelDeliveryKey, results []ChannelDeliveryRecipientResult) error {
+	if db == nil {
+		return errors.New("domain PostgreSQL is not open")
+	}
+	if len(results) == 0 {
+		return nil
+	}
+	if key.ChannelID <= 0 || key.PTSFrom <= 0 || key.PTSTo < key.PTSFrom {
+		return ErrInvalidMessageID
+	}
+	seen := make(map[int64]struct{}, len(results))
+	for _, result := range results {
+		if result.UserID <= 0 {
+			return errors.New("invalid channel delivery recipient")
+		}
+		if _, ok := seen[result.UserID]; ok {
+			return errors.New("duplicate channel delivery recipient result")
+		}
+		seen[result.UserID] = struct{}{}
+		if result.State != ChannelDeliveryRecipientDelivered && result.State != ChannelDeliveryRecipientSkipped && result.State != ChannelDeliveryRecipientRetry {
+			return errors.New("invalid channel delivery recipient state")
+		}
+	}
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var deliveryID int64
+	err = tx.QueryRowContext(ctx, `SELECT id FROM apifull_channel_delivery_outbox
+		WHERE channel_id=$1 AND pts_from=$2 AND pts_to=$3 AND state='pending' FOR UPDATE`,
+		key.ChannelID, key.PTSFrom, key.PTSTo).Scan(&deliveryID)
+	if err == sql.ErrNoRows {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+
+	now := time.Now().Unix()
+	values := make([]string, 0, len(results))
+	args := make([]interface{}, 0, 2+len(results)*3)
+	args = append(args, deliveryID, now)
+	for i, result := range results {
+		first := 3 + i*3
+		values = append(values, fmt.Sprintf("($%d::bigint,$%d::text,$%d::text)", first, first+1, first+2))
+		detail := ""
+		if result.State == ChannelDeliveryRecipientRetry {
+			detail = "delivery failed"
+			if result.Err != nil {
+				detail = result.Err.Error()
+			}
+			if len(detail) > 255 {
+				detail = strings.ToValidUTF8(detail[:255], "")
+			}
+		}
+		args = append(args, result.UserID, result.State, detail)
+	}
+	query := `UPDATE apifull_channel_delivery_recipient AS r
+		SET state=CASE WHEN outcome.recipient_state IN ('delivered','skipped') THEN outcome.recipient_state ELSE r.state END,
+			delivered_at=CASE WHEN outcome.recipient_state IN ('delivered','skipped') THEN $2 ELSE r.delivered_at END,
+			attempts=r.attempts+CASE WHEN outcome.recipient_state='retry' THEN 1 ELSE 0 END,
+			next_attempt_at=CASE WHEN outcome.recipient_state='retry'
+				THEN $2 + LEAST(300::bigint, (1::bigint << LEAST(r.attempts, 8))) ELSE r.next_attempt_at END,
+			last_error=CASE WHEN outcome.recipient_state='retry' THEN outcome.detail ELSE r.last_error END
+		FROM (VALUES ` + strings.Join(values, ",") + `) AS outcome(user_id,recipient_state,detail)
+		WHERE r.delivery_id=$1 AND r.user_id=outcome.user_id AND r.state='pending'`
+	if _, err = tx.ExecContext(ctx, query, args...); err != nil {
+		return err
+	}
+	var pending int
+	if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM apifull_channel_delivery_recipient
+		WHERE delivery_id=$1 AND state='pending'`, deliveryID).Scan(&pending); err != nil {
+		return err
+	}
+	if pending == 0 {
+		if _, err = tx.ExecContext(ctx, `UPDATE apifull_channel_delivery_outbox
+			SET state='completed', payload='', exclude_auth_key_id=0 WHERE id=$1`, deliveryID); err != nil {
 			return err
 		}
 		if _, err = tx.ExecContext(ctx, `DELETE FROM apifull_channel_delivery_recipient WHERE delivery_id=$1`, deliveryID); err != nil {

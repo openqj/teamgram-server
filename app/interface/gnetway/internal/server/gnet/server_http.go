@@ -88,6 +88,17 @@ func (s *Server) onHttpData(ctx *connContext, c gnet.Conn) gnet.Action {
 }
 
 func (s *Server) onHttpHandshake(ctx *connContext, c gnet.Conn, body []byte) {
+	if !s.admission.acquireHandshake(ctx.clientIp) {
+		metricHandshakeRejected.Inc("overload")
+		_, _ = c.Write(httpcodec.FormatErrorResponse(429, "Too Many Requests"))
+		_ = c.Close()
+		return
+	}
+	metricHandshakeInFlight.Inc()
+	defer func() {
+		s.admission.releaseHandshake()
+		metricHandshakeInFlight.Dec()
+	}()
 	_, obj, err := parseFromIncomingMessage(body[8:])
 	if err != nil {
 		logx.Errorf("conn(%s) HTTP handshake parse error: %v", c, err)
@@ -170,6 +181,7 @@ func (s *Server) onHttpHandshake(ctx *connContext, c gnet.Conn, body []byte) {
 				}
 			})
 		}); err != nil {
+			metricWorkerRejected.Inc()
 			logx.Errorf("conn(%s) HTTP pool.Submit error: %v", c, err)
 			_, _ = c.Write(httpcodec.FormatResponse(nil))
 			ctx.httpCodec.Reset()
@@ -203,6 +215,7 @@ func (s *Server) onHttpHandshake(ctx *connContext, c gnet.Conn, body []byte) {
 				}
 			})
 		}); err != nil {
+			metricWorkerRejected.Inc()
 			logx.Errorf("conn(%s) HTTP pool.Submit error: %v", c, err)
 			_, _ = c.Write(httpcodec.FormatResponse(nil))
 			ctx.httpCodec.Reset()
@@ -235,6 +248,15 @@ func (s *Server) onHttpEncryptedMessage(ctx *connContext, c gnet.Conn, authKeyId
 	}
 
 	if authKey != nil {
+		if !ctx.authQuotaHeld && !s.admission.attachAuth(authKey.PermAuthKeyId()) {
+			metricAdmissionRejected.Inc("auth_key_limit")
+			_ = c.Close()
+			return
+		}
+		if !ctx.authQuotaHeld && authKey.PermAuthKeyId() > 0 {
+			ctx.authQuotaKey = authKey.PermAuthKeyId()
+			ctx.authQuotaHeld = true
+		}
 		s.doHttpEncryptedMessage(ctx, c, authKey, body)
 	} else {
 		bodyClone := make([]byte, len(body))
@@ -268,11 +290,21 @@ func (s *Server) onHttpEncryptedMessage(ctx *connContext, c gnet.Conn, authKeyId
 
 			s.eng.Trigger(connId, func(c gnet.Conn) {
 				if ctx2, _ := c.Context().(*connContext); ctx2 != nil {
+					if !ctx2.authQuotaHeld && !s.admission.attachAuth(ak.PermAuthKeyId()) {
+						metricAdmissionRejected.Inc("auth_key_limit")
+						_ = c.Close()
+						return
+					}
+					if !ctx2.authQuotaHeld && ak.PermAuthKeyId() > 0 {
+						ctx2.authQuotaKey = ak.PermAuthKeyId()
+						ctx2.authQuotaHeld = true
+					}
 					ctx2.putAuthKey(ak)
 					s.doHttpEncryptedMessage(ctx2, c, ak, bodyClone)
 				}
 			})
 		}); err != nil {
+			metricWorkerRejected.Inc()
 			logx.Errorf("conn(%s) HTTP pool.Submit error: %v", c, err)
 			_, _ = c.Write(httpcodec.FormatErrorResponse(502, "Bad Gateway"))
 			ctx.httpCodec.Reset()
@@ -333,6 +365,7 @@ func (s *Server) doHttpEncryptedMessage(ctx *connContext, c gnet.Conn, authKey *
 			}
 		})
 	}); err != nil {
+		metricWorkerRejected.Inc()
 		logx.Errorf("conn(%s) HTTP pool.Submit error: %v", c, err)
 		_, _ = c.Write(httpcodec.FormatErrorResponse(502, "Bad Gateway"))
 		ctx.httpCodec.Reset()
