@@ -18,11 +18,15 @@ from postgres_recovery_probe import Lab, ProbeError, redact
 
 
 STAGE_METRICS = {
-    "deliveryClaimWait": 'teamgram_delivery_claim_wait_seconds_count{job="messenger.msg"}',
-    "deliveryPublication": 'teamgram_delivery_publication_seconds_count{job="messenger.msg"}',
-    "deliveryCompletion": 'teamgram_delivery_completion_seconds_count{job="messenger.msg"}',
+    "deliveryClaimWaitCount": 'teamgram_delivery_claim_wait_seconds_count{job="messenger.msg"}',
+    "deliveryClaimWaitSum": 'teamgram_delivery_claim_wait_seconds_sum{job="messenger.msg"}',
+    "deliveryPublicationCount": 'teamgram_delivery_publication_seconds_count{job="messenger.msg"}',
+    "deliveryPublicationSum": 'teamgram_delivery_publication_seconds_sum{job="messenger.msg"}',
+    "deliveryCompletionCount": 'teamgram_delivery_completion_seconds_count{job="messenger.msg"}',
+    "deliveryCompletionSum": 'teamgram_delivery_completion_seconds_sum{job="messenger.msg"}',
     "deliveryResults": 'teamgram_delivery_publications_total{job="messenger.msg"}',
-    "syncDelivery": 'teamgram_sync_delivery_seconds_count{job="messenger.sync"}',
+    "syncDeliveryCount": 'teamgram_sync_delivery_seconds_count{job="messenger.sync"}',
+    "syncDeliverySum": 'teamgram_sync_delivery_seconds_sum{job="messenger.sync"}',
     "syncResults": 'teamgram_sync_delivery_total{job="messenger.sync"}',
 }
 
@@ -55,6 +59,18 @@ def stage_metric_delta(before: dict, after: dict) -> dict:
             delta[name].append({"labels": item.get("labels", {}),
                                 "value": item.get("value", 0) - previous.get(key, 0)})
     return delta
+
+
+def settled_stage_metrics(port: int, before: dict, timeout: float = 15) -> dict:
+    """Allow the 5-second scrape interval to observe the async sync consumer."""
+    deadline = time.monotonic() + timeout
+    latest = {}
+    while time.monotonic() < deadline:
+        latest = stage_metric_snapshot(port)
+        if latest.get("syncDeliveryCount") or latest.get("syncResults"):
+            return latest
+        time.sleep(1)
+    return latest
 
 
 def evaluate(value: dict, *, ack_ms: float = 1000, live_ms: float = 2000) -> dict:
@@ -174,7 +190,7 @@ def run_profile(lab: Lab, gramjs: Path, rate: int, seconds: int, max_inflight: i
         evidence = future.result()
         evidence["databaseBacklogSamples"] = backlog
         try:
-            metrics_after = stage_metric_snapshot(metrics_port)
+            metrics_after = settled_stage_metrics(metrics_port, metrics_before)
             if "error" in metrics_before:
                 evidence["stageMetrics"] = {"before": metrics_before, "after": metrics_after}
             else:

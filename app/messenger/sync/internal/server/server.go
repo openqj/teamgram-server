@@ -21,6 +21,7 @@ import (
 
 	"github.com/zeromicro/go-zero/core/conf"
 	"github.com/zeromicro/go-zero/core/logx"
+	"github.com/zeromicro/go-zero/core/prometheus"
 )
 
 var configFile = flag.String("f", "etc/sync.yaml", "the config file")
@@ -46,6 +47,10 @@ func (s *Server) Initialize() error {
 	if err := logx.SetUp(c.Log); err != nil {
 		return err
 	}
+	// Sync is a Kafka consumer rather than a zrpc server, so it does not pass
+	// through zrpc's ServiceConf setup. Start its configured metrics endpoint
+	// explicitly so durable delivery stages remain observable.
+	prometheus.StartAgent(c.Prometheus)
 
 	ctx, err := svc.NewServiceContext(c)
 	if err != nil {

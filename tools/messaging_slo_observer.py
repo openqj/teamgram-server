@@ -42,7 +42,7 @@ def observe(lab: Lab, args: argparse.Namespace, report: dict) -> None:
                "collectorComplete": False, "run": lab.run_id, "startLatenessSeconds": round(lateness, 3)}
         if lateness <= 5:
             try:
-                evidence, pending = run_profile(lab, gramjs, 1, 2, 32, raw_dir / "unused-state.json")
+                evidence, pending = run_profile(lab, gramjs, 1, 2, 32, raw_dir / "unused-state.json", args.metrics_port)
                 raw = json.dumps(evidence, sort_keys=True) + "\n"
                 raw_path = raw_dir / f"{minute:06d}.json"
                 raw_path.write_text(raw)

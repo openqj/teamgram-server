@@ -79,7 +79,10 @@ Kafka 故障阶段在存活的双账号 session 中使用文件屏障：
 | `teamgram_delivery_backlog_sample_timestamp_seconds` / `sample_errors_total` | 最后成功采样时间 / 采样失败次数 |
 | `teamgram_delivery_publications_total{queue,outcome}` | 发布结果；timeout 可能是发送结果不确定 |
 | `teamgram_delivery_publication_inflight{queue}` | 当前独立投递发布数；受 `DeliveryConcurrency` 有界控制 |
+| `teamgram_delivery_claim_wait_seconds{queue}` | durable intent 入队到成功取得租约的等待时间；可定位 worker/数据库 claim 排队 |
+| `teamgram_delivery_publication_seconds{queue}` | 等待 Kafka 发布结果的时间；不代表 consumer 或客户端已收到 |
 | `teamgram_delivery_completion_seconds{queue,stage}` | 入队到 `consumer_ack` 或 `broker_ack`；不表示端到端接收 |
+| `teamgram_sync_delivery_seconds{stage}` / `teamgram_sync_delivery_total{stage,outcome}` | sync consumer、update 准备、在线 session 查询、gateway push、完成标记和整体 fan-out 的阶段耗时/结果；不带用户或消息 ID |
 | `gnetway_conn_active{proto}` | 网关当前保持的 TCP/WebSocket/HTTP 连接数；1000 在线验收以保持阶段最低值计分 |
 | `teamgram_kafka_producer_outstanding{topic}` | 进程内同 topic 的多个 producer 总占用；64 是单 producer 上限 |
 | `teamgram_kafka_producer_calls_total` / `delivery_results_total` | 调用返回结果 / 含迟到 ACK 的最终 broker 结果 |
@@ -190,6 +193,8 @@ python3 tools/messaging_capacity_probe.py --execute \
 为区分压测端限制，另以 `max-inflight=128` 重跑 20/s，报告 `/tmp/teamgram-capacity-20s-inflight128-20261015.json` 为 `PROFILE_FAILED`：145 个 `MAX_INFLIGHT`、1,055 个 ACK、620 个实时事件，实时送达 p95 约 7.868 秒，pending 峰值约 317，并触发 `pts` 间隔/重复一致性检查。该结果说明扩大客户端并发会暴露实时投递队列瓶颈，应先按发布、消费者确认、sync update 和 gateway 写出阶段定位，再决定 worker、Kafka 分区和服务副本的扩容方式。
 
 每个计划槽都保留在分母。压测端迟到超过 100ms、并发占满、RPC 错误和送达超时均保留失败；不降低速率补发。报告区分计划到 ACK/送达、实际发出到 ACK/送达、窗口内 goodput 与窗口后排空。百分位明确只来自已观察结果，验收同时要求全部计划消息在 ACK 1 秒、在线送达 2 秒内完成。未达到预算或一致性检查失败不会标成已找到系统容量上限。
+
+固定速率探针还保存每个档位的 Prometheus 阶段计数快照和按有限标签计算的 delta：outbox claim、Kafka publication、consumer ACK、sync fan-out、gateway push 及结果分类。快照是诊断证据，不会在指标暂时不可抓取时把容量结果改判为通过；容量结论仍由消息 ACK、实时送达、`pts` 连续性和 outbox 清空决定。
 
 负载期间不逐条读状态或历史；结束后合并 outgoing ACK 与 incoming live 的 `pts` 区间，要求连续且双方最终状态一致，历史和实时 message ID 唯一。runner 以 SQL outbox 零积压作为清理屏障，再删除 tag、读回零剩余，并再次排空清理生成的状态意图。历史按服务当前 50 条上限分页，报告输出等待 stdout 写完，防止较大 JSON 被进程退出截断。
 
