@@ -87,7 +87,7 @@ func (c *DialogCore) DialogGetRecommendedDialogs(ctx context.Context,
 	go func() {
 		bgCtx := context.Background()
 		for _, d := range result.Dialogs {
-			_ = store.DialogRecommendations.UpdateStats(bgCtx,
+			_, _ = store.DialogRecommendations.UpdateStats(bgCtx,
 				userID, d.PeerType, d.PeerId, 1, 0)
 		}
 	}()
@@ -172,7 +172,7 @@ func (c *DialogCore) DialogReportRecommendationFeedback(ctx context.Context,
 		// 用户将推荐对话置顶，表示推荐成功
 		_, err = store.DialogRecommendations.UpdateStats(ctx, userID, peerType, peerID, 0, 1)
 	default:
-		c.Logger.Warnf("unknown feedback type: %d", feedbackType)
+		c.Logger.Infof("unknown feedback type: %d", feedbackType)
 	}
 
 	if err != nil {
@@ -203,7 +203,7 @@ func (c *DialogCore) DialogAddPromotedDialog(ctx context.Context,
 	if len(targetUserIDs) == 0 {
 		// TODO: 获取所有活跃用户 ID
 		// 这里需要实现获取活跃用户列表的逻辑
-		c.Logger.Warn("no target users specified for promoted dialog")
+		c.Logger.Info("no target users specified for promoted dialog")
 		return mtproto.BoolFalse, nil
 	}
 
@@ -249,7 +249,7 @@ func (c *DialogCore) DialogRemovePromotedDialog(ctx context.Context,
 
 	targetUserIDs := in.TargetUserIds
 	if len(targetUserIDs) == 0 {
-		c.Logger.Warn("no target users specified for removing promoted dialog")
+		c.Logger.Info("no target users specified for removing promoted dialog")
 		return mtproto.BoolFalse, nil
 	}
 
