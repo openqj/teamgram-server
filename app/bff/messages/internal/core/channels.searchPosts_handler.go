@@ -22,7 +22,6 @@ import (
 	"strings"
 
 	"github.com/teamgram/proto/mtproto"
-	"github.com/teamgram/teamgram-server/app/bff/apifull/channelview"
 )
 
 func searchPostsQuery(in *mtproto.TLChannelsSearchPosts) string {
@@ -30,18 +29,44 @@ func searchPostsQuery(in *mtproto.TLChannelsSearchPosts) string {
 		return ""
 	}
 	query := strings.TrimSpace(in.GetQuery().GetValue())
+	hashtag := strings.TrimSpace(in.GetHashtag_STRING())
+	if hashtag == "" && in.GetHashtag_FLAGSTRING() != nil {
+		hashtag = strings.TrimSpace(in.GetHashtag_FLAGSTRING().GetValue())
+	}
+	// The TL method requires exactly one selector. Hashtags are sent without
+	// the leading '#'; accepting it here would hide a malformed request.
+	if query != "" && hashtag != "" {
+		return ""
+	}
 	if query != "" {
 		return query
 	}
-	query = strings.TrimSpace(in.GetHashtag_STRING())
-	if query == "" && in.GetHashtag_FLAGSTRING() != nil {
-		query = strings.TrimSpace(in.GetHashtag_FLAGSTRING().GetValue())
-	}
-	query = strings.TrimPrefix(query, "#")
-	if query == "" {
+	if hashtag == "" || strings.HasPrefix(hashtag, "#") {
 		return ""
 	}
-	return "#" + query
+	return hashtag
+}
+
+// validateSearchPostsOffsetPeer checks the cursor shape without treating it
+// as a channel selector. channels.searchPosts searches a global post index;
+// the first request uses inputPeerEmpty and subsequent requests carry the
+// channel peer of the last result. The local APIFull store has no such index,
+// so valid requests are rejected by the handler below.
+func validateSearchPostsOffsetPeer(peer *mtproto.InputPeer) error {
+	if peer == nil {
+		return mtproto.ErrOffsetPeerIdInvalid
+	}
+	switch peer.GetPredicateName() {
+	case mtproto.Predicate_inputPeerEmpty:
+		return nil
+	case mtproto.Predicate_inputPeerChannel:
+		if peer.GetChannelId() <= 0 || peer.GetAccessHash() == 0 {
+			return mtproto.ErrOffsetPeerIdInvalid
+		}
+		return nil
+	default:
+		return mtproto.ErrOffsetPeerIdInvalid
+	}
 }
 
 // ChannelsSearchPosts
@@ -50,11 +75,14 @@ func (c *MessagesCore) ChannelsSearchPosts(in *mtproto.TLChannelsSearchPosts) (*
 	if c == nil || c.MD == nil || c.MD.UserId <= 0 {
 		return nil, mtproto.ErrAuthKeyUnregistered
 	}
-	if in == nil || in.GetOffsetPeer() == nil {
+	if in == nil {
 		return nil, mtproto.ErrPeerIdInvalid
 	}
 	if c.MD.IsBot {
 		return nil, mtproto.ErrBotMethodInvalid
+	}
+	if err := validateSearchPostsOffsetPeer(in.GetOffsetPeer()); err != nil {
+		return nil, err
 	}
 	if stars := in.GetAllowPaidStars(); stars != nil && stars.GetValue() > 0 {
 		return nil, mtproto.ErrMethodNotImpl
@@ -73,22 +101,10 @@ func (c *MessagesCore) ChannelsSearchPosts(in *mtproto.TLChannelsSearchPosts) (*
 	if query == "" {
 		return nil, mtproto.ErrSearchQueryEmpty
 	}
-	limit := in.GetLimit()
-	if limit == 0 {
-		limit = 20
-	}
 
-	return channelview.SearchForInputPeer(
-		c.MD.UserId,
-		in.GetOffsetPeer(),
-		query,
-		0,
-		in.GetOffsetId(),
-		in.GetOffsetRate(),
-		0,
-		0,
-		0,
-		0,
-		limit,
-	)
+	// APIFull only owns per-channel message rows. It has no authoritative
+	// cross-channel post index, relevance score, or cursor that can implement
+	// offset_rate/offset_peer/offset_id and the corresponding next_rate.
+	// Returning a local SQL page here would violate the Layer 229 contract.
+	return nil, mtproto.ErrMethodNotImpl
 }

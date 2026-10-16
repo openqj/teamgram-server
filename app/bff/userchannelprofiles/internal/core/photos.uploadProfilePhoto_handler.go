@@ -23,6 +23,7 @@ import (
 	"github.com/teamgram/teamgram-server/app/messenger/sync/sync"
 	userpb "github.com/teamgram/teamgram-server/app/service/biz/user/user"
 	mediapb "github.com/teamgram/teamgram-server/app/service/media/media"
+	"github.com/teamgram/teamgram-server/pkg/rpc/businessctx"
 )
 
 // PhotosUploadProfilePhoto
@@ -33,6 +34,13 @@ func (c *UserChannelProfilesCore) PhotosUploadProfilePhoto(in *mtproto.TLPhotosU
 	}
 	if in == nil || (inputFileEmpty(in.GetFile()) && inputFileEmpty(in.GetVideo())) {
 		return nil, mtproto.ErrPhotoInvalid
+	}
+	actorID := c.MD.UserId
+	if scope, ok := businessctx.ScopeFromContext(c.ctx); ok {
+		if scope.OwnerID <= 0 || !scope.CanEditPhoto {
+			return nil, mtproto.ErrChatAdminRequired
+		}
+		actorID = scope.OwnerID
 	}
 	if c.MD.PermAuthKeyId == 0 {
 		return nil, mtproto.ErrAuthKeyUnregistered
@@ -59,7 +67,7 @@ func (c *UserChannelProfilesCore) PhotosUploadProfilePhoto(in *mtproto.TLPhotosU
 
 	// TODO: ALBUM_PHOTOS_TOO_MANY
 	updatedPhotoId, err := c.svcCtx.Dao.UserClient.UserUpdateProfilePhoto(c.ctx, &userpb.TLUserUpdateProfilePhoto{
-		UserId: c.MD.UserId,
+		UserId: actorID,
 		Id:     photo.GetId(),
 	})
 	if err != nil {
@@ -73,7 +81,7 @@ func (c *UserChannelProfilesCore) PhotosUploadProfilePhoto(in *mtproto.TLPhotosU
 	me, err := c.svcCtx.Dao.UserClient.UserGetImmutableUser(
 		c.ctx,
 		&userpb.TLUserGetImmutableUser{
-			Id:       c.MD.UserId,
+			Id:       actorID,
 			Privacy:  false,
 			Contacts: nil,
 		})
@@ -86,11 +94,11 @@ func (c *UserChannelProfilesCore) PhotosUploadProfilePhoto(in *mtproto.TLPhotosU
 	}
 
 	syncReply, err := c.svcCtx.Dao.SyncClient.SyncPushUpdates(c.ctx, &sync.TLSyncPushUpdates{
-		UserId: c.MD.UserId,
+		UserId: actorID,
 		Updates: mtproto.MakeUpdatesByUpdatesUsers(
 			[]*mtproto.User{me.ToSelfUser()},
 			mtproto.MakeTLUpdateUser(&mtproto.Update{
-				UserId: c.MD.UserId,
+				UserId: actorID,
 			}).To_Update()),
 	})
 	if err != nil {

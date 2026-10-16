@@ -31,6 +31,13 @@ func (c *DialogsCore) MessagesMarkDialogUnread(in *mtproto.TLMessagesMarkDialogU
 		peer *mtproto.PeerUtil
 	)
 
+	if c == nil || c.MD == nil || c.MD.UserId <= 0 {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
+	if in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+
 	if in.GetParentPeer() != nil {
 		c.Logger.Errorf("messages.markDialogUnread - error: parent peer is not supported")
 		return nil, mtproto.ErrMethodNotImpl
@@ -42,17 +49,35 @@ func (c *DialogsCore) MessagesMarkDialogUnread(in *mtproto.TLMessagesMarkDialogU
 		return nil, err
 	}
 
-	switch in.Peer.GetPredicateName() {
+	if in.GetPeer() == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+
+	switch in.GetPeer().GetPredicateName() {
 	case mtproto.Predicate_inputDialogPeer:
-		peer = mtproto.FromInputPeer2(c.MD.UserId, in.Peer.Peer)
+		if in.GetPeer().GetPeer() == nil {
+			return nil, mtproto.ErrInputRequestInvalid
+		}
+		peer = mtproto.FromInputPeer2(c.MD.UserId, in.GetPeer().GetPeer())
 	case mtproto.Predicate_inputDialogPeerFolder:
 		// error
-		c.Logger.Errorf("client not send inputDialogPeerFolder: %v", in.Peer)
+		c.Logger.Errorf("client not send inputDialogPeerFolder: %v", in.GetPeer())
 		return mtproto.BoolFalse, nil
 	default:
 		err := mtproto.ErrInputConstructorInvalid
 		c.Logger.Errorf("messages.markDialogUnread - error: %v", err)
 		return nil, err
+	}
+	if peer == nil || peer.PeerId <= 0 {
+		return nil, mtproto.ErrPeerIdInvalid
+	}
+	switch peer.PeerType {
+	case mtproto.PEER_SELF, mtproto.PEER_USER, mtproto.PEER_CHAT, mtproto.PEER_CHANNEL:
+	default:
+		return nil, mtproto.ErrInputConstructorInvalid
+	}
+	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.DialogClient == nil || c.svcCtx.Dao.SyncClient == nil {
+		return nil, mtproto.ErrInternalServerError
 	}
 
 	rValue, err := c.svcCtx.Dao.DialogClient.DialogMarkDialogUnread(c.ctx, &dialog.TLDialogMarkDialogUnread{
@@ -77,13 +102,18 @@ func (c *DialogsCore) MessagesMarkDialogUnread(in *mtproto.TLMessagesMarkDialogU
 				Peer: peer.ToPeer(),
 			}).To_DialogPeer(),
 		}).To_Update())
-		if _, err := c.svcCtx.Dao.SyncClient.SyncUpdatesNotMe(c.ctx, &sync.TLSyncUpdatesNotMe{
+		syncReply, err := c.svcCtx.Dao.SyncClient.SyncUpdatesNotMe(c.ctx, &sync.TLSyncUpdatesNotMe{
 			UserId:        c.MD.UserId,
 			PermAuthKeyId: c.MD.PermAuthKeyId,
 			Updates:       updates,
-		}); err != nil {
+		})
+		if err != nil {
 			c.Logger.Errorf("messages.markDialogUnread - sync error: %v", err)
 			return nil, err
+		}
+		if syncReply == nil {
+			c.Logger.Errorf("messages.markDialogUnread - sync returned no response")
+			return nil, mtproto.ErrInternalServerError
 		}
 	}
 

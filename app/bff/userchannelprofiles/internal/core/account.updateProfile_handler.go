@@ -22,6 +22,7 @@ import (
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/messenger/sync/sync"
 	userpb "github.com/teamgram/teamgram-server/app/service/biz/user/user"
+	"github.com/teamgram/teamgram-server/pkg/rpc/businessctx"
 )
 
 // AccountUpdateProfile
@@ -33,11 +34,24 @@ func (c *UserChannelProfilesCore) AccountUpdateProfile(in *mtproto.TLAccountUpda
 	if in == nil {
 		return nil, mtproto.ErrInputRequestInvalid
 	}
+	actorID := c.MD.UserId
+	if scope, ok := businessctx.ScopeFromContext(c.ctx); ok {
+		if scope.OwnerID <= 0 {
+			return nil, mtproto.ErrAuthKeyUnregistered
+		}
+		if (in.GetFirstName() != nil || in.GetLastName() != nil) && !scope.CanEditName {
+			return nil, mtproto.ErrChatAdminRequired
+		}
+		if in.GetAbout() != nil && !scope.CanEditBio {
+			return nil, mtproto.ErrChatAdminRequired
+		}
+		actorID = scope.OwnerID
+	}
 	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.UserClient == nil {
 		return nil, mtproto.ErrInternalServerError
 	}
 	me, err := c.svcCtx.Dao.UserClient.UserGetImmutableUser(c.ctx, &userpb.TLUserGetImmutableUser{
-		Id: c.MD.UserId,
+		Id: actorID,
 	})
 	if err != nil {
 		c.Logger.Errorf("account.updateProfile - error: %v", err)
@@ -69,7 +83,7 @@ func (c *UserChannelProfilesCore) AccountUpdateProfile(in *mtproto.TLAccountUpda
 
 		if in.GetAbout().GetValue() != me.About() {
 			if _, err = c.svcCtx.Dao.UserClient.UserUpdateAbout(c.ctx, &userpb.TLUserUpdateAbout{
-				UserId: c.MD.UserId,
+				UserId: actorID,
 				About:  in.GetAbout().GetValue(),
 			}); err != nil {
 				c.Logger.Errorf("account.updateProfile - error: %v", err)
@@ -82,7 +96,7 @@ func (c *UserChannelProfilesCore) AccountUpdateProfile(in *mtproto.TLAccountUpda
 
 	if nameChanged {
 		if _, err = c.svcCtx.Dao.UserClient.UserUpdateFirstAndLastName(c.ctx, &userpb.TLUserUpdateFirstAndLastName{
-			UserId:    c.MD.UserId,
+			UserId:    actorID,
 			FirstName: firstName,
 			LastName:  lastName,
 		}); err != nil {
@@ -93,10 +107,10 @@ func (c *UserChannelProfilesCore) AccountUpdateProfile(in *mtproto.TLAccountUpda
 		me.SetLastName(lastName)
 
 		if _, err = c.svcCtx.Dao.SyncClient.SyncUpdatesNotMe(c.ctx, &sync.TLSyncUpdatesNotMe{
-			UserId:        c.MD.UserId,
+			UserId:        actorID,
 			PermAuthKeyId: c.MD.PermAuthKeyId,
 			Updates: mtproto.MakeUpdatesByUpdates(mtproto.MakeTLUpdateUserName(&mtproto.Update{
-				UserId:    c.MD.UserId,
+				UserId:    actorID,
 				FirstName: firstName,
 				LastName:  lastName,
 				Username:  me.Username(),

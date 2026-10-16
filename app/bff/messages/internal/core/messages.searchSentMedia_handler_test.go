@@ -67,6 +67,8 @@ func TestMessagesSearchSentMediaRejectsInvalidRequests(t *testing.T) {
 			},
 			want: mtproto.ErrInputFilterInvalid,
 		},
+		{name: "empty filter is unsupported", core: authenticated, in: &mtproto.TLMessagesSearchSentMedia{Filter: mtproto.MakeTLInputMessagesFilterEmpty(&mtproto.MessagesFilter{}).To_MessagesFilter(), Limit: 1}, want: mtproto.ErrFilterNotSupported},
+		{name: "poll filter is unsupported", core: authenticated, in: &mtproto.TLMessagesSearchSentMedia{Filter: &mtproto.MessagesFilter{PredicateName: mtproto.Predicate_inputMessagesFilterPoll}, Limit: 1}, want: mtproto.ErrFilterNotSupported},
 		{name: "negative limit", core: authenticated, in: func() *mtproto.TLMessagesSearchSentMedia { in := searchSentMediaRequest(); in.Limit = -1; return in }(), want: mtproto.ErrLimitInvalid},
 		{name: "limit over maximum", core: authenticated, in: func() *mtproto.TLMessagesSearchSentMedia { in := searchSentMediaRequest(); in.Limit = 101; return in }(), want: mtproto.ErrLimitInvalid},
 	}
@@ -78,6 +80,25 @@ func TestMessagesSearchSentMediaRejectsInvalidRequests(t *testing.T) {
 				t.Fatalf("MessagesSearchSentMedia() = (%v, %v), want (nil, %v)", got, err, tt.want)
 			}
 		})
+	}
+}
+
+func TestMessagesSearchSentMediaFailsClosedForQueryWithoutProviderAuthority(t *testing.T) {
+	client := &searchSentMediaClient{}
+	core := &MessagesCore{
+		ctx:    context.Background(),
+		svcCtx: &svc.ServiceContext{Dao: &dao.Dao{MessageClient: client}},
+		MD:     &metadata.RpcMetadata{UserId: 41},
+	}
+	in := searchSentMediaRequest()
+	in.Q = "caption"
+
+	got, err := core.MessagesSearchSentMedia(in)
+	if got != nil || err != mtproto.ErrMethodNotImpl {
+		t.Fatalf("MessagesSearchSentMedia() = (%v, %v), want (nil, METHOD_NOT_IMPL)", got, err)
+	}
+	if client.request != nil {
+		t.Fatalf("MessageSearchByMediaType request = %+v, want no provider call", client.request)
 	}
 }
 
@@ -105,7 +126,7 @@ func TestMessagesSearchSentMediaUsesGlobalSentMediaQuery(t *testing.T) {
 	if got == nil || len(got.GetMessages()) != 0 {
 		t.Fatalf("MessagesSearchSentMedia() = %+v, want empty typed result", got)
 	}
-	if client.request == nil || client.request.GetUserId() != 41 || client.request.GetPeerType() != mtproto.PEER_UNKNOWN || client.request.GetPeerId() != 0 || client.request.GetMediaType() != mtproto.MEDIA_PHOTOVIDEO {
+	if client.request == nil || client.request.GetUserId() != 41 || client.request.GetPeerType() != mtproto.PEER_UNKNOWN || client.request.GetPeerId() != 0 || client.request.GetMediaType() != mtproto.MEDIA_PHOTOVIDEO || client.request.GetLimit() != 100 {
 		t.Fatalf("global sent-media request = %+v", client.request)
 	}
 }
@@ -151,5 +172,34 @@ func TestMessagesSearchSentMediaRejectsBots(t *testing.T) {
 	got, err := core.MessagesSearchSentMedia(searchSentMediaRequest())
 	if got != nil || err != mtproto.ErrBotMethodInvalid {
 		t.Fatalf("MessagesSearchSentMedia() = (%v, %v), want (nil, BOT_METHOD_INVALID)", got, err)
+	}
+}
+
+func TestMessagesSearchSentMediaFailsClosedWithoutChannelHydration(t *testing.T) {
+	client := &searchSentMediaClient{result: mtproto.MakeTLMessageBoxList(&mtproto.MessageBoxList{BoxList: []*mtproto.MessageBox{
+		mtproto.MakeTLMessageBox(&mtproto.MessageBox{
+			MessageId: 7,
+			PeerType:  mtproto.PEER_CHANNEL,
+			PeerId:    99,
+			Message: mtproto.MakeTLMessage(&mtproto.Message{
+				Id:     7,
+				FromId: mtproto.MakePeerUser(41),
+				PeerId: mtproto.MakePeerChannel(99),
+				Media:  mtproto.MakeTLMessageMediaPhoto(&mtproto.MessageMedia{}).To_MessageMedia(),
+			}).To_Message(),
+		}).To_MessageBox(),
+	}}).To_MessageBoxList()}
+	core := &MessagesCore{
+		ctx: context.Background(),
+		svcCtx: &svc.ServiceContext{Dao: &dao.Dao{
+			MessageClient: client,
+			UserClient:    &searchSentMediaResultUserClient{},
+		}},
+		MD: &metadata.RpcMetadata{UserId: 41},
+	}
+
+	got, err := core.MessagesSearchSentMedia(searchSentMediaRequest())
+	if got != nil || err != mtproto.ErrMethodNotImpl {
+		t.Fatalf("MessagesSearchSentMedia() = (%v, %v), want (nil, METHOD_NOT_IMPL)", got, err)
 	}
 }

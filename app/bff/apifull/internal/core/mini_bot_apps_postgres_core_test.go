@@ -165,6 +165,29 @@ func TestMiniBotWebViewAndPermissionHandlersPostgres(t *testing.T) {
 		t.Fatalf("requested button = %#v", gotButton)
 	}
 
+	requestPeerButton := mtproto.MakeTLInputKeyboardButtonRequestPeer(&mtproto.KeyboardButton{
+		Text: "Pick a bot", ButtonId: 17, MaxQuantity: 2,
+		PeerType: mtproto.MakeTLRequestPeerTypeUser(&mtproto.RequestPeerType{
+			Bot: mtproto.BoolTrue,
+		}).To_RequestPeerType(),
+		NameRequested: true,
+	}).GetData2()
+	peerRequest, err := c.BotsRequestWebViewButton(&mtproto.TLBotsRequestWebViewButton{
+		UserId: bot, Button: requestPeerButton,
+	})
+	if err != nil {
+		t.Fatalf("request peer button: %v", err)
+	}
+	gotPeerButton, err := c.BotsGetRequestedWebViewButton(&mtproto.TLBotsGetRequestedWebViewButton{
+		Bot: bot, WebappReqId: peerRequest.GetWebappReqId(),
+	})
+	if err != nil {
+		t.Fatalf("get requested peer button: %v", err)
+	}
+	if gotPeerButton == nil || gotPeerButton.GetPredicateName() != mtproto.Predicate_keyboardButtonRequestPeer || gotPeerButton.GetButtonId() != 17 || gotPeerButton.GetMaxQuantity() != 2 || gotPeerButton.GetPeerType() == nil || gotPeerButton.GetPeerType().GetPredicateName() != mtproto.Predicate_requestPeerTypeUser || !mtproto.FromBool(gotPeerButton.GetPeerType().GetBot()) || !gotPeerButton.GetNameRequested() {
+		t.Fatalf("requested peer button = %#v", gotPeerButton)
+	}
+
 	mainResult, err := c.MessagesRequestMainWebView(&mtproto.TLMessagesRequestMainWebView{Bot: bot, Platform: "android"})
 	if err != nil {
 		t.Fatalf("request main webview: %v", err)

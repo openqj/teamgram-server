@@ -7,6 +7,7 @@ import (
 
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/proto/mtproto/rpc/metadata"
+	accountdao "github.com/teamgram/teamgram-server/app/bff/account/internal/dao"
 	"github.com/teamgram/teamgram-server/app/bff/account/internal/svc"
 	"github.com/zeromicro/go-zero/core/logx"
 )
@@ -15,7 +16,7 @@ func newBoundaryAccountCore() *AccountCore {
 	ctx := context.Background()
 	return &AccountCore{
 		ctx:    ctx,
-		svcCtx: &svc.ServiceContext{},
+		svcCtx: &svc.ServiceContext{Dao: &accountdao.Dao{}},
 		Logger: logx.WithContext(ctx),
 		MD: &metadata.RpcMetadata{
 			PermAuthKeyId: 91,
@@ -102,5 +103,27 @@ func TestAccountHandlersRejectUnauthenticatedRequests(t *testing.T) {
 	}
 	if result, err := c.AccountResetAuthorization(&mtproto.TLAccountResetAuthorization{Hash: 1}); result != nil || !errors.Is(err, mtproto.ErrAuthKeyUnregistered) {
 		t.Fatalf("reset authorization = (%v, %v), want AUTH_KEY_UNREGISTERED", result, err)
+	}
+	if result, err := c.AccountResetAuthorization(&mtproto.TLAccountResetAuthorization{Hash: 0}); result != nil || !errors.Is(err, mtproto.ErrAuthKeyUnregistered) {
+		t.Fatalf("reset authorization with zero hash = (%v, %v), want AUTH_KEY_UNREGISTERED", result, err)
+	}
+}
+
+func TestAccountDeleteAccountRejectsMissingPermanentAuthKey(t *testing.T) {
+	c := newBoundaryAccountCore()
+	c.MD.PermAuthKeyId = 0
+
+	result, err := c.AccountDeleteAccount(&mtproto.TLAccountDeleteAccount{})
+	if result != nil || !errors.Is(err, mtproto.ErrAuthKeyUnregistered) {
+		t.Fatalf("delete account = (%v, %v), want AUTH_KEY_UNREGISTERED", result, err)
+	}
+}
+
+func TestAccountResetAuthorizationKeepsAuthenticatedZeroHashNoop(t *testing.T) {
+	c := newBoundaryAccountCore()
+
+	result, err := c.AccountResetAuthorization(&mtproto.TLAccountResetAuthorization{Hash: 0})
+	if result != mtproto.BoolFalse || err != nil {
+		t.Fatalf("reset authorization with zero hash = (%v, %v), want BoolFalse", result, err)
 	}
 }

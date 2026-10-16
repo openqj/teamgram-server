@@ -34,7 +34,7 @@ func (c *MessagesCore) MessagesGetRecentLocations(in *mtproto.TLMessagesGetRecen
 	if c == nil || c.MD == nil || c.MD.UserId <= 0 {
 		return nil, mtproto.ErrAuthKeyUnregistered
 	}
-	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.MessageClient == nil {
+	if c.svcCtx == nil || c.svcCtx.Dao == nil {
 		return nil, mtproto.ErrInternalServerError
 	}
 	if in == nil || in.GetPeer() == nil {
@@ -56,7 +56,20 @@ func (c *MessagesCore) MessagesGetRecentLocations(in *mtproto.TLMessagesGetRecen
 	}
 
 	if peer.IsChannel() {
-		return c.getRecentChannelLocations(in.Peer)
+		return c.getRecentChannelLocations(in.Peer, limit)
+	}
+	if c.svcCtx.Dao.MessageClient == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
+	switch peer.PeerType {
+	case mtproto.PEER_USER:
+		if err := c.validateRecentLocationsUserPeer(in.Peer); err != nil {
+			return nil, err
+		}
+	case mtproto.PEER_CHAT:
+		if err := c.validateRecentLocationsChatPeer(peer); err != nil {
+			return nil, err
+		}
 	}
 	geo, err := c.getRecentLocationMessageBoxes(peer, limit)
 	if err != nil {
@@ -77,6 +90,10 @@ func (c *MessagesCore) MessagesGetRecentLocations(in *mtproto.TLMessagesGetRecen
 		},
 		func(userIdList []int64) {
 			if visitErr != nil {
+				return
+			}
+			if c.svcCtx.Dao.UserClient == nil {
+				visitErr = mtproto.ErrInternalServerError
 				return
 			}
 			mUsers, err := c.svcCtx.Dao.UserClient.UserGetMutableUsers(c.ctx, &userpb.TLUserGetMutableUsers{Id: userIdList})
@@ -124,6 +141,58 @@ func (c *MessagesCore) MessagesGetRecentLocations(in *mtproto.TLMessagesGetRecen
 		Users:    mtproto.ToSafeUsers(users),
 		Chats:    mtproto.ToSafeChats(chats),
 	}).To_Messages_Messages(), nil
+}
+
+func (c *MessagesCore) validateRecentLocationsUserPeer(peer *mtproto.InputPeer) error {
+	if peer == nil || peer.GetUserId() <= 0 || peer.GetAccessHash() == 0 {
+		return mtproto.ErrPeerIdInvalid
+	}
+	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.UserClient == nil {
+		return mtproto.ErrInternalServerError
+	}
+	users, err := c.svcCtx.Dao.UserClient.UserGetMutableUsers(c.ctx, &userpb.TLUserGetMutableUsers{
+		Id: []int64{peer.GetUserId()},
+		To: []int64{c.MD.UserId},
+	})
+	if err != nil {
+		return err
+	}
+	if users == nil {
+		return mtproto.ErrInternalServerError
+	}
+	for _, immutable := range users.GetDatas() {
+		if immutable == nil || immutable.GetUser() == nil {
+			continue
+		}
+		user := immutable.GetUser()
+		if user.GetId() == peer.GetUserId() && !user.GetDeleted() && user.GetAccessHash() == peer.GetAccessHash() {
+			return nil
+		}
+	}
+	return mtproto.ErrPeerIdInvalid
+}
+
+func (c *MessagesCore) validateRecentLocationsChatPeer(peer *mtproto.PeerUtil) error {
+	if peer == nil || peer.PeerId <= 0 {
+		return mtproto.ErrPeerIdInvalid
+	}
+	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.ChatClient == nil || c.svcCtx.Dao.ChatClient.Client() == nil {
+		return mtproto.ErrInternalServerError
+	}
+	chat, err := c.svcCtx.Dao.ChatClient.Client().ChatGetMutableChat(c.ctx, &chatpb.TLChatGetMutableChat{
+		ChatId: peer.PeerId,
+	})
+	if err != nil {
+		return err
+	}
+	if chat == nil || chat.GetChat() == nil {
+		return mtproto.ErrPeerIdInvalid
+	}
+	member, ok := chat.GetImmutableChatParticipant(c.MD.UserId)
+	if !ok || member == nil || !member.IsChatMemberStateNormal() {
+		return mtproto.ErrUserNotParticipant
+	}
+	return nil
 }
 
 func (c *MessagesCore) getRecentLocationMessageBoxes(peer *mtproto.PeerUtil, limit int32) ([]*mtproto.MessageBox, error) {
@@ -177,10 +246,11 @@ func (c *MessagesCore) getRecentLocationMessageBoxes(peer *mtproto.PeerUtil, lim
 	}
 }
 
-func (c *MessagesCore) getRecentChannelLocations(peer *mtproto.InputPeer) (*mtproto.Messages_Messages, error) {
-	if _, err := channelview.ValidateInputPeer(c.MD.UserId, peer); err != nil {
+func (c *MessagesCore) getRecentChannelLocations(peer *mtproto.InputPeer, limit int32) (*mtproto.Messages_Messages, error) {
+	locations, err := channelview.RecentLocationsForInputPeer(c.MD.UserId, peer, limit)
+	if err != nil {
 		c.Logger.Errorf("messages.getRecentLocations - error: %v", err)
 		return nil, err
 	}
-	return nil, mtproto.ErrMethodNotImpl
+	return locations, nil
 }

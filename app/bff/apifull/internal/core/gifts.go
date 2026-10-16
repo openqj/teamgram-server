@@ -24,6 +24,7 @@ import (
 
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/domain"
+	"github.com/teamgram/teamgram-server/pkg/rpc/businessctx"
 	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
@@ -70,6 +71,16 @@ func (c *ApiFullCore) giftsUnavailable() error {
 		return err
 	}
 	return mtproto.ErrMethodNotImpl
+}
+
+// giftActorID selects the business owner only when a trusted
+// invokeWithBusinessConnection scope crossed the RPC boundary. Native calls
+// continue to use the authenticated MTProto user.
+func (c *ApiFullCore) giftActorID() (int64, error) {
+	if scope, ok := businessctx.ScopeFromContext(callContext(c)); ok && scope.OwnerID > 0 {
+		return scope.OwnerID, nil
+	}
+	return c.requireUserId()
 }
 
 func (c *ApiFullCore) PaymentsGetStarGifts(in *mtproto.TLPaymentsGetStarGifts) (*mtproto.Payments_StarGifts, error) {
@@ -261,7 +272,7 @@ func (c *ApiFullCore) PaymentsGetUniqueStarGift(in *mtproto.TLPaymentsGetUniqueS
 }
 
 func (c *ApiFullCore) PaymentsGetSavedStarGifts(in *mtproto.TLPaymentsGetSavedStarGifts) (*mtproto.Payments_SavedStarGifts, error) {
-	uid, err := c.requireUserId()
+	uid, err := c.giftActorID()
 	if err != nil {
 		return nil, err
 	}

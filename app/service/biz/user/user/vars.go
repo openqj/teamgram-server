@@ -26,8 +26,10 @@ Here are some sample inline bots, in case you’re curious to see one in action.
 @sticker – Find and send stickers based on emoji
 */
 const (
-	BotFatherId   = int64(900000000010)
-	BotFatherName = "BotFather"
+	BotFatherId          = int64(900000000010)
+	BotFatherName        = "BotFather"
+	VolunteerSupportId   = int64(900000000016)
+	VolunteerSupportName = "Volunteer Support"
 )
 
 const (
@@ -99,6 +101,10 @@ func GetBotIdByName(n string) (id int64) {
 
 func IsBotFather(id int64) bool {
 	return id == BotFatherId
+}
+
+func IsVolunteerSupport(id int64) bool {
+	return id == VolunteerSupportId
 }
 
 func IsBotBing(id int64) bool {

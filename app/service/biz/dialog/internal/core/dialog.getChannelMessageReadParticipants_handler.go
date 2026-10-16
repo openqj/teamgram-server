@@ -17,6 +17,10 @@ import (
 // DialogGetChannelMessageReadParticipants
 // dialog.getChannelMessageReadParticipants user_id:long channel_id:long msg_id:int = Vector<long>;
 func (c *DialogCore) DialogGetChannelMessageReadParticipants(in *dialog.TLDialogGetChannelMessageReadParticipants) (*dialog.Vector_Long, error) {
+	if in == nil || in.GetUserId() <= 0 || in.GetChannelId() <= 0 || in.GetMsgId() <= 0 {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+
 	store, err := c.pgStore()
 	if err != nil || store.Dialogs == nil {
 		return nil, mtproto.ErrMethodNotImpl

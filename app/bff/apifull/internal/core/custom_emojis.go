@@ -105,16 +105,13 @@ func (c *ApiFullCore) MessagesGetFeaturedEmojiStickers(in *mtproto.TLMessagesGet
 	if err != nil {
 		return nil, err
 	}
-	sets, err := persist.ListStickerSets(stickerRequestContext(c), uid, false, false, true, 100)
+	sets, err := persist.ListFeaturedEmojiStickerSets(stickerRequestContext(c), uid, 100)
 	if err != nil {
 		return nil, customEmojiProviderError(c, err)
 	}
 	covers := make([]*mtproto.StickerSetCovered, 0, len(sets))
 	ids := make([]int64, 0, len(sets))
 	for i := range sets {
-		if !sets[i].Emojis {
-			continue
-		}
 		ids = append(ids, sets[i].ID)
 		covers = append(covers, stickerCovered(sets[i]))
 	}

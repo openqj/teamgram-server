@@ -10,15 +10,24 @@ import (
 	"strings"
 
 	"github.com/teamgram/proto/mtproto"
+	"github.com/teamgram/teamgram-server/pkg/mtprotoext"
 	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
 // Response is the envelope used by the Telegram Bot API.
 type Response struct {
-	OK          bool   `json:"ok"`
-	Result      any    `json:"result,omitempty"`
-	ErrorCode   int    `json:"error_code,omitempty"`
-	Description string `json:"description,omitempty"`
+	OK          bool                `json:"ok"`
+	Result      any                 `json:"result,omitempty"`
+	ErrorCode   int                 `json:"error_code,omitempty"`
+	Description string              `json:"description,omitempty"`
+	Parameters  *ResponseParameters `json:"parameters,omitempty"`
+}
+
+// ResponseParameters carries the retry or chat migration hint returned with
+// a failed Bot API request.
+type ResponseParameters struct {
+	MigrateToChatID int64 `json:"migrate_to_chat_id,omitempty"`
+	RetryAfter      int   `json:"retry_after,omitempty"`
 }
 
 type User struct {
@@ -62,6 +71,12 @@ type Chat struct {
 	EmojiStatusCustomID   string   `json:"emoji_status_custom_emoji_id,omitempty"`
 	AccentColorID         int      `json:"accent_color_id,omitempty"`
 	BackgroundCustomEmoji string   `json:"background_custom_emoji_id,omitempty"`
+}
+
+// Story is the Bot API result returned by story publishing methods.
+type Story struct {
+	Chat *Chat `json:"chat"`
+	ID   int   `json:"id"`
 }
 
 // ChatPhoto is the Bot API representation of a chat avatar. MTProto exposes
@@ -176,6 +191,8 @@ type Sticker struct {
 	PremiumAnimation *File         `json:"premium_animation,omitempty"`
 	MaskPosition     *MaskPosition `json:"mask_position,omitempty"`
 	CustomEmojiID    string        `json:"custom_emoji_id,omitempty"`
+	NeedsRepainting  bool          `json:"needs_repainting,omitempty"`
+	FileSize         int64         `json:"file_size,omitempty"`
 }
 
 type Audio struct {
@@ -327,6 +344,239 @@ type Invoice struct {
 	TotalAmount    int64  `json:"total_amount"`
 }
 
+// EphemeralMessageParameters controls delivery of a message that is visible
+// only to a single recipient. It mirrors the Bot API request object; the
+// corresponding incoming message is represented by Message.EphemeralMessageID.
+type EphemeralMessageParameters struct {
+	ReceiverUserID              int64  `json:"receiver_user_id"`
+	CallbackQueryID             string `json:"callback_query_id,omitempty"`
+	ReplaceCallbackQueryMessage bool   `json:"replace_callback_query_message,omitempty"`
+}
+
+type SuggestedPostPrice struct {
+	Currency string `json:"currency"`
+	Amount   int64  `json:"amount"`
+}
+
+type SuggestedPostInfo struct {
+	State    string              `json:"state"`
+	Price    *SuggestedPostPrice `json:"price,omitempty"`
+	SendDate int64               `json:"send_date,omitempty"`
+}
+
+type SuggestedPostApproved struct {
+	SuggestedPostMessage *Message            `json:"suggested_post_message,omitempty"`
+	Price                *SuggestedPostPrice `json:"price,omitempty"`
+	SendDate             int64               `json:"send_date"`
+}
+
+type SuggestedPostApprovalFailed struct {
+	SuggestedPostMessage *Message            `json:"suggested_post_message,omitempty"`
+	Price                *SuggestedPostPrice `json:"price,omitempty"`
+}
+
+type SuggestedPostDeclined struct {
+	SuggestedPostMessage *Message `json:"suggested_post_message,omitempty"`
+	Comment              string   `json:"comment,omitempty"`
+}
+
+type SuggestedPostPaid struct {
+	SuggestedPostMessage *Message    `json:"suggested_post_message,omitempty"`
+	Currency             string      `json:"currency"`
+	Amount               int64       `json:"amount,omitempty"`
+	StarAmount           *StarAmount `json:"star_amount,omitempty"`
+}
+
+type SuggestedPostRefunded struct {
+	SuggestedPostMessage *Message `json:"suggested_post_message,omitempty"`
+	Reason               string   `json:"reason"`
+}
+
+type ChecklistTask struct {
+	ID              int             `json:"id"`
+	Text            string          `json:"text"`
+	TextEntities    []MessageEntity `json:"text_entities,omitempty"`
+	CompletedByUser *User           `json:"completed_by_user,omitempty"`
+	CompletedByChat *Chat           `json:"completed_by_chat,omitempty"`
+	CompletionDate  int64           `json:"completion_date,omitempty"`
+}
+
+type Checklist struct {
+	Title                  string          `json:"title"`
+	TitleEntities          []MessageEntity `json:"title_entities,omitempty"`
+	Tasks                  []ChecklistTask `json:"tasks"`
+	OthersCanAddTasks      bool            `json:"others_can_add_tasks,omitempty"`
+	OthersCanMarkTasksDone bool            `json:"others_can_mark_tasks_as_done,omitempty"`
+}
+
+type ChecklistTasksDone struct {
+	ChecklistMessage       *Message `json:"checklist_message,omitempty"`
+	MarkedAsDoneTaskIDs    []int    `json:"marked_as_done_task_ids,omitempty"`
+	MarkedAsNotDoneTaskIDs []int    `json:"marked_as_not_done_task_ids,omitempty"`
+}
+
+type ChecklistTasksAdded struct {
+	ChecklistMessage *Message        `json:"checklist_message,omitempty"`
+	Tasks            []ChecklistTask `json:"tasks"`
+}
+
+type GiftBackground struct {
+	CenterColor int `json:"center_color"`
+	EdgeColor   int `json:"edge_color"`
+	TextColor   int `json:"text_color"`
+}
+
+type Gift struct {
+	ID                     string          `json:"id"`
+	Sticker                *Sticker        `json:"sticker"`
+	StarCount              int64           `json:"star_count"`
+	UpgradeStarCount       int64           `json:"upgrade_star_count,omitempty"`
+	IsPremium              bool            `json:"is_premium,omitempty"`
+	HasColors              bool            `json:"has_colors,omitempty"`
+	TotalCount             int             `json:"total_count,omitempty"`
+	RemainingCount         int             `json:"remaining_count,omitempty"`
+	PersonalTotalCount     int             `json:"personal_total_count,omitempty"`
+	PersonalRemainingCount int             `json:"personal_remaining_count,omitempty"`
+	Background             *GiftBackground `json:"background,omitempty"`
+	UniqueGiftVariantCount int             `json:"unique_gift_variant_count,omitempty"`
+	PublisherChat          *Chat           `json:"publisher_chat,omitempty"`
+}
+
+// OwnedGifts is the Bot API result used by the user and business gift
+// inventory methods. The MTProto gift unions are flattened into GiftInfo so
+// callers do not need to know the underlying SavedStarGift/UserStarGift
+// constructors.
+type OwnedGifts struct {
+	TotalCount int         `json:"total_count"`
+	Gifts      []*GiftInfo `json:"gifts"`
+	NextOffset string      `json:"next_offset,omitempty"`
+}
+
+// UserChatBoosts is returned by getUserChatBoosts.
+type UserChatBoosts struct {
+	Boosts []*ChatBoost `json:"boosts"`
+}
+
+// BotAccessSettings is the public representation of bots.accessSettings.
+type BotAccessSettings struct {
+	IsAccessRestricted bool    `json:"is_access_restricted"`
+	AddedUserIDs       []int64 `json:"added_user_ids"`
+}
+
+type UniqueGiftModel struct {
+	Name           string   `json:"name"`
+	Sticker        *Sticker `json:"sticker"`
+	RarityPerMille int      `json:"rarity_per_mille"`
+	Rarity         string   `json:"rarity,omitempty"`
+}
+
+type UniqueGiftSymbol struct {
+	Name           string   `json:"name"`
+	Sticker        *Sticker `json:"sticker"`
+	RarityPerMille int      `json:"rarity_per_mille"`
+}
+
+type UniqueGiftBackdropColors struct {
+	CenterColor int `json:"center_color"`
+	EdgeColor   int `json:"edge_color"`
+	SymbolColor int `json:"symbol_color"`
+	TextColor   int `json:"text_color"`
+}
+
+type UniqueGiftBackdrop struct {
+	Name           string                    `json:"name"`
+	Colors         *UniqueGiftBackdropColors `json:"colors"`
+	RarityPerMille int                       `json:"rarity_per_mille"`
+}
+
+type UniqueGiftColors struct {
+	ModelCustomEmojiID    string `json:"model_custom_emoji_id"`
+	SymbolCustomEmojiID   string `json:"symbol_custom_emoji_id"`
+	LightThemeMainColor   int    `json:"light_theme_main_color"`
+	LightThemeOtherColors []int  `json:"light_theme_other_colors"`
+	DarkThemeMainColor    int    `json:"dark_theme_main_color"`
+	DarkThemeOtherColors  []int  `json:"dark_theme_other_colors"`
+}
+
+type UniqueGift struct {
+	GiftID           string              `json:"gift_id"`
+	BaseName         string              `json:"base_name"`
+	Name             string              `json:"name"`
+	Number           int                 `json:"number"`
+	Model            *UniqueGiftModel    `json:"model"`
+	Symbol           *UniqueGiftSymbol   `json:"symbol"`
+	Backdrop         *UniqueGiftBackdrop `json:"backdrop"`
+	IsPremium        bool                `json:"is_premium,omitempty"`
+	IsBurned         bool                `json:"is_burned,omitempty"`
+	IsFromBlockchain bool                `json:"is_from_blockchain,omitempty"`
+	Colors           *UniqueGiftColors   `json:"colors,omitempty"`
+	PublisherChat    *Chat               `json:"publisher_chat,omitempty"`
+}
+
+type GiftInfo struct {
+	Gift                    *Gift           `json:"gift"`
+	OwnedGiftID             string          `json:"owned_gift_id,omitempty"`
+	ConvertStarCount        int64           `json:"convert_star_count,omitempty"`
+	PrepaidUpgradeStarCount int64           `json:"prepaid_upgrade_star_count,omitempty"`
+	IsUpgradeSeparate       bool            `json:"is_upgrade_separate,omitempty"`
+	CanBeUpgraded           bool            `json:"can_be_upgraded,omitempty"`
+	Text                    string          `json:"text,omitempty"`
+	Entities                []MessageEntity `json:"entities,omitempty"`
+	IsPrivate               bool            `json:"is_private,omitempty"`
+	UniqueGiftNumber        int             `json:"unique_gift_number,omitempty"`
+}
+
+type UniqueGiftInfo struct {
+	Gift               *UniqueGift     `json:"gift"`
+	Origin             string          `json:"origin"`
+	Text               string          `json:"text,omitempty"`
+	Entities           []MessageEntity `json:"entities,omitempty"`
+	IsPrivate          bool            `json:"is_private,omitempty"`
+	LastResaleCurrency string          `json:"last_resale_currency,omitempty"`
+	LastResaleAmount   int64           `json:"last_resale_amount,omitempty"`
+	OwnedGiftID        string          `json:"owned_gift_id,omitempty"`
+	TransferStarCount  int64           `json:"transfer_star_count,omitempty"`
+	NextTransferDate   int64           `json:"next_transfer_date,omitempty"`
+}
+
+type PaidMediaInfo struct {
+	StarCount int   `json:"star_count"`
+	PaidMedia []any `json:"paid_media"`
+}
+
+type PaidMediaPreview struct {
+	Type     string `json:"type"`
+	Width    int    `json:"width,omitempty"`
+	Height   int    `json:"height,omitempty"`
+	Duration int    `json:"duration,omitempty"`
+}
+
+type PaidMediaPhoto struct {
+	Type  string      `json:"type"`
+	Photo []PhotoSize `json:"photo"`
+}
+
+type PaidMediaVideo struct {
+	Type  string `json:"type"`
+	Video *Video `json:"video"`
+}
+
+type LivePhoto struct {
+	Photo        []PhotoSize `json:"photo,omitempty"`
+	FileID       string      `json:"file_id"`
+	FileUniqueID string      `json:"file_unique_id"`
+	Width        int         `json:"width"`
+	Height       int         `json:"height"`
+	Duration     int         `json:"duration"`
+	MimeType     string      `json:"mime_type,omitempty"`
+	FileSize     int64       `json:"file_size,omitempty"`
+}
+
+type PaidMediaLivePhoto struct {
+	Type      string     `json:"type"`
+	LivePhoto *LivePhoto `json:"live_photo"`
+}
+
 // SuccessfulPayment is emitted on the service message delivered after a
 // provider confirms an invoice payment.
 type SuccessfulPayment struct {
@@ -441,46 +691,82 @@ type ReplyMarkupInput struct {
 }
 
 type Message struct {
-	MessageID            int                  `json:"message_id"`
-	MessageThreadID      int                  `json:"message_thread_id,omitempty"`
-	From                 *User                `json:"from,omitempty"`
-	SenderChat           *Chat                `json:"sender_chat,omitempty"`
-	Date                 int64                `json:"date"`
-	Chat                 *Chat                `json:"chat"`
-	ForwardFrom          *User                `json:"forward_from,omitempty"`
-	ForwardFromChat      *Chat                `json:"forward_from_chat,omitempty"`
-	ForwardFromMessageID int                  `json:"forward_from_message_id,omitempty"`
-	ReplyToMessage       *Message             `json:"reply_to_message,omitempty"`
-	Text                 string               `json:"text,omitempty"`
-	Entities             []MessageEntity      `json:"entities,omitempty"`
-	Caption              string               `json:"caption,omitempty"`
-	CaptionEntities      []MessageEntity      `json:"caption_entities,omitempty"`
-	ViaBot               *User                `json:"via_bot,omitempty"`
-	EditDate             int64                `json:"edit_date,omitempty"`
-	HasProtectedContent  bool                 `json:"has_protected_content,omitempty"`
-	MediaGroupID         string               `json:"media_group_id,omitempty"`
-	AuthorSignature      string               `json:"author_signature,omitempty"`
-	IsAutomaticForward   bool                 `json:"is_automatic_forward,omitempty"`
-	ConnectedWebsite     string               `json:"connected_website,omitempty"`
-	ReplyMarkup          any                  `json:"reply_markup,omitempty"`
-	Photo                []PhotoSize          `json:"photo,omitempty"`
-	Audio                *Audio               `json:"audio,omitempty"`
-	Document             *Document            `json:"document,omitempty"`
-	Sticker              *Sticker             `json:"sticker,omitempty"`
-	Video                *Video               `json:"video,omitempty"`
-	VideoNote            *VideoNote           `json:"video_note,omitempty"`
-	Animation            *Animation           `json:"animation,omitempty"`
-	Voice                *Voice               `json:"voice,omitempty"`
-	Location             *Location            `json:"location,omitempty"`
-	Venue                *Venue               `json:"venue,omitempty"`
-	Contact              *Contact             `json:"contact,omitempty"`
-	Poll                 *Poll                `json:"poll,omitempty"`
-	Dice                 *Dice                `json:"dice,omitempty"`
-	Game                 *Game                `json:"game,omitempty"`
-	Invoice              *Invoice             `json:"invoice,omitempty"`
-	SuccessfulPayment    *SuccessfulPayment   `json:"successful_payment,omitempty"`
-	BusinessConnectionID string               `json:"business_connection_id,omitempty"`
-	RichMessage          *mtproto.RichMessage `json:"rich_message,omitempty"`
+	MessageID                   int                          `json:"message_id"`
+	MessageThreadID             int                          `json:"message_thread_id,omitempty"`
+	From                        *User                        `json:"from,omitempty"`
+	SenderChat                  *Chat                        `json:"sender_chat,omitempty"`
+	ReceiverUser                *User                        `json:"receiver_user,omitempty"`
+	Date                        int64                        `json:"date"`
+	Chat                        *Chat                        `json:"chat"`
+	ForwardFrom                 *User                        `json:"forward_from,omitempty"`
+	ForwardFromChat             *Chat                        `json:"forward_from_chat,omitempty"`
+	ForwardFromMessageID        int                          `json:"forward_from_message_id,omitempty"`
+	ForwardOrigin               any                          `json:"forward_origin,omitempty"`
+	IsTopicMessage              bool                         `json:"is_topic_message,omitempty"`
+	IsFromOffline               bool                         `json:"is_from_offline,omitempty"`
+	EphemeralMessageID          int                          `json:"ephemeral_message_id,omitempty"`
+	GuestQueryID                string                       `json:"guest_query_id,omitempty"`
+	GuestBotCallerUser          *User                        `json:"guest_bot_caller_user,omitempty"`
+	GuestBotCallerChat          *Chat                        `json:"guest_bot_caller_chat,omitempty"`
+	ReplyToMessage              *Message                     `json:"reply_to_message,omitempty"`
+	Text                        string                       `json:"text,omitempty"`
+	Entities                    []MessageEntity              `json:"entities,omitempty"`
+	Caption                     string                       `json:"caption,omitempty"`
+	CaptionEntities             []MessageEntity              `json:"caption_entities,omitempty"`
+	ViaBot                      *User                        `json:"via_bot,omitempty"`
+	EditDate                    int64                        `json:"edit_date,omitempty"`
+	EffectID                    string                       `json:"effect_id,omitempty"`
+	HasProtectedContent         bool                         `json:"has_protected_content,omitempty"`
+	IsPaidPost                  bool                         `json:"is_paid_post,omitempty"`
+	MediaGroupID                string                       `json:"media_group_id,omitempty"`
+	AuthorSignature             string                       `json:"author_signature,omitempty"`
+	PaidStarCount               int64                        `json:"paid_star_count,omitempty"`
+	IsAutomaticForward          bool                         `json:"is_automatic_forward,omitempty"`
+	ConnectedWebsite            string                       `json:"connected_website,omitempty"`
+	ReplyMarkup                 any                          `json:"reply_markup,omitempty"`
+	Photo                       []PhotoSize                  `json:"photo,omitempty"`
+	LivePhoto                   *LivePhoto                   `json:"live_photo,omitempty"`
+	Audio                       *Audio                       `json:"audio,omitempty"`
+	Document                    *Document                    `json:"document,omitempty"`
+	Sticker                     *Sticker                     `json:"sticker,omitempty"`
+	Video                       *Video                       `json:"video,omitempty"`
+	VideoNote                   *VideoNote                   `json:"video_note,omitempty"`
+	Animation                   *Animation                   `json:"animation,omitempty"`
+	Voice                       *Voice                       `json:"voice,omitempty"`
+	Location                    *Location                    `json:"location,omitempty"`
+	Venue                       *Venue                       `json:"venue,omitempty"`
+	Contact                     *Contact                     `json:"contact,omitempty"`
+	Poll                        *Poll                        `json:"poll,omitempty"`
+	Dice                        *Dice                        `json:"dice,omitempty"`
+	Game                        *Game                        `json:"game,omitempty"`
+	Invoice                     *Invoice                     `json:"invoice,omitempty"`
+	SuccessfulPayment           *SuccessfulPayment           `json:"successful_payment,omitempty"`
+	SuggestedPostInfo           *SuggestedPostInfo           `json:"suggested_post_info,omitempty"`
+	SuggestedPostApproved       *SuggestedPostApproved       `json:"suggested_post_approved,omitempty"`
+	SuggestedPostApprovalFailed *SuggestedPostApprovalFailed `json:"suggested_post_approval_failed,omitempty"`
+	SuggestedPostDeclined       *SuggestedPostDeclined       `json:"suggested_post_declined,omitempty"`
+	SuggestedPostPaid           *SuggestedPostPaid           `json:"suggested_post_paid,omitempty"`
+	SuggestedPostRefunded       *SuggestedPostRefunded       `json:"suggested_post_refunded,omitempty"`
+	PaidMedia                   *PaidMediaInfo               `json:"paid_media,omitempty"`
+	Checklist                   *Checklist                   `json:"checklist,omitempty"`
+	Gift                        *GiftInfo                    `json:"gift,omitempty"`
+	UniqueGift                  *UniqueGiftInfo              `json:"unique_gift,omitempty"`
+	GiftUpgradeSent             *GiftInfo                    `json:"gift_upgrade_sent,omitempty"`
+	ChecklistTasksDone          *ChecklistTasksDone          `json:"checklist_tasks_done,omitempty"`
+	ChecklistTasksAdded         *ChecklistTasksAdded         `json:"checklist_tasks_added,omitempty"`
+	BusinessConnectionID        string                       `json:"business_connection_id,omitempty"`
+	RichMessage                 *mtproto.RichMessage         `json:"rich_message,omitempty"`
+}
+
+type MessageOrigin struct {
+	Type            string `json:"type"`
+	Date            int64  `json:"date"`
+	SenderUser      *User  `json:"sender_user,omitempty"`
+	SenderUserName  string `json:"sender_user_name,omitempty"`
+	SenderChat      *Chat  `json:"sender_chat,omitempty"`
+	AuthorSignature string `json:"author_signature,omitempty"`
+	Chat            *Chat  `json:"chat,omitempty"`
+	MessageID       int    `json:"message_id,omitempty"`
 }
 
 type InlineQuery struct {
@@ -521,6 +807,74 @@ type CallbackQuery struct {
 	GameShortName   string   `json:"game_short_name,omitempty"`
 }
 
+type PollAnswer struct {
+	PollID    string `json:"poll_id"`
+	VoterChat *Chat  `json:"voter_chat,omitempty"`
+	User      *User  `json:"user,omitempty"`
+	OptionIDs []int  `json:"option_ids"`
+}
+
+type ChatJoinRequest struct {
+	Chat       *Chat           `json:"chat"`
+	From       *User           `json:"from"`
+	UserChatID int64           `json:"user_chat_id"`
+	Date       int64           `json:"date"`
+	Bio        string          `json:"bio,omitempty"`
+	InviteLink *ChatInviteLink `json:"invite_link,omitempty"`
+}
+
+type MessageReactionUpdated struct {
+	Chat        *Chat          `json:"chat"`
+	MessageID   int            `json:"message_id"`
+	User        *User          `json:"user,omitempty"`
+	ActorChat   *Chat          `json:"actor_chat,omitempty"`
+	Date        int64          `json:"date"`
+	OldReaction []ReactionType `json:"old_reaction"`
+	NewReaction []ReactionType `json:"new_reaction"`
+}
+
+type ReactionCount struct {
+	Type       ReactionType `json:"type"`
+	TotalCount int          `json:"total_count"`
+}
+
+type MessageReactionCountUpdated struct {
+	Chat      *Chat           `json:"chat"`
+	MessageID int             `json:"message_id"`
+	Date      int64           `json:"date"`
+	Reactions []ReactionCount `json:"reactions"`
+}
+
+type ChatBoostSource struct {
+	Source            string `json:"source"`
+	User              *User  `json:"user,omitempty"`
+	GiveawayMessageID int    `json:"giveaway_message_id,omitempty"`
+}
+
+type ChatBoost struct {
+	BoostID        string           `json:"boost_id"`
+	AddDate        int64            `json:"add_date"`
+	ExpirationDate int64            `json:"expiration_date"`
+	Source         *ChatBoostSource `json:"source"`
+}
+
+type ChatBoostUpdated struct {
+	Chat  *Chat      `json:"chat"`
+	Boost *ChatBoost `json:"boost"`
+}
+
+type ChatBoostRemoved struct {
+	Chat       *Chat            `json:"chat"`
+	BoostID    string           `json:"boost_id"`
+	RemoveDate int64            `json:"remove_date"`
+	Source     *ChatBoostSource `json:"source"`
+}
+
+type PaidMediaPurchased struct {
+	From             *User  `json:"from"`
+	PaidMediaPayload string `json:"paid_media_payload"`
+}
+
 // WebAppQuery is emitted when a Mini App sends data back to its bot. The
 // MTProto update carries the opaque query id and JSON payload; installations
 // that include identity fields in that payload may expose them separately at
@@ -538,22 +892,49 @@ type SentWebAppMessage struct {
 	InlineMessageID string `json:"inline_message_id,omitempty"`
 }
 
+// SentGuestMessage is returned by answerGuestQuery.
+type SentGuestMessage struct {
+	InlineMessageID string `json:"inline_message_id"`
+}
+
 type Update struct {
-	UpdateID                int64                    `json:"update_id"`
-	Message                 *Message                 `json:"message,omitempty"`
-	EditedMessage           *Message                 `json:"edited_message,omitempty"`
-	ChannelPost             *Message                 `json:"channel_post,omitempty"`
-	EditedChannelPost       *Message                 `json:"edited_channel_post,omitempty"`
-	InlineQuery             *InlineQuery             `json:"inline_query,omitempty"`
-	ChosenInlineResult      *ChosenInlineResult      `json:"chosen_inline_result,omitempty"`
-	CallbackQuery           *CallbackQuery           `json:"callback_query,omitempty"`
-	WebAppQuery             *WebAppQuery             `json:"web_app_query,omitempty"`
-	ShippingQuery           *ShippingQuery           `json:"shipping_query,omitempty"`
-	PreCheckoutQuery        *PreCheckoutQuery        `json:"pre_checkout_query,omitempty"`
-	BusinessConnection      *BusinessConnection      `json:"business_connection,omitempty"`
-	BusinessMessage         *Message                 `json:"business_message,omitempty"`
-	EditedBusinessMessage   *Message                 `json:"edited_business_message,omitempty"`
-	DeletedBusinessMessages *BusinessMessagesDeleted `json:"deleted_business_messages,omitempty"`
+	UpdateID                int64                        `json:"update_id"`
+	Message                 *Message                     `json:"message,omitempty"`
+	EditedMessage           *Message                     `json:"edited_message,omitempty"`
+	ChannelPost             *Message                     `json:"channel_post,omitempty"`
+	EditedChannelPost       *Message                     `json:"edited_channel_post,omitempty"`
+	InlineQuery             *InlineQuery                 `json:"inline_query,omitempty"`
+	ChosenInlineResult      *ChosenInlineResult          `json:"chosen_inline_result,omitempty"`
+	CallbackQuery           *CallbackQuery               `json:"callback_query,omitempty"`
+	GuestMessage            *Message                     `json:"guest_message,omitempty"`
+	Poll                    *Poll                        `json:"poll,omitempty"`
+	PollAnswer              *PollAnswer                  `json:"poll_answer,omitempty"`
+	MyChatMember            *ChatMemberUpdated           `json:"my_chat_member,omitempty"`
+	ChatMember              *ChatMemberUpdated           `json:"chat_member,omitempty"`
+	ChatJoinRequest         *ChatJoinRequest             `json:"chat_join_request,omitempty"`
+	MessageReaction         *MessageReactionUpdated      `json:"message_reaction,omitempty"`
+	MessageReactionCount    *MessageReactionCountUpdated `json:"message_reaction_count,omitempty"`
+	ChatBoost               *ChatBoostUpdated            `json:"chat_boost,omitempty"`
+	RemovedChatBoost        *ChatBoostRemoved            `json:"removed_chat_boost,omitempty"`
+	PurchasedPaidMedia      *PaidMediaPurchased          `json:"purchased_paid_media,omitempty"`
+	WebAppQuery             *WebAppQuery                 `json:"web_app_query,omitempty"`
+	ShippingQuery           *ShippingQuery               `json:"shipping_query,omitempty"`
+	PreCheckoutQuery        *PreCheckoutQuery            `json:"pre_checkout_query,omitempty"`
+	BusinessConnection      *BusinessConnection          `json:"business_connection,omitempty"`
+	BusinessMessage         *Message                     `json:"business_message,omitempty"`
+	EditedBusinessMessage   *Message                     `json:"edited_business_message,omitempty"`
+	DeletedBusinessMessages *BusinessMessagesDeleted     `json:"deleted_business_messages,omitempty"`
+}
+
+type ChatMemberUpdated struct {
+	Chat           *Chat           `json:"chat"`
+	From           *User           `json:"from"`
+	Date           int64           `json:"date"`
+	OldChatMember  *ChatMember     `json:"old_chat_member"`
+	NewChatMember  *ChatMember     `json:"new_chat_member"`
+	InviteLink     *ChatInviteLink `json:"invite_link,omitempty"`
+	ViaChatFolder  bool            `json:"via_chat_folder,omitempty"`
+	ViaJoinRequest bool            `json:"via_join_request,omitempty"`
 }
 
 type BusinessMessagesDeleted struct {
@@ -609,6 +990,8 @@ type ChatInviteLink struct {
 	ExpireDate              int64  `json:"expire_date,omitempty"`
 	MemberLimit             int    `json:"member_limit,omitempty"`
 	PendingJoinRequestCount int    `json:"pending_join_request_count,omitempty"`
+	SubscriptionPeriod      int    `json:"subscription_period,omitempty"`
+	SubscriptionPrice       int64  `json:"subscription_price,omitempty"`
 }
 
 // ForumTopic is the Bot API representation of a forum topic.
@@ -792,17 +1175,20 @@ func UserFromImmutableUser(in *mtproto.ImmutableUser) *User {
 		return nil
 	}
 	d := in.GetUser()
+	bot := d.GetBot()
 	return &User{
 		ID:                      d.GetId(),
-		IsBot:                   d.GetBot() != nil,
+		IsBot:                   bot != nil,
 		FirstName:               d.GetFirstName(),
 		LastName:                d.GetLastName(),
 		Username:                d.GetUsername(),
 		IsPremium:               d.GetPremium(),
-		CanJoinGroups:           d.GetBot() == nil || !d.GetBot().GetBotNochats(),
-		CanReadAllGroupMessages: d.GetBot() == nil || d.GetBot().GetBotChatHistory(),
-		SupportsInlineQueries:   d.GetBot() != nil,
-		HasMainWebApp:           d.GetBot() != nil && d.GetBot().GetBotHasMainApp(),
+		AddedToAttachmentMenu:   bot != nil && bot.GetBotAttachMenu(),
+		CanJoinGroups:           bot != nil && !bot.GetBotNochats(),
+		CanReadAllGroupMessages: bot != nil && bot.GetBotChatHistory(),
+		SupportsInlineQueries:   bot != nil && (bot.GetBotInlinePlaceholder() != nil || bot.GetBotInlineGeo()),
+		CanConnectToBusiness:    bot != nil && bot.GetBotBusiness(),
+		HasMainWebApp:           bot != nil && bot.GetBotHasMainApp(),
 	}
 }
 
@@ -816,11 +1202,14 @@ func UserFromMTProto(in *mtproto.User) *User {
 		FirstName:               stringValue(in.GetFirstName()),
 		LastName:                stringValue(in.GetLastName()),
 		Username:                stringValue(in.GetUsername()),
+		LanguageCode:            stringValue(in.GetLangCode()),
 		IsPremium:               in.GetPremium(),
-		CanJoinGroups:           !in.GetBotNochats(),
-		CanReadAllGroupMessages: in.GetBotChatHistory(),
-		SupportsInlineQueries:   in.GetBotInlinePlaceholder() != nil || in.GetBotInlineGeo(),
-		HasMainWebApp:           in.GetBotHasMainApp(),
+		AddedToAttachmentMenu:   in.GetBot() && in.GetBotAttachMenu(),
+		CanJoinGroups:           in.GetBot() && !in.GetBotNochats(),
+		CanReadAllGroupMessages: in.GetBot() && in.GetBotChatHistory(),
+		SupportsInlineQueries:   in.GetBot() && (in.GetBotInlinePlaceholder() != nil || in.GetBotInlineGeo()),
+		CanConnectToBusiness:    in.GetBot() && in.GetBotBusiness(),
+		HasMainWebApp:           in.GetBot() && in.GetBotHasMainApp(),
 	}
 }
 
@@ -1171,9 +1560,15 @@ func MessageFromMTProto(in *mtproto.Message, users []*mtproto.User, chats []*mtp
 		Text:                in.GetMessage(),
 		Entities:            messageEntities(in.GetEntities(), users),
 		EditDate:            int64(wrapperInt32(in.GetEditDate())),
+		IsFromOffline:       in.GetOffline(),
 		MediaGroupID:        fmt.Sprint(wrapperInt64(in.GetGroupedId())),
 		HasProtectedContent: in.GetNoforwards(),
 		AuthorSignature:     stringValue(in.GetPostAuthor()),
+		IsPaidPost:          in.GetPaidSuggestedPostStars() || in.GetPaidSuggestedPostTon(),
+		PaidStarCount:       wrapperInt64(in.GetPaidMessageStars()),
+	}
+	if effect := in.GetEffect(); effect != nil && effect.GetValue() != 0 {
+		message.EffectID = strconv.FormatInt(effect.GetValue(), 10)
 	}
 	if message.MediaGroupID == "0" {
 		message.MediaGroupID = ""
@@ -1181,8 +1576,17 @@ func MessageFromMTProto(in *mtproto.Message, users []*mtproto.User, chats []*mtp
 	if in.GetViaBotId() != nil {
 		message.ViaBot = userByID(in.GetViaBotId().GetValue(), users)
 	}
+	if in.GetGuestchatViaFrom() != nil {
+		peer := in.GetGuestchatViaFrom()
+		if peer.GetUserId() != 0 {
+			message.GuestBotCallerUser = userByID(peer.GetUserId(), users)
+		} else {
+			message.GuestBotCallerChat = ChatFromPeer(peer, users, chats)
+		}
+	}
 	if in.GetFwdFrom() != nil {
 		fwd := in.GetFwdFrom()
+		message.ForwardOrigin = messageOriginFromMTProto(fwd, users, chats)
 		if fwd.GetFromId() != nil {
 			if fwd.GetFromId().GetUserId() != 0 {
 				message.ForwardFrom = userByID(fwd.GetFromId().GetUserId(), users)
@@ -1198,6 +1602,7 @@ func MessageFromMTProto(in *mtproto.Message, users []*mtproto.User, chats []*mtp
 	}
 	if in.GetReplyTo() != nil {
 		reply := in.GetReplyTo()
+		message.IsTopicMessage = reply.GetForumTopic()
 		message.MessageThreadID = int(wrapperInt32(reply.GetReplyToTopId()))
 		replyID := reply.GetReplyToMsgId()
 		if replyID == 0 {
@@ -1212,9 +1617,354 @@ func MessageFromMTProto(in *mtproto.Message, users []*mtproto.User, chats []*mtp
 	}
 	message.ReplyMarkup = replyMarkupFromMTProto(in.GetReplyMarkup())
 	message.RichMessage = in.GetRichMessage()
-	applyMedia(message, in.GetMedia())
+	message.SuggestedPostInfo = suggestedPostInfoFromMTProto(in.GetSuggestedPost())
+	applyMedia(message, in.GetMedia(), users, chats)
+	applyMessageAction(message, in.GetAction(), users, chats)
 	message.SuccessfulPayment = successfulPaymentFromMessageAction(in.GetAction())
 	return message
+}
+
+func messageFromEphemeralMTProto(in *mtproto.EphemeralMessage, users []*mtproto.User, chats []*mtproto.Chat) *Message {
+	if in == nil {
+		return nil
+	}
+	message := &Message{
+		MessageID:          0,
+		EphemeralMessageID: int(in.GetId()),
+		From:               userForPeer(in.GetFromId(), users),
+		ReceiverUser:       userByID(in.GetReceiverId(), users),
+		Date:               int64(in.GetDate()),
+		Chat:               ChatFromPeer(in.GetPeerId(), users, chats),
+		Text:               in.GetMessage(),
+		Entities:           messageEntities(in.GetEntities(), users),
+	}
+	message.ReplyMarkup = replyMarkupFromMTProto(in.GetReplyMarkup())
+	if rich, err := mtprotoext.EphemeralRichMessage(in); err == nil {
+		message.RichMessage = rich
+	}
+	applyMedia(message, in.GetMedia(), users, chats)
+	if reply := in.GetReplyTo(); reply != nil {
+		message.IsTopicMessage = reply.GetForumTopic()
+		message.MessageThreadID = int(wrapperInt32(reply.GetReplyToTopId()))
+	}
+	return message
+}
+
+func suggestedPostInfoFromMTProto(in *mtproto.SuggestedPost) *SuggestedPostInfo {
+	if in == nil {
+		return nil
+	}
+	state := "pending"
+	if in.GetAccepted() {
+		state = "approved"
+	} else if in.GetRejected() {
+		state = "declined"
+	}
+	return &SuggestedPostInfo{State: state, Price: suggestedPostPriceFromStars(in.GetPrice()), SendDate: int64(wrapperInt32(in.GetScheduleDate()))}
+}
+
+func suggestedPostPriceFromStars(in *mtproto.StarsAmount) *SuggestedPostPrice {
+	if in == nil {
+		return nil
+	}
+	return &SuggestedPostPrice{Currency: "XTR", Amount: in.GetAmount()}
+}
+
+func suggestedPostPriceFromAction(in *mtproto.MessageAction) *SuggestedPostPrice {
+	if in == nil {
+		return nil
+	}
+	if currency := in.GetCryptoCurrency_STRING(); currency != "" {
+		return &SuggestedPostPrice{Currency: currency, Amount: in.GetCryptoAmount_INT64()}
+	}
+	return suggestedPostPriceFromStars(in.GetPrice())
+}
+
+func applyMessageAction(message *Message, action *mtproto.MessageAction, users []*mtproto.User, chats []*mtproto.Chat) {
+	if message == nil || action == nil {
+		return
+	}
+	switch action.GetPredicateName() {
+	case mtproto.Predicate_messageActionStarGift:
+		if gift := giftInfoFromMTProto(action, users, chats); gift != nil {
+			if action.GetUpgradeSeparate() || action.GetUpgrade() {
+				message.GiftUpgradeSent = gift
+			} else {
+				message.Gift = gift
+			}
+		}
+	case mtproto.Predicate_messageActionStarGiftUnique:
+		if gift := uniqueGiftInfoFromMTProto(action, users, chats); gift != nil {
+			message.UniqueGift = gift
+		}
+	case mtproto.Predicate_messageActionTodoCompletions:
+		message.ChecklistTasksDone = &ChecklistTasksDone{
+			MarkedAsDoneTaskIDs:    int32SliceToInt(action.GetCompleted()),
+			MarkedAsNotDoneTaskIDs: int32SliceToInt(action.GetIncompleted()),
+		}
+	case mtproto.Predicate_messageActionTodoAppendTasks:
+		message.ChecklistTasksAdded = &ChecklistTasksAdded{Tasks: checklistTasksFromMTProto(action.GetList(), nil, users, chats)}
+	case mtproto.Predicate_messageActionSuggestedPostApproval:
+		message.SuggestedPostApproved = &SuggestedPostApproved{Price: suggestedPostPriceFromAction(action), SendDate: int64(wrapperInt32(action.GetScheduleDate_FLAGINT32()))}
+	case mtproto.Predicate_messageActionSuggestedPostSuccess:
+		message.SuggestedPostPaid = &SuggestedPostPaid{Currency: action.GetCryptoCurrency_STRING(), Amount: action.GetCryptoAmount_INT64(), StarAmount: starAmountFromMTProto(action.GetPrice())}
+		if message.SuggestedPostPaid.Currency == "" {
+			message.SuggestedPostPaid.Currency = "XTR"
+		}
+	case mtproto.Predicate_messageActionSuggestedPostRefund:
+		message.SuggestedPostRefunded = &SuggestedPostRefunded{Reason: suggestedPostRefundReason(action)}
+	}
+}
+
+func suggestedPostRefundReason(action *mtproto.MessageAction) string {
+	if action == nil {
+		return ""
+	}
+	if action.GetRejected() {
+		return "post_deleted"
+	}
+	return "payment_refunded"
+}
+
+func starAmountFromMTProto(in *mtproto.StarsAmount) *StarAmount {
+	if in == nil {
+		return nil
+	}
+	return &StarAmount{Amount: in.GetAmount(), NanostarAmount: int(in.GetNanos())}
+}
+
+func giftInfoFromMTProto(action *mtproto.MessageAction, users []*mtproto.User, chats []*mtproto.Chat) *GiftInfo {
+	if action == nil || action.GetGift() == nil {
+		return nil
+	}
+	text, entities := actionTextFromMTProto(action, users)
+	return &GiftInfo{
+		Gift:                    giftFromMTProto(action.GetGift(), users, chats),
+		ConvertStarCount:        wrapperInt64(action.GetConvertStars_FLAGINT64()),
+		PrepaidUpgradeStarCount: wrapperInt64(action.GetUpgradeStars()),
+		IsUpgradeSeparate:       action.GetUpgradeSeparate(),
+		CanBeUpgraded:           action.GetCanUpgrade(),
+		Text:                    text,
+		Entities:                entities,
+		IsPrivate:               false,
+		UniqueGiftNumber:        int(wrapperInt32(action.GetGiftNum())),
+	}
+}
+
+func uniqueGiftInfoFromMTProto(action *mtproto.MessageAction, users []*mtproto.User, chats []*mtproto.Chat) *UniqueGiftInfo {
+	if action == nil || action.GetGift() == nil {
+		return nil
+	}
+	text, entities := actionTextFromMTProto(action, users)
+	origin := "upgrade"
+	switch {
+	case action.GetFromOffer():
+		origin = "offer"
+	case action.GetAuctionAcquired():
+		origin = "resale"
+	case action.GetTransferred():
+		origin = "transfer"
+	case action.GetAssigned():
+		origin = "gifted_upgrade"
+	}
+	return &UniqueGiftInfo{
+		Gift:              uniqueGiftFromMTProto(action.GetGift(), users, chats),
+		Origin:            origin,
+		Text:              text,
+		Entities:          entities,
+		IsPrivate:         false,
+		OwnedGiftID:       stringValue(action.GetPrepaidUpgradeHash()),
+		TransferStarCount: wrapperInt64(action.GetTransferStars()),
+		NextTransferDate:  int64(wrapperInt32(action.GetCanTransferAt())),
+	}
+}
+
+func actionTextFromMTProto(action *mtproto.MessageAction, users []*mtproto.User) (string, []MessageEntity) {
+	if action == nil {
+		return "", nil
+	}
+	if text := action.GetMessage_FLAGTEXTWITHENTITIES(); text != nil {
+		return text.GetText(), messageEntities(text.GetEntities(), users)
+	}
+	return action.GetMessage_STRING(), nil
+}
+
+func giftFromMTProto(in *mtproto.StarGift, users []*mtproto.User, chats []*mtproto.Chat) *Gift {
+	if in == nil {
+		return nil
+	}
+	result := &Gift{
+		ID:                     strconv.FormatInt(in.GetId(), 10),
+		StarCount:              in.GetStars(),
+		UpgradeStarCount:       wrapperInt64(in.GetUpgradeStars()),
+		IsPremium:              in.GetRequirePremium(),
+		HasColors:              in.GetPeerColorAvailable(),
+		TotalCount:             int(wrapperInt32(in.GetAvailabilityTotal_FLAGINT32())),
+		RemainingCount:         int(wrapperInt32(in.GetAvailabilityRemains())),
+		PersonalTotalCount:     int(wrapperInt32(in.GetPerUserTotal())),
+		PersonalRemainingCount: int(wrapperInt32(in.GetPerUserRemains())),
+		UniqueGiftVariantCount: int(wrapperInt32(in.GetUpgradeVariants())),
+	}
+	result.Sticker = stickerFromGiftDocument(in.GetSticker())
+	if in.GetBackground() != nil {
+		result.Background = &GiftBackground{CenterColor: int(in.GetBackground().GetCenterColor()), EdgeColor: int(in.GetBackground().GetEdgeColor()), TextColor: int(in.GetBackground().GetTextColor())}
+	}
+	if in.GetReleasedBy() != nil {
+		result.PublisherChat = ChatFromPeer(in.GetReleasedBy(), users, chats)
+	}
+	return result
+}
+
+func uniqueGiftFromMTProto(in *mtproto.StarGift, users []*mtproto.User, chats []*mtproto.Chat) *UniqueGift {
+	if in == nil {
+		return nil
+	}
+	result := &UniqueGift{
+		GiftID:           strconv.FormatInt(in.GetGiftId(), 10),
+		BaseName:         in.GetTitle_STRING(),
+		Name:             in.GetSlug(),
+		Number:           int(in.GetNum()),
+		IsPremium:        in.GetRequirePremium(),
+		IsBurned:         in.GetBurned(),
+		IsFromBlockchain: in.GetGiftAddress() != nil,
+	}
+	if result.BaseName == "" {
+		result.BaseName = stringValue(in.GetTitle_FLAGSTRING())
+	}
+	for _, attribute := range in.GetAttributes() {
+		if attribute == nil {
+			continue
+		}
+		rarity := 0
+		if attribute.GetRarity() != nil {
+			rarity = int(attribute.GetRarity().GetPermille())
+		}
+		sticker := stickerFromGiftDocument(attribute.GetDocument())
+		switch {
+		case strings.Contains(attribute.GetPredicateName(), "Model"):
+			result.Model = &UniqueGiftModel{Name: attribute.GetName(), Sticker: sticker, RarityPerMille: rarity, Rarity: giftRarity(attribute.GetRarity())}
+		case strings.Contains(attribute.GetPredicateName(), "Pattern"):
+			result.Symbol = &UniqueGiftSymbol{Name: attribute.GetName(), Sticker: sticker, RarityPerMille: rarity}
+		case strings.Contains(attribute.GetPredicateName(), "Backdrop"):
+			result.Backdrop = &UniqueGiftBackdrop{Name: attribute.GetName(), RarityPerMille: rarity, Colors: &UniqueGiftBackdropColors{CenterColor: int(attribute.GetCenterColor()), EdgeColor: int(attribute.GetEdgeColor()), SymbolColor: int(attribute.GetPatternColor()), TextColor: int(attribute.GetTextColor())}}
+		}
+	}
+	if in.GetReleasedBy() != nil {
+		result.PublisherChat = ChatFromPeer(in.GetReleasedBy(), users, chats)
+	}
+	return result
+}
+
+func giftRarity(in *mtproto.StarGiftAttributeRarity) string {
+	if in == nil {
+		return ""
+	}
+	return strings.TrimPrefix(in.GetPredicateName(), "starGiftAttributeRarity")
+}
+
+func stickerFromGiftDocument(doc *mtproto.Document) *Sticker {
+	if doc == nil {
+		return nil
+	}
+	result := stickerFromDocument(doc)
+	if result == nil {
+		return nil
+	}
+	result.FileID = fileID("document", doc.GetId(), doc.GetAccessHash())
+	result.FileUniqueID = strconv.FormatInt(doc.GetId(), 10)
+	return result
+}
+
+func checklistFromMTProto(in *mtproto.TodoList, completions []*mtproto.TodoCompletion, users []*mtproto.User, chats []*mtproto.Chat) *Checklist {
+	if in == nil {
+		return nil
+	}
+	title := in.GetTitle()
+	return &Checklist{
+		Title:                  textWithEntitiesText(title),
+		TitleEntities:          textWithEntitiesEntities(title, users),
+		Tasks:                  checklistTasksFromMTProto(in.GetList(), completions, users, chats),
+		OthersCanAddTasks:      in.GetOthersCanAppend(),
+		OthersCanMarkTasksDone: in.GetOthersCanComplete(),
+	}
+}
+
+func checklistTasksFromMTProto(in []*mtproto.TodoItem, completions []*mtproto.TodoCompletion, users []*mtproto.User, chats []*mtproto.Chat) []ChecklistTask {
+	result := make([]ChecklistTask, 0, len(in))
+	for _, item := range in {
+		if item == nil {
+			continue
+		}
+		task := ChecklistTask{ID: int(item.GetId()), Text: textWithEntitiesText(item.GetTitle()), TextEntities: textWithEntitiesEntities(item.GetTitle(), users)}
+		for _, completion := range completions {
+			if completion == nil || completion.GetId() != item.GetId() {
+				continue
+			}
+			task.CompletionDate = int64(completion.GetDate())
+			if peer := completion.GetCompletedBy_PEER(); peer != nil {
+				if peer.GetUserId() != 0 {
+					task.CompletedByUser = userByID(peer.GetUserId(), users)
+				} else {
+					task.CompletedByChat = ChatFromPeer(peer, users, chats)
+				}
+			} else if completion.GetCompletedBy_INT64() != 0 {
+				task.CompletedByUser = userByID(completion.GetCompletedBy_INT64(), users)
+			}
+		}
+		result = append(result, task)
+	}
+	return result
+}
+
+func textWithEntitiesText(in *mtproto.TextWithEntities) string {
+	if in == nil {
+		return ""
+	}
+	return in.GetText()
+}
+
+func textWithEntitiesEntities(in *mtproto.TextWithEntities, users []*mtproto.User) []MessageEntity {
+	if in == nil {
+		return nil
+	}
+	return messageEntities(in.GetEntities(), users)
+}
+
+func boolValue(in *mtproto.Bool) bool {
+	return in != nil && in.GetPredicateName() == mtproto.Predicate_boolTrue
+}
+
+func messageOriginFromMTProto(in *mtproto.MessageFwdHeader, users []*mtproto.User, chats []*mtproto.Chat) *MessageOrigin {
+	if in == nil {
+		return nil
+	}
+	origin := &MessageOrigin{
+		Date:            int64(in.GetDate()),
+		AuthorSignature: stringValue(in.GetPostAuthor()),
+		MessageID:       int(wrapperInt32(in.GetChannelPost())),
+	}
+	if peer := in.GetFromId(); peer != nil {
+		if peer.GetUserId() != 0 {
+			origin.Type = "user"
+			origin.SenderUser = userByID(peer.GetUserId(), users)
+			return origin
+		}
+		chat := ChatFromPeer(peer, users, chats)
+		if in.GetChannelPost() != nil {
+			origin.Type = "channel"
+			origin.Chat = chat
+		} else {
+			origin.Type = "chat"
+			origin.SenderChat = chat
+		}
+		return origin
+	}
+	if name := stringValue(in.GetFromName()); name != "" {
+		origin.Type = "hidden_user"
+		origin.SenderUserName = name
+		return origin
+	}
+	return nil
 }
 
 func successfulPaymentFromMessageAction(action *mtproto.MessageAction) *SuccessfulPayment {
@@ -1240,7 +1990,18 @@ func successfulPaymentFromMessageAction(action *mtproto.MessageAction) *Successf
 	return result
 }
 
+// UpdateFromMTProto converts an update without a bot identity. Callers that
+// own a bot token should use UpdateFromMTProtoForBot so participant updates
+// can be classified as my_chat_member when the target is that bot.
 func UpdateFromMTProto(in *mtproto.Update, users []*mtproto.User, chats []*mtproto.Chat) (*Update, bool) {
+	return UpdateFromMTProtoForBot(in, users, chats, 0)
+}
+
+// UpdateFromMTProtoForBot is the Bot API update conversion with the receiving
+// bot id available. Telegram distinguishes chat_member from my_chat_member by
+// the affected user, so the id must be supplied by the update store rather
+// than guessed from the transport update alone.
+func UpdateFromMTProtoForBot(in *mtproto.Update, users []*mtproto.User, chats []*mtproto.Chat, botID int64) (*Update, bool) {
 	if in == nil {
 		return nil, false
 	}
@@ -1254,6 +2015,23 @@ func UpdateFromMTProto(in *mtproto.Update, users []*mtproto.User, chats []*mtpro
 		result.ChannelPost = MessageFromMTProto(in.GetMessage_MESSAGE(), users, chats)
 	case mtproto.Predicate_updateEditChannelMessage:
 		result.EditedChannelPost = MessageFromMTProto(in.GetMessage_MESSAGE(), users, chats)
+	case mtproto.Predicate_updateBotGuestChatQuery:
+		message := MessageFromMTProto(in.GetMessage_MESSAGE(), users, chats)
+		if message == nil {
+			return nil, false
+		}
+		message.GuestQueryID = strconv.FormatInt(in.GetQueryId_INT64(), 10)
+		result.GuestMessage = message
+	case mtproto.Predicate_updateNewEphemeralMessage:
+		result.Message = messageFromEphemeralMTProto(in.GetMessage_EPHEMERALMESSAGE(), users, chats)
+		if result.Message == nil {
+			return nil, false
+		}
+	case mtproto.Predicate_updateEditEphemeralMessage:
+		result.EditedMessage = messageFromEphemeralMTProto(in.GetMessage_EPHEMERALMESSAGE(), users, chats)
+		if result.EditedMessage == nil {
+			return nil, false
+		}
 	case mtproto.Predicate_updateBotInlineQuery:
 		result.InlineQuery = &InlineQuery{
 			ID:       fmt.Sprintf("%d", in.GetQueryId_INT64()),
@@ -1270,6 +2048,15 @@ func UpdateFromMTProto(in *mtproto.Update, users []*mtproto.User, chats []*mtpro
 			InlineMessageID: inputBotInlineMessageIDString(in.GetMsgId_FLAGINPUTBOTINLINEMESSAGEID()),
 			Query:           in.GetQuery(),
 		}
+	case mtproto.Predicate_updateInlineBotCallbackQuery:
+		result.CallbackQuery = &CallbackQuery{
+			ID:              fmt.Sprintf("%d", in.GetQueryId_INT64()),
+			From:            userByID(in.GetUserId(), users),
+			InlineMessageID: inputBotInlineMessageIDString(in.GetMsgId_FLAGINPUTBOTINLINEMESSAGEID()),
+			ChatInstance:    fmt.Sprintf("%d", in.GetChatInstance()),
+			Data:            string(in.GetData_FLAGBYTES()),
+			GameShortName:   stringValue(in.GetGameShortName()),
+		}
 	case mtproto.Predicate_updateBotCallbackQuery:
 		result.CallbackQuery = &CallbackQuery{
 			ID:            fmt.Sprintf("%d", in.GetQueryId_INT64()),
@@ -1278,6 +2065,51 @@ func UpdateFromMTProto(in *mtproto.Update, users []*mtproto.User, chats []*mtpro
 			ChatInstance:  fmt.Sprintf("%d", in.GetChatInstance()),
 			Data:          string(in.GetData_FLAGBYTES()),
 			GameShortName: stringValue(in.GetGameShortName()),
+		}
+	case mtproto.Predicate_updateMessagePoll:
+		result.Poll = pollFromMTProto(in.GetPoll(), in.GetResults())
+		if result.Poll == nil {
+			return nil, false
+		}
+	case mtproto.Predicate_updateMessagePollVote:
+		result.PollAnswer = &PollAnswer{
+			PollID:    strconv.FormatInt(in.GetPollId(), 10),
+			OptionIDs: int32SliceToInt(in.GetPositions()),
+		}
+		if in.GetUserId() != 0 {
+			result.PollAnswer.User = userByID(in.GetUserId(), users)
+		} else {
+			result.PollAnswer.VoterChat = ChatFromPeer(in.GetPeer_PEER(), users, chats)
+		}
+	case mtproto.Predicate_updateBotChatInviteRequester:
+		result.ChatJoinRequest = chatJoinRequestFromMTProto(in, users, chats)
+		if result.ChatJoinRequest == nil {
+			return nil, false
+		}
+	case mtproto.Predicate_updateBotMessageReaction:
+		result.MessageReaction = messageReactionUpdatedFromMTProto(in, users, chats)
+		if result.MessageReaction == nil {
+			return nil, false
+		}
+	case mtproto.Predicate_updateBotMessageReactions:
+		result.MessageReactionCount = messageReactionCountUpdatedFromMTProto(in, users, chats)
+		if result.MessageReactionCount == nil {
+			return nil, false
+		}
+	case mtproto.Predicate_updateBotChatBoost:
+		if boost := chatBoostFromMTProto(in.GetBoost(), users); boost != nil {
+			result.ChatBoost = &ChatBoostUpdated{Chat: ChatFromPeer(in.GetPeer_PEER(), users, chats), Boost: boost}
+		} else {
+			return nil, false
+		}
+	case mtproto.Predicate_updateChatParticipant:
+		return chatMemberUpdateFromMTProto(in, users, chats, botID, false)
+	case mtproto.Predicate_updateChannelParticipant:
+		return chatMemberUpdateFromMTProto(in, users, chats, botID, true)
+	case mtproto.Predicate_updateBotPurchasedPaidMedia:
+		result.PurchasedPaidMedia = &PaidMediaPurchased{
+			From:             userByID(in.GetUserId(), users),
+			PaidMediaPayload: in.GetPayload_STRING(),
 		}
 	case mtproto.Predicate_updateBotWebhookJSONQuery:
 		data := ""
@@ -1346,6 +2178,199 @@ func UpdateFromMTProto(in *mtproto.Update, users []*mtproto.User, chats []*mtpro
 	return result, true
 }
 
+func chatMemberUpdateFromMTProto(in *mtproto.Update, users []*mtproto.User, chats []*mtproto.Chat, botID int64, channel bool) (*Update, bool) {
+	if in == nil {
+		return nil, false
+	}
+	targetID := in.GetUserId()
+	var oldMember, newMember *ChatMember
+	var viaJoinRequest bool
+	if channel {
+		oldParticipant := in.GetPrevParticipant_FLAGCHANNELPARTICIPANT()
+		newParticipant := in.GetNewParticipant_FLAGCHANNELPARTICIPANT()
+		if targetID == 0 {
+			if newParticipant != nil {
+				targetID = newParticipant.GetUserId()
+			} else if oldParticipant != nil {
+				targetID = oldParticipant.GetUserId()
+			}
+		}
+		oldMember = ChatMemberFromChannelParticipant(oldParticipant, users)
+		newMember = ChatMemberFromChannelParticipant(newParticipant, users)
+		if newParticipant != nil {
+			viaJoinRequest = newParticipant.GetViaRequest()
+		}
+	} else {
+		oldParticipant := in.GetPrevParticipant_FLAGCHATPARTICIPANT()
+		newParticipant := in.GetNewParticipant_FLAGCHATPARTICIPANT()
+		if targetID == 0 {
+			if newParticipant != nil {
+				targetID = newParticipant.GetUserId()
+			} else if oldParticipant != nil {
+				targetID = oldParticipant.GetUserId()
+			}
+		}
+		oldMember = ChatMemberFromChatParticipant(oldParticipant, users)
+		newMember = ChatMemberFromChatParticipant(newParticipant, users)
+	}
+	if targetID <= 0 || oldMember == nil && newMember == nil {
+		return nil, false
+	}
+	if oldMember == nil {
+		oldMember = &ChatMember{Status: "left", User: userByID(targetID, users), IsMember: false}
+	}
+	if newMember == nil {
+		newMember = &ChatMember{Status: "left", User: userByID(targetID, users), IsMember: false}
+	}
+	var peer *mtproto.Peer
+	if channel {
+		if in.GetChannelId() <= 0 {
+			return nil, false
+		}
+		peer = mtproto.MakeTLPeerChannel(&mtproto.Peer{ChannelId: in.GetChannelId()}).To_Peer()
+	} else {
+		if in.GetChatId_INT64() <= 0 {
+			return nil, false
+		}
+		peer = mtproto.MakeTLPeerChat(&mtproto.Peer{ChatId: in.GetChatId_INT64()}).To_Peer()
+	}
+	converted := &ChatMemberUpdated{
+		Chat:           ChatFromPeer(peer, users, chats),
+		From:           userByID(in.GetActorId(), users),
+		Date:           int64(in.GetDate_INT32()),
+		OldChatMember:  oldMember,
+		NewChatMember:  newMember,
+		InviteLink:     chatInviteLinkFromMTProto(in.GetInvite(), users),
+		ViaChatFolder:  in.GetViaChatlist(),
+		ViaJoinRequest: viaJoinRequest,
+	}
+	if converted.From != nil && converted.From.ID == 0 {
+		converted.From = nil
+	}
+	if botID > 0 && targetID == botID {
+		return &Update{MyChatMember: converted}, true
+	}
+	return &Update{ChatMember: converted}, true
+}
+
+func chatJoinRequestFromMTProto(in *mtproto.Update, users []*mtproto.User, chats []*mtproto.Chat) *ChatJoinRequest {
+	if in == nil || in.GetPeer_PEER() == nil || in.GetUserId() == 0 {
+		return nil
+	}
+	return &ChatJoinRequest{
+		Chat:       ChatFromPeer(in.GetPeer_PEER(), users, chats),
+		From:       userByID(in.GetUserId(), users),
+		UserChatID: in.GetUserId(),
+		Date:       int64(in.GetDate_INT32()),
+		Bio:        in.GetAbout(),
+		InviteLink: chatInviteLinkFromMTProto(in.GetInvite(), users),
+	}
+}
+
+func chatInviteLinkFromMTProto(in *mtproto.ExportedChatInvite, users []*mtproto.User) *ChatInviteLink {
+	if in == nil {
+		return nil
+	}
+	return &ChatInviteLink{
+		InviteLink:              in.GetLink(),
+		Creator:                 userByID(in.GetAdminId(), users),
+		CreatesJoinRequest:      in.GetRequestNeeded(),
+		IsPrimary:               in.GetPermanent(),
+		IsRevoked:               in.GetRevoked(),
+		Name:                    stringValue(in.GetTitle()),
+		ExpireDate:              int64(wrapperInt32(in.GetExpireDate())),
+		MemberLimit:             int(wrapperInt32(in.GetUsageLimit())),
+		PendingJoinRequestCount: int(wrapperInt32(in.GetRequested())),
+	}
+}
+
+func messageReactionUpdatedFromMTProto(in *mtproto.Update, users []*mtproto.User, chats []*mtproto.Chat) *MessageReactionUpdated {
+	if in == nil || in.GetPeer_PEER() == nil {
+		return nil
+	}
+	result := &MessageReactionUpdated{
+		Chat:        ChatFromPeer(in.GetPeer_PEER(), users, chats),
+		MessageID:   int(in.GetMsgId_INT32()),
+		Date:        int64(in.GetDate_INT32()),
+		OldReaction: reactionTypesFromMTProto(in.GetOldReactions()),
+		NewReaction: reactionTypesFromMTProto(in.GetNewReactions()),
+	}
+	if actor := in.GetActor(); actor != nil {
+		if actor.GetUserId() != 0 {
+			result.User = userByID(actor.GetUserId(), users)
+		} else {
+			result.ActorChat = ChatFromPeer(actor, users, chats)
+		}
+	}
+	return result
+}
+
+func messageReactionCountUpdatedFromMTProto(in *mtproto.Update, users []*mtproto.User, chats []*mtproto.Chat) *MessageReactionCountUpdated {
+	if in == nil || in.GetPeer_PEER() == nil {
+		return nil
+	}
+	result := &MessageReactionCountUpdated{
+		Chat:      ChatFromPeer(in.GetPeer_PEER(), users, chats),
+		MessageID: int(in.GetMsgId_INT32()),
+		Date:      int64(in.GetDate_INT32()),
+		Reactions: make([]ReactionCount, 0, len(in.GetReactions_VECTORREACTIONCOUNT())),
+	}
+	for _, reaction := range in.GetReactions_VECTORREACTIONCOUNT() {
+		if reaction == nil {
+			continue
+		}
+		result.Reactions = append(result.Reactions, ReactionCount{
+			Type:       reactionTypeFromMTProto(reaction.GetReaction_REACTION(), reaction.GetReaction()),
+			TotalCount: int(reaction.GetCount()),
+		})
+	}
+	return result
+}
+
+func reactionTypesFromMTProto(values []*mtproto.Reaction) []ReactionType {
+	result := make([]ReactionType, 0, len(values))
+	for _, value := range values {
+		if converted := reactionTypeFromMTProto(value, ""); converted.Type != "" {
+			result = append(result, converted)
+		}
+	}
+	return result
+}
+
+func reactionTypeFromMTProto(reaction *mtproto.Reaction, fallback string) ReactionType {
+	if reaction != nil {
+		switch reaction.GetPredicateName() {
+		case mtproto.Predicate_reactionEmoji:
+			return ReactionType{Type: "emoji", Emoji: reaction.GetEmoticon()}
+		case mtproto.Predicate_reactionCustomEmoji:
+			return ReactionType{Type: "custom_emoji", CustomEmojiID: strconv.FormatInt(reaction.GetDocumentId(), 10)}
+		}
+	}
+	if fallback != "" {
+		return ReactionType{Type: "emoji", Emoji: fallback}
+	}
+	return ReactionType{}
+}
+
+func chatBoostFromMTProto(in *mtproto.Boost, users []*mtproto.User) *ChatBoost {
+	if in == nil || in.GetId() == "" {
+		return nil
+	}
+	result := &ChatBoost{
+		BoostID:        in.GetId(),
+		AddDate:        int64(in.GetDate()),
+		ExpirationDate: int64(in.GetExpires()),
+	}
+	if userID := wrapperInt64(in.GetUserId()); userID != 0 {
+		result.Source = &ChatBoostSource{Source: "premium", User: userByID(userID, users)}
+	} else if in.GetGiveaway() {
+		result.Source = &ChatBoostSource{Source: "giveaway", GiveawayMessageID: int(wrapperInt32(in.GetGiveawayMsgId()))}
+	} else if in.GetGift() {
+		result.Source = &ChatBoostSource{Source: "gift_code"}
+	}
+	return result
+}
+
 func locationFromGeoPoint(in *mtproto.GeoPoint) *Location {
 	if in == nil {
 		return nil
@@ -1370,7 +2395,7 @@ func inputBotInlineMessageIDString(in *mtproto.InputBotInlineMessageID) string {
 var validAllowedUpdateTypes = map[string]struct{}{
 	"message": {}, "edited_message": {}, "channel_post": {}, "edited_channel_post": {},
 	"business_connection": {}, "business_message": {}, "edited_business_message": {}, "deleted_business_messages": {},
-	"inline_query": {}, "chosen_inline_result": {}, "callback_query": {}, "web_app_query": {}, "shipping_query": {}, "pre_checkout_query": {},
+	"inline_query": {}, "chosen_inline_result": {}, "callback_query": {}, "guest_message": {}, "web_app_query": {}, "shipping_query": {}, "pre_checkout_query": {},
 	"purchased_paid_media": {}, "poll": {}, "poll_answer": {}, "my_chat_member": {}, "chat_member": {}, "chat_join_request": {},
 	"message_reaction": {}, "message_reaction_count": {}, "chat_boost": {}, "removed_chat_boost": {},
 }
@@ -1486,7 +2511,7 @@ func FirstMessageFromUpdates(updates *mtproto.Updates) *Message {
 	return messages[0]
 }
 
-// MessagesFromUpdates preserves the order returned by messages.send* calls.
+// MessagesFromUpdates preserves the order of new and edited message updates.
 func MessagesFromUpdates(updates *mtproto.Updates) []*Message {
 	if updates == nil {
 		return nil
@@ -1499,6 +2524,16 @@ func MessagesFromUpdates(updates *mtproto.Updates) []*Message {
 			}
 		},
 		mtproto.Predicate_updateNewChannelMessage: func(_ int64, update *mtproto.Update, users []*mtproto.User, chats []*mtproto.Chat, _ int32) {
+			if message := MessageFromMTProto(update.GetMessage_MESSAGE(), users, chats); message != nil {
+				result = append(result, message)
+			}
+		},
+		mtproto.Predicate_updateEditMessage: func(_ int64, update *mtproto.Update, users []*mtproto.User, chats []*mtproto.Chat, _ int32) {
+			if message := MessageFromMTProto(update.GetMessage_MESSAGE(), users, chats); message != nil {
+				result = append(result, message)
+			}
+		},
+		mtproto.Predicate_updateEditChannelMessage: func(_ int64, update *mtproto.Update, users []*mtproto.User, chats []*mtproto.Chat, _ int32) {
 			if message := MessageFromMTProto(update.GetMessage_MESSAGE(), users, chats); message != nil {
 				result = append(result, message)
 			}
@@ -1616,7 +2651,7 @@ func fileID(kind string, id, accessHash int64) string {
 	return fmt.Sprintf("%s_%d_%d", kind, id, accessHash)
 }
 
-func applyMedia(message *Message, media *mtproto.MessageMedia) {
+func applyMedia(message *Message, media *mtproto.MessageMedia, users []*mtproto.User, chats []*mtproto.Chat) {
 	if message == nil || media == nil {
 		return
 	}
@@ -1677,6 +2712,10 @@ func applyMedia(message *Message, media *mtproto.MessageMedia) {
 			Currency:       media.GetCurrency(),
 			TotalAmount:    media.GetTotalAmount(),
 		}
+	case mtproto.Predicate_messageMediaPaidMedia:
+		message.PaidMedia = paidMediaInfoFromMTProto(media, users, chats)
+	case mtproto.Predicate_messageMediaToDo:
+		message.Checklist = checklistFromMTProto(media.GetTodo(), media.GetCompletions(), users, chats)
 	case mtproto.Predicate_messageMediaPhoto:
 		if photo := media.GetPhoto_FLAGPHOTO(); photo != nil {
 			message.Photo = make([]PhotoSize, 0, len(photo.GetSizes()))
@@ -1691,6 +2730,20 @@ func applyMedia(message *Message, media *mtproto.MessageMedia) {
 					Height:       int(size.GetH()),
 					FileSize:     int64(size.GetSize2()),
 				})
+			}
+			if media.GetLivePhoto() && media.GetVideo_FLAGDOCUMENT() != nil {
+				doc := media.GetVideo_FLAGDOCUMENT()
+				_, duration, width, height, _, _, _, _, _, _ := documentAttributes(doc)
+				message.LivePhoto = &LivePhoto{
+					Photo:        message.Photo,
+					FileID:       fileID("document", doc.GetId(), doc.GetAccessHash()),
+					FileUniqueID: strconv.FormatInt(doc.GetId(), 10),
+					Width:        width,
+					Height:       height,
+					Duration:     duration,
+					MimeType:     doc.GetMimeType(),
+					FileSize:     documentSize(doc),
+				}
 			}
 		}
 	case mtproto.Predicate_messageMediaDocument:
@@ -1730,6 +2783,33 @@ func applyMedia(message *Message, media *mtproto.MessageMedia) {
 			message.Caption = media.GetWebpage().GetDescription().GetValue()
 		}
 	}
+}
+
+func paidMediaInfoFromMTProto(media *mtproto.MessageMedia, users []*mtproto.User, chats []*mtproto.Chat) *PaidMediaInfo {
+	if media == nil || media.GetPredicateName() != mtproto.Predicate_messageMediaPaidMedia {
+		return nil
+	}
+	result := &PaidMediaInfo{StarCount: int(media.GetStarsAmount()), PaidMedia: make([]any, 0, len(media.GetExtendedMedia_VECTORMESSAGEEXTENDEDMEDIA()))}
+	for _, extended := range media.GetExtendedMedia_VECTORMESSAGEEXTENDEDMEDIA() {
+		if extended == nil {
+			continue
+		}
+		if extended.GetPredicateName() == mtproto.Predicate_messageExtendedMediaPreview {
+			result.PaidMedia = append(result.PaidMedia, &PaidMediaPreview{Type: "preview", Width: int(wrapperInt32(extended.GetW())), Height: int(wrapperInt32(extended.GetH())), Duration: int(wrapperInt32(extended.GetVideoDuration()))})
+			continue
+		}
+		nested := &Message{}
+		applyMedia(nested, extended.GetMedia(), users, chats)
+		switch {
+		case len(nested.Photo) > 0:
+			result.PaidMedia = append(result.PaidMedia, &PaidMediaPhoto{Type: "photo", Photo: nested.Photo})
+		case nested.Video != nil:
+			result.PaidMedia = append(result.PaidMedia, &PaidMediaVideo{Type: "video", Video: nested.Video})
+		case nested.Animation != nil:
+			result.PaidMedia = append(result.PaidMedia, &PaidMediaVideo{Type: "video", Video: &Video{FileID: nested.Animation.FileID, FileUniqueID: nested.Animation.FileUniqueID, Width: nested.Animation.Width, Height: nested.Animation.Height, Duration: nested.Animation.Duration, FileSize: nested.Animation.FileSize, FileName: nested.Animation.FileName, MimeType: nested.Animation.MimeType}})
+		}
+	}
+	return result
 }
 
 func gameFromMTProto(game *mtproto.Game) *Game {
@@ -1817,14 +2897,17 @@ func stickerFromDocument(doc *mtproto.Document) *Sticker {
 		IsAnimated: animated,
 		IsVideo:    video,
 		Emoji:      attribute.GetAlt(),
+		FileSize:   documentSize(doc),
 	}
 	if customEmojiAttr != nil {
 		result.Type = "custom_emoji"
+		result.NeedsRepainting = customEmojiAttr.GetTextColor()
 		if set := customEmojiAttr.GetStickerset(); set != nil {
 			result.SetName = set.GetShortName()
 		}
 	}
 	if stickerAttr != nil {
+		result.NeedsRepainting = stickerAttr.GetTextColor()
 		if stickerAttr.GetMask() {
 			result.Type = "mask"
 			if coords := stickerAttr.GetMaskCoords(); coords != nil {

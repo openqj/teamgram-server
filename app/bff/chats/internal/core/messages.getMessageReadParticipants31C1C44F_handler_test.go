@@ -4,6 +4,8 @@ import (
 	"testing"
 
 	"github.com/teamgram/proto/mtproto"
+	"github.com/teamgram/proto/mtproto/rpc/metadata"
+	"github.com/teamgram/teamgram-server/app/service/biz/dialog/dialog"
 )
 
 func TestBuildMessageReadParticipantDates(t *testing.T) {
@@ -15,6 +17,54 @@ func TestBuildMessageReadParticipantDates(t *testing.T) {
 	got, err = buildMessageReadParticipantDates([]int64{42})
 	if got != nil || err != mtproto.ErrMethodNotImpl {
 		t.Fatalf("read-participant result = (%+v, %v), want (nil, METHOD_NOT_IMPL)", got, err)
+	}
+}
+
+func TestValidateReadParticipantDatesRejectsMalformedRows(t *testing.T) {
+	valid := mtproto.MakeTLReadParticipantDate(&mtproto.ReadParticipantDate{UserId: 42, Date: 123}).To_ReadParticipantDate()
+	if err := validateReadParticipantDates([]*mtproto.ReadParticipantDate{valid}); err != nil {
+		t.Fatalf("valid read-participant date = %v, want nil", err)
+	}
+	for name, dates := range map[string][]*mtproto.ReadParticipantDate{
+		"nil row":       {nil},
+		"zero user":     {{UserId: 0, Date: 123}},
+		"zero date":     {{UserId: 42, Date: 0}},
+		"negative date": {{UserId: 42, Date: -1}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := validateReadParticipantDates(dates); err != mtproto.ErrInternalServerError {
+				t.Fatalf("validateReadParticipantDates() = %v, want INTERNAL_SERVER_ERROR", err)
+			}
+		})
+	}
+}
+
+func TestBuildMessageReadParticipantDatesFromStoredCursorFailsClosed(t *testing.T) {
+	got, err := buildMessageReadParticipantDatesFromStoredCursor(nil)
+	if err != nil || got == nil || len(got.GetDatas()) != 0 {
+		t.Fatalf("empty stored cursor result = (%+v, %v), want empty vector and nil error", got, err)
+	}
+
+	date := mtproto.MakeTLReadParticipantDate(&mtproto.ReadParticipantDate{UserId: 42, Date: 123}).To_ReadParticipantDate()
+	if got, err := buildMessageReadParticipantDatesFromStoredCursor([]*mtproto.ReadParticipantDate{date}); got != nil || err != mtproto.ErrMethodNotImpl {
+		t.Fatalf("stored cursor result = (%+v, %v), want (nil, METHOD_NOT_IMPL)", got, err)
+	}
+}
+
+func TestValidateMessageReadParticipantIDsRejectsInvalidRows(t *testing.T) {
+	if err := validateMessageReadParticipantIDs([]int64{42}, 7); err != nil {
+		t.Fatalf("valid participant IDs = %v, want nil", err)
+	}
+	for name, ids := range map[string][]int64{
+		"zero ID":     {0},
+		"negative ID": {-1},
+		"caller ID":   {7},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := validateMessageReadParticipantIDs(ids, 7); err != mtproto.ErrInternalServerError {
+				t.Fatalf("validateMessageReadParticipantIDs() = %v, want INTERNAL_SERVER_ERROR", err)
+			}
+		})
 	}
 }
 
@@ -38,6 +88,26 @@ func TestGetMessageReadParticipants31RejectsMissingAuthentication(t *testing.T) 
 	}
 	if got, err := (&ChatsCore{}).MessagesGetMessageReadParticipants31C1C44F(in); got != nil || err != mtproto.ErrAuthKeyUnregistered {
 		t.Fatalf("result=(%+v, %v), want (nil, AUTH_KEY_UNREGISTERED)", got, err)
+	}
+}
+
+func TestGetMessageReadParticipants31RejectsMissingDependencies(t *testing.T) {
+	in := &mtproto.TLMessagesGetMessageReadParticipants31C1C44F{
+		Peer: mtproto.MakeTLInputPeerChat(&mtproto.InputPeer{ChatId: 1}).To_InputPeer(),
+	}
+	c := &ChatsCore{MD: &metadata.RpcMetadata{UserId: 1}}
+	if got, err := c.MessagesGetMessageReadParticipants31C1C44F(in); got != nil || err != mtproto.ErrInternalServerError {
+		t.Fatalf("result=(%+v, %v), want (nil, INTERNAL_SERVER_ERROR)", got, err)
+	}
+}
+
+func TestGetMessageReadParticipants31RejectsZeroChannelAccessHash(t *testing.T) {
+	in := &mtproto.TLMessagesGetMessageReadParticipants31C1C44F{
+		Peer: mtproto.MakeTLInputPeerChannel(&mtproto.InputPeer{ChannelId: 1}).To_InputPeer(),
+	}
+	c := &ChatsCore{MD: &metadata.RpcMetadata{UserId: 1}}
+	if got, err := c.MessagesGetMessageReadParticipants31C1C44F(in); got != nil || err != mtproto.ErrChannelInvalid {
+		t.Fatalf("result=(%+v, %v), want (nil, CHANNEL_INVALID)", got, err)
 	}
 }
 
@@ -69,5 +139,34 @@ func TestValidateReadParticipantMessageRequiresRequestedChatAndOwner(t *testing.
 				t.Fatalf("validateReadParticipantMessage() = %v, want PEER_ID_INVALID", err)
 			}
 		})
+	}
+}
+
+func TestValidateReadParticipantChannelMessageRequiresRequestedChannelAndOwner(t *testing.T) {
+	box := &mtproto.MessageBox{
+		UserId:    100,
+		MessageId: 7,
+		PeerType:  mtproto.PEER_CHANNEL,
+		PeerId:    200,
+		Message:   &mtproto.Message{},
+	}
+	if err := validateReadParticipantChannelMessage(100, 200, 7, box); err != nil {
+		t.Fatalf("valid message = %v, want nil", err)
+	}
+	if err := validateReadParticipantChannelMessage(100, 201, 7, box); err != mtproto.ErrPeerIdInvalid {
+		t.Fatalf("wrong channel = %v, want PEER_ID_INVALID", err)
+	}
+	if err := validateReadParticipantChannelMessage(101, 200, 7, box); err != mtproto.ErrPeerIdInvalid {
+		t.Fatalf("wrong owner = %v, want PEER_ID_INVALID", err)
+	}
+}
+
+func TestValidateReadParticipantCallerDialogRequiresRequestedChannel(t *testing.T) {
+	dlg := &dialog.DialogExt{Dialog: mtproto.MakeTLDialog(&mtproto.Dialog{Peer: mtproto.MakeTLPeerChannel(&mtproto.Peer{ChannelId: 200}).To_Peer()}).To_Dialog()}
+	if err := validateReadParticipantCallerDialog(dlg, 200); err != nil {
+		t.Fatalf("valid caller dialog = %v, want nil", err)
+	}
+	if err := validateReadParticipantCallerDialog(dlg, 201); err != mtproto.ErrPeerIdInvalid {
+		t.Fatalf("wrong channel = %v, want PEER_ID_INVALID", err)
 	}
 }

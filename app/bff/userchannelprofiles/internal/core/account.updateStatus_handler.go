@@ -66,24 +66,34 @@ func (c *UserChannelProfilesCore) AccountUpdateStatus(in *mtproto.TLAccountUpdat
 		}).To_UserStatus()
 	}
 
-	if _, err := c.svcCtx.Dao.UserClient.UserUpdateLastSeen(
+	lastSeenReply, err := c.svcCtx.Dao.UserClient.UserUpdateLastSeen(
 		c.ctx,
 		&userpb.TLUserUpdateLastSeen{
 			Id:         c.MD.UserId,
 			LastSeenAt: now,
 			Expires:    expires,
-		}); err != nil {
+		})
+	if err != nil {
 		c.Logger.Errorf("account.updateStatus - update last seen error: %v", err)
 		return nil, err
 	}
+	if lastSeenReply == nil || !mtproto.FromBool(lastSeenReply) {
+		c.Logger.Errorf("account.updateStatus - update last seen returned an unsuccessful response")
+		return nil, mtproto.ErrInternalServerError
+	}
 
-	if _, err := c.svcCtx.Dao.SyncClient.SyncUpdatesNotMe(c.ctx, &sync.TLSyncUpdatesNotMe{
+	syncReply, err := c.svcCtx.Dao.SyncClient.SyncUpdatesNotMe(c.ctx, &sync.TLSyncUpdatesNotMe{
 		UserId:        c.MD.UserId,
 		PermAuthKeyId: c.MD.PermAuthKeyId,
 		Updates:       pushUpdates,
-	}); err != nil {
+	})
+	if err != nil {
 		c.Logger.Errorf("account.updateStatus - push to other sessions error: %v", err)
 		return nil, err
+	}
+	if syncReply == nil {
+		c.Logger.Errorf("account.updateStatus - push to other sessions returned an empty response")
+		return nil, mtproto.ErrInternalServerError
 	}
 
 	return mtproto.BoolTrue, nil

@@ -9,16 +9,16 @@ import (
 	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
-func TestSearchPostsQueryNormalizesHashtags(t *testing.T) {
+func TestSearchPostsQueryValidatesSelectors(t *testing.T) {
 	cases := []struct {
 		name string
 		in   *mtproto.TLChannelsSearchPosts
 		want string
 	}{
-		{name: "plain hashtag", in: &mtproto.TLChannelsSearchPosts{Hashtag_STRING: "topic"}, want: "#topic"},
-		{name: "prefixed hashtag", in: &mtproto.TLChannelsSearchPosts{Hashtag_STRING: "#topic"}, want: "#topic"},
-		{name: "flag hashtag", in: &mtproto.TLChannelsSearchPosts{Hashtag_FLAGSTRING: mtproto.MakeFlagsString(" topic ")}, want: "#topic"},
-		{name: "query wins", in: &mtproto.TLChannelsSearchPosts{Query: mtproto.MakeFlagsString(" announcement "), Hashtag_STRING: "topic"}, want: "announcement"},
+		{name: "plain hashtag", in: &mtproto.TLChannelsSearchPosts{Hashtag_STRING: "topic"}, want: "topic"},
+		{name: "prefixed hashtag is malformed", in: &mtproto.TLChannelsSearchPosts{Hashtag_STRING: "#topic"}, want: ""},
+		{name: "flag hashtag", in: &mtproto.TLChannelsSearchPosts{Hashtag_FLAGSTRING: mtproto.MakeFlagsString(" topic ")}, want: "topic"},
+		{name: "query and hashtag conflict", in: &mtproto.TLChannelsSearchPosts{Query: mtproto.MakeFlagsString(" announcement "), Hashtag_STRING: "topic"}, want: ""},
 		{name: "empty", in: &mtproto.TLChannelsSearchPosts{}, want: ""},
 		{name: "nil request", want: ""},
 	}
@@ -31,9 +31,30 @@ func TestSearchPostsQueryNormalizesHashtags(t *testing.T) {
 	}
 }
 
+func TestValidateSearchPostsOffsetPeer(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		peer *mtproto.InputPeer
+		want error
+	}{
+		{name: "nil", want: mtproto.ErrOffsetPeerIdInvalid},
+		{name: "first page", peer: mtproto.MakeTLInputPeerEmpty(nil).To_InputPeer()},
+		{name: "channel cursor", peer: mtproto.MakeTLInputPeerChannel(&mtproto.InputPeer{ChannelId: 7, AccessHash: 700}).To_InputPeer()},
+		{name: "user cursor", peer: mtproto.MakeTLInputPeerUser(&mtproto.InputPeer{UserId: 7, AccessHash: 700}).To_InputPeer(), want: mtproto.ErrOffsetPeerIdInvalid},
+		{name: "invalid channel cursor", peer: mtproto.MakeTLInputPeerChannel(&mtproto.InputPeer{ChannelId: 0, AccessHash: 700}).To_InputPeer(), want: mtproto.ErrOffsetPeerIdInvalid},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := validateSearchPostsOffsetPeer(tc.peer); !errors.Is(got, tc.want) {
+				t.Fatalf("validateSearchPostsOffsetPeer() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestChannelsSearchPostsRejectsInvalidRequest(t *testing.T) {
 	authenticated := &MessagesCore{MD: &metadata.RpcMetadata{UserId: 42}}
 	channelPeer := mtproto.MakeTLInputPeerChannel(&mtproto.InputPeer{ChannelId: 7, AccessHash: 700}).To_InputPeer()
+	emptyPeer := mtproto.MakeTLInputPeerEmpty(nil).To_InputPeer()
 	for _, tc := range []struct {
 		name string
 		core *MessagesCore
@@ -43,7 +64,7 @@ func TestChannelsSearchPostsRejectsInvalidRequest(t *testing.T) {
 		{name: "nil core", want: mtproto.ErrAuthKeyUnregistered},
 		{name: "missing metadata", core: &MessagesCore{}, want: mtproto.ErrAuthKeyUnregistered},
 		{name: "nil request", core: authenticated, want: mtproto.ErrPeerIdInvalid},
-		{name: "missing offset peer", core: authenticated, in: &mtproto.TLChannelsSearchPosts{}, want: mtproto.ErrPeerIdInvalid},
+		{name: "missing offset peer", core: authenticated, in: &mtproto.TLChannelsSearchPosts{}, want: mtproto.ErrOffsetPeerIdInvalid},
 		{name: "bot", core: &MessagesCore{MD: &metadata.RpcMetadata{UserId: 42, IsBot: true}}, in: &mtproto.TLChannelsSearchPosts{OffsetPeer: channelPeer, Query: mtproto.MakeFlagsString("topic")}, want: mtproto.ErrBotMethodInvalid},
 		{name: "negative limit", core: authenticated, in: &mtproto.TLChannelsSearchPosts{OffsetPeer: channelPeer, Query: mtproto.MakeFlagsString("topic"), Limit: -1}, want: mtproto.ErrLimitInvalid},
 		{name: "limit too large", core: authenticated, in: &mtproto.TLChannelsSearchPosts{OffsetPeer: channelPeer, Query: mtproto.MakeFlagsString("topic"), Limit: 101}, want: mtproto.ErrLimitInvalid},
@@ -52,7 +73,12 @@ func TestChannelsSearchPostsRejectsInvalidRequest(t *testing.T) {
 		{name: "negative offset rate", core: authenticated, in: &mtproto.TLChannelsSearchPosts{OffsetPeer: channelPeer, Query: mtproto.MakeFlagsString("topic"), OffsetRate: -1}, want: mtproto.ErrOffsetInvalid},
 		{name: "empty query", core: authenticated, in: &mtproto.TLChannelsSearchPosts{OffsetPeer: channelPeer}, want: mtproto.ErrSearchQueryEmpty},
 		{name: "blank hashtag", core: authenticated, in: &mtproto.TLChannelsSearchPosts{OffsetPeer: channelPeer, Hashtag_STRING: "  "}, want: mtproto.ErrSearchQueryEmpty},
+		{name: "query and hashtag", core: authenticated, in: &mtproto.TLChannelsSearchPosts{OffsetPeer: channelPeer, Query: mtproto.MakeFlagsString("topic"), Hashtag_STRING: "other"}, want: mtproto.ErrSearchQueryEmpty},
+		{name: "prefixed hashtag", core: authenticated, in: &mtproto.TLChannelsSearchPosts{OffsetPeer: channelPeer, Hashtag_STRING: "#topic"}, want: mtproto.ErrSearchQueryEmpty},
 		{name: "zero paid stars is free", core: authenticated, in: &mtproto.TLChannelsSearchPosts{OffsetPeer: channelPeer, AllowPaidStars: wrapperspb.Int64(0)}, want: mtproto.ErrSearchQueryEmpty},
+		{name: "global ranking provider unavailable", core: authenticated, in: &mtproto.TLChannelsSearchPosts{OffsetPeer: channelPeer, Query: mtproto.MakeFlagsString("topic")}, want: mtproto.ErrMethodNotImpl},
+		{name: "first page global ranking provider unavailable", core: authenticated, in: &mtproto.TLChannelsSearchPosts{OffsetPeer: emptyPeer, Hashtag_STRING: "topic"}, want: mtproto.ErrMethodNotImpl},
+		{name: "wrong cursor peer type", core: authenticated, in: &mtproto.TLChannelsSearchPosts{OffsetPeer: mtproto.MakeTLInputPeerUser(&mtproto.InputPeer{UserId: 7, AccessHash: 700}).To_InputPeer(), Query: mtproto.MakeFlagsString("topic")}, want: mtproto.ErrOffsetPeerIdInvalid},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got, err := tc.core.ChannelsSearchPosts(tc.in)

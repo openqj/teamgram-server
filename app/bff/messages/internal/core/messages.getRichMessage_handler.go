@@ -30,13 +30,12 @@ func (c *MessagesCore) MessagesGetRichMessage(in *mtproto.TLMessagesGetRichMessa
 		return nil, mtproto.ErrAuthKeyUnregistered
 	}
 	if in == nil {
-		c.Logger.Errorf("messages.getRichMessage - error: nil request")
 		return nil, mtproto.ErrInputConstructorInvalid
 	}
 	if in.GetId() <= 0 {
 		return nil, mtproto.ErrMessageIdInvalid
 	}
-	if in.GetPeer() == nil || c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.MessageClient == nil {
+	if in.GetPeer() == nil {
 		return nil, mtproto.ErrPeerIdInvalid
 	}
 
@@ -46,9 +45,23 @@ func (c *MessagesCore) MessagesGetRichMessage(in *mtproto.TLMessagesGetRichMessa
 	}
 	switch peer.PeerType {
 	case mtproto.PEER_SELF, mtproto.PEER_USER, mtproto.PEER_CHAT, mtproto.PEER_CHANNEL:
+		if peer.PeerId <= 0 {
+			if peer.PeerType == mtproto.PEER_CHANNEL {
+				return nil, mtproto.ErrChannelInvalid
+			}
+			return nil, mtproto.ErrPeerIdInvalid
+		}
+		if peer.PeerType == mtproto.PEER_USER && in.GetPeer().GetAccessHash() == 0 {
+			return nil, mtproto.ErrPeerIdInvalid
+		}
+		if peer.PeerType == mtproto.PEER_CHANNEL && in.GetPeer().GetAccessHash() == 0 {
+			return nil, mtproto.ErrChannelInvalid
+		}
 	default:
-		c.Logger.Errorf("messages.getRichMessage - error: peer invalid")
 		return nil, mtproto.ErrPeerIdInvalid
+	}
+	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.MessageClient == nil {
+		return nil, mtproto.ErrInternalServerError
 	}
 
 	// Same client as messages.getMessages. An unknown id is messageEmpty, not an RPC error.
@@ -57,7 +70,9 @@ func (c *MessagesCore) MessagesGetRichMessage(in *mtproto.TLMessagesGetRichMessa
 		IdList: []int32{in.GetId()},
 	})
 	if err != nil {
-		c.Logger.Errorf("messages.getRichMessage - error: %v", err)
+		if c.Logger != nil {
+			c.Logger.Errorf("messages.getRichMessage - error: %v", err)
+		}
 		return nil, err
 	}
 	if boxList == nil {
@@ -66,9 +81,16 @@ func (c *MessagesCore) MessagesGetRichMessage(in *mtproto.TLMessagesGetRichMessa
 
 	var found *mtproto.MessageBox
 	for _, box := range boxList.GetDatas() {
-		if box != nil && box.GetMessageId() == in.GetId() && richPeerMatches(peer, box) {
+		if box == nil || box.GetMessage() == nil || box.GetMessageId() <= 0 || box.GetMessage().GetId() != box.GetMessageId() || box.GetPeerId() <= 0 {
+			return nil, mtproto.ErrInternalServerError
+		}
+		switch box.GetPeerType() {
+		case mtproto.PEER_SELF, mtproto.PEER_USER, mtproto.PEER_CHAT, mtproto.PEER_CHANNEL:
+		default:
+			return nil, mtproto.ErrInternalServerError
+		}
+		if box.GetMessageId() == in.GetId() && richPeerMatches(peer, box) {
 			found = box
-			break
 		}
 	}
 	if found == nil {

@@ -13,6 +13,7 @@ import (
 	"io"
 	"math"
 	"mime"
+	"net"
 	"net/http"
 	"net/url"
 	"path"
@@ -99,6 +100,14 @@ func (r *botAPIRequest) raw(name string) json.RawMessage {
 	return r.values[name]
 }
 
+func (r *botAPIRequest) has(name string) bool {
+	if r == nil {
+		return false
+	}
+	_, ok := r.values[name]
+	return ok
+}
+
 func (r *botAPIRequest) string(name string) string {
 	value := r.raw(name)
 	if len(value) == 0 {
@@ -109,6 +118,21 @@ func (r *botAPIRequest) string(name string) string {
 		return strings.TrimSpace(decoded)
 	}
 	return strings.TrimSpace(string(value))
+}
+
+// text returns user-authored message content without normalizing whitespace.
+// Telegram preserves leading/trailing whitespace in text and captions, while
+// the generic string helper remains trimmed for identifiers and options.
+func (r *botAPIRequest) text(name string) string {
+	value := r.raw(name)
+	if len(value) == 0 {
+		return ""
+	}
+	var decoded string
+	if json.Unmarshal(value, &decoded) == nil {
+		return decoded
+	}
+	return string(value)
 }
 
 func (r *botAPIRequest) int64(name string) (int64, error) {
@@ -268,11 +292,81 @@ func botAPITokenCandidates(raw string) []string {
 	return candidates
 }
 
+var botAPIMethodNames = func() map[string]string {
+	names := []string{
+		"getMe", "getFile", "getUpdates", "setWebhook", "deleteWebhook", "getWebhookInfo",
+		"sendMessage", "sendPhoto", "sendDocument", "sendVideo", "sendVideoNote", "sendSticker",
+		"sendAudio", "sendVoice", "sendAnimation", "sendLocation", "sendVenue", "sendContact",
+		"sendPoll", "sendDice", "sendChatAction", "sendGame", "sendInvoice", "createInvoiceLink",
+		"getMyStarBalance", "getStarTransactions", "refundStarPayment", "editUserStarSubscription",
+		"sendMediaGroup", "forwardMessage", "copyMessage", "forwardMessages", "copyMessages",
+		"getStickerSet", "createNewStickerSet", "addStickerToSet", "setStickerPositionInSet", "deleteStickerFromSet", "replaceStickerInSet", "setStickerEmojiList", "setStickerKeywords", "setStickerMaskPosition", "setStickerSetTitle", "setStickerSetThumbnail", "setCustomEmojiStickerSetThumbnail", "deleteStickerSet",
+		"getChat", "getUserProfilePhotos", "getUserProfileAudios", "getCustomEmojiStickers", "getForumTopicIconStickers", "getUserPersonalChatMessages",
+		"setChatPhoto", "deleteChatPhoto", "getChatAdministrators", "getChatMemberCount", "getChatMember",
+		"exportChatInviteLink", "createChatInviteLink", "editChatInviteLink", "revokeChatInviteLink",
+		"approveChatJoinRequest", "declineChatJoinRequest", "createForumTopic", "editForumTopic",
+		"closeForumTopic", "reopenForumTopic", "hideGeneralForumTopic", "unhideGeneralForumTopic",
+		"closeGeneralForumTopic", "editGeneralForumTopic", "reopenGeneralForumTopic",
+		"unpinAllGeneralForumTopicMessages", "deleteForumTopic", "unpinAllForumTopicMessages", "banChatMember", "kickChatMember",
+		"banChatSenderChat", "unbanChatSenderChat", "unbanChatMember", "restrictChatMember", "promoteChatMember", "setChatAdministratorCustomTitle",
+		"setChatPermissions", "setChatTitle", "setChatDescription", "pinChatMessage", "unpinChatMessage",
+		"unpinAllChatMessages", "leaveChat", "getMyCommands", "setMyCommands", "deleteMyCommands",
+		"setChatMenuButton", "getChatMenuButton", "setMyName", "getMyName", "setMyDescription",
+		"getMyDescription", "setMyShortDescription", "getMyShortDescription", "getMyDefaultAdministratorRights",
+		"setMyDefaultAdministratorRights", "setMyProfilePhoto", "removeMyProfilePhoto", "editMessageText", "editMessageCaption", "editMessageMedia",
+		"editMessageReplyMarkup", "editMessageLiveLocation", "stopMessageLiveLocation", "deleteMessage",
+		"deleteMessages", "deleteMessageReaction", "deleteAllMessageReactions", "setMessageReaction", "setGameScore", "getGameHighScores",
+		"getBusinessConnection", "readBusinessMessage", "deleteBusinessMessages", "answerCallbackQuery",
+		"answerInlineQuery", "answerWebAppQuery", "answerShippingQuery", "answerPreCheckoutQuery",
+		// Methods introduced after the original Bot API surface. Keep these in
+		// the canonical name table even when the matching Layer 229 adapter is
+		// not available, so clients receive a method-specific 501 response.
+		"logOut", "close", "sendLivePhoto", "sendPaidMedia", "sendChecklist", "sendMessageDraft",
+		"sendRichMessage", "sendRichMessageDraft",
+		"setUserEmojiStatus", "setChatMemberTag", "createChatSubscriptionInviteLink", "editChatSubscriptionInviteLink",
+		"answerChatJoinRequestQuery", "sendChatJoinRequestWebApp", "setChatStickerSet", "deleteChatStickerSet",
+		"answerGuestQuery", "getUserChatBoosts", "getManagedBotToken", "replaceManagedBotToken",
+		"getManagedBotAccessSettings", "setManagedBotAccessSettings", "getAvailableGifts", "sendGift",
+		"giftPremiumSubscription", "verifyUser", "verifyChat", "removeUserVerification", "removeChatVerification",
+		"setBusinessAccountName", "setBusinessAccountUsername", "setBusinessAccountBio", "setBusinessAccountProfilePhoto",
+		"removeBusinessAccountProfilePhoto", "setBusinessAccountGiftSettings", "getBusinessAccountStarBalance",
+		"transferBusinessAccountStars", "getBusinessAccountGifts", "getUserGifts", "getChatGifts",
+		"convertGiftToStars", "upgradeGift", "transferGift", "postStory", "repostStory", "editStory", "deleteStory",
+		"savePreparedInlineMessage", "savePreparedKeyboardButton", "editMessageChecklist", "stopPoll",
+		"editEphemeralMessageText", "editEphemeralMessageMedia", "editEphemeralMessageCaption",
+		"editEphemeralMessageReplyMarkup", "approveSuggestedPost", "declineSuggestedPost", "deleteEphemeralMessage",
+		"uploadStickerFile", "setPassportDataErrors",
+	}
+	result := make(map[string]string, len(names))
+	for _, name := range names {
+		result[strings.ToLower(name)] = name
+	}
+	return result
+}()
+
+func canonicalBotAPIMethod(method string) string {
+	if canonical, ok := botAPIMethodNames[strings.ToLower(method)]; ok {
+		return canonical
+	}
+	return method
+}
+
 func dispatchBotAPIMethod(ctx *svc.ServiceContext, r *http.Request, bot *mtproto.ImmutableUser, method string, request *botAPIRequest) (any, int, int, string) {
 	botID := bot.GetUser().GetId()
+	method = canonicalBotAPIMethod(method)
 	switch method {
 	case "getMe":
 		return botapi.UserFromImmutableUser(bot), http.StatusOK, 0, ""
+	case "logOut", "close":
+		return true, http.StatusOK, 0, ""
+	case "getAvailableGifts":
+		return getAvailableGifts(ctx, r, botID)
+	case "convertGiftToStars":
+		return convertGiftToStars(ctx, r, botID, request)
+	case "upgradeGift":
+		return upgradeGift(ctx, r, botID, request)
+	case "transferGift":
+		return transferGift(ctx, r, botID, request)
 	case "getFile":
 		return getFile(request)
 	case "getUpdates":
@@ -299,6 +393,32 @@ func dispatchBotAPIMethod(ctx *svc.ServiceContext, r *http.Request, bot *mtproto
 		return sendBotAPIMedia(ctx, r, bot, request, "video_note", "video_note")
 	case "sendSticker":
 		return sendSticker(ctx, r, bot, request)
+	case "getStickerSet":
+		return getStickerSet(ctx, r, botID, request)
+	case "createNewStickerSet":
+		return createNewStickerSet(ctx, r, botID, request)
+	case "addStickerToSet":
+		return addStickerToSet(ctx, r, botID, request)
+	case "setStickerPositionInSet":
+		return setStickerPositionInSet(ctx, r, botID, request)
+	case "deleteStickerFromSet":
+		return deleteStickerFromSet(ctx, r, botID, request)
+	case "replaceStickerInSet":
+		return replaceStickerInSet(ctx, r, botID, request)
+	case "setStickerEmojiList":
+		return setStickerEmojiList(ctx, r, botID, request)
+	case "setStickerKeywords":
+		return setStickerKeywords(ctx, r, botID, request)
+	case "setStickerMaskPosition":
+		return setStickerMaskPosition(ctx, r, botID, request)
+	case "setStickerSetTitle":
+		return setStickerSetTitle(ctx, r, botID, request)
+	case "setStickerSetThumbnail":
+		return setStickerSetThumbnail(ctx, r, botID, request)
+	case "setCustomEmojiStickerSetThumbnail":
+		return setCustomEmojiStickerSetThumbnail(ctx, r, botID, request)
+	case "deleteStickerSet":
+		return deleteStickerSet(ctx, r, botID, request)
 	case "sendAudio":
 		return sendBotAPIMedia(ctx, r, bot, request, "audio", "audio")
 	case "sendVoice":
@@ -313,6 +433,8 @@ func dispatchBotAPIMethod(ctx *svc.ServiceContext, r *http.Request, bot *mtproto
 		return sendContact(ctx, r, bot, request)
 	case "sendPoll":
 		return sendPoll(ctx, r, bot, request)
+	case "stopPoll":
+		return stopPoll(ctx, r, bot, request)
 	case "sendDice":
 		return sendDice(ctx, r, bot, request)
 	case "sendChatAction":
@@ -337,10 +459,30 @@ func dispatchBotAPIMethod(ctx *svc.ServiceContext, r *http.Request, bot *mtproto
 		return forwardMessage(ctx, r, bot, request, false)
 	case "copyMessage":
 		return forwardMessage(ctx, r, bot, request, true)
+	case "forwardMessages":
+		return forwardMessages(ctx, r, bot, request, false)
+	case "copyMessages":
+		return forwardMessages(ctx, r, bot, request, true)
 	case "getChat":
 		return getChat(ctx, r, botID, request)
 	case "getUserProfilePhotos":
 		return getUserProfilePhotos(ctx, r, botID, request)
+	case "getUserProfileAudios":
+		return getUserProfileAudios(ctx, r, botID, request)
+	case "getCustomEmojiStickers":
+		return getCustomEmojiStickers(ctx, r, botID, request)
+	case "getForumTopicIconStickers":
+		return getForumTopicIconStickers(ctx, r, botID)
+	case "getUserPersonalChatMessages":
+		return getUserPersonalChatMessages(ctx, r, botID, request)
+	case "setUserEmojiStatus":
+		return setUserEmojiStatus(ctx, r, botID, request)
+	case "setChatMemberTag":
+		return setChatMemberTag(ctx, r, botID, request)
+	case "setChatStickerSet":
+		return setChatStickerSet(ctx, r, botID, request)
+	case "deleteChatStickerSet":
+		return deleteChatStickerSet(ctx, r, botID, request)
 	case "setChatPhoto":
 		return setChatPhoto(ctx, r, botID, request)
 	case "deleteChatPhoto":
@@ -355,8 +497,12 @@ func dispatchBotAPIMethod(ctx *svc.ServiceContext, r *http.Request, bot *mtproto
 		return exportChatInviteLink(ctx, r, botID, request)
 	case "createChatInviteLink":
 		return createChatInviteLink(ctx, r, botID, request)
+	case "createChatSubscriptionInviteLink":
+		return createChatSubscriptionInviteLink(ctx, r, botID, request)
 	case "editChatInviteLink":
 		return editChatInviteLink(ctx, r, botID, request)
+	case "editChatSubscriptionInviteLink":
+		return editChatSubscriptionInviteLink(ctx, r, botID, request)
 	case "revokeChatInviteLink":
 		return revokeChatInviteLink(ctx, r, botID, request)
 	case "approveChatJoinRequest":
@@ -375,12 +521,24 @@ func dispatchBotAPIMethod(ctx *svc.ServiceContext, r *http.Request, bot *mtproto
 		return hideGeneralForumTopic(ctx, r, botID, request)
 	case "unhideGeneralForumTopic":
 		return unhideGeneralForumTopic(ctx, r, botID, request)
+	case "closeGeneralForumTopic":
+		return closeGeneralForumTopic(ctx, r, botID, request)
+	case "editGeneralForumTopic":
+		return editGeneralForumTopic(ctx, r, botID, request)
+	case "reopenGeneralForumTopic":
+		return reopenGeneralForumTopic(ctx, r, botID, request)
+	case "unpinAllGeneralForumTopicMessages":
+		return unpinAllGeneralForumTopicMessages(ctx, r, botID, request)
 	case "deleteForumTopic":
 		return deleteForumTopic(ctx, r, botID, request)
 	case "unpinAllForumTopicMessages":
 		return unpinAllForumTopicMessages(ctx, r, botID, request)
 	case "banChatMember", "kickChatMember":
 		return banChatMember(ctx, r, botID, request)
+	case "banChatSenderChat":
+		return banChatSenderChat(ctx, r, botID, request)
+	case "unbanChatSenderChat":
+		return unbanChatSenderChat(ctx, r, botID, request)
 	case "unbanChatMember":
 		return unbanChatMember(ctx, r, botID, request)
 	case "restrictChatMember":
@@ -445,6 +603,10 @@ func dispatchBotAPIMethod(ctx *svc.ServiceContext, r *http.Request, bot *mtproto
 		return getMyDefaultAdministratorRights(ctx, r.Context(), botID, request)
 	case "setMyDefaultAdministratorRights":
 		return setMyDefaultAdministratorRights(ctx, r.Context(), botID, request)
+	case "setMyProfilePhoto":
+		return setMyProfilePhoto(ctx, r, botID, request)
+	case "removeMyProfilePhoto":
+		return removeMyProfilePhoto(ctx, r, bot)
 	case "editMessageText":
 		return editMessageText(ctx, r, bot, request)
 	case "editMessageCaption":
@@ -453,8 +615,18 @@ func dispatchBotAPIMethod(ctx *svc.ServiceContext, r *http.Request, bot *mtproto
 		return editMessageMedia(ctx, r, bot, request)
 	case "editMessageReplyMarkup":
 		return editMessageReplyMarkup(ctx, r, bot, request)
+	case "editMessageLiveLocation":
+		return editMessageLiveLocation(ctx, r, bot, request)
+	case "stopMessageLiveLocation":
+		return stopMessageLiveLocation(ctx, r, bot, request)
 	case "deleteMessage":
 		return deleteMessage(ctx, r, botID, request)
+	case "deleteMessages":
+		return deleteMessages(ctx, r, botID, request)
+	case "deleteMessageReaction":
+		return deleteMessageReaction(ctx, r, botID, request)
+	case "deleteAllMessageReactions":
+		return deleteAllMessageReactions(ctx, r, botID, request)
 	case "setMessageReaction":
 		return setMessageReaction(ctx, r, botID, request)
 	case "setGameScore":
@@ -477,9 +649,104 @@ func dispatchBotAPIMethod(ctx *svc.ServiceContext, r *http.Request, bot *mtproto
 		return answerShippingQuery(ctx, r.Context(), botID, request)
 	case "answerPreCheckoutQuery":
 		return answerPreCheckoutQuery(ctx, r.Context(), botID, request)
+	case "answerChatJoinRequestQuery":
+		return answerChatJoinRequestQuery(ctx, r, botID, request)
+	case "sendChatJoinRequestWebApp":
+		return sendChatJoinRequestWebApp(ctx, r, botID, request)
+	case "answerGuestQuery":
+		return answerGuestQuery(ctx, r, botID, request)
+	case "setBusinessAccountName":
+		return setBusinessAccountName(ctx, r, botID, request)
+	case "setBusinessAccountUsername":
+		return setBusinessAccountUsername(ctx, r, botID, request)
+	case "setBusinessAccountBio":
+		return setBusinessAccountBio(ctx, r, botID, request)
+	case "setBusinessAccountProfilePhoto":
+		return setBusinessAccountProfilePhoto(ctx, r, botID, request)
+	case "removeBusinessAccountProfilePhoto":
+		return removeBusinessAccountProfilePhoto(ctx, r, botID, request)
+	case "getBusinessAccountStarBalance":
+		return getBusinessAccountStarBalance(ctx, r, botID, request)
+	case "getBusinessAccountGifts":
+		return getBusinessAccountGifts(ctx, r, botID, request)
+	case "getUserGifts":
+		return getUserGifts(ctx, r, botID, request)
+	case "getChatGifts":
+		return getChatGifts(ctx, r, botID, request)
+	case "savePreparedInlineMessage":
+		return savePreparedInlineMessage(ctx, r, botID, request)
+	case "deleteEphemeralMessage":
+		return deleteEphemeralMessage(ctx, r, botID, request)
+	case "editEphemeralMessageText":
+		return editEphemeralMessageText(ctx, r, bot, request)
+	case "editEphemeralMessageMedia":
+		return editEphemeralMessageMedia(ctx, r, bot, request)
+	case "editEphemeralMessageCaption":
+		return editEphemeralMessageCaption(ctx, r, bot, request)
+	case "editEphemeralMessageReplyMarkup":
+		return editEphemeralMessageReplyMarkup(ctx, r, bot, request)
+	case "sendLivePhoto":
+		return sendLivePhoto(ctx, r, bot, request)
+	case "sendPaidMedia":
+		return sendPaidMedia(ctx, r, bot, request)
+	case "sendChecklist":
+		return sendChecklist(ctx, r, bot, request)
+	case "sendMessageDraft":
+		return sendMessageDraft(ctx, r, bot, request)
+	case "sendRichMessage":
+		return sendRichMessage(ctx, r, bot, request)
+	case "sendRichMessageDraft":
+		return sendRichMessageDraft(ctx, r, bot, request)
+	case "editMessageChecklist":
+		return editMessageChecklist(ctx, r, bot, request)
+	case "uploadStickerFile":
+		return uploadStickerFile(ctx, r, botID, request)
+	case "getUserChatBoosts":
+		return getUserChatBoosts(ctx, r, botID, request)
+	case "getManagedBotToken":
+		return getManagedBotToken(ctx, r, botID, request)
+	case "replaceManagedBotToken":
+		return replaceManagedBotToken(ctx, r, botID, request)
+	case "getManagedBotAccessSettings":
+		return getManagedBotAccessSettings(ctx, r, botID, request)
+	case "setManagedBotAccessSettings":
+		return setManagedBotAccessSettings(ctx, r, botID, request)
+	case "verifyUser":
+		return verifyUser(ctx, r, botID, request)
+	case "verifyChat":
+		return verifyChat(ctx, r, botID, request)
+	case "removeUserVerification":
+		return removeUserVerification(ctx, r, botID, request)
+	case "removeChatVerification":
+		return removeChatVerification(ctx, r, botID, request)
+	case "setPassportDataErrors":
+		return setPassportDataErrors(ctx, r, botID, request)
+	case "postStory":
+		return postStory(ctx, r, botID, request)
+	case "repostStory":
+		return repostStory(ctx, r, botID, request)
+	case "editStory":
+		return editStory(ctx, r, botID, request)
+	case "deleteStory":
+		return deleteStory(ctx, r, botID, request)
+	case "approveSuggestedPost":
+		return suggestedPost(ctx, r, botID, request, false)
+	case "declineSuggestedPost":
+		return suggestedPost(ctx, r, botID, request, true)
+	case "savePreparedKeyboardButton":
+		return savePreparedKeyboardButton(ctx, r, botID, request)
+	case "sendGift", "giftPremiumSubscription",
+		"transferBusinessAccountStars":
+		return botAPIUnsupportedMethod(method)
+	case "setBusinessAccountGiftSettings":
+		return setBusinessAccountGiftSettings(ctx, r, botID, request)
 	default:
 		return nil, http.StatusNotImplemented, 501, "Bad Request: method is not supported by this server"
 	}
+}
+
+func botAPIUnsupportedMethod(method string) (any, int, int, string) {
+	return nil, http.StatusNotImplemented, 501, "Not Implemented: " + method + " requires a Layer 229/service adapter"
 }
 
 type botAPIFileRef struct {
@@ -560,19 +827,22 @@ func getUpdates(ctx *svc.ServiceContext, r *http.Request, botID int64, request *
 		return nil, http.StatusBadRequest, 400, "Bad Request: invalid offset"
 	}
 	limit, err := request.int("limit")
-	if err != nil || limit < 0 || limit > 100 {
+	if err != nil || (request.has("limit") && limit < 1) || limit > 100 {
 		return nil, http.StatusBadRequest, 400, "Bad Request: invalid limit"
 	}
 	timeout, err := request.int("timeout")
 	if err != nil || timeout < 0 || timeout > 50 {
 		return nil, http.StatusBadRequest, 400, "Bad Request: invalid timeout"
 	}
-	var allowed []string
-	if err := request.json("allowed_updates", &allowed); err != nil {
+	allowed, allowedPresent, err := parseBotAPIAllowedUpdates(request)
+	if err != nil {
 		return nil, http.StatusBadRequest, 400, "Bad Request: invalid allowed_updates"
 	}
-	if err := validateBotAPIAllowedUpdates(allowed); err != nil {
-		return nil, http.StatusBadRequest, 400, "Bad Request: invalid allowed_updates"
+	if !allowedPresent {
+		// The Bot API keeps the previous filter when allowed_updates is omitted.
+		// The store exposes the last webhook filter when it is available; a
+		// missing row means the default (all update types) remains in effect.
+		allowed = append([]string(nil), webhook.AllowedUpdates...)
 	}
 	deadline := time.Now().Add(time.Duration(timeout) * time.Second)
 	for {
@@ -612,12 +882,18 @@ func setWebhook(ctx *svc.ServiceContext, requestCtx context.Context, botID int64
 	if len(secretToken) > 256 || !validWebhookSecretToken(secretToken) {
 		return nil, http.StatusBadRequest, 400, "Bad Request: secret_token is invalid"
 	}
-	allowed := []string{}
-	if err := request.json("allowed_updates", &allowed); err != nil {
+	previousWebhook, _, err := ctx.BotAPIStore.GetWebhook(requestCtx, botID)
+	if err != nil {
+		return nil, http.StatusInternalServerError, 500, err.Error()
+	}
+	allowed, allowedPresent, err := parseBotAPIAllowedUpdates(request)
+	if err != nil {
 		return nil, http.StatusBadRequest, 400, "Bad Request: invalid allowed_updates"
 	}
-	if err := validateBotAPIAllowedUpdates(allowed); err != nil {
-		return nil, http.StatusBadRequest, 400, "Bad Request: invalid allowed_updates"
+	if !allowedPresent {
+		// Telegram preserves the previous allowed_updates filter when this
+		// optional field is omitted while updating a webhook.
+		allowed = append([]string(nil), previousWebhook.AllowedUpdates...)
 	}
 	dropPending, err := request.bool("drop_pending_updates")
 	if err != nil {
@@ -654,6 +930,24 @@ func validateBotAPIAllowedUpdates(allowed []string) error {
 	return nil
 }
 
+func parseBotAPIAllowedUpdates(request *botAPIRequest) ([]string, bool, error) {
+	if request == nil || !request.has("allowed_updates") {
+		return nil, false, nil
+	}
+	raw := request.raw("allowed_updates")
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil, false, nil
+	}
+	var allowed []string
+	if err := request.json("allowed_updates", &allowed); err != nil {
+		return nil, true, err
+	}
+	if err := validateBotAPIAllowedUpdates(allowed); err != nil {
+		return nil, true, err
+	}
+	return allowed, true, nil
+}
+
 func sendMessage(ctx *svc.ServiceContext, r *http.Request, bot *mtproto.ImmutableUser, request *botAPIRequest) (any, int, int, string) {
 	botID := bot.GetUser().GetId()
 	scope, business, scopeErr := resolveBotAPISendScope(ctx, r.Context(), botID, request)
@@ -670,7 +964,10 @@ func sendMessage(ctx *svc.ServiceContext, r *http.Request, bot *mtproto.Immutabl
 	if err != nil || chatID == 0 {
 		return nil, http.StatusBadRequest, 400, "Bad Request: chat_id is invalid"
 	}
-	text := request.string("text")
+	text, entities, formatErr := botAPITextEntities(request, "text", "entities", "parse_mode")
+	if formatErr != nil {
+		return nil, http.StatusBadRequest, 400, "Bad Request: " + formatErr.Error()
+	}
 	if text == "" {
 		return nil, http.StatusBadRequest, 400, "Bad Request: text is empty"
 	}
@@ -685,10 +982,6 @@ func sendMessage(ctx *svc.ServiceContext, r *http.Request, bot *mtproto.Immutabl
 		Date:    int32(time.Now().Unix()),
 		Message: text,
 	}).To_Message()
-	var entities []botapi.MessageEntity
-	if err := request.json("entities", &entities); err != nil {
-		return nil, http.StatusBadRequest, 400, "Bad Request: entities is invalid"
-	}
 	message.Entities = botapi.MessageEntitiesToMTProto(entities)
 	markup, err := botAPIReplyMarkup(request)
 	if err != nil {
@@ -925,16 +1218,27 @@ func sendBotAPIMedia(ctx *svc.ServiceContext, r *http.Request, bot *mtproto.Immu
 		if fileID == "" {
 			return nil, http.StatusBadRequest, 400, "Bad Request: media file is required"
 		}
-		media, err = botAPIExistingMedia(kind, fileID, request)
+		if botAPIHTTPMediaURL(fileID) {
+			data, mimeType, name, fetchErr := fetchBotAPIRemoteMedia(r.Context(), fileID)
+			if fetchErr != nil {
+				return nil, http.StatusBadRequest, 400, "Bad Request: media URL is invalid"
+			}
+			fileRef, uploadErr := uploadBotAPIFile(r.Context(), ctx, botID, name, data)
+			if uploadErr != nil {
+				return nil, http.StatusBadRequest, 400, rpcDescription(uploadErr)
+			}
+			media = botAPIUploadedMedia(kind, fileRef, name, mimeType, duration, width, height, request)
+		} else {
+			media, err = botAPIExistingMedia(kind, fileID, request)
+		}
 		if err != nil {
 			return nil, http.StatusBadRequest, 400, "Bad Request: file_id is invalid"
 		}
 	}
 
-	caption := request.string("caption")
-	var entities []botapi.MessageEntity
-	if err := request.json("caption_entities", &entities); err != nil {
-		return nil, http.StatusBadRequest, 400, "Bad Request: caption_entities is invalid"
+	caption, entities, formatErr := botAPICaptionEntities(request, "caption", "caption_entities")
+	if formatErr != nil {
+		return nil, http.StatusBadRequest, 400, "Bad Request: " + formatErr.Error()
 	}
 	markup, err := botAPIReplyMarkup(request)
 	if err != nil {
@@ -1152,7 +1456,7 @@ func sendPoll(ctx *svc.ServiceContext, r *http.Request, bot *mtproto.ImmutableUs
 		return nil, http.StatusBadRequest, 400, "Bad Request: correct_option_id is only valid for quiz polls"
 	}
 	openPeriod, err := request.int("open_period")
-	if err != nil || openPeriod < 0 {
+	if err != nil || openPeriod < 0 || (openPeriod > 0 && (openPeriod < 5 || openPeriod > 600)) {
 		return nil, http.StatusBadRequest, 400, "Bad Request: open_period is invalid"
 	}
 	closeDate, err := request.int64("close_date")
@@ -1237,12 +1541,9 @@ func sendBotAPIStructuredMedia(ctx *svc.ServiceContext, r *http.Request, bot *mt
 	if err != nil || peerID == 0 {
 		return nil, http.StatusBadRequest, 400, "Bad Request: chat_id is invalid"
 	}
-	if caption == "" {
-		caption = request.string("caption")
-	}
-	var entities []botapi.MessageEntity
-	if err := request.json("caption_entities", &entities); err != nil {
-		return nil, http.StatusBadRequest, 400, "Bad Request: caption_entities is invalid"
+	caption, entities, formatErr := botAPICaptionEntities(request, "caption", "caption_entities")
+	if formatErr != nil {
+		return nil, http.StatusBadRequest, 400, "Bad Request: " + formatErr.Error()
 	}
 	var markup botapi.ReplyMarkupInput
 	if err := request.json("reply_markup", &markup); err != nil {
@@ -1288,6 +1589,8 @@ type botAPIMediaGroupItem struct {
 	Media             string                 `json:"media"`
 	Caption           string                 `json:"caption,omitempty"`
 	CaptionEntities   []botapi.MessageEntity `json:"caption_entities,omitempty"`
+	ParseMode         string                 `json:"parse_mode,omitempty"`
+	CaptionParseMode  string                 `json:"caption_parse_mode,omitempty"`
 	HasSpoiler        bool                   `json:"has_spoiler,omitempty"`
 	SupportsStreaming bool                   `json:"supports_streaming,omitempty"`
 	Duration          int                    `json:"duration,omitempty"`
@@ -1324,11 +1627,15 @@ func sendMediaGroup(ctx *svc.ServiceContext, r *http.Request, bot *mtproto.Immut
 		if err != nil {
 			return nil, http.StatusBadRequest, 400, "Bad Request: media item is invalid"
 		}
+		caption, entities, formatErr := botAPIMediaGroupCaption(item)
+		if formatErr != nil {
+			return nil, http.StatusBadRequest, 400, "Bad Request: " + formatErr.Error()
+		}
 		multiMedia = append(multiMedia, mtproto.MakeTLInputSingleMedia(&mtproto.InputSingleMedia{
 			Media:    media,
 			RandomId: randomMessageID(),
-			Message:  item.Caption,
-			Entities: botapi.MessageEntitiesToMTProto(item.CaptionEntities),
+			Message:  caption,
+			Entities: botapi.MessageEntitiesToMTProto(entities),
 		}).To_InputSingleMedia())
 	}
 	replyTo, err := botAPIReplyTo(request)
@@ -1358,6 +1665,12 @@ func sendMediaGroup(ctx *svc.ServiceContext, r *http.Request, bot *mtproto.Immut
 }
 
 func botAPILocationCoordinates(request *botAPIRequest) (float64, float64, error) {
+	if request == nil || !request.has("longitude") || len(request.raw("longitude")) == 0 || string(request.raw("longitude")) == "null" {
+		return 0, 0, errors.New("Bad Request: longitude is invalid")
+	}
+	if !request.has("latitude") || len(request.raw("latitude")) == 0 || string(request.raw("latitude")) == "null" {
+		return 0, 0, errors.New("Bad Request: latitude is invalid")
+	}
 	longitude, err := request.float64("longitude")
 	if err != nil || longitude < -180 || longitude > 180 {
 		return 0, 0, errors.New("Bad Request: longitude is invalid")
@@ -1409,11 +1722,19 @@ func botAPIMediaGroupInput(r *http.Request, ctx *svc.ServiceContext, botID int64
 		}
 		return botAPIUploadedMedia(item.Type, fileRef, name, mimeType, item.Duration, item.Width, item.Height, &botAPIRequest{values: map[string]json.RawMessage{"has_spoiler": json.RawMessage(strconv.FormatBool(item.HasSpoiler)), "supports_streaming": json.RawMessage(strconv.FormatBool(item.SupportsStreaming))}}), nil
 	}
-	if strings.HasPrefix(item.Media, "http://") || strings.HasPrefix(item.Media, "https://") {
-		if item.Type == "photo" {
-			return mtproto.MakeTLInputMediaPhotoExternal(&mtproto.InputMedia{Url: item.Media, Spoiler: item.HasSpoiler}).To_InputMedia(), nil
+	if botAPIHTTPMediaURL(item.Media) {
+		data, mimeType, name, err := fetchBotAPIRemoteMedia(r.Context(), item.Media)
+		if err != nil {
+			return nil, err
 		}
-		return mtproto.MakeTLInputMediaDocumentExternal(&mtproto.InputMedia{Url: item.Media, Spoiler: item.HasSpoiler}).To_InputMedia(), nil
+		fileRef, err := uploadBotAPIFile(r.Context(), ctx, botID, name, data)
+		if err != nil {
+			return nil, err
+		}
+		return botAPIUploadedMedia(item.Type, fileRef, name, mimeType, item.Duration, item.Width, item.Height, &botAPIRequest{values: map[string]json.RawMessage{
+			"has_spoiler":        json.RawMessage(strconv.FormatBool(item.HasSpoiler)),
+			"supports_streaming": json.RawMessage(strconv.FormatBool(item.SupportsStreaming)),
+		}}), nil
 	}
 	return botAPIExistingMedia(item.Type, item.Media, &botAPIRequest{values: map[string]json.RawMessage{"has_spoiler": json.RawMessage(strconv.FormatBool(item.HasSpoiler))}})
 }
@@ -1514,6 +1835,104 @@ func botAPIExistingMedia(kind, fileID string, request *botAPIRequest) (*mtproto.
 	}
 }
 
+func botAPIHTTPMediaURL(raw string) bool {
+	parsed, err := url.ParseRequestURI(raw)
+	if err != nil || parsed.Host == "" {
+		return false
+	}
+	return strings.EqualFold(parsed.Scheme, "http") || strings.EqualFold(parsed.Scheme, "https")
+}
+
+const botAPIRemoteMediaMaxBytes = 20 << 20
+
+func fetchBotAPIRemoteMedia(parent context.Context, rawURL string) ([]byte, string, string, error) {
+	parsed, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil || parsed.Host == "" || parsed.User != nil || parsed.Fragment != "" ||
+		(!strings.EqualFold(parsed.Scheme, "http") && !strings.EqualFold(parsed.Scheme, "https")) {
+		return nil, "", "", errors.New("invalid remote media URL")
+	}
+	if err := rejectBotAPIRemoteHost(parsed.Hostname()); err != nil {
+		return nil, "", "", err
+	}
+	requestContext, cancel := context.WithTimeout(parent, 15*time.Second)
+	defer cancel()
+	transport := &http.Transport{
+		Proxy: nil,
+		DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
+			host, port, splitErr := net.SplitHostPort(address)
+			if splitErr != nil {
+				return nil, splitErr
+			}
+			if err := rejectBotAPIRemoteHost(host); err != nil {
+				return nil, err
+			}
+			ips, err := net.LookupIP(host)
+			if err != nil || len(ips) == 0 {
+				return nil, errors.New("remote media host cannot be resolved")
+			}
+			return (&net.Dialer{Timeout: 10 * time.Second}).DialContext(ctx, network, net.JoinHostPort(ips[0].String(), port))
+		},
+	}
+	client := &http.Client{
+		Transport: transport,
+		CheckRedirect: func(req *http.Request, _ []*http.Request) error {
+			if req == nil || req.URL == nil || req.URL.User != nil || req.URL.Fragment != "" ||
+				(!strings.EqualFold(req.URL.Scheme, "http") && !strings.EqualFold(req.URL.Scheme, "https")) {
+				return errors.New("invalid remote media redirect")
+			}
+			return rejectBotAPIRemoteHost(req.URL.Hostname())
+		},
+	}
+	req, err := http.NewRequestWithContext(requestContext, http.MethodGet, parsed.String(), nil)
+	if err != nil {
+		return nil, "", "", err
+	}
+	req.Header.Set("Accept", "image/*,audio/*,video/*,application/octet-stream;q=0.8")
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, "", "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || resp.ContentLength > botAPIRemoteMediaMaxBytes {
+		return nil, "", "", errors.New("remote media response is invalid")
+	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, botAPIRemoteMediaMaxBytes+1))
+	if err != nil || len(data) == 0 || len(data) > botAPIRemoteMediaMaxBytes {
+		return nil, "", "", errors.New("remote media response is too large or empty")
+	}
+	name := path.Base(resp.Request.URL.Path)
+	if name == "." || name == "/" || name == "" {
+		name = "bot-api-media"
+	}
+	mimeType := resp.Header.Get("Content-Type")
+	if parsedType, _, parseErr := mime.ParseMediaType(mimeType); parseErr == nil {
+		mimeType = parsedType
+	}
+	if mimeType == "" {
+		mimeType = mime.TypeByExtension(filepath.Ext(name))
+	}
+	if mimeType == "" {
+		mimeType = "application/octet-stream"
+	}
+	return data, mimeType, name, nil
+}
+
+func rejectBotAPIRemoteHost(host string) error {
+	if strings.TrimSpace(host) == "" {
+		return errors.New("remote media host is empty")
+	}
+	ips, err := net.LookupIP(host)
+	if err != nil || len(ips) == 0 {
+		return errors.New("remote media host cannot be resolved")
+	}
+	for _, ip := range ips {
+		if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() || ip.IsMulticast() {
+			return errors.New("remote media host is not public")
+		}
+	}
+	return nil
+}
+
 func botAPIUploadedMedia(kind string, file *mtproto.InputFile, name, mimeType string, duration, width, height int, request *botAPIRequest) *mtproto.InputMedia {
 	if kind == "photo" {
 		return mtproto.MakeTLInputMediaUploadedPhoto(&mtproto.InputMedia{
@@ -1566,7 +1985,19 @@ func botAPIUploadedMedia(kind string, file *mtproto.InputFile, name, mimeType st
 }
 
 func uploadBotAPIFile(ctx context.Context, service *svc.ServiceContext, botID int64, name string, data []byte) (*mtproto.InputFile, error) {
-	if service == nil || service.DfsClient == nil || botID <= 0 || len(data) == 0 {
+	return uploadBotAPIFileWithContext(botRPCContext(ctx, botID), service, botID, name, data)
+}
+
+// uploadBotAPIFileWithContext writes the temporary Bot API upload under the
+// same creator that the downstream media service uses to read it. The caller
+// supplies the already-authenticated RPC context so business connections keep
+// their outgoing scope metadata while the file remains owned by the bot's
+// media auth key.
+func uploadBotAPIFileWithContext(ctx context.Context, service *svc.ServiceContext, creatorID int64, name string, data []byte) (*mtproto.InputFile, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if service == nil || service.DfsClient == nil || creatorID <= 0 || len(data) == 0 {
 		return nil, mtproto.ErrMethodNotImpl
 	}
 	const partSize = 512 << 10
@@ -1585,8 +2016,8 @@ func uploadBotAPIFile(ctx context.Context, service *svc.ServiceContext, botID in
 		if end > len(data) {
 			end = len(data)
 		}
-		_, err := service.DfsClient.DfsWriteFilePartData(botRPCContext(ctx, botID), &dfspb.TLDfsWriteFilePartData{
-			Creator:        botID,
+		_, err := service.DfsClient.DfsWriteFilePartData(ctx, &dfspb.TLDfsWriteFilePartData{
+			Creator:        creatorID,
 			FileId:         fileID,
 			FilePart:       int32(part),
 			Bytes:          data[start:end],
@@ -1707,13 +2138,12 @@ func getMyShortDescription(ctx *svc.ServiceContext, requestCtx context.Context, 
 }
 
 func editMessageText(ctx *svc.ServiceContext, r *http.Request, bot *mtproto.ImmutableUser, request *botAPIRequest) (any, int, int, string) {
-	text := request.string("text")
+	text, entities, formatErr := botAPITextEntities(request, "text", "entities", "parse_mode")
+	if formatErr != nil {
+		return nil, http.StatusBadRequest, 400, "Bad Request: " + formatErr.Error()
+	}
 	if text == "" {
 		return nil, http.StatusBadRequest, 400, "Bad Request: text is empty"
-	}
-	var entities []botapi.MessageEntity
-	if err := request.json("entities", &entities); err != nil {
-		return nil, http.StatusBadRequest, 400, "Bad Request: entities is invalid"
 	}
 	markup, err := botAPIReplyMarkup(request)
 	if err != nil {
@@ -1723,13 +2153,12 @@ func editMessageText(ctx *svc.ServiceContext, r *http.Request, bot *mtproto.Immu
 }
 
 func editMessageCaption(ctx *svc.ServiceContext, r *http.Request, bot *mtproto.ImmutableUser, request *botAPIRequest) (any, int, int, string) {
-	caption := request.string("caption")
+	caption, entities, formatErr := botAPICaptionEntities(request, "caption", "caption_entities")
+	if formatErr != nil {
+		return nil, http.StatusBadRequest, 400, "Bad Request: " + formatErr.Error()
+	}
 	if len(request.raw("caption")) == 0 {
 		return nil, http.StatusBadRequest, 400, "Bad Request: caption is empty"
-	}
-	var entities []botapi.MessageEntity
-	if err := request.json("caption_entities", &entities); err != nil {
-		return nil, http.StatusBadRequest, 400, "Bad Request: caption_entities is invalid"
 	}
 	markup, err := botAPIReplyMarkup(request)
 	if err != nil {
@@ -1755,11 +2184,15 @@ func editMessageMedia(ctx *svc.ServiceContext, r *http.Request, bot *mtproto.Imm
 		return nil, http.StatusBadRequest, 400, "Bad Request: media is invalid"
 	}
 	_, hasCaption := mediaObject["caption"]
+	caption, captionEntities, formatErr := botAPIMediaGroupCaption(item)
+	if formatErr != nil {
+		return nil, http.StatusBadRequest, 400, "Bad Request: " + formatErr.Error()
+	}
 	markup, err := botAPIReplyMarkup(request)
 	if err != nil {
 		return nil, http.StatusBadRequest, 400, "Bad Request: reply_markup is invalid"
 	}
-	return editBotAPIMessageWithMedia(ctx, r, bot, request, item.Caption, hasCaption, item.CaptionEntities, markup, media)
+	return editBotAPIMessageWithMedia(ctx, r, bot, request, caption, hasCaption, captionEntities, markup, media)
 }
 
 func editMessageReplyMarkup(ctx *svc.ServiceContext, r *http.Request, bot *mtproto.ImmutableUser, request *botAPIRequest) (any, int, int, string) {

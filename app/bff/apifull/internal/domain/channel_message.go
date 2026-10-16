@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/teamgram/proto/mtproto"
+	"google.golang.org/protobuf/proto"
 )
 
 var (
@@ -22,6 +23,7 @@ var (
 	ErrDuplicateMessageID    = errors.New("duplicate channel message id")
 	ErrRandomIDConflict      = errors.New("channel random id reused with different content")
 	ErrRandomIDMissing       = errors.New("channel random id is required")
+	ErrPollInvalid           = errors.New("channel message is not a poll")
 )
 
 type ChannelMessage struct {
@@ -509,6 +511,88 @@ func UpdateChannelMessage(channelID, sender int64, messageID int32, text string)
 	row.ChannelID = channelID
 	row.Pts = pts
 	row.Text = text
+	row.Edited = true
+	row.EditedAt = editedAt
+	row.Pinned = pinned != 0
+	if err = insertChannelDeliveryEventTx(tx, channelID, sender, 0, channelEventEdit, []ChannelMessage{row}, []int32{messageID}, row.Pinned, pts, pts); err != nil {
+		return ChannelMessage{}, err
+	}
+	if err = tx.Commit(); err != nil {
+		return ChannelMessage{}, err
+	}
+	return row, nil
+}
+
+// StopChannelPoll closes a channel poll while preserving its current results.
+// The message row, event, PTS and delivery outbox are committed together so a
+// retry cannot expose a closed poll without its corresponding update.
+func StopChannelPoll(channelID, sender int64, messageID int32, replyMarkup *mtproto.ReplyMarkup) (ChannelMessage, error) {
+	var row ChannelMessage
+	if db == nil {
+		return row, errors.New("domain PostgreSQL is not open")
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		return row, err
+	}
+	defer tx.Rollback()
+	var creator int64
+	err = tx.QueryRow(`SELECT creator_user_id FROM apifull_channel WHERE id=? FOR UPDATE`, channelID).Scan(&creator)
+	if err == sql.ErrNoRows {
+		return row, ErrChannelMissing
+	}
+	if err != nil {
+		return row, err
+	}
+	if creator != sender {
+		return row, ErrNotCreator
+	}
+	var edited, pinned int
+	var contentJSON sql.NullString
+	err = tx.QueryRow(`SELECT message_id, sender_user_id, date, message, edited, edited_at, pinned, reply_to_msg_id, reply_to_top_id, COALESCE(content_json,'')
+		FROM apifull_channel_message WHERE channel_id=? AND message_id=? FOR UPDATE`, channelID, messageID).
+		Scan(&row.MessageID, &row.Sender, &row.Date, &row.Text, &edited, &row.EditedAt, &pinned, &row.ReplyToMsgID, &row.ReplyToTopID, &contentJSON)
+	if err == sql.ErrNoRows {
+		return ChannelMessage{}, ErrMessageMissing
+	}
+	if err != nil {
+		return ChannelMessage{}, err
+	}
+	if err = decodeChannelMessageContent(contentJSON.String, &row.Content); err != nil {
+		return ChannelMessage{}, err
+	}
+	if row.Content.Media == nil || row.Content.Media.GetPredicateName() != mtproto.Predicate_messageMediaPoll || row.Content.Media.GetPoll() == nil {
+		return ChannelMessage{}, ErrPollInvalid
+	}
+	poll := proto.Clone(row.Content.Media.GetPoll()).(*mtproto.Poll)
+	if poll.GetClosed() {
+		return ChannelMessage{}, mtproto.ErrMessagePollClosed
+	}
+	poll.Closed = true
+	row.Content.Media = mtproto.MakeTLMessageMediaPoll(&mtproto.MessageMedia{
+		Poll: poll, Results: row.Content.Media.GetResults(),
+	}).To_MessageMedia()
+	if replyMarkup != nil {
+		row.Content.ReplyMarkup = replyMarkup
+	}
+	contentJSONValue, err := encodeChannelMessageContent(row.Content)
+	if err != nil {
+		return ChannelMessage{}, err
+	}
+	pts, err := advanceChannelMessagePTS(tx, channelID, 1)
+	if err != nil {
+		return ChannelMessage{}, err
+	}
+	editedAt := time.Now().Unix()
+	if _, err = tx.Exec(`UPDATE apifull_channel_message SET edited=1, edited_at=?, content_json=? WHERE channel_id=? AND message_id=?`,
+		editedAt, contentJSONValue, channelID, messageID); err != nil {
+		return ChannelMessage{}, err
+	}
+	if err = appendChannelEventTx(tx, channelID, pts, 1, channelEventEdit, []int32{messageID}, row.Sender, row.Date, row.Text, contentJSONValue, editedAt, pinned != 0); err != nil {
+		return ChannelMessage{}, err
+	}
+	row.ChannelID = channelID
+	row.Pts = pts
 	row.Edited = true
 	row.EditedAt = editedAt
 	row.Pinned = pinned != 0

@@ -52,6 +52,11 @@ type encodedUpdate struct {
 	dedupeKey string
 }
 
+type pendingWebhookUpdate struct {
+	id   int64
+	data []byte
+}
+
 func New(ctx context.Context, cfg postgres.Config) (*Store, error) {
 	pool, err := postgres.NewPool(ctx, cfg)
 	if err != nil {
@@ -121,6 +126,15 @@ func (s *Store) AppendOnce(ctx context.Context, botID int64, updates *mtproto.Up
 		mtproto.Predicate_updateEditChannelMessage: func(_ int64, update *mtproto.Update, users []*mtproto.User, chats []*mtproto.Chat, _ int32) {
 			s.appendConverted(ctx, &encoded, update, users, chats)
 		},
+		mtproto.Predicate_updateBotGuestChatQuery: func(_ int64, update *mtproto.Update, users []*mtproto.User, chats []*mtproto.Chat, _ int32) {
+			s.appendConverted(ctx, &encoded, update, users, chats)
+		},
+		mtproto.Predicate_updateNewEphemeralMessage: func(_ int64, update *mtproto.Update, users []*mtproto.User, chats []*mtproto.Chat, _ int32) {
+			s.appendConverted(ctx, &encoded, update, users, chats)
+		},
+		mtproto.Predicate_updateEditEphemeralMessage: func(_ int64, update *mtproto.Update, users []*mtproto.User, chats []*mtproto.Chat, _ int32) {
+			s.appendConverted(ctx, &encoded, update, users, chats)
+		},
 		mtproto.Predicate_updateBotInlineQuery: func(_ int64, update *mtproto.Update, users []*mtproto.User, chats []*mtproto.Chat, _ int32) {
 			s.appendConverted(ctx, &encoded, update, users, chats)
 		},
@@ -128,6 +142,36 @@ func (s *Store) AppendOnce(ctx context.Context, botID int64, updates *mtproto.Up
 			s.appendConverted(ctx, &encoded, update, users, chats)
 		},
 		mtproto.Predicate_updateBotCallbackQuery: func(_ int64, update *mtproto.Update, users []*mtproto.User, chats []*mtproto.Chat, _ int32) {
+			s.appendConverted(ctx, &encoded, update, users, chats)
+		},
+		mtproto.Predicate_updateInlineBotCallbackQuery: func(_ int64, update *mtproto.Update, users []*mtproto.User, chats []*mtproto.Chat, _ int32) {
+			s.appendConverted(ctx, &encoded, update, users, chats)
+		},
+		mtproto.Predicate_updateMessagePoll: func(_ int64, update *mtproto.Update, users []*mtproto.User, chats []*mtproto.Chat, _ int32) {
+			s.appendConverted(ctx, &encoded, update, users, chats)
+		},
+		mtproto.Predicate_updateMessagePollVote: func(_ int64, update *mtproto.Update, users []*mtproto.User, chats []*mtproto.Chat, _ int32) {
+			s.appendConverted(ctx, &encoded, update, users, chats)
+		},
+		mtproto.Predicate_updateBotChatInviteRequester: func(_ int64, update *mtproto.Update, users []*mtproto.User, chats []*mtproto.Chat, _ int32) {
+			s.appendConverted(ctx, &encoded, update, users, chats)
+		},
+		mtproto.Predicate_updateBotMessageReaction: func(_ int64, update *mtproto.Update, users []*mtproto.User, chats []*mtproto.Chat, _ int32) {
+			s.appendConverted(ctx, &encoded, update, users, chats)
+		},
+		mtproto.Predicate_updateBotMessageReactions: func(_ int64, update *mtproto.Update, users []*mtproto.User, chats []*mtproto.Chat, _ int32) {
+			s.appendConverted(ctx, &encoded, update, users, chats)
+		},
+		mtproto.Predicate_updateBotChatBoost: func(_ int64, update *mtproto.Update, users []*mtproto.User, chats []*mtproto.Chat, _ int32) {
+			s.appendConverted(ctx, &encoded, update, users, chats)
+		},
+		mtproto.Predicate_updateChatParticipant: func(_ int64, update *mtproto.Update, users []*mtproto.User, chats []*mtproto.Chat, _ int32) {
+			s.appendConvertedForBot(ctx, &encoded, botID, update, users, chats)
+		},
+		mtproto.Predicate_updateChannelParticipant: func(_ int64, update *mtproto.Update, users []*mtproto.User, chats []*mtproto.Chat, _ int32) {
+			s.appendConvertedForBot(ctx, &encoded, botID, update, users, chats)
+		},
+		mtproto.Predicate_updateBotPurchasedPaidMedia: func(_ int64, update *mtproto.Update, users []*mtproto.User, chats []*mtproto.Chat, _ int32) {
 			s.appendConverted(ctx, &encoded, update, users, chats)
 		},
 		mtproto.Predicate_updateBotWebhookJSONQuery: func(_ int64, update *mtproto.Update, users []*mtproto.User, chats []*mtproto.Chat, _ int32) {
@@ -215,6 +259,10 @@ VALUES($1,$2,$3::jsonb)`, botID, updateID, string(data)); err != nil {
 }
 
 func (s *Store) appendConverted(ctx context.Context, encoded *[]encodedUpdate, update *mtproto.Update, users []*mtproto.User, chats []*mtproto.Chat) {
+	s.appendConvertedForBot(ctx, encoded, 0, update, users, chats)
+}
+
+func (s *Store) appendConvertedForBot(ctx context.Context, encoded *[]encodedUpdate, botID int64, update *mtproto.Update, users []*mtproto.User, chats []*mtproto.Chat) {
 	if update != nil && update.GetPredicateName() == mtproto.Predicate_updateBotBusinessConnect && s.userLoader != nil {
 		if connection := update.GetConnection(); connection != nil && connection.GetUserId() > 0 {
 			if immutable, err := s.userLoader(ctx, connection.GetUserId()); err == nil && immutable != nil && immutable.GetUser() != nil {
@@ -226,7 +274,7 @@ func (s *Store) appendConverted(ctx context.Context, encoded *[]encodedUpdate, u
 		}
 	}
 
-	converted, ok := botapi.UpdateFromMTProto(update, users, chats)
+	converted, ok := botapi.UpdateFromMTProtoForBot(update, users, chats, botID)
 	if !ok {
 		return
 	}
@@ -637,13 +685,9 @@ WHERE bot_id=$1 ORDER BY update_id LIMIT $2`, botID, webhookDeliverySize)
 		return
 	}
 	defer rows.Close()
-	type pendingUpdate struct {
-		id   int64
-		data []byte
-	}
-	items := make([]pendingUpdate, 0, webhookDeliverySize)
+	items := make([]pendingWebhookUpdate, 0, webhookDeliverySize)
 	for rows.Next() {
-		var item pendingUpdate
+		var item pendingWebhookUpdate
 		if err := rows.Scan(&item.id, &item.data); err != nil {
 			return
 		}
@@ -657,6 +701,49 @@ WHERE bot_id=$1 ORDER BY update_id LIMIT $2`, botID, webhookDeliverySize)
 		allowedSet[name] = struct{}{}
 	}
 	client := &http.Client{Timeout: 10 * time.Second}
+	jobs := make(chan pendingWebhookUpdate)
+	workerCount := webhook.MaxConnections
+	if workerCount <= 0 {
+		workerCount = 40
+	}
+	if workerCount > len(items) {
+		workerCount = len(items)
+	}
+	var workers sync.WaitGroup
+	for i := 0; i < workerCount; i++ {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			for item := range jobs {
+				req, err := http.NewRequestWithContext(ctx, http.MethodPost, webhook.URL, strings.NewReader(string(item.data)))
+				if err != nil {
+					s.recordWebhookError(ctx, botID, err)
+					continue
+				}
+				req.Header.Set("Content-Type", "application/json")
+				if webhook.SecretToken != "" {
+					req.Header.Set("X-Telegram-Bot-Api-Secret-Token", webhook.SecretToken)
+				}
+				resp, err := client.Do(req)
+				if err != nil {
+					s.recordWebhookError(ctx, botID, err)
+					continue
+				}
+				if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+					_ = resp.Body.Close()
+					s.recordWebhookError(ctx, botID, fmt.Errorf("webhook returned HTTP %d", resp.StatusCode))
+					continue
+				}
+				_, readErr := io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
+				_ = resp.Body.Close()
+				if readErr != nil {
+					s.recordWebhookError(ctx, botID, readErr)
+					continue
+				}
+				_, _ = s.Pool.Exec(ctx, `DELETE FROM bot_api_updates WHERE bot_id=$1 AND update_id=$2`, botID, item.id)
+			}
+		}()
+	}
 	for _, item := range items {
 		if len(allowedSet) > 0 && !allowedUpdate(item.data, allowedSet) {
 			// A filtered update must not block delivery of a later allowed
@@ -664,36 +751,10 @@ WHERE bot_id=$1 ORDER BY update_id LIMIT $2`, botID, webhookDeliverySize)
 			_, _ = s.Pool.Exec(ctx, `DELETE FROM bot_api_updates WHERE bot_id=$1 AND update_id=$2`, botID, item.id)
 			continue
 		}
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, webhook.URL, strings.NewReader(string(item.data)))
-		if err != nil {
-			s.recordWebhookError(ctx, botID, err)
-			return
-		}
-		req.Header.Set("Content-Type", "application/json")
-		if webhook.SecretToken != "" {
-			req.Header.Set("X-Telegram-Bot-Api-Secret-Token", webhook.SecretToken)
-		}
-		resp, err := client.Do(req)
-		if err != nil {
-			s.recordWebhookError(ctx, botID, err)
-			return
-		}
-		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			_ = resp.Body.Close()
-			s.recordWebhookError(ctx, botID, fmt.Errorf("webhook returned HTTP %d", resp.StatusCode))
-			return
-		}
-		// Telegram treats any 2xx response as an acknowledged update. A
-		// webhook endpoint is not required to return the Bot API response
-		// envelope, so an empty or plain-text 200 must also drain the queue.
-		_, readErr := io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
-		_ = resp.Body.Close()
-		if readErr != nil {
-			s.recordWebhookError(ctx, botID, readErr)
-			return
-		}
-		_, _ = s.Pool.Exec(ctx, `DELETE FROM bot_api_updates WHERE bot_id=$1 AND update_id=$2`, botID, item.id)
+		jobs <- item
 	}
+	close(jobs)
+	workers.Wait()
 }
 
 func (s *Store) recordWebhookError(ctx context.Context, botID int64, err error) {

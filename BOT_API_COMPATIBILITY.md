@@ -39,13 +39,16 @@ are stored in PostgreSQL.
 - Files and messages: `getFile`, file download, `sendMessage`, `sendPhoto`,
   `sendDocument`, `sendVideo`, `sendVideoNote`, `sendSticker`, `sendAudio`, `sendVoice`, `sendAnimation`,
   `sendLocation`, `sendVenue`, `sendContact`, `sendPoll`, `sendDice`,
+  `sendRichMessage`, `sendRichMessageDraft`,
   `sendMediaGroup`, `sendChatAction`, `sendGame`, `sendInvoice`,
   `createInvoiceLink`, `getMyStarBalance`, `getStarTransactions`,
   `refundStarPayment`, `editUserStarSubscription`,
-  `forwardMessage`, `copyMessage`, `getChat`,
+  `forwardMessage`, `copyMessage`, `forwardMessages`, `copyMessages`, `getChat`,
   `editMessageText`, `editMessageCaption`, `editMessageMedia`,
-  `editMessageReplyMarkup`, `setGameScore`, `getGameHighScores`,
-  `deleteMessage`, `setMessageReaction`, `answerCallbackQuery`, and
+  `editMessageReplyMarkup`, `editMessageLiveLocation`,
+  `stopMessageLiveLocation`, `setGameScore`, `getGameHighScores`,
+  `deleteMessage`, `deleteMessages`, `deleteMessageReaction`,
+  `deleteAllMessageReactions`, `setMessageReaction`, `answerCallbackQuery`, and
   `answerInlineQuery` for article, media, cached media, location, venue,
   contact, and game results.
   Payment completion service messages expose `successful_payment` with order,
@@ -82,10 +85,39 @@ are stored in PostgreSQL.
   the returned `message_thread_id` is the persisted Layer 229 topic id.
 - Profile photos: `getUserProfilePhotos`, `setChatPhoto`, and
   `deleteChatPhoto` use the Layer 229 photo/chat RPCs and DFS upload path.
+  `setBusinessAccountProfilePhoto` uses the connected business user's edit
+  permission, bot-authenticated DFS upload, and owner-scoped
+  `photos.uploadProfilePhoto`.
+- Sticker sets: `getStickerSet`, `createNewStickerSet`, `addStickerToSet`,
+  position/delete/replace operations, emoji/keyword/mask edits, thumbnail and
+  title changes, custom emoji thumbnails, and `deleteStickerSet` use the Layer
+  229 sticker services. `setChatStickerSet` and `deleteChatStickerSet` use
+  `channels.setStickers` for supergroups.
+- Gifts and profile controls: `getAvailableGifts`, local-owner gift
+  conversion/upgrade/transfer, `setUserEmojiStatus`,
+  `getUserProfileAudios`, `getCustomEmojiStickers`,
+  `getForumTopicIconStickers`, and `getUserPersonalChatMessages` are routed
+  through their Layer 229 adapters. Gift mutation is limited to the bot's
+  local owner ledger until business-account gift scope is available.
+- Lifecycle and Mini App helpers: `logOut`, `close`, and
+  `savePreparedInlineMessage` use Telegram's boolean/result contracts and the
+  Layer 229 prepared-inline persistence service. `deleteEphemeralMessage` and
+  the four ephemeral edit methods use the native Layer 229 ephemeral-message
+  service; photo, video, document, audio, and animation edits resolve through
+  the existing DFS/media path.
+- Poll and business controls: `stopPoll` preserves poll results while closing
+  the poll in both ordinary message storage and the PostgreSQL channel store.
+  Business account name, username, bio, and profile-photo methods enforce the
+  connection rights before calling the corresponding Layer 229 services.
 - Message input accepts JSON, URL encoded forms, multipart uploads, existing
   Bot API file ids, UTF-16 entity offsets, inline keyboards, reply keyboards,
-  force replies, Web App buttons, disabled link previews, and empty inline
-  keyboard removal.
+  force replies, Web App buttons, disabled link previews, empty inline keyboard
+  removal, and HTTP(S) media URLs. Method names are case-insensitive, and
+  message/caption whitespace is preserved.
+- The Bot API response type supports Telegram's `parameters` envelope, and
+  updates include forwarding origin, topic/offline/effect fields, inline callback queries,
+  polls, poll answers, join requests, reactions, chat boosts, and paid-media
+  purchase updates whenever the corresponding Layer 229 update is available.
 - `botapi.ValidateWebAppInitData` implements Telegram's Web App HMAC contract
   for developer backends, including optional `auth_date` freshness checks.
 - MTProto Layer 229 already contains the Mini App request and webview methods;
@@ -93,24 +125,49 @@ are stored in PostgreSQL.
 
 ## Not yet complete
 
-The following method groups still need dedicated protocol adapters before the
-server can claim full current Telegram Bot API compatibility:
+Compatibility snapshot (2026-10-17): the live Telegram documentation exposes
+183 official method names. All 183 are accepted case-insensitively by the
+canonical HTTP route table, which also keeps the project extensions
+`sendRichMessage`/`sendRichMessageDraft` and the legacy `kickChatMember` alias.
+178 official methods have concrete dispatch adapters. Five route names return a
+Telegram-shaped method-specific `501` because their Layer 229/service contract
+is not available: `sendGift`, `giftPremiumSubscription`,
+`setBusinessAccountGiftSettings`, `transferBusinessAccountStars`, and
+`savePreparedKeyboardButton`. Other dispatched methods can still return `501`
+when their configured backing service is unavailable. Rich message `html`,
+`markdown`, and text-block requests are supported; rich media blocks and draft
+stop controls remain explicitly unsupported.
 
-- Remaining media and message methods: link preview preference fields beyond
-  the disabled and show-above-text flags.
+The following contract details still differ from Telegram's current behavior:
+
+- Formatting: `parse_mode` and `caption_parse_mode` support Telegram HTML,
+  Markdown, and MarkdownV2 entity conversion. Explicit `entities`/
+  `caption_entities` still take precedence, as in Telegram's API.
+- Message methods: `stopPoll` and ephemeral text, caption, media, and reply
+  markup edits are implemented. Ephemeral `show_caption_above_media` and rich
+  draft stop controls return a method-specific `501` because the current
+  Layer 229 records have no matching flags. `deleteMessages`,
+  `deleteMessageReaction`, and `deleteAllMessageReactions` use the existing
+  message and reaction services.
+- Gifts: `getAvailableGifts` is complete. Gift conversion, upgrade, and
+  transfer currently accept the project's local `user_id`/`owned_gift_id`
+  ledger shape and reject non-owner accounts or positive `star_count`; the
+  current official `business_connection_id` flow still needs a business gift
+  adapter. `sendGift` and `giftPremiumSubscription` remain unsupported.
 - Chat administration: hidden member details and some channel-only
   administrative fields still need dedicated Bot API adapters.
 - Inline mode and Mini Apps: external inline media is retained as WebDocument
   and is downloaded into DFS when an inline result is selected for sending;
   the remote URL is restricted to public HTTP(S) hosts and bounded to 20 MiB.
-- Business message actions: `readBusinessMessage` and
-  `deleteBusinessMessages`, plus business-scoped message editing, still need
-  a generated Layer 229 adapter that carries `invokeWithBusinessConnection`
-  through the service boundary.
-- Payments, invoices, passport, boosts, and statistics still have provider or
-  Bot API adapter gaps beyond invoice delivery, invoice links, Stars account
-  balance/history/refunds/subscription edits, and shipping/pre-checkout
-  callbacks.
+- Updates and webhooks: `my_chat_member` and `chat_member` are converted from
+  channel/chat participant updates and persisted in the PostgreSQL Bot API
+  queue. Webhook delivery uses the configured `max_connections` worker bound;
+  failed HTTP requests remain queued and update the webhook error fields for a
+  later retry. `removed_chat_boost` still depends on a matching Layer 229 update
+  constructor being emitted by the source service.
+- Bot profile commands: `setMyCommands` and `getMyCommands` currently use the
+  default command scope and language only; Telegram's `scope` and
+  `language_code` variants need persistence support.
 
 Unsupported methods return a Telegram-shaped `501` response rather than a
 successful placeholder. New methods must preserve the existing MTProto Layer

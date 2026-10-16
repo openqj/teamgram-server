@@ -16,11 +16,13 @@ import (
 
 type getUsersUserClientStub struct {
 	userclient.UserClient
-	users *userpb.Vector_ImmutableUser
-	err   error
+	users   *userpb.Vector_ImmutableUser
+	err     error
+	request *userpb.TLUserGetMutableUsers
 }
 
-func (s *getUsersUserClientStub) UserGetMutableUsers(context.Context, *userpb.TLUserGetMutableUsers) (*userpb.Vector_ImmutableUser, error) {
+func (s *getUsersUserClientStub) UserGetMutableUsers(_ context.Context, in *userpb.TLUserGetMutableUsers) (*userpb.Vector_ImmutableUser, error) {
+	s.request = in
 	return s.users, s.err
 }
 
@@ -36,8 +38,8 @@ func newGetUsersTestCore(stub *getUsersUserClientStub) *UsersCore {
 
 func TestUsersGetUsersReturnsProviderUsers(t *testing.T) {
 	users := &getUsersUserClientStub{users: &userpb.Vector_ImmutableUser{Datas: []*mtproto.ImmutableUser{
-		mtproto.MakeTLImmutableUser(&mtproto.ImmutableUser{User: &mtproto.UserData{Id: 42, FirstName: "self"}}).To_ImmutableUser(),
-		mtproto.MakeTLImmutableUser(&mtproto.ImmutableUser{User: &mtproto.UserData{Id: 43, FirstName: "peer"}}).To_ImmutableUser(),
+		mtproto.MakeTLImmutableUser(&mtproto.ImmutableUser{User: &mtproto.UserData{Id: 42, AccessHash: 142, FirstName: "self"}}).To_ImmutableUser(),
+		mtproto.MakeTLImmutableUser(&mtproto.ImmutableUser{User: &mtproto.UserData{Id: 43, AccessHash: 143, FirstName: "peer"}}).To_ImmutableUser(),
 	}}}
 	core := newGetUsersTestCore(users)
 	result, err := core.UsersGetUsers(&mtproto.TLUsersGetUsers{Id: []*mtproto.InputUser{
@@ -49,6 +51,70 @@ func TestUsersGetUsersReturnsProviderUsers(t *testing.T) {
 	}
 	if result == nil || len(result.GetDatas()) != 2 || result.GetDatas()[0].GetId() != 42 || result.GetDatas()[1].GetId() != 43 {
 		t.Fatalf("users.getUsers result = %v, want self and provider user 43", result)
+	}
+	if result.GetDatas()[0].GetAccessHash().GetValue() != 142 || result.GetDatas()[1].GetAccessHash().GetValue() != 143 {
+		t.Fatalf("users.getUsers access hashes = %v, want self=142 peer=143", result.GetDatas())
+	}
+	if users.request == nil || len(users.request.GetId()) != 2 || users.request.GetId()[0] != 42 || users.request.GetId()[1] != 43 || len(users.request.GetTo()) != 1 || users.request.GetTo()[0] != 42 {
+		t.Fatalf("provider request = %v, want ids [42 43] and to [42]", users.request)
+	}
+}
+
+func TestUsersGetUsersPreservesRequestOrderAndDuplicates(t *testing.T) {
+	users := &getUsersUserClientStub{users: &userpb.Vector_ImmutableUser{Datas: []*mtproto.ImmutableUser{
+		{User: &mtproto.UserData{Id: 42, AccessHash: 142}},
+		{User: &mtproto.UserData{Id: 43, AccessHash: 143}},
+	}}}
+	result, err := newGetUsersTestCore(users).UsersGetUsers(&mtproto.TLUsersGetUsers{Id: []*mtproto.InputUser{
+		mtproto.MakeTLInputUser(&mtproto.InputUser{UserId: 43, AccessHash: 143}).To_InputUser(),
+		mtproto.MakeTLInputUserSelf(nil).To_InputUser(),
+		mtproto.MakeTLInputUser(&mtproto.InputUser{UserId: 43, AccessHash: 143}).To_InputUser(),
+	}})
+	if err != nil || result == nil || len(result.GetDatas()) != 3 {
+		t.Fatalf("users.getUsers result = (%v, %v), want three users", result, err)
+	}
+	for i, want := range []int64{43, 42, 43} {
+		if result.GetDatas()[i].GetId() != want {
+			t.Fatalf("users.getUsers result[%d] = %d, want %d", i, result.GetDatas()[i].GetId(), want)
+		}
+	}
+}
+
+func TestUsersGetUsersRejectsAccessHashMismatchAndDeletedUsers(t *testing.T) {
+	for name, provider := range map[string]*userpb.Vector_ImmutableUser{
+		"hash mismatch": {Datas: []*mtproto.ImmutableUser{
+			{User: &mtproto.UserData{Id: 42, AccessHash: 142}},
+			{User: &mtproto.UserData{Id: 43, AccessHash: 143}},
+		}},
+		"deleted user": {Datas: []*mtproto.ImmutableUser{
+			{User: &mtproto.UserData{Id: 42, AccessHash: 142}},
+			{User: &mtproto.UserData{Id: 43, AccessHash: 143, Deleted: true}},
+		}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			inputHash := int64(143)
+			if name == "hash mismatch" {
+				inputHash = 999
+			}
+			result, err := newGetUsersTestCore(&getUsersUserClientStub{users: provider}).UsersGetUsers(&mtproto.TLUsersGetUsers{Id: []*mtproto.InputUser{
+				mtproto.MakeTLInputUserSelf(nil).To_InputUser(),
+				mtproto.MakeTLInputUser(&mtproto.InputUser{UserId: 43, AccessHash: inputHash}).To_InputUser(),
+			}})
+			if result != nil || !errors.Is(err, mtproto.ErrUserIdInvalid) {
+				t.Fatalf("users.getUsers = (%v, %v), want nil and USER_ID_INVALID", result, err)
+			}
+		})
+	}
+}
+
+func TestUsersGetUsersRejectsMissingCanonicalUser(t *testing.T) {
+	result, err := newGetUsersTestCore(&getUsersUserClientStub{users: &userpb.Vector_ImmutableUser{Datas: []*mtproto.ImmutableUser{
+		{User: &mtproto.UserData{Id: 42, AccessHash: 142}},
+	}}}).UsersGetUsers(&mtproto.TLUsersGetUsers{Id: []*mtproto.InputUser{
+		mtproto.MakeTLInputUser(&mtproto.InputUser{UserId: 43, AccessHash: 143}).To_InputUser(),
+	}})
+	if result != nil || !errors.Is(err, mtproto.ErrUserIdInvalid) {
+		t.Fatalf("missing canonical user = (%v, %v), want nil and USER_ID_INVALID", result, err)
 	}
 }
 
@@ -69,6 +135,9 @@ func TestUsersGetUsersRejectsMalformedInput(t *testing.T) {
 		"nil request": nil,
 		"nil user":    {Id: []*mtproto.InputUser{nil}},
 		"empty user":  {Id: []*mtproto.InputUser{mtproto.MakeTLInputUserEmpty(nil).To_InputUser()}},
+		"missing access hash": {Id: []*mtproto.InputUser{
+			mtproto.MakeTLInputUser(&mtproto.InputUser{UserId: 43}).To_InputUser(),
+		}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			result, err := core.UsersGetUsers(input)

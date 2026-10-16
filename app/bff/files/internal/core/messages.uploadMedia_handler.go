@@ -237,9 +237,12 @@ func (c *FilesCore) makeMediaByInputMedia(media *mtproto.InputMedia) (messageMed
 	case mtproto.Predicate_inputMediaGeoLive:
 		// inputMediaGeoLive#971fa843 flags:# stopped:flags.0?true geo_point:InputGeoPoint heading:flags.2?int period:flags.1?int proximity_notification_radius:flags.3?int = InputMedia;
 
+		live := media.To_InputMediaGeoLive()
 		messageMedia = mtproto.MakeTLMessageMediaGeoLive(&mtproto.MessageMedia{
-			Geo:    mtproto.MakeGeoPointByInput(media.To_InputMediaGeoLive().GetGeoPoint()),
-			Period: media.To_InputMediaGeoLive().GetPeriod().GetValue(),
+			Geo:                         mtproto.MakeGeoPointByInput(live.GetGeoPoint()),
+			Heading:                     live.GetHeading(),
+			Period:                      live.GetPeriod().GetValue(),
+			ProximityNotificationRadius: live.GetProximityNotificationRadius(),
 		}).To_MessageMedia()
 	case mtproto.Predicate_inputMediaPoll:
 		// inputMediaPoll#f94e5f1 flags:# poll:Poll correct_answers:flags.0?Vector<bytes> solution:flags.1?string solution_entities:flags.1?Vector<MessageEntity> = InputMedia;

@@ -113,6 +113,70 @@ func TestFeaturedStickerSetsPostgresPagination(t *testing.T) {
 	}
 }
 
+func TestOwnedStickerSetsPostgresPagination(t *testing.T) {
+	dsn := os.Getenv("APIFULL_POSTGRES_DSN")
+	if dsn == "" {
+		t.Skip("APIFULL_POSTGRES_DSN must point to an isolated PostgreSQL 18 database")
+	}
+	if err := OpenPostgres(dsn); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ClosePostgres() })
+
+	db, err := stickerDB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	owner := time.Now().UnixNano()
+	unrelatedOwner := owner + 1
+	prefix := fmt.Sprintf("my_stickers_%d_", owner)
+	const distractors = 100
+	_, err = db.ExecContext(ctx, `
+		INSERT INTO apifull_sticker_set
+			(access_hash, owner_user_id, title, short_name)
+		SELECT $1::bigint + n, $2::bigint, 'unrelated', $3 || 'unrelated_' || n::text
+		FROM generate_series(1, $4) AS n`, owner, unrelatedOwner, prefix, distractors)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ownedIDs := make([]int64, 2)
+	for i := range ownedIDs {
+		shortName := fmt.Sprintf("%sowned_%d", prefix, i)
+		if err = db.QueryRowContext(ctx, `
+			INSERT INTO apifull_sticker_set
+				(access_hash, owner_user_id, title, short_name)
+			VALUES ($1, $2, 'owned', $3) RETURNING id`, owner+1000+int64(i), owner, shortName).Scan(&ownedIDs[i]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() {
+		_, _ = db.ExecContext(context.Background(), `DELETE FROM apifull_sticker_set WHERE owner_user_id IN ($1, $2)`, owner, unrelatedOwner)
+	})
+
+	page, total, err := ListOwnedStickerSets(ctx, owner, 0, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != int64(len(ownedIDs)) {
+		t.Fatalf("total = %d, want %d", total, len(ownedIDs))
+	}
+	if len(page) != 1 || page[0].ID != ownedIDs[0] {
+		t.Fatalf("first page IDs = %v, want [%d]", stickerSetIDs(page), ownedIDs[0])
+	}
+
+	page, total, err = ListOwnedStickerSets(ctx, owner, ownedIDs[0], 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != int64(len(ownedIDs)) {
+		t.Fatalf("second page total = %d, want %d", total, len(ownedIDs))
+	}
+	if len(page) != 1 || page[0].ID != ownedIDs[1] {
+		t.Fatalf("second page IDs = %v, want [%d]", stickerSetIDs(page), ownedIDs[1])
+	}
+}
+
 func TestRemoveStickerCompactsPositionsPostgres(t *testing.T) {
 	dsn := os.Getenv("APIFULL_POSTGRES_DSN")
 	if dsn == "" {

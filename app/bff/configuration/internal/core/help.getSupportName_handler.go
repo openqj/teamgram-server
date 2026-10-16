@@ -19,6 +19,8 @@
 package core
 
 import (
+	"strings"
+
 	"github.com/teamgram/proto/mtproto"
 )
 
@@ -31,9 +33,13 @@ func (c *ConfigurationCore) HelpGetSupportName(in *mtproto.TLHelpGetSupportName)
 	if err != nil {
 		return nil, err
 	}
-	// The support username is deployment-owned.  Returning the typed empty
-	// constructor when it is unset preserves Telegram's no-support semantics.
+	name := cfg.SupportUserUsername
+	if name == "" {
+		name = strings.TrimSpace(strings.TrimSpace(cfg.SupportUserFirstName) + " " + strings.TrimSpace(cfg.SupportUserLastName))
+	}
+	// Prefer an explicitly configured support name/username, then derive the
+	// display name from the support user's first and last names.
 	return mtproto.MakeTLHelpSupportName(&mtproto.Help_SupportName{
-		Name: cfg.SupportUserUsername,
+		Name: name,
 	}).To_Help_SupportName(), nil
 }

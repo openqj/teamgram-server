@@ -31,15 +31,16 @@ func (s *markDialogUnreadDialogClientStub) DialogMarkDialogUnread(_ context.Cont
 type markDialogUnreadSyncClientStub struct {
 	syncclient.SyncClient
 	requests []*syncpb.TLSyncUpdatesNotMe
+	response *mtproto.Void
 	err      error
 }
 
 func (s *markDialogUnreadSyncClientStub) SyncUpdatesNotMe(_ context.Context, in *syncpb.TLSyncUpdatesNotMe) (*mtproto.Void, error) {
 	s.requests = append(s.requests, in)
-	return mtproto.EmptyVoid, s.err
+	return s.response, s.err
 }
 
-func newMarkDialogUnreadTestCore(dialogs *markDialogUnreadDialogClientStub, syncStub *markDialogUnreadSyncClientStub) *DialogsCore {
+func newMarkDialogUnreadTestCore(dialogs dialogclient.DialogClient, syncStub syncclient.SyncClient) *DialogsCore {
 	ctx := context.Background()
 	return &DialogsCore{
 		ctx: ctx,
@@ -66,7 +67,7 @@ func markDialogUnreadRequest(unread bool) *mtproto.TLMessagesMarkDialogUnread {
 
 func TestMessagesMarkDialogUnreadSyncsSuccessfulMutationToOtherSessions(t *testing.T) {
 	dialogs := &markDialogUnreadDialogClientStub{response: mtproto.BoolTrue}
-	syncStub := &markDialogUnreadSyncClientStub{}
+	syncStub := &markDialogUnreadSyncClientStub{response: mtproto.EmptyVoid}
 	core := newMarkDialogUnreadTestCore(dialogs, syncStub)
 
 	got, err := core.MessagesMarkDialogUnread(markDialogUnreadRequest(true))
@@ -96,7 +97,7 @@ func TestMessagesMarkDialogUnreadSyncsSuccessfulMutationToOtherSessions(t *testi
 
 func TestMessagesMarkDialogUnreadSyncsClearedMark(t *testing.T) {
 	dialogs := &markDialogUnreadDialogClientStub{response: mtproto.BoolTrue}
-	syncStub := &markDialogUnreadSyncClientStub{}
+	syncStub := &markDialogUnreadSyncClientStub{response: mtproto.EmptyVoid}
 	core := newMarkDialogUnreadTestCore(dialogs, syncStub)
 
 	got, err := core.MessagesMarkDialogUnread(markDialogUnreadRequest(false))
@@ -126,7 +127,7 @@ func TestMessagesMarkDialogUnreadDoesNotSyncUnsuccessfulMutation(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dialogs := &markDialogUnreadDialogClientStub{response: tc.response, err: tc.err}
-			syncStub := &markDialogUnreadSyncClientStub{}
+			syncStub := &markDialogUnreadSyncClientStub{response: mtproto.EmptyVoid}
 			core := newMarkDialogUnreadTestCore(dialogs, syncStub)
 
 			got, err := core.MessagesMarkDialogUnread(markDialogUnreadRequest(false))
@@ -168,6 +169,96 @@ func TestMessagesMarkDialogUnreadPropagatesSyncFailure(t *testing.T) {
 	got, err := core.MessagesMarkDialogUnread(markDialogUnreadRequest(true))
 	if !errors.Is(err, syncErr) || got != nil {
 		t.Fatalf("MessagesMarkDialogUnread() = (%v, %v), want propagated sync error", got, err)
+	}
+	if len(syncStub.requests) != 1 {
+		t.Fatalf("SyncUpdatesNotMe calls = %d, want 1", len(syncStub.requests))
+	}
+}
+
+func TestMessagesMarkDialogUnreadRejectsUnauthenticatedRequests(t *testing.T) {
+	request := markDialogUnreadRequest(true)
+	missingUserCore := newMarkDialogUnreadTestCore(&markDialogUnreadDialogClientStub{}, &markDialogUnreadSyncClientStub{})
+	missingUserCore.MD.UserId = 0
+	for _, tc := range []struct {
+		name string
+		core *DialogsCore
+	}{
+		{name: "nil core"},
+		{name: "nil metadata", core: &DialogsCore{}},
+		{name: "missing user", core: missingUserCore},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := tc.core.MessagesMarkDialogUnread(request)
+			if got != nil || !errors.Is(err, mtproto.ErrAuthKeyUnregistered) {
+				t.Fatalf("MessagesMarkDialogUnread() = (%v, %v), want AUTH_KEY_UNREGISTERED", got, err)
+			}
+		})
+	}
+}
+
+func TestMessagesMarkDialogUnreadValidatesRequestAndPeer(t *testing.T) {
+	core := newMarkDialogUnreadTestCore(&markDialogUnreadDialogClientStub{response: mtproto.BoolTrue}, &markDialogUnreadSyncClientStub{response: mtproto.EmptyVoid})
+	for _, tc := range []struct {
+		name string
+		in   *mtproto.TLMessagesMarkDialogUnread
+		want error
+	}{
+		{name: "nil request", want: mtproto.ErrInputRequestInvalid},
+		{name: "nil dialog peer", in: &mtproto.TLMessagesMarkDialogUnread{}, want: mtproto.ErrInputRequestInvalid},
+		{name: "nil nested peer", in: &mtproto.TLMessagesMarkDialogUnread{Peer: mtproto.MakeTLInputDialogPeer(&mtproto.InputDialogPeer{}).To_InputDialogPeer()}, want: mtproto.ErrInputRequestInvalid},
+		{name: "empty peer", in: &mtproto.TLMessagesMarkDialogUnread{Peer: mtproto.MakeTLInputDialogPeer(&mtproto.InputDialogPeer{Peer: mtproto.MakeTLInputPeerEmpty(nil).To_InputPeer()}).To_InputDialogPeer()}, want: mtproto.ErrPeerIdInvalid},
+		{name: "unknown input peer constructor", in: &mtproto.TLMessagesMarkDialogUnread{Peer: mtproto.MakeTLInputDialogPeer(&mtproto.InputDialogPeer{Peer: &mtproto.InputPeer{PredicateName: "inputPeerUnknown"}}).To_InputDialogPeer()}, want: mtproto.ErrPeerIdInvalid},
+		{name: "community dialog peer", in: &mtproto.TLMessagesMarkDialogUnread{Peer: mtproto.MakeTLInputDialogPeerCommunity(&mtproto.InputDialogPeer{}).To_InputDialogPeer()}, want: mtproto.ErrInputConstructorInvalid},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := core.MessagesMarkDialogUnread(tc.in)
+			if got != nil || !errors.Is(err, tc.want) {
+				t.Fatalf("MessagesMarkDialogUnread() = (%v, %v), want %v", got, err, tc.want)
+			}
+		})
+	}
+}
+
+func TestMessagesMarkDialogUnreadFolderReturnsBoolFalseWithoutProviders(t *testing.T) {
+	core := newMarkDialogUnreadTestCore(nil, nil)
+	got, err := core.MessagesMarkDialogUnread(&mtproto.TLMessagesMarkDialogUnread{
+		Peer: mtproto.MakeTLInputDialogPeerFolder(&mtproto.InputDialogPeer{FolderId: 1}).To_InputDialogPeer(),
+	})
+	if err != nil || got != mtproto.BoolFalse {
+		t.Fatalf("MessagesMarkDialogUnread(folder) = (%v, %v), want BoolFalse", got, err)
+	}
+}
+
+func TestMessagesMarkDialogUnreadRejectsMissingProviders(t *testing.T) {
+	request := markDialogUnreadRequest(true)
+	t.Run("dialog provider", func(t *testing.T) {
+		core := newMarkDialogUnreadTestCore(nil, &markDialogUnreadSyncClientStub{response: mtproto.EmptyVoid})
+		got, err := core.MessagesMarkDialogUnread(request)
+		if got != nil || !errors.Is(err, mtproto.ErrInternalServerError) {
+			t.Fatalf("MessagesMarkDialogUnread() = (%v, %v), want INTERNAL_SERVER_ERROR", got, err)
+		}
+	})
+	t.Run("sync provider", func(t *testing.T) {
+		dialogs := &markDialogUnreadDialogClientStub{response: mtproto.BoolTrue}
+		core := newMarkDialogUnreadTestCore(dialogs, nil)
+		got, err := core.MessagesMarkDialogUnread(request)
+		if got != nil || !errors.Is(err, mtproto.ErrInternalServerError) {
+			t.Fatalf("MessagesMarkDialogUnread() = (%v, %v), want INTERNAL_SERVER_ERROR", got, err)
+		}
+		if dialogs.request != nil {
+			t.Fatalf("DialogMarkDialogUnread request = %v, want no mutation when sync provider is unavailable", dialogs.request)
+		}
+	})
+}
+
+func TestMessagesMarkDialogUnreadRejectsNilSyncReply(t *testing.T) {
+	dialogs := &markDialogUnreadDialogClientStub{response: mtproto.BoolTrue}
+	syncStub := &markDialogUnreadSyncClientStub{}
+	core := newMarkDialogUnreadTestCore(dialogs, syncStub)
+
+	got, err := core.MessagesMarkDialogUnread(markDialogUnreadRequest(true))
+	if got != nil || !errors.Is(err, mtproto.ErrInternalServerError) {
+		t.Fatalf("MessagesMarkDialogUnread() = (%v, %v), want INTERNAL_SERVER_ERROR", got, err)
 	}
 	if len(syncStub.requests) != 1 {
 		t.Fatalf("SyncUpdatesNotMe calls = %d, want 1", len(syncStub.requests))

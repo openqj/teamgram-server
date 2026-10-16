@@ -285,6 +285,74 @@ func TestMessagesGetMessagesViewsDoesNotFabricateIncrementedCounts(t *testing.T)
 	}
 }
 
+func TestMessagesGetMessagesViewsDoesNotFabricateUserOrChatIncrementedCounts(t *testing.T) {
+	const (
+		userPeerID     int64 = 84
+		userAccessHash int64 = 840
+		chatPeerID     int64 = 77
+	)
+
+	tests := []struct {
+		name       string
+		request    *mtproto.InputPeer
+		storedPeer *mtproto.Peer
+		users      *messagesViewsUserClientStub
+		chat       *messagesViewsChatRPCStub
+	}{
+		{
+			name:       "user",
+			request:    mtproto.MakeTLInputPeerUser(&mtproto.InputPeer{UserId: userPeerID, AccessHash: userAccessHash}).To_InputPeer(),
+			storedPeer: mtproto.MakePeerUser(userPeerID),
+			users:      &messagesViewsUserClientStub{response: messagesViewsUser(userPeerID, userAccessHash)},
+		},
+		{
+			name:       "basic chat",
+			request:    mtproto.MakeTLInputPeerChat(&mtproto.InputPeer{ChatId: chatPeerID}).To_InputPeer(),
+			storedPeer: mtproto.MakePeerChat(chatPeerID),
+			chat: &messagesViewsChatRPCStub{chat: &mtproto.MutableChat{
+				Chat: &mtproto.ImmutableChat{Id: chatPeerID},
+				ChatParticipants: []*mtproto.ImmutableChatParticipant{{
+					UserId:          messagesViewsCallerID,
+					ParticipantType: mtproto.ChatMemberNormal,
+					State:           mtproto.ChatMemberStateNormal,
+				}},
+			}},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			stored := messagesViewsBox(1, test.storedPeer, wrapperspb.Int32(7), nil, nil)
+			messages := &messagesViewsMessageClientStub{response: &messagepb.Vector_MessageBox{
+				Datas: []*mtproto.MessageBox{stored},
+			}}
+			var chats *chatclient.ChatClientHelper
+			if test.chat != nil {
+				chats = newMessagesViewsChatClient(t, test.chat)
+			}
+			core := newMessagesViewsTestCore(messages, test.users, chats)
+
+			got, err := core.MessagesGetMessagesViews(&mtproto.TLMessagesGetMessagesViews{
+				Peer:      test.request,
+				Id:        []int32{1},
+				Increment: mtproto.BoolTrue,
+			})
+			if got != nil || err != mtproto.ErrMethodNotImpl {
+				t.Fatalf("MessagesGetMessagesViews() = (%v, %v), want (nil, METHOD_NOT_IMPL)", got, err)
+			}
+			if messages.calls != 1 || stored.GetMessage().GetViews().GetValue() != 7 {
+				t.Fatalf("increment changed persisted fixture or skipped message validation: calls=%d views=%v", messages.calls, stored.GetMessage().GetViews())
+			}
+			if test.users != nil && test.users.calls != 1 {
+				t.Fatalf("user validation calls = %d, want 1", test.users.calls)
+			}
+			if test.chat != nil && test.chat.calls != 1 {
+				t.Fatalf("chat validation calls = %d, want 1", test.chat.calls)
+			}
+		})
+	}
+}
+
 func TestMessagesGetMessagesViewsRejectsEmptyIDs(t *testing.T) {
 	core := newMessagesViewsTestCore(nil, nil, nil)
 	got, err := core.MessagesGetMessagesViews(&mtproto.TLMessagesGetMessagesViews{})

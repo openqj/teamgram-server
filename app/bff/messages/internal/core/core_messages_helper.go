@@ -96,9 +96,17 @@ func (c *MessagesCore) makeMediaByInputMedia(media *mtproto.InputMedia) (message
 
 		messageMedia = mtproto.MakeTLMessageMediaPhoto(&mtproto.MessageMedia{
 			Spoiler:         media.Spoiler,
+			LivePhoto:       media.LivePhoto,
 			Photo_FLAGPHOTO: photo,
 			TtlSeconds:      media.TtlSeconds,
 		}).To_MessageMedia()
+		if media.LivePhoto {
+			video, videoErr := c.inputMediaVideoDocument(media.Video)
+			if videoErr != nil {
+				return nil, videoErr
+			}
+			messageMedia.Video_FLAGDOCUMENT = video
+		}
 	case mtproto.Predicate_inputMediaPhoto:
 		// inputMediaPhoto#b3ba0635 flags:#
 		//	id:InputPhoto
@@ -125,9 +133,17 @@ func (c *MessagesCore) makeMediaByInputMedia(media *mtproto.InputMedia) (message
 
 		messageMedia = mtproto.MakeTLMessageMediaPhoto(&mtproto.MessageMedia{
 			Spoiler:         mediaPhoto.GetSpoiler(),
+			LivePhoto:       mediaPhoto.GetLivePhoto(),
 			Photo_FLAGPHOTO: photo,
 			TtlSeconds:      mediaPhoto.GetTtlSeconds(),
 		}).To_MessageMedia()
+		if mediaPhoto.GetLivePhoto() {
+			video, videoErr := c.inputMediaVideoDocument(mediaPhoto.GetVideo())
+			if videoErr != nil {
+				return nil, videoErr
+			}
+			messageMedia.Video_FLAGDOCUMENT = video
+		}
 	case mtproto.Predicate_inputMediaGeoPoint:
 		// inputMediaGeoPoint#f9c44144 geo_point:InputGeoPoint = InputMedia;
 
@@ -262,9 +278,12 @@ func (c *MessagesCore) makeMediaByInputMedia(media *mtproto.InputMedia) (message
 	case mtproto.Predicate_inputMediaGeoLive:
 		// inputMediaGeoLive#971fa843 flags:# stopped:flags.0?true geo_point:InputGeoPoint heading:flags.2?int period:flags.1?int proximity_notification_radius:flags.3?int = InputMedia;
 
+		live := media.To_InputMediaGeoLive()
 		messageMedia = mtproto.MakeTLMessageMediaGeoLive(&mtproto.MessageMedia{
-			Geo:    mtproto.MakeGeoPointByInput(media.To_InputMediaGeoLive().GetGeoPoint()),
-			Period: media.To_InputMediaGeoLive().GetPeriod().GetValue(),
+			Geo:                         mtproto.MakeGeoPointByInput(live.GetGeoPoint()),
+			Heading:                     live.GetHeading(),
+			Period:                      live.GetPeriod().GetValue(),
+			ProximityNotificationRadius: live.GetProximityNotificationRadius(),
 		}).To_MessageMedia()
 	case mtproto.Predicate_inputMediaPoll:
 		// inputMediaPoll#f94e5f1 flags:# poll:Poll correct_answers:flags.0?Vector<bytes> solution:flags.1?string solution_entities:flags.1?Vector<MessageEntity> = InputMedia;
@@ -342,15 +361,53 @@ func (c *MessagesCore) makeMediaByInputMedia(media *mtproto.InputMedia) (message
 		return nil, mtproto.ErrMethodNotImpl
 	case mtproto.Predicate_inputMediaPaidMedia:
 		// inputMediaPaidMedia#c4103386 flags:# stars_amount:long extended_media:Vector<InputMedia> payload:flags.0?string = InputMedia;
-		return nil, mtproto.ErrMethodNotImpl
+		if media.GetStarsAmount() <= 0 || len(media.GetExtendedMedia_VECTORINPUTMEDIA()) == 0 || len(media.GetExtendedMedia_VECTORINPUTMEDIA()) > 10 {
+			return nil, mtproto.ErrMediaInvalid
+		}
+		extended := make([]*mtproto.MessageExtendedMedia, 0, len(media.GetExtendedMedia_VECTORINPUTMEDIA()))
+		for _, input := range media.GetExtendedMedia_VECTORINPUTMEDIA() {
+			if input == nil {
+				return nil, mtproto.ErrMediaInvalid
+			}
+			nested, nestedErr := c.makeMediaByInputMedia(input)
+			if nestedErr != nil {
+				return nil, nestedErr
+			}
+			extended = append(extended, mtproto.MakeTLMessageExtendedMedia(&mtproto.MessageExtendedMedia{Media: nested}).To_MessageExtendedMedia())
+		}
+		messageMedia = mtproto.MakeTLMessageMediaPaidMedia(&mtproto.MessageMedia{
+			StarsAmount:                              media.GetStarsAmount(),
+			ExtendedMedia_VECTORMESSAGEEXTENDEDMEDIA: extended,
+		}).To_MessageMedia()
 	case mtproto.Predicate_inputMediaTodo:
 		// inputMediaTodo#9fc55fde todo:TodoList = InputMedia;
-		return nil, mtproto.ErrMethodNotImpl
+		if media.GetTodo() == nil || len(media.GetTodo().GetList()) == 0 || len(media.GetTodo().GetList()) > 30 {
+			return nil, mtproto.ErrMediaInvalid
+		}
+		messageMedia = mtproto.MakeTLMessageMediaToDo(&mtproto.MessageMedia{Todo: media.GetTodo()}).To_MessageMedia()
 	default:
 		err = mtproto.ErrMediaInvalid
 	}
 
 	return
+}
+
+func (c *MessagesCore) inputMediaVideoDocument(input *mtproto.InputDocument) (*mtproto.Document, error) {
+	if input == nil || input.GetPredicateName() != mtproto.Predicate_inputDocument || input.GetId() <= 0 || input.GetAccessHash() == 0 {
+		return nil, mtproto.ErrDocumentInvalid
+	}
+	if c == nil || c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.MediaClient == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
+	document, err := c.svcCtx.Dao.MediaClient.MediaGetDocument(c.ctx, &mediapb.TLMediaGetDocument{Id: input.GetId()})
+	if err != nil {
+		return nil, err
+	}
+	if document == nil || document.GetPredicateName() != mtproto.Predicate_document ||
+		document.GetId() != input.GetId() || document.GetAccessHash() != input.GetAccessHash() {
+		return nil, mtproto.ErrDocumentInvalid
+	}
+	return document, nil
 }
 
 //// TODO(@benqi): mention...

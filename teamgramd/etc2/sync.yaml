@@ -39,7 +39,10 @@ Routine:
 Postgres:
   DSN: ${TEAMGRAM_POSTGRES_DSN}
   ApplicationName: teamgram-sync
-  MaxConns: ${TEAMGRAM_SYNC_POSTGRES_MAX_CONNS}
+  # Keep direct startup valid when the optional pool override is absent. The
+  # Sync server applies TEAMGRAM_SYNC_POSTGRES_MAX_CONNS explicitly after
+  # loading this file.
+  MaxConns: 16
   MinConns: 1
   MaxConnLifetime: 1h
   MaxConnIdleTime: 30m

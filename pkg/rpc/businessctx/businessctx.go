@@ -15,12 +15,21 @@ import (
 )
 
 const (
-	connectionMetadataKey = "x-teamgram-business-connection-id"
-	ownerMetadataKey      = "x-teamgram-business-owner-id"
-	replyMetadataKey      = "x-teamgram-business-can-reply"
-	readMetadataKey       = "x-teamgram-business-can-read"
-	deleteSentMetadataKey = "x-teamgram-business-can-delete-sent"
-	deleteAllMetadataKey  = "x-teamgram-business-can-delete-all"
+	connectionMetadataKey    = "x-teamgram-business-connection-id"
+	ownerMetadataKey         = "x-teamgram-business-owner-id"
+	replyMetadataKey         = "x-teamgram-business-can-reply"
+	readMetadataKey          = "x-teamgram-business-can-read"
+	deleteSentMetadataKey    = "x-teamgram-business-can-delete-sent"
+	deleteAllMetadataKey     = "x-teamgram-business-can-delete-all"
+	editNameMetadataKey      = "x-teamgram-business-can-edit-name"
+	editBioMetadataKey       = "x-teamgram-business-can-edit-bio"
+	editPhotoMetadataKey     = "x-teamgram-business-can-edit-profile-photo"
+	editUsernameMetadataKey  = "x-teamgram-business-can-edit-username"
+	viewGiftsMetadataKey     = "x-teamgram-business-can-view-gifts"
+	sellGiftsMetadataKey     = "x-teamgram-business-can-sell-gifts"
+	changeGiftsMetadataKey   = "x-teamgram-business-can-change-gift-settings"
+	transferGiftsMetadataKey = "x-teamgram-business-can-transfer-and-upgrade-gifts"
+	transferStarsMetadataKey = "x-teamgram-business-can-transfer-stars"
 )
 
 type contextKey struct{}
@@ -29,12 +38,21 @@ type contextKey struct{}
 // connection registry. It is intentionally small and only includes rights
 // needed by message operations.
 type Scope struct {
-	ConnectionID    string
-	OwnerID         int64
-	CanReply        bool
-	CanReadMessages bool
-	CanDeleteSent   bool
-	CanDeleteAll    bool
+	ConnectionID     string
+	OwnerID          int64
+	CanReply         bool
+	CanReadMessages  bool
+	CanDeleteSent    bool
+	CanDeleteAll     bool
+	CanEditName      bool
+	CanEditBio       bool
+	CanEditPhoto     bool
+	CanEditUsername  bool
+	CanViewGifts     bool
+	CanSellGifts     bool
+	CanChangeGifts   bool
+	CanTransferGifts bool
+	CanTransferStars bool
 }
 
 func Valid(scope Scope) bool {
@@ -68,6 +86,15 @@ func ScopeFromContext(ctx context.Context) (Scope, bool) {
 	scope.CanReadMessages = parseBool(single(md.Get(readMetadataKey)))
 	scope.CanDeleteSent = parseBool(single(md.Get(deleteSentMetadataKey)))
 	scope.CanDeleteAll = parseBool(single(md.Get(deleteAllMetadataKey)))
+	scope.CanEditName = parseBool(single(md.Get(editNameMetadataKey)))
+	scope.CanEditBio = parseBool(single(md.Get(editBioMetadataKey)))
+	scope.CanEditPhoto = parseBool(single(md.Get(editPhotoMetadataKey)))
+	scope.CanEditUsername = parseBool(single(md.Get(editUsernameMetadataKey)))
+	scope.CanViewGifts = parseBool(single(md.Get(viewGiftsMetadataKey)))
+	scope.CanSellGifts = parseBool(single(md.Get(sellGiftsMetadataKey)))
+	scope.CanChangeGifts = parseBool(single(md.Get(changeGiftsMetadataKey)))
+	scope.CanTransferGifts = parseBool(single(md.Get(transferGiftsMetadataKey)))
+	scope.CanTransferStars = parseBool(single(md.Get(transferStarsMetadataKey)))
 	return scope, Valid(scope)
 }
 
@@ -85,6 +112,15 @@ func WithOutgoingScope(ctx context.Context, scope Scope) context.Context {
 		readMetadataKey, strconv.FormatBool(scope.CanReadMessages),
 		deleteSentMetadataKey, strconv.FormatBool(scope.CanDeleteSent),
 		deleteAllMetadataKey, strconv.FormatBool(scope.CanDeleteAll),
+		editNameMetadataKey, strconv.FormatBool(scope.CanEditName),
+		editBioMetadataKey, strconv.FormatBool(scope.CanEditBio),
+		editPhotoMetadataKey, strconv.FormatBool(scope.CanEditPhoto),
+		editUsernameMetadataKey, strconv.FormatBool(scope.CanEditUsername),
+		viewGiftsMetadataKey, strconv.FormatBool(scope.CanViewGifts),
+		sellGiftsMetadataKey, strconv.FormatBool(scope.CanSellGifts),
+		changeGiftsMetadataKey, strconv.FormatBool(scope.CanChangeGifts),
+		transferGiftsMetadataKey, strconv.FormatBool(scope.CanTransferGifts),
+		transferStarsMetadataKey, strconv.FormatBool(scope.CanTransferStars),
 	)
 }
 

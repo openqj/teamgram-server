@@ -69,6 +69,9 @@ func (c *MessagesCore) MessagesGetMessagesViews(in *mtproto.TLMessagesGetMessage
 		return nil, err
 	}
 	if increment && peer.PeerType != mtproto.PEER_CHANNEL {
+		// Non-channel messages have only per-user copies here; without an
+		// authoritative viewer-deduplicated counter, incrementing would fabricate
+		// a global view count.
 		return nil, mtproto.ErrMethodNotImpl
 	}
 

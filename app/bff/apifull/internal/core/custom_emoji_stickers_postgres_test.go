@@ -48,6 +48,68 @@ func TestCustomEmojiStickersPostgresRoundTrip(t *testing.T) {
 	}
 }
 
+func TestFeaturedEmojiStickersFiltersBeforeLimit(t *testing.T) {
+	if !persist.StickerProviderReady() {
+		t.Skip("APIFULL_POSTGRES_DSN is not configured")
+	}
+	ctx := context.Background()
+	uid := int64(886000000 + os.Getpid()%100000)
+	prefix := fmt.Sprintf("emoji_limit_%d_", uid)
+	db, err := persist.OpenPostgresDB(os.Getenv("APIFULL_POSTGRES_DSN"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	const distractors = 100
+	_, err = db.ExecContext(ctx, `
+		INSERT INTO apifull_sticker_set
+			(access_hash, owner_user_id, title, short_name, featured, emojis)
+		SELECT $1 + n, $2, 'non-emoji', $3 || n::text, TRUE, FALSE
+		FROM generate_series(1, $4) AS n`, uid, uid, prefix, distractors)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.ExecContext(ctx, `
+		INSERT INTO apifull_sticker_user_set
+			(user_id, set_id, installed, archived, unread, order_index)
+		SELECT $1, id, TRUE, FALSE, FALSE, 0
+		FROM apifull_sticker_set
+		WHERE owner_user_id=$1 AND short_name LIKE ($2 || '%')`, uid, prefix)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var targetID int64
+	targetShortName := prefix + "target"
+	err = db.QueryRowContext(ctx, `
+		INSERT INTO apifull_sticker_set
+			(access_hash, owner_user_id, title, short_name, featured, emojis)
+		VALUES ($1, $2, 'emoji', $3, TRUE, TRUE)
+		RETURNING id`, uid+1000, uid, targetShortName).Scan(&targetID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.ExecContext(ctx, `
+		INSERT INTO apifull_sticker_user_set
+			(user_id, set_id, installed, archived, unread, order_index)
+		VALUES ($1, $2, TRUE, FALSE, FALSE, 1)`, uid, targetID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = db.ExecContext(ctx, `DELETE FROM apifull_sticker_set WHERE owner_user_id=$1`, uid)
+	})
+
+	c := &ApiFullCore{MD: &metadata.RpcMetadata{UserId: uid}}
+	featured, err := c.MessagesGetFeaturedEmojiStickers(&mtproto.TLMessagesGetFeaturedEmojiStickers{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !containsCoveredStickerSet(featured.GetSets(), targetID) {
+		t.Fatalf("featured emoji stickers=%v, want target %d despite non-emoji rows before it", featured, targetID)
+	}
+}
+
 func containsStickerSet(sets []*mtproto.StickerSet, id int64) bool {
 	for _, set := range sets {
 		if set != nil && set.GetId() == id {

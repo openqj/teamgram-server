@@ -25,6 +25,7 @@ import (
 	"github.com/teamgram/proto/mtproto"
 	sharedpersist "github.com/teamgram/teamgram-server/app/bff/apifull/persist"
 	"github.com/teamgram/teamgram-server/app/bff/authorization/model"
+	"github.com/teamgram/teamgram-server/app/service/authsession/authsession"
 )
 
 const authorizationSettingsKey = "authorization_settings"
@@ -48,6 +49,7 @@ func (c *AuthorizationCore) AccountChangeAuthorizationSettings(in *mtproto.TLAcc
 	if in == nil {
 		return nil, mtproto.ErrInputRequestInvalid
 	}
+
 	// AuthsessionClient has no RPC that updates encrypted_requests_disabled,
 	// call_requests_disabled, or confirmed. Persist per auth key instead of
 	// resetting any session. PostgreSQL is the durable production store; the
@@ -55,6 +57,33 @@ func (c *AuthorizationCore) AccountChangeAuthorizationSettings(in *mtproto.TLAcc
 	// the shared store yet.
 	keyId := c.MD.PermAuthKeyId
 	if in.GetHash() != 0 {
+		if c.MD.GetUserId() <= 0 {
+			return nil, mtproto.ErrAuthKeyUnregistered
+		}
+		if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.AuthsessionClient == nil {
+			return nil, mtproto.ErrInternalServerError
+		}
+		authorizations, err := c.svcCtx.Dao.AuthsessionClient.AuthsessionGetAuthorizations(c.ctx, &authsession.TLAuthsessionGetAuthorizations{
+			UserId:           c.MD.GetUserId(),
+			ExcludeAuthKeyId: c.MD.GetPermAuthKeyId(),
+		})
+		if err != nil {
+			c.Logger.Errorf("account.changeAuthorizationSettings - authorization lookup error: %v", err)
+			return nil, err
+		}
+		if authorizations == nil {
+			return nil, mtproto.ErrInternalServerError
+		}
+		owned := false
+		for _, authorization := range authorizations.GetAuthorizations() {
+			if authorization != nil && authorization.GetHash() == in.GetHash() {
+				owned = true
+				break
+			}
+		}
+		if !owned {
+			return nil, mtproto.ErrHashInvalid
+		}
 		keyId = in.GetHash()
 	}
 

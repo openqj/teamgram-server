@@ -27,6 +27,12 @@ import (
 // messages.getDialogUnreadMarks#22e24e22 = Vector<DialogPeer>;
 func (c *DialogsCore) MessagesGetDialogUnreadMarks(in *mtproto.TLMessagesGetDialogUnreadMarks) (*mtproto.Vector_DialogPeer, error) {
 	_ = in
+	if c == nil || c.MD == nil || c.MD.UserId <= 0 {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
+	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.DialogClient == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
 
 	dialogPeerList, err := c.svcCtx.DialogClient.DialogGetDialogUnreadMarkList(
 		c.ctx,
@@ -34,11 +40,38 @@ func (c *DialogsCore) MessagesGetDialogUnreadMarks(in *mtproto.TLMessagesGetDial
 			UserId: c.MD.UserId,
 		})
 	if err != nil {
-		c.Logger.Errorf("messages.getDialogUnreadMarks - error: %v", err)
+		if c.Logger != nil {
+			c.Logger.Errorf("messages.getDialogUnreadMarks - error: %v", err)
+		}
 		return nil, err
+	}
+	if dialogPeerList == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
+	for _, dialogPeer := range dialogPeerList.GetDatas() {
+		if dialogPeer == nil || dialogPeer.GetPeer() == nil {
+			return nil, mtproto.ErrInternalServerError
+		}
+		peer := dialogPeer.GetPeer()
+		switch peer.GetPredicateName() {
+		case mtproto.Predicate_peerUser:
+			if peer.GetUserId() <= 0 {
+				return nil, mtproto.ErrInternalServerError
+			}
+		case mtproto.Predicate_peerChat:
+			if peer.GetChatId() <= 0 {
+				return nil, mtproto.ErrInternalServerError
+			}
+		case mtproto.Predicate_peerChannel:
+			if peer.GetChannelId() <= 0 {
+				return nil, mtproto.ErrInternalServerError
+			}
+		default:
+			return nil, mtproto.ErrInternalServerError
+		}
 	}
 
 	return &mtproto.Vector_DialogPeer{
-		Datas: dialogPeerList.Datas,
+		Datas: dialogPeerList.GetDatas(),
 	}, nil
 }

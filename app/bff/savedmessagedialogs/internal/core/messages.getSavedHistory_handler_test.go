@@ -92,6 +92,7 @@ func savedHistoryRequest() *mtproto.TLMessagesGetSavedHistory {
 
 func TestMessagesGetSavedHistoryHydratesChannelChats(t *testing.T) {
 	messages := &savedHistoryMessageClient{boxes: savedHistoryChannelBox(9001)}
+	messages.boxes.Count = 999
 	core := newSavedHistoryCore(messages, &savedHistoryUserClient{users: &userpb.Vector_ImmutableUser{}}, &savedHistoryChatClient{chats: &chatpb.Vector_MutableChat{}}, 42)
 	core.channelChatsByID = func(userID int64, ids []int64) []*mtproto.Chat {
 		if userID != 42 || len(ids) != 1 || ids[0] != 9001 {
@@ -104,11 +105,59 @@ func TestMessagesGetSavedHistoryHydratesChannelChats(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MessagesGetSavedHistory() error = %v", err)
 	}
-	if got == nil || got.GetPredicateName() != mtproto.Predicate_messages_messages || len(got.GetMessages()) != 1 || len(got.GetChats()) != 1 || got.GetChats()[0].GetId() != 9001 {
+	if got == nil || got.GetPredicateName() != mtproto.Predicate_messages_messages || got.GetCount() != 0 || len(got.GetMessages()) != 1 || len(got.GetChats()) != 1 || got.GetChats()[0].GetId() != 9001 {
 		t.Fatalf("MessagesGetSavedHistory() = %v, want one message and hydrated channel", got)
 	}
 	if messages.calls != 1 || messages.request.GetPeerId() != 9001 || messages.request.GetUserId() != 42 {
 		t.Fatalf("message provider calls/request = %d/%v", messages.calls, messages.request)
+	}
+}
+
+func TestMessagesGetSavedHistoryFailsClosedWithoutSliceMetadata(t *testing.T) {
+	messages := &savedHistoryMessageClient{boxes: &mtproto.MessageBoxList{
+		BoxList: []*mtproto.MessageBox{{
+			MessageId: 17,
+			Message: &mtproto.Message{
+				Id:     17,
+				PeerId: mtproto.MakeTLPeerUser(&mtproto.Peer{UserId: 9001}).To_Peer(),
+			},
+		}},
+		Count: 999,
+	}}
+	core := newSavedHistoryCore(messages, &savedHistoryUserClient{users: &userpb.Vector_ImmutableUser{}}, &savedHistoryChatClient{chats: &chatpb.Vector_MutableChat{}}, 42)
+	request := savedHistoryRequest()
+	request.Peer = mtproto.MakeTLInputPeerUser(&mtproto.InputPeer{UserId: 9001, AccessHash: 77}).To_InputPeer()
+	request.Limit = 1
+
+	if got, err := core.MessagesGetSavedHistory(request); got != nil || !errors.Is(err, mtproto.ErrMethodNotImpl) {
+		t.Fatalf("full page = (%v, %v), want METHOD_NOT_IMPL without authoritative slice metadata", got, err)
+	}
+	if messages.calls != 1 {
+		t.Fatalf("message provider calls = %d, want one call", messages.calls)
+	}
+}
+
+func TestMessagesGetSavedHistoryValidatesParentPeer(t *testing.T) {
+	messages := &savedHistoryMessageClient{boxes: savedHistoryChannelBox(9001)}
+	core := newSavedHistoryCore(messages, &savedHistoryUserClient{users: &userpb.Vector_ImmutableUser{}}, &savedHistoryChatClient{chats: &chatpb.Vector_MutableChat{}}, 42)
+	core.channelChatsByID = func(_ int64, ids []int64) []*mtproto.Chat {
+		if len(ids) != 1 || ids[0] != 9001 {
+			return nil
+		}
+		return []*mtproto.Chat{mtproto.MakeTLChannel(&mtproto.Chat{Id: 9001, Photo: mtproto.MakeTLChatPhotoEmpty(nil).To_ChatPhoto()}).To_Chat()}
+	}
+	request := savedHistoryRequest()
+	request.ParentPeer = mtproto.MakeTLInputPeerChat(&mtproto.InputPeer{ChatId: 9002}).To_InputPeer()
+	if got, err := core.MessagesGetSavedHistory(request); got != nil || !errors.Is(err, mtproto.ErrPeerIdInvalid) {
+		t.Fatalf("foreign parent = (%v, %v), want PEER_ID_INVALID", got, err)
+	}
+	if messages.calls != 0 {
+		t.Fatalf("message provider calls = %d, want no call for invalid parent", messages.calls)
+	}
+
+	request.ParentPeer = mtproto.MakeTLInputPeerSelf(nil).To_InputPeer()
+	if _, err := core.MessagesGetSavedHistory(request); err != nil {
+		t.Fatalf("self parent = %v, want accepted", err)
 	}
 }
 

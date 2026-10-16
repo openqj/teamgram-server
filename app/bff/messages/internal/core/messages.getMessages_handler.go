@@ -109,6 +109,11 @@ func (c *MessagesCore) MessagesGetMessages(in *mtproto.TLMessagesGetMessages) (*
 	if boxList == nil {
 		return nil, mtproto.ErrInternalServerError
 	}
+	for _, box := range boxList.GetDatas() {
+		if box == nil || box.GetMessage() == nil {
+			return nil, mtproto.ErrInternalServerError
+		}
+	}
 
 	var readErr error
 	boxList.Visit(c.MD.UserId,
@@ -171,6 +176,9 @@ func (c *MessagesCore) MessagesGetMessages(in *mtproto.TLMessagesGetMessages) (*
 			rValues.Chats = append(rValues.Chats, mChats.GetChatListByIdList(c.MD.UserId, chatIdList...)...)
 		},
 		func(channelIdList []int64) {
+			// messages.getMessages carries no peer or access hash. Without a
+			// channel-specific message resolver, these IDs cannot be authorized
+			// against APIFull or native channel storage.
 			if readErr == nil && len(channelIdList) > 0 {
 				readErr = mtproto.ErrMethodNotImpl
 			}

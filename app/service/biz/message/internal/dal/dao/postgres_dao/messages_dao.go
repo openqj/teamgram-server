@@ -433,10 +433,19 @@ ORDER BY user_message_box_id DESC LIMIT $5`, userID, dialogID1, dialogID2, userM
 
 // SelectSentByMediaType returns media authored by userID across dialogs.
 func (d *MessagesDAO) SelectSentByMediaType(ctx context.Context, userID int64, mediaType int32, userMessageBoxID, limit int32) ([]dataobject.MessagesDO, error) {
-	rows, err := d.db.Query(ctx, `SELECT `+messageColumns+` FROM messages
+	query := `SELECT ` + messageColumns + ` FROM messages
 WHERE user_id = $1 AND sender_user_id = $1 AND message_filter_type = $2
   AND user_message_box_id < $3 AND deleted = FALSE
-ORDER BY user_message_box_id DESC LIMIT $4`, userID, mediaType, userMessageBoxID, limit)
+ORDER BY user_message_box_id DESC LIMIT $4`
+	args := []any{userID, mediaType, userMessageBoxID, limit}
+	if mediaType == mtproto.MEDIA_PHOTOVIDEO {
+		query = `SELECT ` + messageColumns + ` FROM messages
+WHERE user_id = $1 AND sender_user_id = $1 AND message_filter_type IN ($2, $3, $4)
+  AND user_message_box_id < $5 AND deleted = FALSE
+ORDER BY user_message_box_id DESC LIMIT $6`
+		args = []any{userID, mtproto.MEDIA_PHOTOVIDEO, mtproto.MEDIA_PHOTOS_ONLY, mtproto.MEDIA_VIDEOS_ONLY, userMessageBoxID, limit}
+	}
+	rows, err := d.db.Query(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -557,11 +566,17 @@ func (d *MessagesDAO) CountByMediaType(ctx context.Context, userID, dialogID1, d
 WHERE user_id = $1 AND dialog_id1 = $2 AND dialog_id2 = $3
   AND message_filter_type = $4 AND deleted = FALSE`
 	args := []any{userID, dialogID1, dialogID2, mediaType}
-	if mediaType == mtproto.MEDIA_PHOTOVIDEO {
+	switch mediaType {
+	case mtproto.MEDIA_PHOTOVIDEO:
 		query = `SELECT count(*) FROM messages
 WHERE user_id = $1 AND dialog_id1 = $2 AND dialog_id2 = $3
   AND message_filter_type IN ($4, $5, $6) AND deleted = FALSE`
 		args = []any{userID, dialogID1, dialogID2, mtproto.MEDIA_PHOTOVIDEO, mtproto.MEDIA_PHOTOS_ONLY, mtproto.MEDIA_VIDEOS_ONLY}
+	case mtproto.MEDIA_PINNED:
+		query = `SELECT count(*) FROM messages
+WHERE user_id = $1 AND dialog_id1 = $2 AND dialog_id2 = $3
+  AND pinned = TRUE AND deleted = FALSE`
+		args = []any{userID, dialogID1, dialogID2}
 	}
 	err := d.db.QueryRow(ctx, query, args...).Scan(&count)
 	return count, err

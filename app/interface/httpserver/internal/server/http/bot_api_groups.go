@@ -56,6 +56,12 @@ func botAPIInviteLinkFromMTProto(invite *mtproto.ExportedChatInvite, creator *bo
 	if invite.GetRequested() != nil {
 		pending = int(invite.GetRequested().GetValue())
 	}
+	subscriptionPeriod := 0
+	subscriptionPrice := int64(0)
+	if pricing := invite.GetSubscriptionPricing(); pricing != nil {
+		subscriptionPeriod = int(pricing.GetPeriod())
+		subscriptionPrice = pricing.GetAmount()
+	}
 	link := &botapi.ChatInviteLink{
 		InviteLink:              invite.GetLink(),
 		Creator:                 creator,
@@ -66,6 +72,8 @@ func botAPIInviteLinkFromMTProto(invite *mtproto.ExportedChatInvite, creator *bo
 		ExpireDate:              expireDate,
 		MemberLimit:             memberLimit,
 		PendingJoinRequestCount: pending,
+		SubscriptionPeriod:      subscriptionPeriod,
+		SubscriptionPrice:       subscriptionPrice,
 	}
 	return link
 }

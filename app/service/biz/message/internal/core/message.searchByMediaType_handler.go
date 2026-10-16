@@ -37,8 +37,14 @@ func (c *MessageCore) MessageSearchByMediaType(in *message.TLMessageSearchByMedi
 	if offset == 0 {
 		offset = math.MaxInt32
 	}
-	if limit > 50 {
-		limit = 50
+	// searchSentMedia has no pagination and permits up to 100; peer-scoped
+	// media callers retain the provider's 50-row page.
+	maxLimit := int32(50)
+	if in.PeerType == mtproto.PEER_UNKNOWN && in.PeerId == 0 {
+		maxLimit = 100
+	}
+	if limit > maxLimit {
+		limit = maxLimit
 	}
 
 	switch in.GetMediaType() {

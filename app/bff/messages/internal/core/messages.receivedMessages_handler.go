@@ -18,11 +18,7 @@
 
 package core
 
-import (
-	"context"
-
-	"github.com/teamgram/proto/mtproto"
-)
+import "github.com/teamgram/proto/mtproto"
 
 // MessagesReceivedMessages
 // messages.receivedMessages#5a954c0 max_id:int = Vector<ReceivedNotifyMessage>;
@@ -36,17 +32,8 @@ func (c *MessagesCore) MessagesReceivedMessages(in *mtproto.TLMessagesReceivedMe
 	if in.GetMaxId() < 0 {
 		return nil, mtproto.ErrMessageIdInvalid
 	}
-	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.ReceivedMessages == nil {
-		return nil, mtproto.ErrMethodNotImpl
-	}
-	ctx := c.ctx
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	if err := c.svcCtx.Dao.ReceivedMessages.Record(ctx, c.MD.UserId, in.GetMaxId()); err != nil {
-		return nil, err
-	}
-	// The notification producer is optional. A durable cursor acknowledgement
-	// still has a valid empty result when there are no pending notifications.
-	return &mtproto.Vector_ReceivedNotifyMessage{Datas: []*mtproto.ReceivedNotifyMessage{}}, nil
+	// A cursor-only acknowledgement cannot cancel PUSH delivery or produce the
+	// canonical ReceivedNotifyMessage rows required by Layer 229. Keep this
+	// method fail-closed until one provider owns both operations atomically.
+	return nil, mtproto.ErrMethodNotImpl
 }

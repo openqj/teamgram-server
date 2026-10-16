@@ -60,7 +60,8 @@ func (c *MessagesCore) MessagesSendMessage(in *mtproto.TLMessagesSendMessage) (*
 		return nil, mtproto.ErrMethodNotImpl
 	}
 
-	if in.Message == "" {
+	hasRichMessage := !inputRichEmpty(in.GetRichMessage())
+	if in.Message == "" && !hasRichMessage {
 		err := mtproto.ErrMessageEmpty
 		c.Logger.Errorf("message empty: %v", err)
 		return nil, err
@@ -73,11 +74,13 @@ func (c *MessagesCore) MessagesSendMessage(in *mtproto.TLMessagesSendMessage) (*
 		return nil, err
 	}
 	replyToMsgID, replyToTopID := storedReplyIDs(in.GetReplyTo(), in.GetReplyToMsgId())
-	if up, handled, err := c.deliverStored(in.GetPeer(), peer, in.GetScheduleDate().GetValue(), in.Message, replyToMsgID, replyToTopID, in.GetRandomId()); handled {
-		if err != nil {
-			c.Logger.Errorf("messages.sendMessage stored: %v", err)
+	if !hasRichMessage {
+		if up, handled, err := c.deliverStored(in.GetPeer(), peer, in.GetScheduleDate().GetValue(), in.Message, replyToMsgID, replyToTopID, in.GetRandomId()); handled {
+			if err != nil {
+				c.Logger.Errorf("messages.sendMessage stored: %v", err)
+			}
+			return up, err
 		}
-		return up, err
 	}
 
 	if !peer.IsChatOrUser() {
@@ -158,6 +161,9 @@ func (c *MessagesCore) MessagesSendMessage(in *mtproto.TLMessagesSendMessage) (*
 		Effect:               in.Effect,
 		Factcheck:            nil,
 	}).To_Message()
+	if hasRichMessage {
+		outMessage.RichMessage = inputRichToRich(in.GetRichMessage())
+	}
 
 	// Fix SavedPeerId
 	if peer.IsSelfUser(actingUserID) {

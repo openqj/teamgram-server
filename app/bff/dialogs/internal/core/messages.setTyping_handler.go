@@ -32,7 +32,7 @@ import (
 // MessagesSetTyping
 // messages.setTyping#58943ee2 flags:# peer:InputPeer top_msg_id:flags.0?int action:SendMessageAction = Bool;
 func (c *DialogsCore) MessagesSetTyping(in *mtproto.TLMessagesSetTyping) (*mtproto.Bool, error) {
-	if c.MD == nil || c.MD.UserId <= 0 {
+	if c == nil || c.MD == nil || c.MD.UserId <= 0 {
 		return nil, mtproto.ErrAuthKeyUnregistered
 	}
 	if in == nil || in.GetPeer() == nil {
@@ -56,8 +56,11 @@ func (c *DialogsCore) MessagesSetTyping(in *mtproto.TLMessagesSetTyping) (*mtpro
 		peer = mtproto.FromInputPeer2(actorID, in.GetPeer())
 		date = int32(time.Now().Unix())
 	)
-	if peer.PeerId <= 0 {
+	if peer == nil || peer.PeerId <= 0 {
 		return nil, mtproto.ErrPeerIdInvalid
+	}
+	if c.svcCtx == nil || c.svcCtx.Dao == nil {
+		return nil, mtproto.ErrMethodNotImpl
 	}
 
 	pushUpdates := func(userId int64, updates *mtproto.Updates) error {
@@ -76,6 +79,9 @@ func (c *DialogsCore) MessagesSetTyping(in *mtproto.TLMessagesSetTyping) (*mtpro
 
 	switch peer.PeerType {
 	case mtproto.PEER_SELF, mtproto.PEER_USER:
+		if c.svcCtx.Dao.SyncClient == nil || c.svcCtx.Dao.UserClient == nil {
+			return nil, mtproto.ErrMethodNotImpl
+		}
 		userIDs := []int64{peer.PeerId}
 		if actorID != peer.PeerId {
 			userIDs = append(userIDs, actorID)
@@ -122,8 +128,9 @@ func (c *DialogsCore) MessagesSetTyping(in *mtproto.TLMessagesSetTyping) (*mtpro
 		}
 		updates := mtproto.MakeTLUpdateShort(&mtproto.Updates{
 			Update: mtproto.MakeTLUpdateUserTyping(&mtproto.Update{
-				UserId: actorID,
-				Action: in.Action,
+				UserId:             actorID,
+				TopMsgId_FLAGINT32: in.GetTopMsgId(),
+				Action:             in.Action,
 			}).To_Update(),
 			Date: date,
 		}).To_Updates()
@@ -131,6 +138,9 @@ func (c *DialogsCore) MessagesSetTyping(in *mtproto.TLMessagesSetTyping) (*mtpro
 			return nil, err
 		}
 	case mtproto.PEER_CHAT:
+		if c.svcCtx.Dao.SyncClient == nil || c.svcCtx.Dao.ChatClient == nil {
+			return nil, mtproto.ErrMethodNotImpl
+		}
 		chat, err := c.svcCtx.Dao.ChatClient.ChatGetMutableChat(c.ctx, &chatpb.TLChatGetMutableChat{
 			ChatId: peer.PeerId,
 		})
@@ -181,21 +191,39 @@ func (c *DialogsCore) MessagesSetTyping(in *mtproto.TLMessagesSetTyping) (*mtpro
 		if c.svcCtx.Plugin == nil {
 			return nil, mtproto.ErrMethodNotImpl
 		}
-		recipients, err := c.svcCtx.Plugin.GetChannelTypingRecipients(c.ctx, c.MD.UserId, in.GetPeer())
+		if c.svcCtx.Dao.SyncClient == nil {
+			return nil, mtproto.ErrMethodNotImpl
+		}
+		recipients, err := c.svcCtx.Plugin.GetChannelTypingRecipients(c.ctx, actorID, in.GetPeer())
 		if err != nil {
 			return nil, err
+		}
+		if recipients == nil {
+			return nil, fmt.Errorf("messages.setTyping: channel resolver returned no recipient set")
+		}
+		recipientIDs := make([]int64, 0, len(recipients))
+		seenRecipients := map[int64]struct{}{actorID: {}}
+		for _, userID := range recipients {
+			if userID <= 0 {
+				return nil, fmt.Errorf("messages.setTyping: channel resolver returned invalid recipient %d", userID)
+			}
+			if _, ok := seenRecipients[userID]; ok {
+				continue
+			}
+			seenRecipients[userID] = struct{}{}
+			recipientIDs = append(recipientIDs, userID)
 		}
 		update := &mtproto.Update{
 			ChannelId:          peer.PeerId,
 			TopMsgId_FLAGINT32: in.GetTopMsgId(),
-			FromId:             mtproto.MakePeerUser(c.MD.UserId),
+			FromId:             mtproto.MakePeerUser(actorID),
 			Action:             in.Action,
 		}
 		updates := mtproto.MakeTLUpdateShort(&mtproto.Updates{
 			Update: mtproto.MakeTLUpdateChannelUserTyping(update).To_Update(),
 			Date:   date,
 		}).To_Updates()
-		for _, userID := range recipients {
+		for _, userID := range recipientIDs {
 			if err := pushUpdates(userID, updates); err != nil {
 				return nil, err
 			}

@@ -918,17 +918,25 @@ func (c *ApiFullCore) MessagesGetMyStickers(in *mtproto.TLMessagesGetMyStickers)
 	if err != nil {
 		return nil, err
 	}
-	sets, err := persist.ListStickerSets(stickerRequestContext(c), uid, false, false, false, in.GetLimit())
+	if in.GetOffsetId() < 0 {
+		return nil, mtproto.ErrOffsetInvalid
+	}
+	if in.GetLimit() < 0 {
+		return nil, mtproto.ErrLimitInvalid
+	}
+	sets, total, err := persist.ListOwnedStickerSets(stickerRequestContext(c), uid, in.GetOffsetId(), in.GetLimit())
 	if err != nil {
 		return nil, stickerProviderError(c, err)
 	}
 	covers := make([]*mtproto.StickerSetCovered, 0, len(sets))
 	for _, set := range sets {
-		if set.OwnerUserID == uid {
-			covers = append(covers, stickerCovered(set))
-		}
+		covers = append(covers, stickerCovered(set))
 	}
-	return mtproto.MakeTLMessagesMyStickers(&mtproto.Messages_MyStickers{Count: int32(len(covers)), Sets: covers}).To_Messages_MyStickers(), nil
+	count := int32(total)
+	if total > int64(^uint32(0)>>1) {
+		count = int32(^uint32(0) >> 1)
+	}
+	return mtproto.MakeTLMessagesMyStickers(&mtproto.Messages_MyStickers{Count: count, Sets: covers}).To_Messages_MyStickers(), nil
 }
 
 func (c *ApiFullCore) MessagesSearchStickers(in *mtproto.TLMessagesSearchStickers) (*mtproto.Messages_FoundStickers, error) {

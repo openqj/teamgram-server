@@ -22,13 +22,17 @@ import (
 	"math"
 
 	"github.com/teamgram/proto/mtproto"
+	chatpb "github.com/teamgram/teamgram-server/app/service/biz/chat/chat"
 	"github.com/teamgram/teamgram-server/app/service/biz/message/message"
+	userpb "github.com/teamgram/teamgram-server/app/service/biz/user/user"
 )
 
 const (
 	// The schema has no published maximum; bound response allocation locally.
 	searchResultsPositionsMaxLimit int32 = 2000
-	searchResultsPositionsPageSize int32 = 1000
+	// Keep position pages at 50 rows so the cursor remains bounded even though
+	// the provider accepts the public searchSentMedia limit of up to 100.
+	searchResultsPositionsPageSize int32 = 50
 )
 
 // MessagesGetSearchResultsPositions
@@ -66,6 +70,9 @@ func (c *MessagesCore) MessagesGetSearchResultsPositions(in *mtproto.TLMessagesG
 	// Channel search is served by channelview, which has no media-position or
 	// exact-count API. The message service's local cache is not authoritative.
 	if peer.IsChannel() {
+		if in.GetPeer().GetAccessHash() == 0 {
+			return nil, mtproto.ErrChannelInvalid
+		}
 		return nil, mtproto.ErrMethodNotImpl
 	}
 	if in.GetSavedPeerId() != nil {
@@ -75,6 +82,20 @@ func (c *MessagesCore) MessagesGetSearchResultsPositions(in *mtproto.TLMessagesG
 	mediaType, err := searchResultsPositionMediaType(in.GetFilter())
 	if err != nil {
 		return nil, err
+	}
+	switch peer.PeerType {
+	case mtproto.PEER_USER:
+		if err = c.validateSearchResultsPositionsUserPeer(in.GetPeer()); err != nil {
+			return nil, err
+		}
+	case mtproto.PEER_CHAT:
+		if err = c.validateSearchResultsPositionsChatPeer(peer); err != nil {
+			return nil, err
+		}
+	case mtproto.PEER_SELF:
+		// InputPeerSelf is already bound to the authenticated user.
+	default:
+		return nil, mtproto.ErrPeerIdInvalid
 	}
 
 	count, err := c.svcCtx.Dao.MessageClient.MessageGetSearchCounter(c.ctx, &message.TLMessageGetSearchCounter{
@@ -98,50 +119,9 @@ func (c *MessagesCore) MessagesGetSearchResultsPositions(in *mtproto.TLMessagesG
 		return nil, err
 	}
 
-	offsetID := in.GetOffsetId()
-	if offsetID == 0 {
-		offsetID = math.MaxInt32
-	}
-	boxList, err := c.svcCtx.Dao.MessageClient.MessageSearchByMediaType(c.ctx, &message.TLMessageSearchByMediaType{
-		UserId:    c.MD.UserId,
-		PeerType:  peer.PeerType,
-		PeerId:    peer.PeerId,
-		MediaType: mediaType,
-		Offset:    offsetID,
-		Limit:     in.GetLimit(),
-	})
+	positions, err := c.searchResultsPositionPage(peer, mediaType, in.GetOffsetId(), positionOffset, count.GetV(), in.GetLimit())
 	if err != nil {
 		return nil, err
-	}
-	if boxList == nil {
-		return nil, mtproto.ErrInternalServerError
-	}
-
-	startPositionOffset := positionOffset
-	positions := make([]*mtproto.SearchResultsPosition, 0, in.GetLimit())
-	previousID := offsetID
-	for _, box := range boxList.GetBoxList() {
-		if int32(len(positions)) == in.GetLimit() {
-			break
-		}
-		messageID, date, err := searchResultPositionData(box)
-		if err != nil || messageID >= previousID || positionOffset >= count.GetV() {
-			return nil, mtproto.ErrInternalServerError
-		}
-		positions = append(positions, mtproto.MakeTLSearchResultPosition(&mtproto.SearchResultsPosition{
-			MsgId:  messageID,
-			Date:   date,
-			Offset: positionOffset,
-		}).To_SearchResultsPosition())
-		positionOffset++
-		previousID = messageID
-	}
-	expectedPositions := count.GetV() - startPositionOffset
-	if expectedPositions > in.GetLimit() {
-		expectedPositions = in.GetLimit()
-	}
-	if int32(len(positions)) != expectedPositions {
-		return nil, mtproto.ErrInternalServerError
 	}
 
 	return makeSearchResultsPositions(count.GetV(), positions), nil
@@ -155,6 +135,129 @@ func makeSearchResultsPositions(count int32, positions []*mtproto.SearchResultsP
 		Count:     count,
 		Positions: positions,
 	}).To_Messages_SearchResultsPositions()
+}
+
+func (c *MessagesCore) validateSearchResultsPositionsUserPeer(input *mtproto.InputPeer) error {
+	if input == nil || input.GetUserId() <= 0 || input.GetAccessHash() == 0 {
+		return mtproto.ErrPeerIdInvalid
+	}
+	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.UserClient == nil {
+		return mtproto.ErrInternalServerError
+	}
+	users, err := c.svcCtx.Dao.UserClient.UserGetMutableUsers(c.ctx, &userpb.TLUserGetMutableUsers{
+		Id: []int64{input.GetUserId()},
+		To: []int64{c.MD.UserId},
+	})
+	if err != nil {
+		return err
+	}
+	if users == nil {
+		return mtproto.ErrInternalServerError
+	}
+	for _, user := range users.GetDatas() {
+		if user == nil || user.GetUser() == nil {
+			continue
+		}
+		data := user.GetUser()
+		if data.GetId() == input.GetUserId() && !data.GetDeleted() && data.GetAccessHash() == input.GetAccessHash() {
+			return nil
+		}
+	}
+	return mtproto.ErrPeerIdInvalid
+}
+
+func (c *MessagesCore) validateSearchResultsPositionsChatPeer(peer *mtproto.PeerUtil) error {
+	if peer == nil || peer.PeerId <= 0 || c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.ChatClient == nil || c.svcCtx.Dao.ChatClient.Client() == nil {
+		return mtproto.ErrInternalServerError
+	}
+	chat, err := c.svcCtx.Dao.ChatClient.Client().ChatGetMutableChat(c.ctx, &chatpb.TLChatGetMutableChat{
+		ChatId: peer.PeerId,
+	})
+	if err != nil {
+		return err
+	}
+	if chat == nil {
+		return mtproto.ErrPeerIdInvalid
+	}
+	member, ok := chat.GetImmutableChatParticipant(c.MD.UserId)
+	if !ok || member == nil || !member.IsChatMemberStateNormal() {
+		return mtproto.ErrUserNotParticipant
+	}
+	return nil
+}
+
+func (c *MessagesCore) searchResultsPositionPage(peer *mtproto.PeerUtil, mediaType, offsetID, positionOffset, count, limit int32) ([]*mtproto.SearchResultsPosition, error) {
+	if positionOffset < 0 || positionOffset > count {
+		return nil, mtproto.ErrInternalServerError
+	}
+	if positionOffset == count {
+		return []*mtproto.SearchResultsPosition{}, nil
+	}
+	if offsetID == 0 {
+		offsetID = math.MaxInt32
+	}
+	positions := make([]*mtproto.SearchResultsPosition, 0, limit)
+	position := positionOffset
+	cursor := offsetID
+	for int32(len(positions)) < limit && position < count {
+		requestLimit := limit - int32(len(positions))
+		if requestLimit > searchResultsPositionsPageSize {
+			requestLimit = searchResultsPositionsPageSize
+		}
+		boxList, err := c.svcCtx.Dao.MessageClient.MessageSearchByMediaType(c.ctx, &message.TLMessageSearchByMediaType{
+			UserId:    c.MD.UserId,
+			PeerType:  peer.PeerType,
+			PeerId:    peer.PeerId,
+			MediaType: mediaType,
+			Offset:    cursor,
+			Limit:     requestLimit,
+		})
+		if err != nil {
+			return nil, err
+		}
+		if boxList == nil {
+			return nil, mtproto.ErrInternalServerError
+		}
+		boxes := boxList.GetBoxList()
+		if int32(len(boxes)) > requestLimit {
+			return nil, mtproto.ErrInternalServerError
+		}
+		previousID := cursor
+		for _, box := range boxes {
+			messageID, date, err := searchResultPositionData(box)
+			if err != nil || messageID >= previousID || position >= count {
+				return nil, mtproto.ErrInternalServerError
+			}
+			positions = append(positions, mtproto.MakeTLSearchResultPosition(&mtproto.SearchResultsPosition{
+				MsgId:  messageID,
+				Date:   date,
+				Offset: position,
+			}).To_SearchResultsPosition())
+			position++
+			previousID = messageID
+		}
+		if len(boxes) == 0 {
+			if position != count {
+				return nil, mtproto.ErrInternalServerError
+			}
+			break
+		}
+		cursor = previousID
+		if int32(len(boxes)) < requestLimit {
+			if position != count && int32(len(positions)) < limit {
+				return nil, mtproto.ErrInternalServerError
+			}
+			break
+		}
+	}
+	expectedPositions := count - positionOffset
+	if expectedPositions > limit {
+		expectedPositions = limit
+	}
+	if int32(len(positions)) != expectedPositions {
+		return nil, mtproto.ErrInternalServerError
+	}
+	return positions, nil
 }
 
 func (c *MessagesCore) searchResultsPositionOffset(peer *mtproto.PeerUtil, mediaType, offsetID, count int32) (int32, error) {
@@ -182,6 +285,9 @@ func (c *MessagesCore) searchResultsPositionOffset(peer *mtproto.PeerUtil, media
 		}
 
 		boxes := boxList.GetBoxList()
+		if int32(len(boxes)) > searchResultsPositionsPageSize {
+			return 0, mtproto.ErrInternalServerError
+		}
 		if len(boxes) == 0 {
 			if position == count {
 				if rank >= 0 {

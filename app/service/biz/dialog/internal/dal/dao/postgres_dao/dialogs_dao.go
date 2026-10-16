@@ -351,7 +351,7 @@ func (d *DialogsDAO) Delete(ctx context.Context, userID int64, peerType int32, p
 	return d.update(ctx, d.db, `DELETE FROM dialogs WHERE user_id = $1 AND peer_type = $2 AND peer_id = $3`, userID, peerType, peerID)
 }
 func (d *DialogsDAO) SelectDialogsByGTReadInboxMaxId(ctx context.Context, peerType int32, peerID int64, readInboxMaxID int32, userID int64) ([]int64, error) {
-	rows, err := d.db.Query(ctx, `SELECT user_id FROM dialogs WHERE peer_type = $1 AND peer_id = $2 AND read_inbox_max_id >= $3 AND user_id <> $4`, peerType, peerID, readInboxMaxID, userID)
+	rows, err := d.db.Query(ctx, `SELECT user_id FROM dialogs WHERE peer_type = $1 AND peer_id = $2 AND read_inbox_max_id >= $3 AND user_id <> $4 ORDER BY user_id`, peerType, peerID, readInboxMaxID, userID)
 	if err != nil {
 		return nil, err
 	}

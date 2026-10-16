@@ -37,9 +37,15 @@ func (c *ChatsCore) MessagesGetMessageReadParticipants31C1C44F(in *mtproto.TLMes
 	var (
 		peer = mtproto.FromInputPeer2(c.MD.UserId, in.Peer)
 	)
+	if err := validateMessageReadParticipantsPeer(peer); err != nil {
+		return nil, err
+	}
 
 	switch peer.PeerType {
 	case mtproto.PEER_CHANNEL:
+		if err := validateMessageReadParticipantsDependencies(c, peer.PeerType); err != nil {
+			return nil, err
+		}
 		msgBox, err := c.svcCtx.Dao.MessageClient.MessageGetUserMessage(c.ctx, &message.TLMessageGetUserMessage{
 			UserId: c.MD.UserId,
 			Id:     in.MsgId,
@@ -51,8 +57,8 @@ func (c *ChatsCore) MessagesGetMessageReadParticipants31C1C44F(in *mtproto.TLMes
 			c.Logger.Errorf("messages.getMessageReadParticipants - empty message reply")
 			return nil, mtproto.ErrInternalServerError
 		}
-		if msgBox.GetPeerType() != mtproto.PEER_CHANNEL || msgBox.GetPeerId() != peer.PeerId || msgBox.GetMessageId() != in.MsgId {
-			return nil, mtproto.ErrPeerIdInvalid
+		if err := validateReadParticipantChannelMessage(c.MD.UserId, peer.PeerId, in.MsgId, msgBox); err != nil {
+			return nil, err
 		}
 
 		callerDialog, err := c.svcCtx.Dao.DialogClient.DialogGetDialogById(c.ctx, &dialog.TLDialogGetDialogById{
@@ -63,9 +69,9 @@ func (c *ChatsCore) MessagesGetMessageReadParticipants31C1C44F(in *mtproto.TLMes
 		if err != nil {
 			c.Logger.Errorf("messages.getMessageReadParticipants - error: %v", err)
 			return nil, err
-		} else if callerDialog == nil || callerDialog.GetDialog() == nil {
+		} else if err := validateReadParticipantCallerDialog(callerDialog, peer.PeerId); err != nil {
 			c.Logger.Errorf("messages.getMessageReadParticipants - empty caller dialog")
-			return nil, mtproto.ErrPeerIdInvalid
+			return nil, err
 		}
 
 		participants, err := c.svcCtx.Dao.DialogClient.DialogGetChannelMessageReadParticipants(c.ctx, &dialog.TLDialogGetChannelMessageReadParticipants{
@@ -82,6 +88,9 @@ func (c *ChatsCore) MessagesGetMessageReadParticipants31C1C44F(in *mtproto.TLMes
 		}
 		return buildMessageReadParticipantDates(participants.GetDatas())
 	case mtproto.PEER_CHAT:
+		if err := validateMessageReadParticipantsDependencies(c, peer.PeerType); err != nil {
+			return nil, err
+		}
 		msgBox, err := c.svcCtx.Dao.MessageClient.MessageGetUserMessage(c.ctx, &message.TLMessageGetUserMessage{
 			UserId: c.MD.UserId,
 			Id:     in.MsgId,
@@ -145,8 +154,8 @@ func (c *ChatsCore) MessagesGetMessageReadParticipants31C1C44F(in *mtproto.TLMes
 		}
 
 		// Read receipts are persisted against the sender's local cursor. Resolve
-		// that cursor from the participant copies, then read all dates in one
-		// PostgreSQL-backed message-service call.
+		// that cursor from the participant copies, then inspect the persisted
+		// receipt rows. Their max-date is not an exact per-message timestamp.
 		senderMessageID := int32(0)
 		boxList.Walk(func(_ int, v *mtproto.MessageBox) {
 			if v != nil && v.UserId == msgBox.SenderUserId {
@@ -166,7 +175,7 @@ func (c *ChatsCore) MessagesGetMessageReadParticipants31C1C44F(in *mtproto.TLMes
 		if readDates == nil {
 			return nil, mtproto.ErrInternalServerError
 		}
-		return &mtproto.Vector_ReadParticipantDate{Datas: readDates.GetDatas()}, nil
+		return buildMessageReadParticipantDatesFromStoredCursor(readDates.GetDatas())
 	default:
 		err := mtproto.ErrPeerIdInvalid
 		c.Logger.Errorf("messages.getMessageReadParticipants - error: %v", err)
@@ -176,6 +185,80 @@ func (c *ChatsCore) MessagesGetMessageReadParticipants31C1C44F(in *mtproto.TLMes
 
 func validateReadParticipantMessage(userID, chatID int64, messageID int32, box *mtproto.MessageBox) error {
 	if box == nil || box.GetMessage() == nil || box.GetUserId() != userID || box.GetMessageId() != messageID || box.GetPeerType() != mtproto.PEER_CHAT || box.GetPeerId() != chatID {
+		return mtproto.ErrPeerIdInvalid
+	}
+	return nil
+}
+
+func validateReadParticipantChannelMessage(userID, channelID int64, messageID int32, box *mtproto.MessageBox) error {
+	if box == nil || box.GetMessage() == nil || box.GetUserId() != userID || box.GetMessageId() != messageID || box.GetPeerType() != mtproto.PEER_CHANNEL || box.GetPeerId() != channelID {
+		return mtproto.ErrPeerIdInvalid
+	}
+	return nil
+}
+
+func validateMessageReadParticipantsPeer(peer *mtproto.PeerUtil) error {
+	if peer == nil || peer.GetPeerId() <= 0 {
+		return mtproto.ErrPeerIdInvalid
+	}
+	if peer.GetPeerType() == mtproto.PEER_CHANNEL && peer.GetAccessHash() == 0 {
+		return mtproto.ErrChannelInvalid
+	}
+	return nil
+}
+
+func validateMessageReadParticipantsDependencies(c *ChatsCore, peerType int32) error {
+	if c == nil || c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.MessageClient == nil {
+		return mtproto.ErrInternalServerError
+	}
+	if peerType == mtproto.PEER_CHANNEL && c.svcCtx.Dao.DialogClient == nil {
+		return mtproto.ErrInternalServerError
+	}
+	if peerType == mtproto.PEER_CHAT && (c.svcCtx.Dao.ChatClient == nil || c.svcCtx.Dao.ChatClient.Client() == nil) {
+		return mtproto.ErrInternalServerError
+	}
+	return nil
+}
+
+func validateMessageReadParticipantIDs(ids []int64, callerID int64) error {
+	for _, id := range ids {
+		if id <= 0 || id == callerID {
+			return mtproto.ErrInternalServerError
+		}
+	}
+	return nil
+}
+
+func validateReadParticipantDates(dates []*mtproto.ReadParticipantDate) error {
+	for _, date := range dates {
+		if date == nil || date.GetUserId() <= 0 || date.GetDate() <= 0 {
+			return mtproto.ErrInternalServerError
+		}
+	}
+	return nil
+}
+
+func buildMessageReadParticipantDatesFromStoredCursor(dates []*mtproto.ReadParticipantDate) (*mtproto.Vector_ReadParticipantDate, error) {
+	if err := validateReadParticipantDates(dates); err != nil {
+		return nil, err
+	}
+	if len(dates) > 0 {
+		// message_read_outbox stores a reader's maximum sender-local
+		// message cursor and the latest timestamp for that cursor. A
+		// request for an earlier message cannot recover that message's
+		// exact read time, so do not return a later timestamp as if it
+		// were authoritative for this message.
+		return nil, mtproto.ErrMethodNotImpl
+	}
+	return &mtproto.Vector_ReadParticipantDate{Datas: []*mtproto.ReadParticipantDate{}}, nil
+}
+
+func validateReadParticipantCallerDialog(callerDialog *dialog.DialogExt, channelID int64) error {
+	if callerDialog == nil || callerDialog.GetDialog() == nil || callerDialog.GetDialog().GetPeer() == nil {
+		return mtproto.ErrPeerIdInvalid
+	}
+	peer := callerDialog.GetDialog().GetPeer()
+	if peer.GetPredicateName() != mtproto.Predicate_peerChannel || peer.GetChannelId() != channelID {
 		return mtproto.ErrPeerIdInvalid
 	}
 	return nil

@@ -25,6 +25,7 @@ import (
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/domain"
 	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/persist"
+	userpb "github.com/teamgram/teamgram-server/app/service/biz/user/user"
 	"github.com/teamgram/teamgram-server/pkg/rpc/dccontext"
 	"google.golang.org/grpc/status"
 )
@@ -100,6 +101,80 @@ func inputUserIDs(users []*mtproto.InputUser) []int64 {
 		out = append(out, u.GetUserId())
 	}
 	return out
+}
+
+// hydrateCanonicalUsers resolves only the requested IDs through the
+// authoritative User service. Connected-bot state stores IDs, not a second
+// copy of Telegram User constructors, so a missing or malformed profile must
+// fail closed instead of producing a synthetic user.
+func (c *ApiFullCore) hydrateCanonicalUsers(ids []int64, viewerID int64, botIDs map[int64]struct{}) ([]*mtproto.User, error) {
+	if len(ids) == 0 {
+		return []*mtproto.User{}, nil
+	}
+	if viewerID <= 0 {
+		return nil, mtproto.ErrUserIdInvalid
+	}
+	requested := make([]int64, 0, len(ids))
+	wanted := make(map[int64]struct{}, len(ids))
+	for _, id := range ids {
+		if id <= 0 {
+			return nil, mtproto.ErrUserIdInvalid
+		}
+		if _, ok := wanted[id]; ok {
+			continue
+		}
+		wanted[id] = struct{}{}
+		requested = append(requested, id)
+	}
+	d := c.apifullDao()
+	if d == nil || d.UserClient == nil {
+		return nil, mtproto.ErrMethodNotImpl
+	}
+	profiles, err := d.UserGetMutableUsers(callContext(c), &userpb.TLUserGetMutableUsers{Id: requested})
+	if err != nil {
+		return nil, err
+	}
+	if profiles == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
+	byID := make(map[int64]*mtproto.ImmutableUser, len(profiles.GetDatas()))
+	for _, profile := range profiles.GetDatas() {
+		if profile == nil || profile.GetUser() == nil {
+			return nil, mtproto.ErrInternalServerError
+		}
+		id := profile.GetUser().GetId()
+		if _, ok := wanted[id]; !ok {
+			continue
+		}
+		if _, duplicate := byID[id]; duplicate {
+			return nil, mtproto.ErrInternalServerError
+		}
+		byID[id] = profile
+	}
+
+	users := make([]*mtproto.User, 0, len(requested))
+	for _, id := range requested {
+		profile := byID[id]
+		if profile == nil || profile.GetUser() == nil || profile.GetUser().GetId() != id || profile.Deleted() {
+			return nil, mtproto.ErrUserIdInvalid
+		}
+		if profile.GetUser().GetAccessHash() == 0 {
+			return nil, mtproto.ErrUserIdInvalid
+		}
+		_, requireBot := botIDs[id]
+		if requireBot && profile.GetUser().GetBot() == nil {
+			return nil, mtproto.ErrBotInvalid
+		}
+		if !requireBot && profile.GetUser().GetBot() != nil {
+			return nil, mtproto.ErrUserIsBot
+		}
+		user := profile.ToUser(viewerID)
+		if user == nil || user.GetId() != id || user.GetAccessHash() == nil || user.GetAccessHash().GetValue() == 0 {
+			return nil, mtproto.ErrInternalServerError
+		}
+		users = append(users, user)
+	}
+	return users, nil
 }
 
 func businessBotRecipientsFromInput(in *mtproto.InputBusinessBotRecipients) *mtproto.BusinessBotRecipients {
@@ -239,64 +314,53 @@ func (c *ApiFullCore) AccountGetConnectedBots(in *mtproto.TLAccountGetConnectedB
 		return nil, err
 	}
 	_ = in
-	if domain.Ready() {
-		rows, err := domain.ListConnectedBots(c.MD.UserId)
-		if err != nil {
-			return nil, err
-		}
-		bots := make([]*mtproto.ConnectedBot, 0, len(rows))
-		for _, row := range rows {
-			rights := mtproto.MakeTLBusinessBotRights(&mtproto.BusinessBotRights{}).To_BusinessBotRights()
-			if len(row.Rights) > 0 && string(row.Rights) != "null" {
-				if err := json.Unmarshal(row.Rights, rights); err != nil {
-					return nil, err
-				}
-			}
-			recipients := mtproto.MakeTLBusinessBotRecipients(&mtproto.BusinessBotRecipients{}).To_BusinessBotRecipients()
-			if len(row.RecipientsBot) > 0 && string(row.RecipientsBot) != "null" {
-				if err := json.Unmarshal(row.RecipientsBot, recipients); err != nil {
-					return nil, err
-				}
-			}
-			var direct *mtproto.BusinessRecipients
-			if len(row.Recipients) > 0 && string(row.Recipients) != "null" {
-				direct = mtproto.MakeTLBusinessRecipients(&mtproto.BusinessRecipients{}).To_BusinessRecipients()
-				if err := json.Unmarshal(row.Recipients, direct); err != nil {
-					return nil, err
-				}
-			}
-			bots = append(bots, mtproto.MakeTLConnectedBot(&mtproto.ConnectedBot{
-				BotId: row.BotID, CanReply: row.CanReply, Rights: rights,
-				Recipients_BUSINESSBOTRECIPIENTS: recipients, Recipients_BUSINESSRECIPIENTS: direct,
-			}).To_ConnectedBot())
-		}
-		return mtproto.MakeTLAccountConnectedBots(&mtproto.Account_ConnectedBots{ConnectedBots: bots, Users: []*mtproto.User{}}).To_Account_ConnectedBots(), nil
+	if !domain.Ready() {
+		return nil, mtproto.ErrMethodNotImpl
 	}
-	list, err := loadConnectedBots(c.MD.UserId)
+	rows, err := domain.ListConnectedBots(c.MD.UserId)
 	if err != nil {
 		return nil, err
 	}
-	bots := make([]*mtproto.ConnectedBot, 0, len(list))
-	for _, row := range list {
-		rights := row.Rights
-		if rights == nil {
-			rights = mtproto.MakeTLBusinessBotRights(&mtproto.BusinessBotRights{}).To_BusinessBotRights()
+	botIDs := make(map[int64]struct{}, len(rows))
+	ids := make([]int64, 0, len(rows))
+	bots := make([]*mtproto.ConnectedBot, 0, len(rows))
+	for _, row := range rows {
+		if row.BotID <= 0 {
+			return nil, mtproto.ErrUserIdInvalid
 		}
-		recipients := row.RecipientsBot
-		if recipients == nil {
-			recipients = mtproto.MakeTLBusinessBotRecipients(&mtproto.BusinessBotRecipients{}).To_BusinessBotRecipients()
+		botIDs[row.BotID] = struct{}{}
+		ids = append(ids, row.BotID)
+		rights := mtproto.MakeTLBusinessBotRights(&mtproto.BusinessBotRights{}).To_BusinessBotRights()
+		if len(row.Rights) > 0 && string(row.Rights) != "null" {
+			if err := json.Unmarshal(row.Rights, rights); err != nil {
+				return nil, err
+			}
+		}
+		recipients := mtproto.MakeTLBusinessBotRecipients(&mtproto.BusinessBotRecipients{}).To_BusinessBotRecipients()
+		if len(row.RecipientsBot) > 0 && string(row.RecipientsBot) != "null" {
+			if err := json.Unmarshal(row.RecipientsBot, recipients); err != nil {
+				return nil, err
+			}
+		}
+		var direct *mtproto.BusinessRecipients
+		if len(row.Recipients) > 0 && string(row.Recipients) != "null" {
+			direct = mtproto.MakeTLBusinessRecipients(&mtproto.BusinessRecipients{}).To_BusinessRecipients()
+			if err := json.Unmarshal(row.Recipients, direct); err != nil {
+				return nil, err
+			}
 		}
 		bots = append(bots, mtproto.MakeTLConnectedBot(&mtproto.ConnectedBot{
-			BotId:                            row.BotId,
-			CanReply:                         row.CanReply,
-			Rights:                           rights,
-			Recipients_BUSINESSBOTRECIPIENTS: recipients,
-			Recipients_BUSINESSRECIPIENTS:    row.Recipients,
+			BotId: row.BotID, CanReply: row.CanReply, Rights: rights,
+			Recipients_BUSINESSBOTRECIPIENTS: recipients, Recipients_BUSINESSRECIPIENTS: direct,
 		}).To_ConnectedBot())
+	}
+	users, err := c.hydrateCanonicalUsers(ids, c.MD.UserId, botIDs)
+	if err != nil {
+		return nil, err
 	}
 	return mtproto.MakeTLAccountConnectedBots(&mtproto.Account_ConnectedBots{
 		ConnectedBots: bots,
-		Users:         []*mtproto.User{},
+		Users:         users,
 	}).To_Account_ConnectedBots(), nil
 }
 
@@ -316,7 +380,14 @@ func (c *ApiFullCore) AccountGetBotBusinessConnection(in *mtproto.TLAccountGetBo
 		if !found {
 			return nil, errBusinessConnectionIDInvalid
 		}
-		return businessConnectionUpdates(record)
+		if record.OwnerUserID == uid {
+			return nil, mtproto.ErrUserIdInvalid
+		}
+		users, err := c.hydrateCanonicalUsers([]int64{uid, record.OwnerUserID}, uid, map[int64]struct{}{uid: {}})
+		if err != nil {
+			return nil, err
+		}
+		return businessConnectionUpdatesWithUsers(record, users[1:])
 	}
 	var result mtproto.Updates
 	if err = c.callBusinessProvider("account.getBotBusinessConnection", map[string]any{
@@ -324,13 +395,41 @@ func (c *ApiFullCore) AccountGetBotBusinessConnection(in *mtproto.TLAccountGetBo
 	}, &result); err != nil {
 		return nil, err
 	}
-	if result.GetPredicateName() == "" {
-		return nil, mtproto.ErrInternalServerError
+	ownerID, err := validateBotBusinessConnectionUpdates(&result, in.GetConnectionId())
+	if err != nil {
+		return nil, err
 	}
+	if ownerID == uid {
+		return nil, mtproto.ErrUserIdInvalid
+	}
+	users, err := c.hydrateCanonicalUsers([]int64{uid, ownerID}, uid, map[int64]struct{}{uid: {}})
+	if err != nil {
+		return nil, err
+	}
+	result.SetUsers(users[1:])
 	return &result, nil
 }
 
+func validateBotBusinessConnectionUpdates(updates *mtproto.Updates, connectionID string) (int64, error) {
+	if updates == nil || updates.GetPredicateName() != mtproto.Predicate_updates || len(updates.GetUpdates()) != 1 {
+		return 0, mtproto.ErrInternalServerError
+	}
+	update := updates.GetUpdates()[0]
+	if update == nil || update.GetPredicateName() != mtproto.Predicate_updateBotBusinessConnect || update.GetConnection() == nil {
+		return 0, mtproto.ErrInternalServerError
+	}
+	connection := update.GetConnection()
+	if connection.GetConnectionId() != connectionID || connection.GetUserId() <= 0 || connection.GetDcId() <= 0 || connection.GetDate() <= 0 || update.GetQts() <= 0 {
+		return 0, mtproto.ErrInternalServerError
+	}
+	return connection.GetUserId(), nil
+}
+
 func businessConnectionUpdates(record domain.BusinessConnectionRecord) (*mtproto.Updates, error) {
+	return businessConnectionUpdatesWithUsers(record, nil)
+}
+
+func businessConnectionUpdatesWithUsers(record domain.BusinessConnectionRecord, users []*mtproto.User) (*mtproto.Updates, error) {
 	if record.ConnectionID == "" || record.OwnerUserID <= 0 || record.BotUserID <= 0 || record.DCID <= 0 || record.Date <= 0 || record.QTS <= 0 || len(record.Rights) == 0 {
 		return nil, mtproto.ErrInternalServerError
 	}
@@ -346,7 +445,7 @@ func businessConnectionUpdates(record domain.BusinessConnectionRecord) (*mtproto
 	update := mtproto.MakeTLUpdateBotBusinessConnect(&mtproto.Update{
 		Connection: connection, Qts: record.QTS,
 	}).To_Update()
-	return mtproto.MakeUpdatesByUpdates(update), nil
+	return mtproto.MakeUpdatesByUpdatesUsers(users, update), nil
 }
 
 func (c *ApiFullCore) AccountToggleConnectedBotPaused(in *mtproto.TLAccountToggleConnectedBotPaused) (*mtproto.Bool, error) {

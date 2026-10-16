@@ -79,6 +79,9 @@ func (c *MessagesCore) MessagesEditMessage(in *mtproto.TLMessagesEditMessage) (*
 			return nil, err
 		}
 	case mtproto.PEER_CHANNEL:
+		if in.Media != nil && in.Media.GetPredicateName() == mtproto.Predicate_inputMediaPoll && in.Media.GetStopped() {
+			return channelview.StopPollForInputPeer(c.MD.UserId, in.GetPeer(), in.Id, in.GetReplyMarkup())
+		}
 		text := ""
 		if in.GetMessage() != nil {
 			text = in.GetMessage().GetValue()
@@ -126,10 +129,29 @@ func (c *MessagesCore) MessagesEditMessage(in *mtproto.TLMessagesEditMessage) (*
 	}
 
 	if in.Media != nil {
-		outMessage.Media, err = c.makeMediaByInputMedia(in.Media)
-		if err != nil {
-			c.Logger.Errorf("messages.editMessage - media error: %v", err)
-			return nil, err
+		if in.Media.GetPredicateName() == mtproto.Predicate_inputMediaPoll && in.Media.GetStopped() &&
+			outMessage.GetMedia() != nil && outMessage.GetMedia().GetPredicateName() == mtproto.Predicate_messageMediaPoll {
+			previous := outMessage.GetMedia()
+			poll := proto.Clone(previous.GetPoll()).(*mtproto.Poll)
+			poll.Closed = true
+			outMessage.Media = mtproto.MakeTLMessageMediaPoll(&mtproto.MessageMedia{
+				Poll: poll, Results: previous.GetResults(),
+			}).To_MessageMedia()
+		} else if in.Media.GetPredicateName() == mtproto.Predicate_inputMediaGeoLive && in.Media.To_InputMediaGeoLive().GetStopped() &&
+			outMessage.GetMedia() != nil && outMessage.GetMedia().GetPredicateName() == mtproto.Predicate_messageMediaGeoLive {
+			live := in.Media.To_InputMediaGeoLive()
+			previous := outMessage.GetMedia()
+			outMessage.Media = mtproto.MakeTLMessageMediaGeoLive(&mtproto.MessageMedia{
+				Geo:                         previous.GetGeo(),
+				Heading:                     live.GetHeading(),
+				ProximityNotificationRadius: live.GetProximityNotificationRadius(),
+			}).To_MessageMedia()
+		} else {
+			outMessage.Media, err = c.makeMediaByInputMedia(in.Media)
+			if err != nil {
+				c.Logger.Errorf("messages.editMessage - media error: %v", err)
+				return nil, err
+			}
 		}
 	}
 	// message

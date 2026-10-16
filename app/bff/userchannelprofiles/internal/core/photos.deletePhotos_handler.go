@@ -23,6 +23,7 @@ import (
 	"github.com/teamgram/teamgram-server/app/messenger/sync/sync"
 	userpb "github.com/teamgram/teamgram-server/app/service/biz/user/user"
 	mediapb "github.com/teamgram/teamgram-server/app/service/media/media"
+	"github.com/teamgram/teamgram-server/pkg/rpc/businessctx"
 )
 
 // PhotosDeletePhotos
@@ -33,6 +34,13 @@ func (c *UserChannelProfilesCore) PhotosDeletePhotos(in *mtproto.TLPhotosDeleteP
 	}
 	if in == nil {
 		return nil, mtproto.ErrInputRequestInvalid
+	}
+	actorID := c.MD.UserId
+	if scope, ok := businessctx.ScopeFromContext(c.ctx); ok {
+		if scope.OwnerID <= 0 || !scope.CanEditPhoto {
+			return nil, mtproto.ErrChatAdminRequired
+		}
+		actorID = scope.OwnerID
 	}
 	var (
 		photo        *mtproto.Photo
@@ -56,7 +64,7 @@ func (c *UserChannelProfilesCore) PhotosDeletePhotos(in *mtproto.TLPhotosDeleteP
 
 	// TODO: ALBUM_PHOTOS_TOO_MANY
 	mainId, err := c.svcCtx.Dao.UserClient.UserDeleteProfilePhotos(c.ctx, &userpb.TLUserDeleteProfilePhotos{
-		UserId: c.MD.UserId,
+		UserId: actorID,
 		Id:     deleteIdList,
 	})
 	if err != nil {
@@ -87,7 +95,7 @@ func (c *UserChannelProfilesCore) PhotosDeletePhotos(in *mtproto.TLPhotosDeleteP
 	me, err := c.svcCtx.Dao.UserClient.UserGetImmutableUser(
 		c.ctx,
 		&userpb.TLUserGetImmutableUser{
-			Id:       c.MD.UserId,
+			Id:       actorID,
 			Privacy:  false,
 			Contacts: nil,
 		})
@@ -100,11 +108,11 @@ func (c *UserChannelProfilesCore) PhotosDeletePhotos(in *mtproto.TLPhotosDeleteP
 	}
 
 	syncReply, err := c.svcCtx.Dao.SyncClient.SyncPushUpdates(c.ctx, &sync.TLSyncPushUpdates{
-		UserId: c.MD.UserId,
+		UserId: actorID,
 		Updates: mtproto.MakeUpdatesByUpdatesUsers(
 			[]*mtproto.User{me.ToSelfUser()},
 			mtproto.MakeTLUpdateUser(&mtproto.Update{
-				UserId: c.MD.UserId,
+				UserId: actorID,
 			}).To_Update()),
 	})
 	if err != nil {

@@ -26,14 +26,26 @@ import (
 // UsersGetMe
 // users.getMe id:long token:string = User;
 func (c *UsersCore) UsersGetMe(in *mtproto.TLUsersGetMe) (*mtproto.User, error) {
+	if c == nil || in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.UserClient == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
+
 	// 通过 in.token 获取user
 	user, err := c.svcCtx.Dao.UserClient.UserGetImmutableUserByToken(c.ctx, &user.TLUserGetImmutableUserByToken{
 		Token: in.GetToken(),
 	})
-	if err != nil || user == nil {
+	if err != nil {
 		c.Logger.Errorf("users.getMe - error: %v", err)
 		return nil, err
-	} else if user.Id() != in.Id {
+	}
+	if user == nil || user.GetUser() == nil {
+		c.Logger.Errorf("users.getMe - user service returned no user")
+		return nil, mtproto.ErrInternalServerError
+	}
+	if user.Id() != in.Id {
 		err = mtproto.ErrTokenInvalid
 		c.Logger.Errorf("users.getMe - error: %v", err)
 		return nil, err

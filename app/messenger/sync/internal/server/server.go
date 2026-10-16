@@ -12,6 +12,8 @@ package server
 import (
 	"errors"
 	"flag"
+	"os"
+	"strconv"
 	"strings"
 
 	"github.com/teamgram/teamgram-server/app/messenger/sync/internal/config"
@@ -42,6 +44,9 @@ func (s *Server) Initialize() error {
 	if strings.TrimSpace(c.Postgres.DSN) == "" {
 		return errors.New("messenger sync: Postgres.DSN is required")
 	}
+	if err := applyPostgresEnvOverrides(&c); err != nil {
+		return err
+	}
 	logx.Infof("messenger sync config loaded")
 
 	if err := logx.SetUp(c.Log); err != nil {
@@ -67,6 +72,22 @@ func (s *Server) Initialize() error {
 	// go s.grpcSrv.Start()
 	go s.mq.Start()
 
+	return nil
+}
+
+func applyPostgresEnvOverrides(c *config.Config) error {
+	if c == nil {
+		return errors.New("messenger sync: nil config")
+	}
+	value, ok := os.LookupEnv("TEAMGRAM_SYNC_POSTGRES_MAX_CONNS")
+	if !ok || strings.TrimSpace(value) == "" {
+		return nil
+	}
+	maxConns, err := strconv.ParseInt(strings.TrimSpace(value), 10, 32)
+	if err != nil || maxConns < 1 {
+		return errors.New("messenger sync: TEAMGRAM_SYNC_POSTGRES_MAX_CONNS must be a positive integer")
+	}
+	c.Postgres.MaxConns = int32(maxConns)
 	return nil
 }
 

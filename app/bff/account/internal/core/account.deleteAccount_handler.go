@@ -31,6 +31,9 @@ func (c *AccountCore) AccountDeleteAccount(in *mtproto.TLAccountDeleteAccount) (
 	if c == nil || c.svcCtx == nil || c.svcCtx.Dao == nil || c.MD == nil || c.MD.UserId <= 0 {
 		return nil, mtproto.ErrUserIdInvalid
 	}
+	if c.MD.GetPermAuthKeyId() == 0 {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
 	if in == nil {
 		return nil, mtproto.ErrInputRequestInvalid
 	}

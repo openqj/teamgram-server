@@ -87,6 +87,18 @@ func TestMessagesSendMethodsFailClosedWithoutMessageProvider(t *testing.T) {
 			},
 		},
 		{
+			name: "send rich message",
+			call: func() error {
+				_, err := core.MessagesSendMessage(&mtproto.TLMessagesSendMessage{
+					Peer: mtproto.MakeTLInputPeerSelf(nil).To_InputPeer(),
+					RichMessage: mtproto.MakeTLInputRichMessageHTML(&mtproto.InputRichMessage{
+						Html: "<b>hello</b>",
+					}).To_InputRichMessage(),
+				})
+				return err
+			},
+		},
+		{
 			name: "send media",
 			call: func() error {
 				_, err := core.MessagesSendMedia(&mtproto.TLMessagesSendMedia{

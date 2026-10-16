@@ -24,6 +24,7 @@ import (
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/messenger/sync/sync"
 	userpb "github.com/teamgram/teamgram-server/app/service/biz/user/user"
+	"github.com/teamgram/teamgram-server/pkg/rpc/businessctx"
 )
 
 // AccountUpdateUsername
@@ -35,6 +36,13 @@ func (c *UsernamesCore) AccountUpdateUsername(in *mtproto.TLAccountUpdateUsernam
 	if in == nil {
 		return nil, mtproto.ErrInputRequestInvalid
 	}
+	actorID := c.MD.UserId
+	if scope, ok := businessctx.ScopeFromContext(c.ctx); ok {
+		if scope.OwnerID <= 0 || !scope.CanEditUsername {
+			return nil, mtproto.ErrChatAdminRequired
+		}
+		actorID = scope.OwnerID
+	}
 
 	username := in.GetUsername()
 	if username != "" && usernameFormatInvalid(username) {
@@ -45,7 +53,7 @@ func (c *UsernamesCore) AccountUpdateUsername(in *mtproto.TLAccountUpdateUsernam
 	}
 
 	me, err := c.svcCtx.Dao.UserClient.UserGetImmutableUser(c.ctx, &userpb.TLUserGetImmutableUser{
-		Id: c.MD.UserId,
+		Id: actorID,
 	})
 	if err != nil {
 		c.Logger.Errorf("account.updateUsername - error: %v", err)
@@ -57,7 +65,7 @@ func (c *UsernamesCore) AccountUpdateUsername(in *mtproto.TLAccountUpdateUsernam
 	}
 
 	ok, err := c.svcCtx.Dao.UserClient.UserUpdateUsername(c.ctx, &userpb.TLUserUpdateUsername{
-		UserId:   c.MD.UserId,
+		UserId:   actorID,
 		Username: username,
 	})
 	if err != nil {
@@ -70,10 +78,10 @@ func (c *UsernamesCore) AccountUpdateUsername(in *mtproto.TLAccountUpdateUsernam
 
 	me.SetUsername(username)
 	synced, err := c.svcCtx.Dao.SyncClient.SyncUpdatesNotMe(c.ctx, &sync.TLSyncUpdatesNotMe{
-		UserId:        c.MD.UserId,
+		UserId:        actorID,
 		PermAuthKeyId: c.MD.PermAuthKeyId,
 		Updates: mtproto.MakeUpdatesByUpdates(mtproto.MakeTLUpdateUserName(&mtproto.Update{
-			UserId:    c.MD.UserId,
+			UserId:    actorID,
 			FirstName: me.FirstName(),
 			LastName:  me.LastName(),
 			Username:  username,

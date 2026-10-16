@@ -38,9 +38,15 @@ func (c *ChatsCore) MessagesGetMessageReadParticipants2C6F97B7(in *mtproto.TLMes
 		peer       = mtproto.FromInputPeer2(c.MD.UserId, in.Peer)
 		rValueList = make([]int64, 0)
 	)
+	if err := validateMessageReadParticipantsPeer(peer); err != nil {
+		return nil, err
+	}
 
 	switch peer.PeerType {
 	case mtproto.PEER_CHANNEL:
+		if err := validateMessageReadParticipantsDependencies(c, peer.PeerType); err != nil {
+			return nil, err
+		}
 		msgBox, err := c.svcCtx.Dao.MessageClient.MessageGetUserMessage(c.ctx, &message.TLMessageGetUserMessage{
 			UserId: c.MD.UserId,
 			Id:     in.MsgId,
@@ -52,8 +58,8 @@ func (c *ChatsCore) MessagesGetMessageReadParticipants2C6F97B7(in *mtproto.TLMes
 			c.Logger.Errorf("messages.getMessageReadParticipants - empty message reply")
 			return nil, mtproto.ErrInternalServerError
 		}
-		if msgBox.GetPeerType() != mtproto.PEER_CHANNEL || msgBox.GetPeerId() != peer.PeerId || msgBox.GetMessageId() != in.MsgId {
-			return nil, mtproto.ErrPeerIdInvalid
+		if err := validateReadParticipantChannelMessage(c.MD.UserId, peer.PeerId, in.MsgId, msgBox); err != nil {
+			return nil, err
 		}
 
 		callerDialog, err := c.svcCtx.Dao.DialogClient.DialogGetDialogById(c.ctx, &dialog.TLDialogGetDialogById{
@@ -64,9 +70,9 @@ func (c *ChatsCore) MessagesGetMessageReadParticipants2C6F97B7(in *mtproto.TLMes
 		if err != nil {
 			c.Logger.Errorf("messages.getMessageReadParticipants - error: %v", err)
 			return nil, err
-		} else if callerDialog == nil || callerDialog.GetDialog() == nil {
+		} else if err := validateReadParticipantCallerDialog(callerDialog, peer.PeerId); err != nil {
 			c.Logger.Errorf("messages.getMessageReadParticipants - empty caller dialog")
-			return nil, mtproto.ErrPeerIdInvalid
+			return nil, err
 		}
 
 		participants, err := c.svcCtx.Dao.DialogClient.DialogGetChannelMessageReadParticipants(c.ctx, &dialog.TLDialogGetChannelMessageReadParticipants{
@@ -81,9 +87,15 @@ func (c *ChatsCore) MessagesGetMessageReadParticipants2C6F97B7(in *mtproto.TLMes
 			c.Logger.Errorf("messages.getMessageReadParticipants - empty channel participant reply")
 			return nil, mtproto.ErrInternalServerError
 		}
+		if err := validateMessageReadParticipantIDs(participants.GetDatas(), c.MD.UserId); err != nil {
+			return nil, err
+		}
 
 		return &mtproto.Vector_Long{Datas: participants.GetDatas()}, nil
 	case mtproto.PEER_CHAT:
+		if err := validateMessageReadParticipantsDependencies(c, peer.PeerType); err != nil {
+			return nil, err
+		}
 		msgBox, err := c.svcCtx.Dao.MessageClient.MessageGetUserMessage(c.ctx, &message.TLMessageGetUserMessage{
 			UserId: c.MD.UserId,
 			Id:     in.MsgId,

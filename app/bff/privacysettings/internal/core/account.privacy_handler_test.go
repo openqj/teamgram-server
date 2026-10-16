@@ -118,6 +118,57 @@ func privacySetRequest(rule *mtproto.InputPrivacyRule) *mtproto.TLAccountSetPriv
 	}
 }
 
+func TestAccountSetPrivacyRejectsMalformedInputBeforeProviders(t *testing.T) {
+	allowAll := mtproto.MakeTLInputPrivacyValueAllowAll(nil).To_InputPrivacyRule()
+	tooMany := make([]*mtproto.InputPrivacyRule, 1001)
+	for i := range tooMany {
+		tooMany[i] = mtproto.MakeTLInputPrivacyValueAllowPremium(nil).To_InputPrivacyRule()
+	}
+
+	mismatchedConstructor := mtproto.MakeTLInputPrivacyValueAllowAll(nil).To_InputPrivacyRule()
+	mismatchedConstructor.Constructor = mtproto.TLConstructor_CRC32_inputPrivacyValueDisallowAll
+	mismatchedKeyConstructor := mtproto.MakeTLInputPrivacyKeyStatusTimestamp(nil).To_InputPrivacyKey()
+	mismatchedKeyConstructor.Constructor = mtproto.TLConstructor_CRC32_inputPrivacyKeyPhoneNumber
+
+	invalidUser := mtproto.MakeTLInputPrivacyValueAllowUsers(nil)
+	invalidUser.SetUsers([]*mtproto.InputUser{mtproto.MakeTLInputUserEmpty(nil).To_InputUser()})
+	invalidChat := mtproto.MakeTLInputPrivacyValueAllowChatParticipants(nil)
+	invalidChat.SetChats([]int64{0})
+
+	tests := []struct {
+		name string
+		in   *mtproto.TLAccountSetPrivacy
+		want error
+	}{
+		{name: "missing key", in: &mtproto.TLAccountSetPrivacy{Rules: []*mtproto.InputPrivacyRule{allowAll}}, want: mtproto.ErrPrivacyKeyInvalid},
+		{name: "unknown key", in: &mtproto.TLAccountSetPrivacy{Key: &mtproto.InputPrivacyKey{PredicateName: "unknown"}, Rules: []*mtproto.InputPrivacyRule{allowAll}}, want: mtproto.ErrPrivacyKeyInvalid},
+		{name: "mismatched key constructor", in: &mtproto.TLAccountSetPrivacy{Key: mismatchedKeyConstructor, Rules: []*mtproto.InputPrivacyRule{allowAll}}, want: mtproto.ErrPrivacyKeyInvalid},
+		{name: "empty rules", in: privacySetRequest(nil), want: mtproto.ErrPrivacyValueInvalid},
+		{name: "nil rule", in: &mtproto.TLAccountSetPrivacy{Key: mtproto.MakeTLInputPrivacyKeyStatusTimestamp(nil).To_InputPrivacyKey(), Rules: []*mtproto.InputPrivacyRule{nil}}, want: mtproto.ErrPrivacyValueInvalid},
+		{name: "unknown rule", in: privacySetRequest(&mtproto.InputPrivacyRule{PredicateName: "unknown"}), want: mtproto.ErrPrivacyValueInvalid},
+		{name: "mismatched constructor", in: privacySetRequest(mismatchedConstructor), want: mtproto.ErrPrivacyValueInvalid},
+		{name: "duplicate base", in: &mtproto.TLAccountSetPrivacy{Key: mtproto.MakeTLInputPrivacyKeyStatusTimestamp(nil).To_InputPrivacyKey(), Rules: []*mtproto.InputPrivacyRule{allowAll, mtproto.MakeTLInputPrivacyValueDisallowAll(nil).To_InputPrivacyRule()}}, want: mtproto.ErrPrivacyValueInvalid},
+		{name: "invalid user constructor", in: privacySetRequest(invalidUser.To_InputPrivacyRule()), want: mtproto.ErrPrivacyValueInvalid},
+		{name: "invalid chat id", in: privacySetRequest(invalidChat.To_InputPrivacyRule()), want: mtproto.ErrPrivacyValueInvalid},
+		{name: "unexpected payload", in: privacySetRequest(mtproto.MakeTLInputPrivacyValueAllowAll(&mtproto.InputPrivacyRule{Chats: []int64{42}}).To_InputPrivacyRule()), want: mtproto.ErrPrivacyValueInvalid},
+		{name: "too many rules", in: &mtproto.TLAccountSetPrivacy{Key: mtproto.MakeTLInputPrivacyKeyStatusTimestamp(nil).To_InputPrivacyKey(), Rules: tooMany}, want: mtproto.ErrPrivacyTooLong},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			userStub := &privacyUserClientStub{}
+			c := newPrivacyTestCore(userStub, &privacyChatClientStub{}, nil)
+			got, err := c.AccountSetPrivacy(tc.in)
+			if got != nil || !errors.Is(err, tc.want) {
+				t.Fatalf("AccountSetPrivacy() = (%v, %v), want nil and %v", got, err, tc.want)
+			}
+			if userStub.setCalls != 0 {
+				t.Fatalf("user service called %d times for malformed input", userStub.setCalls)
+			}
+		})
+	}
+}
+
 func TestAccountGetPrivacyPropagatesRuleLoadError(t *testing.T) {
 	wantErr := errors.New("user service unavailable")
 	c := newPrivacyTestCore(&privacyUserClientStub{rulesErr: wantErr}, &privacyChatClientStub{}, nil)

@@ -30,12 +30,12 @@ func (c *AccountCore) AccountResetAuthorization(in *mtproto.TLAccountResetAuthor
 	if c == nil || in == nil {
 		return nil, mtproto.ErrInputRequestInvalid
 	}
+	if c.MD == nil || c.MD.GetPermAuthKeyId() == 0 || c.MD.GetUserId() == 0 {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
 	if in.Hash == 0 {
 		c.Logger.Errorf("account.resetAuthorization#df77f3bc - hash is 0")
 		return mtproto.BoolFalse, nil
-	}
-	if c.MD == nil || c.MD.GetPermAuthKeyId() == 0 || c.MD.GetUserId() == 0 {
-		return nil, mtproto.ErrAuthKeyUnregistered
 	}
 	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.AuthsessionClient == nil || c.svcCtx.Dao.SyncClient == nil {
 		return nil, mtproto.ErrInternalServerError

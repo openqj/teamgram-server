@@ -88,6 +88,10 @@ func TestHistoryAndEditDataCheckInputPeerAuthorization(t *testing.T) {
 	if _, err := Post(owner, channelID, "announcement #topic", time.Now().Unix()); err != nil {
 		t.Fatal(err)
 	}
+	localPage, err := SearchForInputPeer(member, input, "", 0, 0, 1, 0, 0, 0, 0, 1)
+	if err != nil || localPage.GetPredicateName() != mtproto.Predicate_messages_messagesSlice || localPage.GetCount() != 2 || len(localPage.GetMessages()) != 1 || localPage.GetNextRate() != nil {
+		t.Fatalf("local search pagination: predicate=%s count=%d messages=%d next_rate=%v err=%v", localPage.GetPredicateName(), localPage.GetCount(), len(localPage.GetMessages()), localPage.GetNextRate(), err)
+	}
 	hashtagSearch, err := SearchForInputPeer(member, input, "#topic", 0, 0, 0, 0, 0, 0, 0, 20)
 	if err != nil || len(hashtagSearch.GetMessages()) != 1 || hashtagSearch.GetMessages()[0].GetMessage() != "announcement #topic" {
 		t.Fatalf("member hashtag search: messages=%d err=%v", len(hashtagSearch.GetMessages()), err)

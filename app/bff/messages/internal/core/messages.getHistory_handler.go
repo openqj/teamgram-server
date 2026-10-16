@@ -36,15 +36,26 @@ func (c *MessagesCore) MessagesGetHistory(in *mtproto.TLMessagesGetHistory) (*mt
 	if in == nil || in.GetPeer() == nil {
 		return nil, mtproto.ErrInputRequestInvalid
 	}
+	if in.GetLimit() <= 0 {
+		return nil, mtproto.ErrLimitInvalid
+	}
+	if in.GetOffsetId() < 0 || in.GetOffsetDate() < 0 {
+		return nil, mtproto.ErrOffsetInvalid
+	}
+	if in.GetMaxId() < 0 || in.GetMinId() < 0 {
+		return nil, mtproto.ErrMessageIdInvalid
+	}
+	// The count provider cannot apply these bounds, so returning a
+	// messagesSlice would fabricate exact pagination metadata.
+	if in.GetMaxId() != 0 || in.GetMinId() != 0 {
+		return nil, mtproto.ErrMethodNotImpl
+	}
 	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.MessageClient == nil {
 		return nil, mtproto.ErrInternalServerError
 	}
 	var (
-		err  error
-		peer = mtproto.FromInputPeer2(c.MD.UserId, in.GetPeer())
-		chat *mtproto.MutableChat
-		//channel   *channelpb.MutableChannel
-		//isChannel bool
+		err   error
+		peer  = mtproto.FromInputPeer2(c.MD.UserId, in.GetPeer())
 		limit = in.Limit
 	)
 	if peer == nil || peer.PeerId <= 0 {
@@ -54,27 +65,23 @@ func (c *MessagesCore) MessagesGetHistory(in *mtproto.TLMessagesGetHistory) (*mt
 	if limit > 50 {
 		limit = 50
 	}
-
+	if in.GetAddOffset() > 0 && int64(in.GetAddOffset())+int64(limit) > int64(1<<31-1) {
+		return nil, mtproto.ErrOffsetInvalid
+	}
 	switch peer.PeerType {
-	case mtproto.PEER_SELF, mtproto.PEER_USER, mtproto.PEER_CHAT:
-		if peer.PeerType == mtproto.PEER_CHAT {
-			if c.svcCtx.Dao.ChatClient == nil || c.svcCtx.Dao.ChatClient.Client() == nil {
-				return nil, mtproto.ErrInternalServerError
-			}
-			// 400	CHAT_ID_INVALID	The provided chat id is invalid
-			if chat, err = c.svcCtx.Dao.ChatClient.Client().ChatGetMutableChat(c.ctx, &chatpb.TLChatGetMutableChat{
-				ChatId: peer.PeerId,
-			}); err != nil {
-				err = mtproto.ErrPeerIdInvalid
-				c.Logger.Errorf("messages.getHistory - error: %v", err)
-				return nil, err
-			}
-			// TODO(@benqi): check migratedToId
-			_ = chat
+	case mtproto.PEER_SELF:
+	case mtproto.PEER_USER:
+		if err = c.validateMessagesGetHistoryUserPeer(in.GetPeer()); err != nil {
+			return nil, err
+		}
+	case mtproto.PEER_CHAT:
+		if err = c.validateMessagesGetHistoryChatPeer(peer); err != nil {
+			return nil, err
 		}
 	case mtproto.PEER_CHANNEL:
-		if limit <= 0 {
-			limit = 20
+		// channelview currently implements only offset_id and limit.
+		if in.GetOffsetDate() != 0 || in.GetAddOffset() != 0 || in.GetHash() != 0 {
+			return nil, mtproto.ErrMethodNotImpl
 		}
 		return channelview.HistoryForInputPeer(c.MD.UserId, in.GetPeer(), in.OffsetId, limit)
 		//// 400	CHANNEL_INVALID	The provided channel is invalid
@@ -150,6 +157,25 @@ func (c *MessagesCore) MessagesGetHistory(in *mtproto.TLMessagesGetHistory) (*mt
 	if boxList == nil || count == nil {
 		return nil, mtproto.ErrInternalServerError
 	}
+	if count.GetV() < 0 {
+		return nil, mtproto.ErrInternalServerError
+	}
+	if err = validateMessagesGetHistoryBoxes(boxList, limit, in.GetAddOffset()); err != nil {
+		return nil, err
+	}
+	if in.GetAddOffset() > 0 {
+		// The provider fetches add_offset+limit rows for a backward page. The
+		// public method returns only the requested window after that offset.
+		skip := int(in.GetAddOffset())
+		if skip >= len(boxList.GetDatas()) {
+			boxList.Datas = []*mtproto.MessageBox{}
+		} else {
+			boxList.Datas = boxList.GetDatas()[skip:]
+		}
+	}
+	if count.GetV() < boxList.Length() {
+		return nil, mtproto.ErrInternalServerError
+	}
 
 	var (
 		messages   []*mtproto.Message
@@ -210,6 +236,9 @@ func (c *MessagesCore) MessagesGetHistory(in *mtproto.TLMessagesGetHistory) (*mt
 	if hydrateErr != nil {
 		return nil, hydrateErr
 	}
+	if int32(len(messages)) != boxList.Length() {
+		return nil, mtproto.ErrInternalServerError
+	}
 
 	var (
 		rValues *mtproto.Messages_Messages
@@ -246,4 +275,82 @@ func (c *MessagesCore) MessagesGetHistory(in *mtproto.TLMessagesGetHistory) (*mt
 	//}
 
 	return rValues, nil
+}
+
+func (c *MessagesCore) validateMessagesGetHistoryUserPeer(input *mtproto.InputPeer) error {
+	if input == nil || input.GetUserId() <= 0 || input.GetAccessHash() == 0 {
+		return mtproto.ErrPeerIdInvalid
+	}
+	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.UserClient == nil {
+		return mtproto.ErrInternalServerError
+	}
+	users, err := c.svcCtx.Dao.UserClient.UserGetMutableUsers(c.ctx, &userpb.TLUserGetMutableUsers{
+		Id: []int64{input.GetUserId()},
+		To: []int64{c.MD.UserId},
+	})
+	if err != nil {
+		return err
+	}
+	if users == nil {
+		return mtproto.ErrInternalServerError
+	}
+	for _, user := range users.GetDatas() {
+		if user == nil || user.GetUser() == nil {
+			continue
+		}
+		data := user.GetUser()
+		if data.GetId() == input.GetUserId() && !data.GetDeleted() && data.GetAccessHash() == input.GetAccessHash() {
+			return nil
+		}
+	}
+	return mtproto.ErrPeerIdInvalid
+}
+
+func (c *MessagesCore) validateMessagesGetHistoryChatPeer(peer *mtproto.PeerUtil) error {
+	if peer == nil || peer.PeerId <= 0 || c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.ChatClient == nil || c.svcCtx.Dao.ChatClient.Client() == nil {
+		return mtproto.ErrInternalServerError
+	}
+	chat, err := c.svcCtx.Dao.ChatClient.Client().ChatGetMutableChat(c.ctx, &chatpb.TLChatGetMutableChat{
+		ChatId: peer.PeerId,
+	})
+	if err != nil {
+		return err
+	}
+	if chat == nil {
+		return mtproto.ErrPeerIdInvalid
+	}
+	for _, participant := range chat.GetChatParticipants() {
+		if participant == nil {
+			return mtproto.ErrInternalServerError
+		}
+	}
+	member, ok := chat.GetImmutableChatParticipant(c.MD.UserId)
+	if !ok || member == nil || !member.IsChatMemberStateNormal() {
+		return mtproto.ErrUserNotParticipant
+	}
+	return nil
+}
+
+func validateMessagesGetHistoryBoxes(boxList *message.Vector_MessageBox, limit, addOffset int32) error {
+	if boxList == nil {
+		return mtproto.ErrInternalServerError
+	}
+	maxBoxes := int64(limit)
+	if addOffset > 0 {
+		maxBoxes += int64(addOffset)
+	}
+	if int64(len(boxList.GetDatas())) > maxBoxes {
+		return mtproto.ErrInternalServerError
+	}
+	for _, box := range boxList.GetDatas() {
+		if box == nil || box.GetMessage() == nil || box.GetMessageId() <= 0 || box.GetMessage().GetId() != box.GetMessageId() || box.GetPeerId() <= 0 {
+			return mtproto.ErrInternalServerError
+		}
+		switch box.GetPeerType() {
+		case mtproto.PEER_SELF, mtproto.PEER_USER, mtproto.PEER_CHAT, mtproto.PEER_CHANNEL:
+		default:
+			return mtproto.ErrInternalServerError
+		}
+	}
+	return nil
 }

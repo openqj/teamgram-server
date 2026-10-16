@@ -139,17 +139,11 @@ func (c *MessageCore) MessageGetSavedHistoryMessages(in *message.TLMessageGetSav
 		}
 	}
 
-	var (
-		count int64
-	)
-	count, err = c.svcCtx.Dao.CountSavedMessages(c.ctx, selfUserId, peer.PeerType, peer.PeerId)
-	if err != nil {
-		return nil, err
-	}
-
-	return mtproto.MakeTLMessageBoxListSlice(&mtproto.MessageBoxList{
+	// The saved-history provider exposes only the selected message boxes. It
+	// does not expose an authoritative total, continuation cursor, or search
+	// rate, so do not turn a SQL row count into protocol pagination metadata.
+	return mtproto.MakeTLMessageBoxList(&mtproto.MessageBoxList{
 		BoxList: boxList,
-		Count:   int32(count),
 	}).To_MessageBoxList(), nil
 }
 

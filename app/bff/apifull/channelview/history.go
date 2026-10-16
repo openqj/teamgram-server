@@ -30,6 +30,8 @@ func mapDomain(err error) error {
 		return mtproto.ErrRandomIdDuplicate
 	case errors.Is(err, domain.ErrRandomIDMissing):
 		return mtproto.ErrInputRequestInvalid
+	case errors.Is(err, domain.ErrPollInvalid):
+		return mtproto.ErrMessageIdInvalid
 	default:
 		return err
 	}
@@ -329,6 +331,92 @@ func HistoryForInputPeer(userID int64, peer *mtproto.InputPeer, offsetID, limit 
 	return History(userID, channelID, offsetID, limit)
 }
 
+const recentLocationsPageSize int32 = 50
+
+// RecentLocationsForInputPeer returns the newest geolocation messages from a
+// channel-owned PostgreSQL history. HistoryForInputPeer performs the access
+// hash and read authorization check for every page, so a membership change
+// while paging cannot expose a partial result as a successful response.
+func RecentLocationsForInputPeer(userID int64, peer *mtproto.InputPeer, limit int32) (*mtproto.Messages_Messages, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 100 {
+		limit = 100
+	}
+
+	var (
+		locations []*mtproto.Message
+		chats     []*mtproto.Chat
+		offsetID  int32
+		lastMinID int32
+	)
+	for {
+		page, err := HistoryForInputPeer(userID, peer, offsetID, recentLocationsPageSize)
+		if err != nil {
+			return nil, err
+		}
+		if page == nil {
+			return nil, mtproto.ErrInternalServerError
+		}
+		if len(chats) == 0 {
+			chats = append(chats, page.GetChats()...)
+		}
+
+		messages := page.GetMessages()
+		if len(messages) == 0 {
+			break
+		}
+		minID := int32(0)
+		for _, message := range messages {
+			if message == nil {
+				continue
+			}
+			if id := message.GetId(); id > 0 && (minID == 0 || id < minID) {
+				minID = id
+			}
+			if channelMessageHasGeo(message) {
+				locations = append(locations, message)
+				if int32(len(locations)) == limit {
+					return recentLocationsResult(locations, chats), nil
+				}
+			}
+		}
+
+		if int32(len(messages)) < recentLocationsPageSize {
+			break
+		}
+		if minID == 0 || (offsetID != 0 && minID >= offsetID) || minID == lastMinID {
+			return nil, mtproto.ErrInternalServerError
+		}
+		lastMinID = minID
+		offsetID = minID
+	}
+	return recentLocationsResult(locations, chats), nil
+}
+
+func recentLocationsResult(messages []*mtproto.Message, chats []*mtproto.Chat) *mtproto.Messages_Messages {
+	return mtproto.MakeTLMessagesMessages(&mtproto.Messages_Messages{
+		Messages: messages,
+		Chats:    chats,
+		Users:    []*mtproto.User{},
+	}).To_Messages_Messages()
+}
+
+func channelMessageHasGeo(message *mtproto.Message) bool {
+	if message == nil {
+		return false
+	}
+	switch message.GetMedia().GetPredicateName() {
+	case mtproto.Predicate_messageMediaGeo,
+		mtproto.Predicate_messageMediaGeoLive,
+		mtproto.Predicate_messageMediaVenue:
+		return true
+	default:
+		return false
+	}
+}
+
 // PostForInputPeer verifies the exact channel peer before adding a stored
 // channel message. The generic message sender has already normalized this peer
 // into a PeerUtil, which does not retain the access hash.
@@ -478,6 +566,27 @@ func EditForInputPeer(userID int64, peer *mtproto.InputPeer, id int32, text stri
 		return nil, err
 	}
 	return Edit(userID, channelID, id, text)
+}
+
+func StopPollForInputPeer(userID int64, peer *mtproto.InputPeer, id int32, replyMarkup *mtproto.ReplyMarkup) (*mtproto.Updates, error) {
+	channelID, err := ValidateInputPeer(userID, peer)
+	if err != nil {
+		return nil, err
+	}
+	row, err := domain.StopChannelPoll(channelID, userID, id, replyMarkup)
+	if err != nil {
+		return nil, mapDomain(err)
+	}
+	messages, err := messagesOf([]domain.ChannelMessage{row})
+	if err != nil {
+		return nil, err
+	}
+	update := mtproto.MakeTLUpdateEditChannelMessage(&mtproto.Update{
+		Message_MESSAGE: messages[0],
+		Pts_INT32:       row.Pts,
+		PtsCount:        1,
+	}).To_Update()
+	return mtproto.MakeUpdatesByUpdates(update), nil
 }
 
 func PersonalHistory(viewerID, ownerID, channelID int64, minID, maxID, limit int32) (*mtproto.Messages_Messages, error) {
@@ -657,7 +766,7 @@ func MessageViewsForInputPeer(userID int64, peer *mtproto.InputPeer, ids []int32
 	// View counters and the optional read cursor are member-only operations.
 	// Do not use the public-history validator here: a public channel may be
 	// browsed without joining, but getMessagesViews can mutate per-user state.
-	if _, err := ValidateInputPeer(userID, peer); err != nil {
+	if _, err := validateMessageViewsInputPeer(userID, peer); err != nil {
 		return nil, err
 	}
 	if _, err := MessagesBox(userID, peer.GetChannelId(), ids); err != nil {
@@ -689,6 +798,34 @@ func MessageViewsForInputPeer(userID int64, peer *mtproto.InputPeer, ids []int32
 		}).To_MessageViews())
 	}
 	return views, nil
+}
+
+// validateMessageViewsInputPeer applies the strict member-only view policy
+// while treating the channel creator as an implicit member. Creator rows are
+// intentionally absent from apifull_channel_member, so ValidateInputPeer
+// cannot be reused for this method without rejecting the owner.
+func validateMessageViewsInputPeer(userID int64, peer *mtproto.InputPeer) (int64, error) {
+	if peer == nil || peer.GetPredicateName() != mtproto.Predicate_inputPeerChannel || peer.GetChannelId() <= 0 || peer.GetAccessHash() == 0 {
+		return 0, mtproto.ErrChannelInvalid
+	}
+	ch, ok, err := domain.LoadChannel(peer.GetChannelId())
+	if err != nil {
+		return 0, stored(err)
+	}
+	if !ok || ch.AccessHash != peer.GetAccessHash() {
+		return 0, mtproto.ErrChannelInvalid
+	}
+	if ch.Creator == userID {
+		return ch.ID, nil
+	}
+	member, err := domain.ChannelIsMember(ch.ID, userID)
+	if err != nil {
+		return 0, stored(err)
+	}
+	if !member {
+		return 0, mtproto.ErrUserNotParticipant
+	}
+	return ch.ID, nil
 }
 
 func GetMessageEditData(userID int64, peer *mtproto.InputPeer, messageID int32) (*mtproto.Messages_MessageEditData, error) {
@@ -723,6 +860,10 @@ func GetMessageEditData(userID int64, peer *mtproto.InputPeer, messageID int32) 
 	return mtproto.MakeTLMessagesMessageEditData(&mtproto.Messages_MessageEditData{Caption: false}).To_Messages_MessageEditData(), nil
 }
 
+// Search implements the peer-local messages.search path. addOffset is a SQL
+// row offset for that local query; it is not channels.searchPosts.offset_rate.
+// The latter is a cross-channel ranking cursor and is intentionally rejected
+// by the channels.searchPosts handler until an authoritative post index exists.
 func Search(userID, channelID int64, q string, sender int64, beforeID, addOffset, minDate, maxDate, minID, maxID, limit int32) (*mtproto.Messages_Messages, error) {
 	ch, ok, err := domain.LoadChannel(channelID)
 	if err != nil {
@@ -741,12 +882,6 @@ func Search(userID, channelID int64, q string, sender int64, beforeID, addOffset
 	}
 	if total > int32(len(rows)) {
 		box.Count = total
-		// This local provider treats offset_rate as a row offset. It is not a
-		// global post-ranking cursor.
-		if addOffset >= 0 {
-			next := addOffset + int32(len(rows))
-			box.NextRate = wrapperspb.Int32(next)
-		}
 		box.PredicateName = mtproto.Predicate_messages_messagesSlice
 	}
 	return box, nil

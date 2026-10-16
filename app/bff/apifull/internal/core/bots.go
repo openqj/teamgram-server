@@ -153,7 +153,7 @@ func (c *ApiFullCore) BotsGetBotInfoDCD914FD(in *mtproto.TLBotsGetBotInfoDCD914F
 	if err != nil {
 		return nil, err
 	}
-	if in == nil || in.GetBot() == nil {
+	if in == nil {
 		return nil, mtproto.ErrInputConstructorInvalid
 	}
 	// The User service currently exposes only the default bot profile. Keep
@@ -163,17 +163,20 @@ func (c *ApiFullCore) BotsGetBotInfoDCD914FD(in *mtproto.TLBotsGetBotInfoDCD914F
 		return nil, mtproto.ErrMethodNotImpl
 	}
 	bot := in.GetBot()
-	var botID int64
-	switch bot.GetPredicateName() {
-	case mtproto.Predicate_inputUserSelf:
-		botID = callerID
-	case mtproto.Predicate_inputUser:
-		botID = bot.GetUserId()
-		if botID <= 0 || bot.GetAccessHash() == 0 {
-			return nil, mtproto.ErrUserIdInvalid
+	botID := callerID
+	explicitInputUser := false
+	if bot != nil {
+		switch bot.GetPredicateName() {
+		case mtproto.Predicate_inputUserSelf:
+		case mtproto.Predicate_inputUser:
+			explicitInputUser = true
+			botID = bot.GetUserId()
+			if botID <= 0 || bot.GetAccessHash() == 0 {
+				return nil, mtproto.ErrUserIdInvalid
+			}
+		default:
+			return nil, mtproto.ErrInputConstructorInvalid
 		}
-	default:
-		return nil, mtproto.ErrInputConstructorInvalid
 	}
 	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.UserClient == nil {
 		return nil, mtproto.ErrInternalServerError
@@ -185,7 +188,7 @@ func (c *ApiFullCore) BotsGetBotInfoDCD914FD(in *mtproto.TLBotsGetBotInfoDCD914F
 	if profile == nil || profile.GetUser() == nil || profile.GetUser().GetBot() == nil {
 		return nil, mtproto.ErrUserIdInvalid
 	}
-	if bot.GetPredicateName() == mtproto.Predicate_inputUser && profile.GetUser().GetAccessHash() != bot.GetAccessHash() {
+	if explicitInputUser && profile.GetUser().GetAccessHash() != bot.GetAccessHash() {
 		return nil, mtproto.ErrUserIdInvalid
 	}
 	registryInfo, err := c.svcCtx.Dao.UserGetBotInfo(c.ctx, &userpb.TLUserGetBotInfo{BotId: botID})

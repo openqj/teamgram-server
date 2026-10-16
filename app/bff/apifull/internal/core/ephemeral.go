@@ -28,6 +28,7 @@ import (
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/domain"
 	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/persist"
+	"github.com/teamgram/teamgram-server/pkg/mtprotoext"
 )
 
 // RPCEphemeralServer: Layer 229 ephemeral messages are short-lived protocol
@@ -36,8 +37,11 @@ import (
 
 type ephemeralRecord struct {
 	Message     *mtproto.EphemeralMessage `json:"message"`
+	RichMessage *mtproto.RichMessage      `json:"rich_message,omitempty"`
 	RandomID    int64                     `json:"random_id,omitempty"`
 	RequestHash string                    `json:"request_hash,omitempty"`
+	DraftID     int64                     `json:"draft_id,omitempty"`
+	ExpiresAt   int64                     `json:"expires_at,omitempty"`
 }
 
 // ephemeralRequestHash captures the complete protocol request. The random ID
@@ -169,7 +173,8 @@ func (c *ApiFullCore) EphemeralSendMessage(in *mtproto.TLEphemeralSendMessage) (
 	if in == nil {
 		return nil, mtproto.ErrInputRequestInvalid
 	}
-	if in.GetMessage() == "" && in.GetMedia() == nil && in.GetRichMessage() == nil {
+	if in.GetMessage() == "" && in.GetMedia() == nil && in.GetRichMessage() == nil &&
+		(in.GetQueryId() == nil || in.GetQueryId().GetValue() == 0) {
 		return nil, mtproto.ErrMessageEmpty
 	}
 	if in.GetRandomId() == 0 {
@@ -179,10 +184,12 @@ func (c *ApiFullCore) EphemeralSendMessage(in *mtproto.TLEphemeralSendMessage) (
 	if err != nil {
 		return nil, fmt.Errorf("hash ephemeral request: %w", err)
 	}
-	// APIFull has no media/rich-message resolver for ephemeral records. Do not
-	// persist an incomplete object while claiming success.
-	if in.GetMedia() != nil || in.GetRichMessage() != nil {
-		return nil, mtproto.ErrMediaInvalid
+	var media *mtproto.MessageMedia
+	if in.GetMedia() != nil {
+		media, err = c.uploadStoryMedia(userID, in.GetMedia())
+		if err != nil {
+			return nil, err
+		}
 	}
 	receiverID := int64(0)
 	if in.GetReceiverId() != nil {
@@ -204,11 +211,21 @@ func (c *ApiFullCore) EphemeralSendMessage(in *mtproto.TLEphemeralSendMessage) (
 		peer = mtproto.MakePeerUser(receiverID)
 	}
 	var message *mtproto.EphemeralMessage
+	edited := false
 	err = persist.Update(key, func(raw string) (string, error) {
 		records, err := ephemeralRecords(raw)
 		if err != nil {
 			return "", err
 		}
+		now := time.Now().Unix()
+		active := records[:0]
+		for _, record := range records {
+			if record.ExpiresAt > 0 && record.ExpiresAt <= now {
+				continue
+			}
+			active = append(active, record)
+		}
+		records = active
 		if in.GetRandomId() != 0 {
 			for _, record := range records {
 				if record.RandomID == in.GetRandomId() && record.Message != nil {
@@ -216,8 +233,74 @@ func (c *ApiFullCore) EphemeralSendMessage(in *mtproto.TLEphemeralSendMessage) (
 						return "", mtproto.ErrRandomIdDuplicate
 					}
 					message = record.Message
+					if err := mtprotoext.SetEphemeralRichMessage(message, record.RichMessage); err != nil {
+						return "", err
+					}
 					return raw, nil
 				}
+			}
+		}
+		// The Layer 229 schema does not expose a separate ephemeral edit RPC.
+		// The Bot API adapter uses a negative query_id as an internal edit
+		// selector; positive query IDs remain draft IDs and keep their public
+		// semantics unchanged.
+		if queryID := in.GetQueryId(); queryID != nil && queryID.GetValue() < 0 && queryID.GetValue() != -1<<63 {
+			targetID := -queryID.GetValue()
+			if targetID > int64(^uint32(0)>>1) {
+				return "", mtproto.ErrMessageIdInvalid
+			}
+			for i := range records {
+				if records[i].Message == nil || int64(records[i].Message.GetId()) != targetID {
+					continue
+				}
+				message = records[i].Message
+				message.Message = in.GetMessage()
+				message.Entities = in.GetEntities()
+				if media != nil {
+					message.Media = media
+				}
+				if in.GetReplyMarkup() != nil {
+					message.ReplyMarkup = in.GetReplyMarkup()
+				}
+				if in.GetRichMessage() == nil {
+					if err := mtprotoext.SetEphemeralRichMessage(message, nil); err != nil {
+						return "", err
+					}
+				}
+				if in.GetRichMessage() != nil {
+					records[i].RichMessage = inputRichMessageToOutput(in.GetRichMessage())
+					if err := mtprotoext.SetEphemeralRichMessage(message, records[i].RichMessage); err != nil {
+						return "", err
+					}
+				}
+				edited = true
+				encoded, encodeErr := json.Marshal(records)
+				return string(encoded), encodeErr
+			}
+			return "", mtproto.ErrMessageIdInvalid
+		}
+		if queryID := in.GetQueryId(); queryID != nil && queryID.GetValue() != 0 {
+			for i := range records {
+				if records[i].DraftID != queryID.GetValue() || records[i].Message == nil {
+					continue
+				}
+				message = records[i].Message
+				message.Message = in.GetMessage()
+				message.Entities = in.GetEntities()
+				if media != nil {
+					message.Media = media
+				}
+				message.ReplyMarkup = in.GetReplyMarkup()
+				message.Date = int32(now)
+				records[i].RichMessage = inputRichMessageToOutput(in.GetRichMessage())
+				if err := mtprotoext.SetEphemeralRichMessage(message, records[i].RichMessage); err != nil {
+					return "", err
+				}
+				records[i].RandomID = in.GetRandomId()
+				records[i].RequestHash = requestHash
+				records[i].ExpiresAt = now + 30
+				encoded, encodeErr := json.Marshal(records)
+				return string(encoded), encodeErr
 			}
 		}
 		var nextID int32 = 1
@@ -240,14 +323,29 @@ func (c *ApiFullCore) EphemeralSendMessage(in *mtproto.TLEphemeralSendMessage) (
 			Date:          int32(time.Now().Unix()),
 			Message:       in.GetMessage(),
 			Entities:      in.GetEntities(),
+			Media:         media,
 			ReplyMarkup:   in.GetReplyMarkup(),
 		}
-		records = append(records, ephemeralRecord{Message: message, RandomID: in.GetRandomId(), RequestHash: requestHash})
+		richMessage := inputRichMessageToOutput(in.GetRichMessage())
+		if err := mtprotoext.SetEphemeralRichMessage(message, richMessage); err != nil {
+			return "", err
+		}
+		record := ephemeralRecord{Message: message, RichMessage: richMessage, RandomID: in.GetRandomId(), RequestHash: requestHash}
+		if queryID := in.GetQueryId(); queryID != nil && queryID.GetValue() != 0 {
+			record.DraftID = queryID.GetValue()
+			record.ExpiresAt = now + 30
+		}
+		records = append(records, record)
 		encoded, err := json.Marshal(records)
 		return string(encoded), err
 	})
 	if err != nil {
 		return nil, err
+	}
+	if edited {
+		update := mtproto.MakeTLUpdateEditEphemeralMessage(&mtproto.Update{})
+		update.SetMessage_EPHEMERALMESSAGE(message)
+		return mtproto.MakeUpdatesByUpdates(update.To_Update()), nil
 	}
 	update := mtproto.MakeTLUpdateNewEphemeralMessage(&mtproto.Update{})
 	update.SetMessage_EPHEMERALMESSAGE(message)

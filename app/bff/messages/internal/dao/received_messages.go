@@ -7,8 +7,9 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// ReceivedMessagesStore records the highest notification id acknowledged by a
-// user. Updates are monotonic so retransmitted RPCs are idempotent.
+// ReceivedMessagesStore is a monotonic PostgreSQL projection of a caller's
+// max_id. It is not a Layer 229 notification provider: it cannot cancel PUSH
+// delivery or supply canonical ReceivedNotifyMessage rows on its own.
 type ReceivedMessagesStore interface {
 	Record(ctx context.Context, userID int64, maxID int32) error
 }

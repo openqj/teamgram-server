@@ -219,6 +219,18 @@ live P95 为 318/303ms；5000 用户轮次保持完整收件、恢复、PTS、ou
 确认的秒级主瓶颈。探针主机、Kafka handler 调度和端到端客户端事件循环仍需分别
 隔离测量，不能只凭 gateway worker 解耦推导实时送达收益。
 
+## 2026-10-16 IfNot 推送与直接启动配置修复
+
+`sync.pushUpdatesIfNot` 原来仍逐会话串行调用 gateway；现在复用已有的最多 8 路
+有界 session 推送器，并保留单用户的失败返回、回执完成和 Kafka 重试语义。该改动
+针对多设备用户的同步热路径，当前只有聚焦并发回归，没有新的端到端容量数据，不能
+把它写成已验证的 P95 改善。
+
+`teamgramd/etc2/sync.yaml` 的 `MaxConns` 已恢复为静态默认 16。go-zero
+`UseEnv()` 对缺失变量会展开为空值，原来的 `${TEAMGRAM_SYNC_POSTGRES_MAX_CONNS}`
+会让独立启动的 YAML 加载失败；Sync 启动代码现在仅在环境变量存在且为正整数时覆盖
+该默认值。Docker 运行时仍可用 `TEAMGRAM_SYNC_POSTGRES_MAX_CONNS` 做连接预算 A/B。
+
 ---
 
 ## Phase 1: 性能瓶颈分析

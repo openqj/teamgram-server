@@ -38,6 +38,8 @@ func newPostgresDao(c config.Config) (*Postgres, error) {
 		`SELECT key,value,updated_at FROM idgen_counters LIMIT 0`,
 		`SELECT consumer_group,topic,partition_id,message_offset,user_id,request_hash,delivery_data,delivered,delivered_at FROM sync_delivery_receipts LIMIT 0`,
 		`SELECT user_id,state,pending_name,pending_bot_id,pending_menu_text,pending_menu_url,pending_app_title,pending_app_short_name,pending_app_description,pending_app_url,last_message_id,last_reply,updated_at FROM botfather_sessions LIMIT 0`,
+		`SELECT id,user_id,status,problem,category,environment,assigned_to,claimed_at,resolved_at,created_at,updated_at FROM volunteer_support_tickets LIMIT 0`,
+		`SELECT user_id,state,problem,category,environment,last_message_id,last_reply,ticket_id,submitted_at,updated_at FROM volunteer_support_sessions LIMIT 0`,
 		`SELECT bot_id,next_update_id FROM bot_api_update_counters LIMIT 0`,
 		`SELECT bot_id,update_id,update_data,created_at FROM bot_api_updates LIMIT 0`,
 		`SELECT bot_id,dedupe_key,first_update_id,created_at FROM bot_api_update_dedup LIMIT 0`,

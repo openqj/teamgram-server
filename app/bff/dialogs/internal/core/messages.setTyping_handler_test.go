@@ -24,6 +24,7 @@ import (
 	"github.com/teamgram/proto/mtproto/rpc/metadata"
 	"github.com/teamgram/teamgram-server/app/bff/dialogs/internal/dao"
 	"github.com/teamgram/teamgram-server/app/bff/dialogs/internal/svc"
+	dialogsplugin "github.com/teamgram/teamgram-server/app/bff/dialogs/plugin"
 	syncclient "github.com/teamgram/teamgram-server/app/messenger/sync/client"
 	syncpb "github.com/teamgram/teamgram-server/app/messenger/sync/sync"
 	chatpb "github.com/teamgram/teamgram-server/app/service/biz/chat/chat"
@@ -57,6 +58,20 @@ type setTypingUserClientStub struct {
 	response *userpb.Vector_ImmutableUser
 	err      error
 	request  *userpb.TLUserGetMutableUsers
+}
+
+type setTypingPluginStub struct {
+	dialogsplugin.DialogsPlugin
+	recipients []int64
+	err        error
+	selfID     int64
+	peer       *mtproto.InputPeer
+}
+
+func (s *setTypingPluginStub) GetChannelTypingRecipients(_ context.Context, selfID int64, peer *mtproto.InputPeer) ([]int64, error) {
+	s.selfID = selfID
+	s.peer = peer
+	return s.recipients, s.err
 }
 
 func (s *setTypingUserClientStub) UserGetMutableUsers(_ context.Context, in *userpb.TLUserGetMutableUsers) (*userpb.Vector_ImmutableUser, error) {
@@ -125,8 +140,9 @@ func TestMessagesSetTypingPushesUserTypingAndPropagatesSyncFailures(t *testing.T
 		userStub := setTypingUsers(84, 840)
 		core := newSetTypingTestCore(syncStub, &setTypingChatClientStub{}, userStub)
 		got, err := core.MessagesSetTyping(&mtproto.TLMessagesSetTyping{
-			Peer:   mtproto.MakeTLInputPeerUser(&mtproto.InputPeer{UserId: 84, AccessHash: 840}).To_InputPeer(),
-			Action: setTypingAction(),
+			Peer:     mtproto.MakeTLInputPeerUser(&mtproto.InputPeer{UserId: 84, AccessHash: 840}).To_InputPeer(),
+			TopMsgId: mtproto.MakeFlagsInt32(17),
+			Action:   setTypingAction(),
 		})
 		if err != nil || got != mtproto.BoolTrue {
 			t.Fatalf("MessagesSetTyping() = (%v, %v), want BoolTrue", got, err)
@@ -138,7 +154,11 @@ func TestMessagesSetTypingPushesUserTypingAndPropagatesSyncFailures(t *testing.T
 			t.Fatalf("UserGetMutableUsers request = %v, want target and self in requester context", userStub.request)
 		}
 		update := syncStub.requests[0].GetUpdates().GetUpdate()
-		if update == nil || update.GetPredicateName() != mtproto.Predicate_updateUserTyping || update.To_UpdateUserTyping().GetUserId() != 42 {
+		if update == nil {
+			t.Fatalf("typing update is nil")
+		}
+		typing := update.To_UpdateUserTyping()
+		if update.GetPredicateName() != mtproto.Predicate_updateUserTyping || typing.GetUserId() != 42 || typing.GetTopMsgId_FLAGINT32() == nil || typing.GetTopMsgId_FLAGINT32().GetValue() != 17 {
 			t.Fatalf("typing update = %v, want current user 42", update)
 		}
 	})
@@ -350,5 +370,93 @@ func TestMessagesSetTypingChannelFailsClosedWithoutMemberBroadcastPath(t *testin
 	}
 	if len(syncStub.requests) != 0 || chatStub.request != nil {
 		t.Fatalf("channel typing touched unrelated broadcast clients: sync=%v chat=%v", syncStub.requests, chatStub.request)
+	}
+}
+
+func TestMessagesSetTypingChannelUsesCanonicalRecipientsAndPreservesUpdateFields(t *testing.T) {
+	syncStub := &setTypingSyncClientStub{response: mtproto.EmptyVoid}
+	pluginStub := &setTypingPluginStub{recipients: []int64{42, 84, 84, 85}}
+	core := newSetTypingTestCore(syncStub, &setTypingChatClientStub{})
+	core.svcCtx.Plugin = pluginStub
+	peer := mtproto.MakeTLInputPeerChannel(&mtproto.InputPeer{ChannelId: 90, AccessHash: 900}).To_InputPeer()
+
+	got, err := core.MessagesSetTyping(&mtproto.TLMessagesSetTyping{
+		Peer:     peer,
+		TopMsgId: mtproto.MakeFlagsInt32(17),
+		Action:   setTypingAction(),
+	})
+	if err != nil || got != mtproto.BoolTrue {
+		t.Fatalf("MessagesSetTyping(channel) = (%v, %v), want BoolTrue", got, err)
+	}
+	if pluginStub.selfID != 42 || pluginStub.peer != peer {
+		t.Fatalf("channel resolver request = self %d peer %v, want self 42 and original peer %v", pluginStub.selfID, pluginStub.peer, peer)
+	}
+	if len(syncStub.requests) != 2 {
+		t.Fatalf("SyncPushUpdates requests = %d, want unique non-sender recipients 84 and 85", len(syncStub.requests))
+	}
+	gotRecipients := map[int64]bool{}
+	for _, request := range syncStub.requests {
+		gotRecipients[request.GetUserId()] = true
+		update := request.GetUpdates().GetUpdate()
+		if update == nil {
+			t.Fatalf("channel typing update is nil")
+		}
+		typing := update.To_UpdateChannelUserTyping()
+		topMsgID := typing.GetTopMsgId_FLAGINT32()
+		if update.GetPredicateName() != mtproto.Predicate_updateChannelUserTyping || typing.GetChannelId() != 90 || topMsgID == nil || topMsgID.GetValue() != 17 || typing.GetFromId().GetUserId() != 42 {
+			t.Fatalf("channel typing update = %v, want channel 90/top_msg_id 17/from user 42", update)
+		}
+	}
+	if len(gotRecipients) != 2 || !gotRecipients[84] || !gotRecipients[85] {
+		t.Fatalf("typing recipients = %v, want {84, 85}", gotRecipients)
+	}
+}
+
+func TestMessagesSetTypingChannelRejectsMalformedRecipientProviderResponse(t *testing.T) {
+	syncStub := &setTypingSyncClientStub{response: mtproto.EmptyVoid}
+	core := newSetTypingTestCore(syncStub, &setTypingChatClientStub{})
+	core.svcCtx.Plugin = &setTypingPluginStub{}
+
+	got, err := core.MessagesSetTyping(&mtproto.TLMessagesSetTyping{
+		Peer:   mtproto.MakeTLInputPeerChannel(&mtproto.InputPeer{ChannelId: 90, AccessHash: 900}).To_InputPeer(),
+		Action: setTypingAction(),
+	})
+	if err == nil || got != nil || len(syncStub.requests) != 0 {
+		t.Fatalf("MessagesSetTyping(channel) = (%v, %v), pushes %d; want malformed provider error without BoolTrue or pushes", got, err, len(syncStub.requests))
+	}
+}
+
+func TestMessagesSetTypingFailsClosedWhenCanonicalDependenciesAreMissing(t *testing.T) {
+	userPeer := mtproto.MakeTLInputPeerUser(&mtproto.InputPeer{UserId: 84, AccessHash: 840}).To_InputPeer()
+	chatPeer := mtproto.MakeTLInputPeerChat(&mtproto.InputPeer{ChatId: 17}).To_InputPeer()
+	newRequest := func(peer *mtproto.InputPeer) *mtproto.TLMessagesSetTyping {
+		return &mtproto.TLMessagesSetTyping{Peer: peer, Action: setTypingAction()}
+	}
+	validSync := &setTypingSyncClientStub{response: mtproto.EmptyVoid}
+
+	tests := []struct {
+		name string
+		core *DialogsCore
+		in   *mtproto.TLMessagesSetTyping
+	}{
+		{name: "nil service context", core: &DialogsCore{MD: &metadata.RpcMetadata{UserId: 42}}, in: newRequest(userPeer)},
+		{name: "nil dao", core: &DialogsCore{svcCtx: &svc.ServiceContext{}, MD: &metadata.RpcMetadata{UserId: 42}}, in: newRequest(userPeer)},
+		{name: "nil sync client", core: &DialogsCore{svcCtx: &svc.ServiceContext{Dao: &dao.Dao{}}, MD: &metadata.RpcMetadata{UserId: 42}}, in: newRequest(userPeer)},
+		{name: "nil user client", core: &DialogsCore{svcCtx: &svc.ServiceContext{Dao: &dao.Dao{SyncClient: validSync}}, MD: &metadata.RpcMetadata{UserId: 42}}, in: newRequest(userPeer)},
+		{name: "nil chat client", core: &DialogsCore{svcCtx: &svc.ServiceContext{Dao: &dao.Dao{SyncClient: validSync}}, MD: &metadata.RpcMetadata{UserId: 42}}, in: newRequest(chatPeer)},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := test.core.MessagesSetTyping(test.in)
+			if !errors.Is(err, mtproto.ErrMethodNotImpl) || got != nil {
+				t.Fatalf("MessagesSetTyping() = (%v, %v), want METHOD_NOT_IMPL with nil result", got, err)
+			}
+		})
+	}
+
+	var nilCore *DialogsCore
+	got, err := nilCore.MessagesSetTyping(newRequest(userPeer))
+	if !errors.Is(err, mtproto.ErrAuthKeyUnregistered) || got != nil {
+		t.Fatalf("MessagesSetTyping(nil core) = (%v, %v), want AUTH_KEY_UNREGISTERED", got, err)
 	}
 }

@@ -12,6 +12,7 @@ package core
 import (
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/messenger/sync/sync"
+	userpb "github.com/teamgram/teamgram-server/app/service/biz/user/user"
 )
 
 // SyncPushUpdates
@@ -25,6 +26,9 @@ func (c *SyncCore) SyncPushUpdates(in *sync.TLSyncPushUpdates) (*mtproto.Void, e
 	}
 	if c == nil {
 		return nil, mtproto.ErrInternalServerError
+	}
+	if userpb.IsVolunteerSupport(in.GetUserId()) {
+		return c.HandleVolunteerSupportUpdates(in)
 	}
 	var (
 		userId  = in.GetUserId()

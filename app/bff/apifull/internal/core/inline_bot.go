@@ -1039,6 +1039,20 @@ func inputRichMessageToOutput(input *mtproto.InputRichMessage) *mtproto.RichMess
 	if input == nil {
 		return nil
 	}
+	blocks := blocksOrEmpty(input.GetBlocks())
+	if len(blocks) == 0 {
+		text := input.GetMarkdown()
+		if text == "" {
+			text = input.GetHtml()
+		}
+		if text != "" {
+			blocks = []*mtproto.PageBlock{
+				mtproto.MakeTLPageBlockParagraph(&mtproto.PageBlock{
+					Text: mtproto.MakeTLTextPlain(&mtproto.RichText{Text_STRING: text}).To_RichText(),
+				}).To_PageBlock(),
+			}
+		}
+	}
 	photos := make([]*mtproto.Photo, 0, len(input.GetPhotos()))
 	for _, photo := range input.GetPhotos() {
 		if converted := inputPhotoToOutput(photo); converted != nil {
@@ -1052,7 +1066,7 @@ func inputRichMessageToOutput(input *mtproto.InputRichMessage) *mtproto.RichMess
 		}
 	}
 	return mtproto.MakeTLRichMessage(&mtproto.RichMessage{
-		Blocks: blocksOrEmpty(input.GetBlocks()), Photos: photos, Documents: documents, Rtl: input.GetRtl(),
+		Blocks: blocks, Photos: photos, Documents: documents, Rtl: input.GetRtl(),
 	}).To_RichMessage()
 }
 

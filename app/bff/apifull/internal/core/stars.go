@@ -33,6 +33,7 @@ import (
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/domain"
 	userpb "github.com/teamgram/teamgram-server/app/service/biz/user/user"
+	"github.com/teamgram/teamgram-server/pkg/rpc/businessctx"
 	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
@@ -229,7 +230,7 @@ func (c *ApiFullCore) PaymentsGetStarsTopupOptions(in *mtproto.TLPaymentsGetStar
 }
 
 func (c *ApiFullCore) PaymentsGetStarsStatus(in *mtproto.TLPaymentsGetStarsStatus) (*mtproto.Payments_StarsStatus, error) {
-	uid, err := c.requireUserId()
+	uid, err := c.starsActorID()
 	if err != nil {
 		return nil, err
 	}
@@ -264,6 +265,13 @@ func (c *ApiFullCore) PaymentsGetStarsStatus(in *mtproto.TLPaymentsGetStarsStatu
 		return nil, mtproto.ErrMethodNotImpl
 	}
 	return makeStarsStatus(balance, nil, nil), nil
+}
+
+func (c *ApiFullCore) starsActorID() (int64, error) {
+	if scope, ok := businessctx.ScopeFromContext(callContext(c)); ok && scope.OwnerID > 0 {
+		return scope.OwnerID, nil
+	}
+	return c.requireUserId()
 }
 
 func (c *ApiFullCore) PaymentsGetStarsTransactions(in *mtproto.TLPaymentsGetStarsTransactions) (*mtproto.Payments_StarsStatus, error) {

@@ -23,6 +23,9 @@ func (c *DialogCore) DialogGetAllDrafts(in *dialog.TLDialogGetAllDrafts) (*dialo
 	rValues := &dialog.Vector_PeerWithDraftMessage{
 		Datas: []*dialog.PeerWithDraftMessage{},
 	}
+	if in == nil || in.GetUserId() <= 0 {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
 
 	if c == nil || c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.Postgres == nil ||
 		c.svcCtx.Dao.Postgres.Store == nil || c.svcCtx.Dao.Postgres.Store.Dialogs == nil {
@@ -35,16 +38,32 @@ func (c *DialogCore) DialogGetAllDrafts(in *dialog.TLDialogGetAllDrafts) (*dialo
 	for i := range rows {
 		v := &rows[i]
 		if v.DraftMessageData == "" {
-			continue
+			if c.Logger != nil {
+				c.Logger.Errorf("dialog.getAllDrafts - empty draft message data")
+			}
+			return nil, mtproto.ErrInternalServerError
 		}
 
-		draft := &mtproto.DraftMessage{}
+		var draft *mtproto.DraftMessage
 		if err := jsonx.UnmarshalFromString(v.DraftMessageData, &draft); err != nil {
-			c.Logger.Errorf("dialog.getAllDrafts - unmarshal draft: %v", err)
-			continue
+			if c.Logger != nil {
+				c.Logger.Errorf("dialog.getAllDrafts - unmarshal draft: %v", err)
+			}
+			return nil, mtproto.ErrInternalServerError
 		}
 		if draft == nil {
-			continue
+			if c.Logger != nil {
+				c.Logger.Errorf("dialog.getAllDrafts - draft message is null")
+			}
+			return nil, mtproto.ErrInternalServerError
+		}
+		switch draft.GetPredicateName() {
+		case mtproto.Predicate_draftMessageEmpty, mtproto.Predicate_draftMessage:
+		default:
+			if c.Logger != nil {
+				c.Logger.Errorf("dialog.getAllDrafts - unsupported draft predicate: %q", draft.GetPredicateName())
+			}
+			return nil, mtproto.ErrInternalServerError
 		}
 
 		rValues.Datas = append(rValues.Datas,

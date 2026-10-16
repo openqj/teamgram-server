@@ -126,10 +126,7 @@ func (c *MessagesCore) MessagesReadMessageContents(in *mtproto.TLMessagesReadMes
 		return nil, mtproto.ErrInternalServerError
 	} else if messages.Length() == 0 {
 		c.Logger.Errorf("messages.readMessageContents - error: missing messages")
-		return mtproto.MakeTLMessagesAffectedMessages(&mtproto.Messages_AffectedMessages{
-			Pts:      c.svcCtx.Dao.IDGenClient2.CurrentPtsId(c.ctx, c.MD.UserId),
-			PtsCount: 0,
-		}).To_Messages_AffectedMessages(), nil
+		return c.currentReadMessageContentsPts()
 	}
 
 	groups, err := groupReadMessageContents(c.MD.UserId, messages.GetDatas())
@@ -138,10 +135,15 @@ func (c *MessagesCore) MessagesReadMessageContents(in *mtproto.TLMessagesReadMes
 		return nil, err
 	}
 	var (
-		affected *mtproto.Messages_AffectedMessages
-		ptsCount int32
+		affected   *mtproto.Messages_AffectedMessages
+		ptsCount   int32
+		hasContent bool
 	)
 	for _, group := range groups {
+		if len(group.contents) == 0 {
+			continue
+		}
+		hasContent = true
 		affected, err = c.svcCtx.Dao.MsgClient.MsgReadMessageContents(c.ctx, &msgpb.TLMsgReadMessageContents{
 			UserId:    c.MD.UserId,
 			AuthKeyId: c.MD.PermAuthKeyId,
@@ -157,6 +159,9 @@ func (c *MessagesCore) MessagesReadMessageContents(in *mtproto.TLMessagesReadMes
 			return nil, mtproto.ErrInternalServerError
 		}
 		ptsCount += affected.PtsCount
+	}
+	if !hasContent {
+		return c.currentReadMessageContentsPts()
 	}
 	result := mtproto.MakeTLMessagesAffectedMessages(&mtproto.Messages_AffectedMessages{
 		Pts:      affected.Pts,
@@ -177,4 +182,14 @@ func (c *MessagesCore) MessagesReadMessageContents(in *mtproto.TLMessagesReadMes
 				}).To_Update()),
 			})
 		}).(*mtproto.Messages_AffectedMessages), nil
+}
+
+func (c *MessagesCore) currentReadMessageContentsPts() (*mtproto.Messages_AffectedMessages, error) {
+	if c == nil || c.svcCtx == nil || c.svcCtx.Dao == nil || !c.svcCtx.Dao.IDGenClient2.Available() {
+		return nil, mtproto.ErrInternalServerError
+	}
+	return mtproto.MakeTLMessagesAffectedMessages(&mtproto.Messages_AffectedMessages{
+		Pts:      c.svcCtx.Dao.IDGenClient2.CurrentPtsId(c.ctx, c.MD.UserId),
+		PtsCount: 0,
+	}).To_Messages_AffectedMessages(), nil
 }

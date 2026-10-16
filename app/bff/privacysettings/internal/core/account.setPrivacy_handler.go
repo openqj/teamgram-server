@@ -35,21 +35,24 @@ func (c *PrivacySettingsCore) AccountSetPrivacy(in *mtproto.TLAccountSetPrivacy)
 	if in == nil {
 		return nil, mtproto.ErrInputRequestInvalid
 	}
-	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.UserClient == nil || c.svcCtx.Dao.ChatClient == nil || c.svcCtx.Dao.SyncClient == nil {
-		return nil, mtproto.ErrInternalServerError
-	}
-	var (
-		key = mtproto.FromInputPrivacyKeyType(in.Key)
-	)
-
-	// TODO(@benqi): Check request valid.
-	if key == mtproto.KEY_TYPE_INVALID {
-		err := mtproto.ErrPrivacyKeyInvalid
+	key, err := privacyKeyType(in.GetKey())
+	if err != nil {
 		c.Logger.Errorf("account.setPrivacy - error: %v", err)
 		return nil, err
 	}
+	if err = validatePrivacyInputRules(c.MD.UserId, in.GetRules()); err != nil {
+		c.Logger.Errorf("account.setPrivacy - error: %v", err)
+		return nil, err
+	}
+	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.UserClient == nil || c.svcCtx.Dao.ChatClient == nil || c.svcCtx.Dao.SyncClient == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
 
 	ruleList := mtproto.ToPrivacyRuleListByInput(c.MD.UserId, in.Rules)
+	if _, err = mtproto.NormalizePrivacyRules(ruleList); err != nil {
+		c.Logger.Errorf("account.setPrivacy - error: %v", err)
+		return nil, err
+	}
 	users, chats, err := c.hydratePrivacyRuleObjects(ruleList)
 	if err != nil {
 		c.Logger.Errorf("account.setPrivacy - error: %v", err)

@@ -598,6 +598,10 @@ func (c *ApiFullCore) resolveChannelInviteeIDs(caller int64, users []*mtproto.In
 		if target.GetUser().GetDeleted() {
 			return nil, mtproto.ErrInputUserDeactivated
 		}
+		if input.GetPredicateName() == mtproto.Predicate_inputUser &&
+			(input.GetAccessHash() == 0 || target.GetUser().GetAccessHash() != input.GetAccessHash()) {
+			return nil, mtproto.ErrUserIdInvalid
+		}
 		ids = append(ids, peer.PeerId)
 	}
 	return ids, nil

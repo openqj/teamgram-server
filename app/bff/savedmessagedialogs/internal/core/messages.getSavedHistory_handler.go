@@ -37,6 +37,16 @@ func (c *SavedMessageDialogsCore) MessagesGetSavedHistory(in *mtproto.TLMessages
 	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.MessageClient == nil {
 		return nil, mtproto.ErrMethodNotImpl
 	}
+	if parent := in.GetParentPeer(); parent != nil {
+		parentPeer := mtproto.FromInputPeer2(c.MD.UserId, parent)
+		if !savedPeerAllowed(parentPeer) {
+			return nil, mtproto.ErrPeerIdInvalid
+		}
+		parentKey := savedPeerKeyOf(parentPeer.PeerType, parentPeer.PeerId, c.MD.UserId)
+		if parentKey.peerType != mtproto.PEER_USER || parentKey.peerId != c.MD.UserId {
+			return nil, mtproto.ErrPeerIdInvalid
+		}
+	}
 
 	peer := mtproto.FromInputPeer2(c.MD.UserId, in.GetPeer())
 	if peer == nil || peer.PeerId == 0 {
@@ -69,6 +79,12 @@ func (c *SavedMessageDialogsCore) MessagesGetSavedHistory(in *mtproto.TLMessages
 	}
 	if boxList == nil {
 		return nil, mtproto.ErrInternalServerError
+	}
+	// The message provider returns only a page. Without an authoritative total
+	// and continuation cursor, a full page cannot be encoded as a truthful
+	// messages.MessagesSlice response.
+	if limit > 0 && boxList.Length() >= limit {
+		return nil, mtproto.ErrMethodNotImpl
 	}
 
 	var (
@@ -130,28 +146,9 @@ func (c *SavedMessageDialogsCore) MessagesGetSavedHistory(in *mtproto.TLMessages
 		return nil, hydrateErr
 	}
 
-	var (
-		rValues *mtproto.Messages_Messages
-	)
-
-	//if !isChannel {
-	if boxList.Length() == limit {
-		rValues = mtproto.MakeTLMessagesMessagesSlice(&mtproto.Messages_Messages{
-			Inexact:        false, // TODO: ???
-			Count:          boxList.Count,
-			NextRate:       nil, // TODO: ???
-			OffsetIdOffset: nil, // TODO: ???
-			Messages:       messages,
-			Users:          mtproto.ToSafeUsers(users),
-			Chats:          mtproto.ToSafeChats(chats),
-		}).To_Messages_Messages()
-	} else {
-		rValues = mtproto.MakeTLMessagesMessages(&mtproto.Messages_Messages{
-			Messages: messages,
-			Users:    mtproto.ToSafeUsers(users),
-			Chats:    mtproto.ToSafeChats(chats),
-		}).To_Messages_Messages()
-	}
-
-	return rValues, nil
+	return mtproto.MakeTLMessagesMessages(&mtproto.Messages_Messages{
+		Messages: messages,
+		Users:    mtproto.ToSafeUsers(users),
+		Chats:    mtproto.ToSafeChats(chats),
+	}).To_Messages_Messages(), nil
 }

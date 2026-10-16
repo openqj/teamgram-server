@@ -10,6 +10,7 @@
 package core
 
 import (
+	"context"
 	"time"
 
 	"github.com/teamgram/proto/mtproto"
@@ -72,6 +73,7 @@ func (c *SyncCore) SyncPushUpdatesIfNot(in *sync.TLSyncPushUpdatesIfNot) (*mtpro
 	}
 
 	stageStarted = time.Now()
+	targets := make([]sessionPushTarget, 0, len(statusList.GetUserSessions()))
 	for _, sess := range statusList.GetUserSessions() {
 		if sess == nil {
 			continue
@@ -92,14 +94,22 @@ func (c *SyncCore) SyncPushUpdatesIfNot(in *sync.TLSyncPushUpdatesIfNot) (*mtpro
 			return nil, mtproto.ErrMethodNotImpl
 		}
 
-		if err = c.svcCtx.Dao.PushUpdatesToSession(c.ctx, sess.GetGateway(), &session.TLSessionPushUpdatesData{
-			PermAuthKeyId: permAuthKeyId,
+		targets = append(targets, sessionPushTarget{
+			serverID:  sess.GetGateway(),
+			authKeyID: permAuthKeyId,
+			updates:   pushData,
+		})
+	}
+	if err = pushSessionTargets(c.ctx, targets, maxConcurrentSessionPushes, func(ctx context.Context, target sessionPushTarget) error {
+		return c.svcCtx.Dao.PushUpdatesToSession(ctx, target.serverID, &session.TLSessionPushUpdatesData{
+			PermAuthKeyId: target.authKeyID,
 			Notification:  notification,
-			Updates:       pushData,
-		}); err != nil {
-			c.Logger.Errorf("sync.pushUpdatesIfNot - push updates to gateway %s error: %v", sess.GetGateway(), err)
-			return nil, err
-		}
+			Updates:       target.updates,
+		})
+	}); err != nil {
+		c.Logger.Errorf("sync.pushUpdatesIfNot - push updates to sessions error: %v", err)
+		dao.ObserveDeliveryStage("session_dispatch_if_not", stageStarted, err)
+		return nil, err
 	}
 	dao.ObserveDeliveryStage("session_dispatch_if_not", stageStarted, err)
 	if err != nil {

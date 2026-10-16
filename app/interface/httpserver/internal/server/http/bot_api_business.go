@@ -31,12 +31,21 @@ func resolveBotAPIBusinessScope(ctx *svc.ServiceContext, requestCtx context.Cont
 	}
 	rights := connection.GetRights()
 	return businessctx.Scope{
-		ConnectionID:    connection.GetConnectionId(),
-		OwnerID:         connection.GetUserId(),
-		CanReply:        connection.GetCanReply() || (rights != nil && rights.GetReply()),
-		CanReadMessages: rights != nil && rights.GetReadMessages(),
-		CanDeleteSent:   rights != nil && rights.GetDeleteSentMessages(),
-		CanDeleteAll:    rights != nil && rights.GetDeleteReceivedMessages(),
+		ConnectionID:     connection.GetConnectionId(),
+		OwnerID:          connection.GetUserId(),
+		CanReply:         connection.GetCanReply() || (rights != nil && rights.GetReply()),
+		CanReadMessages:  rights != nil && rights.GetReadMessages(),
+		CanDeleteSent:    rights != nil && rights.GetDeleteSentMessages(),
+		CanDeleteAll:     rights != nil && rights.GetDeleteReceivedMessages(),
+		CanEditName:      rights != nil && rights.GetEditName(),
+		CanEditBio:       rights != nil && rights.GetEditBio(),
+		CanEditPhoto:     rights != nil && rights.GetEditProfilePhoto(),
+		CanEditUsername:  rights != nil && rights.GetEditUsername(),
+		CanViewGifts:     rights != nil && rights.GetViewGifts(),
+		CanSellGifts:     rights != nil && rights.GetSellGifts(),
+		CanChangeGifts:   rights != nil && rights.GetChangeGiftSettings(),
+		CanTransferGifts: rights != nil && rights.GetTransferAndUpgradeGifts(),
+		CanTransferStars: rights != nil && rights.GetTransferStars(),
 	}, nil
 }
 

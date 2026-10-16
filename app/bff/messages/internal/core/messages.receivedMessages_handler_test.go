@@ -14,10 +14,12 @@ import (
 type receivedMessagesStoreStub struct {
 	userID int64
 	maxID  int32
+	called bool
 	err    error
 }
 
 func (s *receivedMessagesStoreStub) Record(_ context.Context, userID int64, maxID int32) error {
+	s.called = true
 	s.userID, s.maxID = userID, maxID
 	return s.err
 }
@@ -54,29 +56,17 @@ func TestMessagesReceivedMessagesFailsClosedWithoutProvider(t *testing.T) {
 	}
 }
 
-func TestMessagesReceivedMessagesPersistsCursor(t *testing.T) {
+func TestMessagesReceivedMessagesDoesNotRecordCursorWithoutNotificationProvider(t *testing.T) {
 	store := &receivedMessagesStoreStub{}
 	core := &MessagesCore{
 		MD:     &metadata.RpcMetadata{UserId: 42},
 		svcCtx: &svc.ServiceContext{Dao: &dao.Dao{ReceivedMessages: store}},
 	}
 	got, err := core.MessagesReceivedMessages(&mtproto.TLMessagesReceivedMessages{MaxId: 123})
-	if err != nil || got == nil || len(got.GetDatas()) != 0 {
-		t.Fatalf("MessagesReceivedMessages() = (%v, %v), want empty vector", got, err)
+	if got != nil || !errors.Is(err, mtproto.ErrMethodNotImpl) {
+		t.Fatalf("MessagesReceivedMessages() = (%v, %v), want (nil, METHOD_NOT_IMPL)", got, err)
 	}
-	if store.userID != 42 || store.maxID != 123 {
-		t.Fatalf("received cursor = (%d, %d), want (42, 123)", store.userID, store.maxID)
-	}
-}
-
-func TestMessagesReceivedMessagesPropagatesStoreError(t *testing.T) {
-	wantErr := errors.New("postgres unavailable")
-	core := &MessagesCore{
-		MD:     &metadata.RpcMetadata{UserId: 42},
-		svcCtx: &svc.ServiceContext{Dao: &dao.Dao{ReceivedMessages: &receivedMessagesStoreStub{err: wantErr}}},
-	}
-	got, err := core.MessagesReceivedMessages(&mtproto.TLMessagesReceivedMessages{MaxId: 123})
-	if got != nil || !errors.Is(err, wantErr) {
-		t.Fatalf("MessagesReceivedMessages() = (%v, %v), want store error", got, err)
+	if store.called {
+		t.Fatalf("received cursor was recorded without a notification cancellation provider: (%d, %d)", store.userID, store.maxID)
 	}
 }

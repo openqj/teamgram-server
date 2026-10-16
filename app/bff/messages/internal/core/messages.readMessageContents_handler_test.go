@@ -34,10 +34,12 @@ type readMessageContentsMsgClientStub struct {
 	response *mtproto.Messages_AffectedMessages
 	err      error
 	calls    int
+	requests []*msgpb.TLMsgReadMessageContents
 }
 
-func (s *readMessageContentsMsgClientStub) MsgReadMessageContents(context.Context, *msgpb.TLMsgReadMessageContents) (*mtproto.Messages_AffectedMessages, error) {
+func (s *readMessageContentsMsgClientStub) MsgReadMessageContents(_ context.Context, in *msgpb.TLMsgReadMessageContents) (*mtproto.Messages_AffectedMessages, error) {
 	s.calls++
+	s.requests = append(s.requests, in)
 	return s.response, s.err
 }
 
@@ -102,15 +104,74 @@ func TestMessagesReadMessageContentsFailsClosedOnMissingDependenciesAndResponses
 	box := &mtproto.MessageBox{
 		MessageId:    7,
 		SenderUserId: 84,
-		PeerType:     mtproto.PEER_USER,
-		PeerId:       84,
-		Message:      &mtproto.Message{},
+		PeerType:     mtproto.PEER_CHAT,
+		PeerId:       3000,
+		Message:      &mtproto.Message{Id: 7, PeerId: mtproto.MakePeerChat(3000), Mentioned: true},
 	}
 	messageList := &readMessageContentsMessageClientStub{response: &messagepb.Vector_MessageBox{Datas: []*mtproto.MessageBox{box}}}
 	nilAffected := &readMessageContentsMsgClientStub{}
 	core = newReadMessageContentsTestCore(messageList, nilAffected)
 	if got, err := core.MessagesReadMessageContents(request); got != nil || !errors.Is(err, mtproto.ErrInternalServerError) {
 		t.Fatalf("nil affected response = (%v, %v), want nil/INTERNAL_SERVER_ERROR", got, err)
+	}
+}
+
+func TestMessagesReadMessageContentsSkipsEmptyPeerGroups(t *testing.T) {
+	messageList := &readMessageContentsMessageClientStub{response: &messagepb.Vector_MessageBox{Datas: []*mtproto.MessageBox{
+		{
+			MessageId:    7,
+			SenderUserId: 84,
+			PeerType:     mtproto.PEER_USER,
+			PeerId:       84,
+			Message:      &mtproto.Message{Id: 7},
+		},
+		{
+			MessageId:    8,
+			SenderUserId: 84,
+			PeerType:     mtproto.PEER_CHAT,
+			PeerId:       3000,
+			Message:      &mtproto.Message{Id: 8, PeerId: mtproto.MakePeerChat(3000), Mentioned: true},
+		},
+	}}}
+	msg := &readMessageContentsMsgClientStub{response: mtproto.MakeTLMessagesAffectedMessages(&mtproto.Messages_AffectedMessages{
+		Pts:      12,
+		PtsCount: 1,
+	}).To_Messages_AffectedMessages()}
+	core := newReadMessageContentsTestCore(messageList, msg)
+
+	got, err := core.MessagesReadMessageContents(&mtproto.TLMessagesReadMessageContents{Id: []int32{7, 8}})
+	if err != nil {
+		t.Fatalf("MessagesReadMessageContents() error = %v", err)
+	}
+	if got == nil || got.GetPts() != 12 || got.GetPtsCount() != 1 {
+		t.Fatalf("MessagesReadMessageContents() = %v, want pts=12/pts_count=1", got)
+	}
+	if msg.calls != 1 || len(msg.requests) != 1 {
+		t.Fatalf("MsgReadMessageContents calls = %d, want one non-empty group", msg.calls)
+	}
+	request := msg.requests[0]
+	if request.GetPeerType() != mtproto.PEER_CHAT || request.GetPeerId() != 3000 || len(request.GetId()) != 1 || request.GetId()[0].GetId() != 8 {
+		t.Fatalf("MsgReadMessageContents request = %v, want chat 3000 with message 8", request)
+	}
+}
+
+func TestMessagesReadMessageContentsFailsClosedWithoutPtsProviderForNoop(t *testing.T) {
+	messageList := &readMessageContentsMessageClientStub{response: &messagepb.Vector_MessageBox{Datas: []*mtproto.MessageBox{{
+		MessageId:    7,
+		SenderUserId: 84,
+		PeerType:     mtproto.PEER_USER,
+		PeerId:       84,
+		Message:      &mtproto.Message{Id: 7},
+	}}}}
+	msg := &readMessageContentsMsgClientStub{}
+	core := newReadMessageContentsTestCore(messageList, msg)
+
+	got, err := core.MessagesReadMessageContents(&mtproto.TLMessagesReadMessageContents{Id: []int32{7}})
+	if got != nil || !errors.Is(err, mtproto.ErrInternalServerError) {
+		t.Fatalf("MessagesReadMessageContents() = (%v, %v), want nil/INTERNAL_SERVER_ERROR", got, err)
+	}
+	if msg.calls != 0 {
+		t.Fatalf("MsgReadMessageContents calls = %d, want zero for an empty content batch", msg.calls)
 	}
 }
 

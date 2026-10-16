@@ -23,6 +23,151 @@ import (
 	userpb "github.com/teamgram/teamgram-server/app/service/biz/user/user"
 )
 
+func privacyKeyType(key *mtproto.InputPrivacyKey) (int, error) {
+	if key == nil {
+		return mtproto.KEY_TYPE_INVALID, mtproto.ErrPrivacyKeyInvalid
+	}
+	var keyType int
+	var expected mtproto.TLConstructor
+	switch key.GetPredicateName() {
+	case mtproto.Predicate_inputPrivacyKeyStatusTimestamp:
+		keyType = mtproto.STATUS_TIMESTAMP
+		expected = mtproto.TLConstructor_CRC32_inputPrivacyKeyStatusTimestamp
+	case mtproto.Predicate_inputPrivacyKeyChatInvite:
+		keyType = mtproto.CHAT_INVITE
+		expected = mtproto.TLConstructor_CRC32_inputPrivacyKeyChatInvite
+	case mtproto.Predicate_inputPrivacyKeyPhoneCall:
+		keyType = mtproto.PHONE_CALL
+		expected = mtproto.TLConstructor_CRC32_inputPrivacyKeyPhoneCall
+	case mtproto.Predicate_inputPrivacyKeyPhoneP2P:
+		keyType = mtproto.PHONE_P2P
+		expected = mtproto.TLConstructor_CRC32_inputPrivacyKeyPhoneP2P
+	case mtproto.Predicate_inputPrivacyKeyForwards:
+		keyType = mtproto.FORWARDS
+		expected = mtproto.TLConstructor_CRC32_inputPrivacyKeyForwards
+	case mtproto.Predicate_inputPrivacyKeyProfilePhoto:
+		keyType = mtproto.PROFILE_PHOTO
+		expected = mtproto.TLConstructor_CRC32_inputPrivacyKeyProfilePhoto
+	case mtproto.Predicate_inputPrivacyKeyPhoneNumber:
+		keyType = mtproto.PHONE_NUMBER
+		expected = mtproto.TLConstructor_CRC32_inputPrivacyKeyPhoneNumber
+	case mtproto.Predicate_inputPrivacyKeyAddedByPhone:
+		keyType = mtproto.ADDED_BY_PHONE
+		expected = mtproto.TLConstructor_CRC32_inputPrivacyKeyAddedByPhone
+	case mtproto.Predicate_inputPrivacyKeyVoiceMessages:
+		keyType = mtproto.VOICE_MESSAGES
+		expected = mtproto.TLConstructor_CRC32_inputPrivacyKeyVoiceMessages
+	case mtproto.Predicate_inputPrivacyKeyAbout:
+		keyType = mtproto.ABOUT
+		expected = mtproto.TLConstructor_CRC32_inputPrivacyKeyAbout
+	case mtproto.Predicate_inputPrivacyKeyBirthday:
+		keyType = mtproto.BIRTHDAY
+		expected = mtproto.TLConstructor_CRC32_inputPrivacyKeyBirthday
+	case mtproto.Predicate_inputPrivacyKeyStarGiftsAutoSave:
+		keyType = mtproto.STAR_GIFTS_AUTO_SAVE
+		expected = mtproto.TLConstructor_CRC32_inputPrivacyKeyStarGiftsAutoSave
+	case mtproto.Predicate_inputPrivacyKeyNoPaidMessages:
+		keyType = mtproto.NO_PAID_MESSAGES
+		expected = mtproto.TLConstructor_CRC32_inputPrivacyKeyNoPaidMessages
+	case mtproto.Predicate_inputPrivacyKeySavedMusic:
+		keyType = mtproto.SAVED_MUSIC
+		expected = mtproto.TLConstructor_CRC32_inputPrivacyKeySavedMusic
+	default:
+		return mtproto.KEY_TYPE_INVALID, mtproto.ErrPrivacyKeyInvalid
+	}
+	if key.GetConstructor() != mtproto.TLConstructor_CRC32_UNKNOWN && key.GetConstructor() != expected {
+		return mtproto.KEY_TYPE_INVALID, mtproto.ErrPrivacyKeyInvalid
+	}
+	return keyType, nil
+}
+
+func validatePrivacyInputUser(user *mtproto.InputUser, selfID int64) error {
+	if user == nil {
+		return mtproto.ErrPrivacyValueInvalid
+	}
+	switch user.GetPredicateName() {
+	case mtproto.Predicate_inputUser:
+		if user.GetUserId() <= 0 {
+			return mtproto.ErrPrivacyValueInvalid
+		}
+		if user.GetConstructor() != mtproto.TLConstructor_CRC32_UNKNOWN && user.GetConstructor() != mtproto.TLConstructor_CRC32_inputUser {
+			return mtproto.ErrPrivacyValueInvalid
+		}
+	case mtproto.Predicate_inputUserSelf:
+		if user.GetConstructor() != mtproto.TLConstructor_CRC32_UNKNOWN && user.GetConstructor() != mtproto.TLConstructor_CRC32_inputUserSelf {
+			return mtproto.ErrPrivacyValueInvalid
+		}
+		if selfID <= 0 {
+			return mtproto.ErrPrivacyValueInvalid
+		}
+	default:
+		return mtproto.ErrPrivacyValueInvalid
+	}
+	return nil
+}
+
+func validatePrivacyInputRules(selfID int64, rules []*mtproto.InputPrivacyRule) error {
+	if len(rules) == 0 {
+		return mtproto.ErrPrivacyValueInvalid
+	}
+	if len(rules) > 1000 {
+		return mtproto.ErrPrivacyTooLong
+	}
+
+	expectedConstructors := map[string]mtproto.TLConstructor{
+		mtproto.Predicate_inputPrivacyValueAllowContacts:            mtproto.TLConstructor_CRC32_inputPrivacyValueAllowContacts,
+		mtproto.Predicate_inputPrivacyValueAllowAll:                 mtproto.TLConstructor_CRC32_inputPrivacyValueAllowAll,
+		mtproto.Predicate_inputPrivacyValueAllowUsers:               mtproto.TLConstructor_CRC32_inputPrivacyValueAllowUsers,
+		mtproto.Predicate_inputPrivacyValueDisallowContacts:         mtproto.TLConstructor_CRC32_inputPrivacyValueDisallowContacts,
+		mtproto.Predicate_inputPrivacyValueDisallowAll:              mtproto.TLConstructor_CRC32_inputPrivacyValueDisallowAll,
+		mtproto.Predicate_inputPrivacyValueDisallowUsers:            mtproto.TLConstructor_CRC32_inputPrivacyValueDisallowUsers,
+		mtproto.Predicate_inputPrivacyValueAllowChatParticipants:    mtproto.TLConstructor_CRC32_inputPrivacyValueAllowChatParticipants,
+		mtproto.Predicate_inputPrivacyValueDisallowChatParticipants: mtproto.TLConstructor_CRC32_inputPrivacyValueDisallowChatParticipants,
+		mtproto.Predicate_inputPrivacyValueAllowCloseFriends:        mtproto.TLConstructor_CRC32_inputPrivacyValueAllowCloseFriends,
+		mtproto.Predicate_inputPrivacyValueAllowPremium:             mtproto.TLConstructor_CRC32_inputPrivacyValueAllowPremium,
+		mtproto.Predicate_inputPrivacyValueAllowBots:                mtproto.TLConstructor_CRC32_inputPrivacyValueAllowBots,
+		mtproto.Predicate_inputPrivacyValueDisallowBots:             mtproto.TLConstructor_CRC32_inputPrivacyValueDisallowBots,
+	}
+	for _, rule := range rules {
+		if rule == nil {
+			return mtproto.ErrPrivacyValueInvalid
+		}
+		predicate := rule.GetPredicateName()
+		expected, ok := expectedConstructors[predicate]
+		if !ok {
+			return mtproto.ErrPrivacyValueInvalid
+		}
+		if rule.GetConstructor() != mtproto.TLConstructor_CRC32_UNKNOWN && rule.GetConstructor() != expected {
+			return mtproto.ErrPrivacyValueInvalid
+		}
+		switch predicate {
+		case mtproto.Predicate_inputPrivacyValueAllowUsers, mtproto.Predicate_inputPrivacyValueDisallowUsers:
+			if len(rule.GetChats()) != 0 {
+				return mtproto.ErrPrivacyValueInvalid
+			}
+			for _, user := range rule.GetUsers() {
+				if err := validatePrivacyInputUser(user, selfID); err != nil {
+					return err
+				}
+			}
+		case mtproto.Predicate_inputPrivacyValueAllowChatParticipants, mtproto.Predicate_inputPrivacyValueDisallowChatParticipants:
+			if len(rule.GetUsers()) != 0 {
+				return mtproto.ErrPrivacyValueInvalid
+			}
+			for _, id := range rule.GetChats() {
+				if id <= 0 {
+					return mtproto.ErrPrivacyValueInvalid
+				}
+			}
+		default:
+			if len(rule.GetUsers()) != 0 || len(rule.GetChats()) != 0 {
+				return mtproto.ErrPrivacyValueInvalid
+			}
+		}
+	}
+	return nil
+}
+
 func validatePrivacyHydratedIDs(kind string, requestedIDs, hydratedIDs []int64) error {
 	requested := make(map[int64]struct{}, len(requestedIDs))
 	for _, id := range requestedIDs {

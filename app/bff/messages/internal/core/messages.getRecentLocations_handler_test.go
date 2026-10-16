@@ -29,11 +29,23 @@ func (c *recentLocationsMessageClient) MessageGetHistoryMessages(_ context.Conte
 
 type recentLocationsUserClient struct {
 	userclient.UserClient
-	err error
+	err      error
+	users    *userpb.Vector_ImmutableUser
+	requests []*userpb.TLUserGetMutableUsers
 }
 
-func (c *recentLocationsUserClient) UserGetMutableUsers(context.Context, *userpb.TLUserGetMutableUsers) (*userpb.Vector_ImmutableUser, error) {
-	return &userpb.Vector_ImmutableUser{}, c.err
+func (c *recentLocationsUserClient) UserGetMutableUsers(_ context.Context, in *userpb.TLUserGetMutableUsers) (*userpb.Vector_ImmutableUser, error) {
+	c.requests = append(c.requests, in)
+	if c.err != nil {
+		return nil, c.err
+	}
+	if c.users != nil {
+		return c.users, nil
+	}
+	return &userpb.Vector_ImmutableUser{Datas: []*mtproto.ImmutableUser{
+		mtproto.MakeTLImmutableUser(&mtproto.ImmutableUser{User: &mtproto.UserData{Id: 41, AccessHash: 410}}).To_ImmutableUser(),
+		mtproto.MakeTLImmutableUser(&mtproto.ImmutableUser{User: &mtproto.UserData{Id: 42, AccessHash: 99}}).To_ImmutableUser(),
+	}}, nil
 }
 
 func newRecentLocationsCore(messageClient messageclient.MessageClient) *MessagesCore {
@@ -92,9 +104,10 @@ func TestMessagesGetRecentLocationsPaginatesPastNonGeoHistory(t *testing.T) {
 			}
 		},
 	}
+	users := &recentLocationsUserClient{}
 	peer := mtproto.MakeTLInputPeerUser(&mtproto.InputPeer{UserId: 42, AccessHash: 99}).To_InputPeer()
 
-	got, err := newRecentLocationsCore(client).MessagesGetRecentLocations(&mtproto.TLMessagesGetRecentLocations{
+	got, err := newRecentLocationsCoreWithUserClient(client, users).MessagesGetRecentLocations(&mtproto.TLMessagesGetRecentLocations{
 		Peer:  peer,
 		Limit: 1,
 	})
@@ -106,6 +119,9 @@ func TestMessagesGetRecentLocationsPaginatesPastNonGeoHistory(t *testing.T) {
 	}
 	if len(client.requests) != 2 || client.requests[0].GetLimit() != recentLocationsHistoryPageSize || client.requests[1].GetOffsetId() != 101 {
 		t.Fatalf("history requests = %+v, want two 100-message pages offset at 101", client.requests)
+	}
+	if len(users.requests) == 0 || len(users.requests[0].GetTo()) != 1 || users.requests[0].GetTo()[0] != 41 {
+		t.Fatalf("user validation request = %+v, want caller in to", users.requests)
 	}
 }
 
@@ -173,6 +189,55 @@ func TestMessagesGetRecentLocationsPropagatesUserHydrationError(t *testing.T) {
 	got, err := core.MessagesGetRecentLocations(&mtproto.TLMessagesGetRecentLocations{Peer: peer, Limit: 1})
 	if got != nil || !errors.Is(err, hydrationErr) {
 		t.Fatalf("MessagesGetRecentLocations() = (%+v, %v), want (nil, user hydration error)", got, err)
+	}
+}
+
+func TestMessagesGetRecentLocationsRejectsInvalidUserAccessHash(t *testing.T) {
+	client := &recentLocationsMessageClient{
+		getHistory: func(*messagepb.TLMessageGetHistoryMessages) (*messagepb.Vector_MessageBox, error) {
+			t.Fatal("history must not be read for an invalid user access hash")
+			return nil, nil
+		},
+	}
+	for _, accessHash := range []int64{0, 98} {
+		peer := mtproto.MakeTLInputPeerUser(&mtproto.InputPeer{UserId: 42, AccessHash: accessHash}).To_InputPeer()
+		got, err := newRecentLocationsCore(client).MessagesGetRecentLocations(&mtproto.TLMessagesGetRecentLocations{Peer: peer, Limit: 1})
+		if got != nil || err != mtproto.ErrPeerIdInvalid {
+			t.Fatalf("access hash %d: MessagesGetRecentLocations() = (%+v, %v), want PEER_ID_INVALID", accessHash, got, err)
+		}
+	}
+	if len(client.requests) != 0 {
+		t.Fatalf("history requests = %d, want none for invalid user access hashes", len(client.requests))
+	}
+}
+
+func TestMessagesGetRecentLocationsFailsClosedWhenUserClientMissing(t *testing.T) {
+	client := &recentLocationsMessageClient{
+		getHistory: func(*messagepb.TLMessageGetHistoryMessages) (*messagepb.Vector_MessageBox, error) {
+			t.Fatal("history must not be read without a user client")
+			return nil, nil
+		},
+	}
+	peer := mtproto.MakeTLInputPeerUser(&mtproto.InputPeer{UserId: 42, AccessHash: 99}).To_InputPeer()
+	core := newRecentLocationsCoreWithUserClient(client, nil)
+	got, err := core.MessagesGetRecentLocations(&mtproto.TLMessagesGetRecentLocations{Peer: peer, Limit: 1})
+	if got != nil || err != mtproto.ErrInternalServerError {
+		t.Fatalf("missing user client: MessagesGetRecentLocations() = (%+v, %v), want INTERNAL_SERVER_ERROR", got, err)
+	}
+}
+
+func TestMessagesGetRecentLocationsFailsClosedWhenChatClientMissing(t *testing.T) {
+	client := &recentLocationsMessageClient{
+		getHistory: func(*messagepb.TLMessageGetHistoryMessages) (*messagepb.Vector_MessageBox, error) {
+			t.Fatal("history must not be read without chat membership validation")
+			return nil, nil
+		},
+	}
+	peer := mtproto.MakeTLInputPeerChat(&mtproto.InputPeer{ChatId: 77}).To_InputPeer()
+	core := newRecentLocationsCore(client)
+	got, err := core.MessagesGetRecentLocations(&mtproto.TLMessagesGetRecentLocations{Peer: peer, Limit: 1})
+	if got != nil || err != mtproto.ErrInternalServerError {
+		t.Fatalf("missing chat client: MessagesGetRecentLocations() = (%+v, %v), want INTERNAL_SERVER_ERROR", got, err)
 	}
 }
 

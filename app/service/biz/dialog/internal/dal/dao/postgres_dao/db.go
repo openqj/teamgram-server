@@ -19,22 +19,26 @@ type DB interface {
 }
 
 type Store struct {
-	Pool             *pgxpool.Pool
-	Dialogs          *DialogsDAO
-	DialogFilters    *DialogFiltersDAO
-	Drafts           *DraftsDAO
-	SavedDialogs     *SavedDialogsDAO
-	DialogFilterTags *DialogFilterTagsDAO
+	Pool                   *pgxpool.Pool
+	Dialogs                *DialogsDAO
+	DialogFilters          *DialogFiltersDAO
+	Drafts                 *DraftsDAO
+	SavedDialogs           *SavedDialogsDAO
+	DialogFilterTags       *DialogFilterTagsDAO
+	DialogRecommendations  *DialogRecommendationsDAO
+	RecommendationConfigs  *RecommendationConfigsDAO
 }
 
 func NewStore(pool *pgxpool.Pool) *Store {
 	return &Store{
-		Pool:             pool,
-		Dialogs:          NewDialogsDAO(pool),
-		DialogFilters:    NewDialogFiltersDAO(pool),
-		Drafts:           NewDraftsDAO(pool),
-		SavedDialogs:     NewSavedDialogsDAO(pool),
-		DialogFilterTags: NewDialogFilterTagsDAO(pool),
+		Pool:                  pool,
+		Dialogs:               NewDialogsDAO(pool),
+		DialogFilters:         NewDialogFiltersDAO(pool),
+		Drafts:                NewDraftsDAO(pool),
+		SavedDialogs:          NewSavedDialogsDAO(pool),
+		DialogFilterTags:      NewDialogFilterTagsDAO(pool),
+		DialogRecommendations: NewDialogRecommendationsDAO(pool),
+		RecommendationConfigs: NewRecommendationConfigsDAO(pool),
 	}
 }
 

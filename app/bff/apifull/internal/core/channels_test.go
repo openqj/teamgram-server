@@ -36,7 +36,7 @@ func (c *channelMemberUserClient) UserGetImmutableUserV2(_ context.Context, in *
 	if in == nil || in.GetId() == 0 {
 		return nil, nil
 	}
-	return &mtproto.ImmutableUser{User: &mtproto.UserData{Id: in.GetId(), FirstName: "user"}}, nil
+	return &mtproto.ImmutableUser{User: &mtproto.UserData{Id: in.GetId(), AccessHash: in.GetId(), FirstName: "user"}}, nil
 }
 
 func (c *channelMemberUserClient) UserGetMutableUsersV2(_ context.Context, in *userpb.TLUserGetMutableUsersV2) (*mtproto.MutableUsers, error) {

@@ -35,27 +35,39 @@ func (c *UsersCore) UsersGetUsers(in *mtproto.TLUsersGetUsers) (*mtproto.Vector_
 	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.UserClient == nil {
 		return nil, mtproto.ErrInternalServerError
 	}
-	var (
-		idList []int64
-	)
+	type requestedUser struct {
+		id         int64
+		accessHash int64
+		self       bool
+	}
+
+	requested := make([]requestedUser, 0, len(in.GetId()))
+	idList := make([]int64, 0, len(in.GetId()))
 
 	for _, inputUser := range in.Id {
 		if inputUser == nil {
 			return nil, mtproto.ErrUserIdInvalid
 		}
-		peer := mtproto.FromInputUser(c.MD.UserId, inputUser)
-		switch peer.PeerType {
-		case mtproto.PEER_SELF:
+		switch inputUser.GetPredicateName() {
+		case mtproto.Predicate_inputUserSelf:
+			requested = append(requested, requestedUser{id: c.MD.UserId, self: true})
 			idList = append(idList, c.MD.UserId)
-		case mtproto.PEER_USER:
-			if peer.PeerId <= 0 {
+		case mtproto.Predicate_inputUser:
+			if inputUser.GetUserId() <= 0 || inputUser.GetAccessHash() == 0 {
 				return nil, mtproto.ErrUserIdInvalid
 			}
-			idList = append(idList, peer.PeerId)
+			requested = append(requested, requestedUser{
+				id:         inputUser.GetUserId(),
+				accessHash: inputUser.GetAccessHash(),
+			})
+			idList = append(idList, inputUser.GetUserId())
 		default:
 			c.Logger.Errorf("invalid userId")
 			return nil, mtproto.ErrUserIdInvalid
 		}
+	}
+	if len(requested) == 0 {
+		return &mtproto.Vector_User{Datas: []*mtproto.User{}}, nil
 	}
 
 	mUsers, err := c.svcCtx.Dao.UserClient.UserGetMutableUsers(c.ctx, &userpb.TLUserGetMutableUsers{
@@ -71,7 +83,33 @@ func (c *UsersCore) UsersGetUsers(in *mtproto.TLUsersGetUsers) (*mtproto.Vector_
 		return nil, mtproto.ErrInternalServerError
 	}
 
-	return &mtproto.Vector_User{
-		Datas: mUsers.GetUserListByIdList(c.MD.UserId, idList...),
-	}, nil
+	canonical := make(map[int64]*mtproto.ImmutableUser, len(mUsers.GetDatas()))
+	for _, immutable := range mUsers.GetDatas() {
+		if immutable == nil || immutable.GetUser() == nil || immutable.Id() <= 0 {
+			return nil, mtproto.ErrInternalServerError
+		}
+		if _, exists := canonical[immutable.Id()]; exists {
+			return nil, mtproto.ErrInternalServerError
+		}
+		canonical[immutable.Id()] = immutable
+	}
+	me, ok := canonical[c.MD.UserId]
+	if !ok || me.Deleted() {
+		return nil, mtproto.ErrInternalServerError
+	}
+
+	users := make([]*mtproto.User, 0, len(requested))
+	for _, request := range requested {
+		immutable, ok := canonical[request.id]
+		if !ok || immutable.Deleted() || (!request.self && immutable.AccessHash() != request.accessHash) {
+			return nil, mtproto.ErrUserIdInvalid
+		}
+		if request.self || request.id == c.MD.UserId {
+			users = append(users, immutable.ToSelfUser())
+		} else {
+			users = append(users, immutable.ToUnsafeUser(me))
+		}
+	}
+
+	return &mtproto.Vector_User{Datas: users}, nil
 }

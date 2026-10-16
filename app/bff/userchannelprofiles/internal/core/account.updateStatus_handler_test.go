@@ -18,27 +18,39 @@ import (
 
 type statusUserClient struct {
 	userclient.UserClient
-	sequence *[]string
-	err      error
-	request  *userpb.TLUserUpdateLastSeen
+	sequence  *[]string
+	err       error
+	request   *userpb.TLUserUpdateLastSeen
+	reply     *mtproto.Bool
+	returnNil bool
 }
 
 func (c *statusUserClient) UserUpdateLastSeen(_ context.Context, in *userpb.TLUserUpdateLastSeen) (*mtproto.Bool, error) {
 	*c.sequence = append(*c.sequence, "persist")
 	c.request = in
+	if c.returnNil {
+		return nil, c.err
+	}
+	if c.reply != nil {
+		return c.reply, c.err
+	}
 	return mtproto.BoolTrue, c.err
 }
 
 type statusSyncClient struct {
 	syncclient.SyncClient
-	sequence *[]string
-	err      error
-	request  *sync.TLSyncUpdatesNotMe
+	sequence  *[]string
+	err       error
+	request   *sync.TLSyncUpdatesNotMe
+	returnNil bool
 }
 
 func (c *statusSyncClient) SyncUpdatesNotMe(_ context.Context, in *sync.TLSyncUpdatesNotMe) (*mtproto.Void, error) {
 	*c.sequence = append(*c.sequence, "push")
 	c.request = in
+	if c.returnNil {
+		return nil, c.err
+	}
 	return mtproto.EmptyVoid, c.err
 }
 
@@ -124,6 +136,67 @@ func TestAccountUpdateStatusReturnsPushFailure(t *testing.T) {
 	}
 	if len(sequence) != 2 || sequence[0] != "persist" || sequence[1] != "push" {
 		t.Fatalf("calls after push failure = %v, want [persist push]", sequence)
+	}
+}
+
+func TestAccountUpdateStatusFailsClosedOnUnsuccessfulPersistenceReply(t *testing.T) {
+	sequence := []string{}
+	users := &statusUserClient{sequence: &sequence, reply: mtproto.BoolFalse}
+	syncer := &statusSyncClient{sequence: &sequence}
+	core := newStatusCore(users, syncer)
+
+	if got, err := core.AccountUpdateStatus(&mtproto.TLAccountUpdateStatus{Offline: mtproto.BoolFalse}); got != nil || !errors.Is(err, mtproto.ErrInternalServerError) {
+		t.Fatalf("AccountUpdateStatus() = (%v, %v), want internal error", got, err)
+	}
+	if len(sequence) != 1 || sequence[0] != "persist" {
+		t.Fatalf("calls after unsuccessful persistence reply = %v, want [persist]", sequence)
+	}
+}
+
+func TestAccountUpdateStatusFailsClosedOnEmptyDependencyReplies(t *testing.T) {
+	tests := []struct {
+		name      string
+		users     *statusUserClient
+		syncer    *statusSyncClient
+		wantCalls []string
+	}{
+		{
+			name: "persistence",
+			users: &statusUserClient{
+				returnNil: true,
+			},
+			syncer:    &statusSyncClient{},
+			wantCalls: []string{"persist"},
+		},
+		{
+			name:  "sync",
+			users: &statusUserClient{},
+			syncer: &statusSyncClient{
+				returnNil: true,
+			},
+			wantCalls: []string{"persist", "push"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sequence := []string{}
+			tt.users.sequence = &sequence
+			tt.syncer.sequence = &sequence
+			core := newStatusCore(tt.users, tt.syncer)
+
+			if got, err := core.AccountUpdateStatus(&mtproto.TLAccountUpdateStatus{Offline: mtproto.BoolFalse}); got != nil || !errors.Is(err, mtproto.ErrInternalServerError) {
+				t.Fatalf("AccountUpdateStatus() = (%v, %v), want internal error", got, err)
+			}
+			if len(sequence) != len(tt.wantCalls) {
+				t.Fatalf("calls after empty %s reply = %v, want %v", tt.name, sequence, tt.wantCalls)
+			}
+			for i, want := range tt.wantCalls {
+				if sequence[i] != want {
+					t.Fatalf("call %d after empty %s reply = %q, want %q", i, tt.name, sequence[i], want)
+				}
+			}
+		})
 	}
 }
 

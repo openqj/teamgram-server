@@ -30,6 +30,7 @@ import (
 	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/persist"
 	chatpb "github.com/teamgram/teamgram-server/app/service/biz/chat/chat"
 	"github.com/teamgram/teamgram-server/app/service/dfs/dfs"
+	"github.com/teamgram/teamgram-server/pkg/rpc/businessctx"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/wrapperspb"
 )
@@ -271,7 +272,7 @@ func (s *userStoryStore) boxed(ids []int32, pinnedOnly bool) *mtproto.Stories_St
 // APIFull: the authenticated user's durable story store. Requests for a
 // different peer must not be answered with the caller's stories.
 func (c *ApiFullCore) ownStoryStore(peer *mtproto.InputPeer, user *mtproto.InputUser) (int64, *userStoryStore, error) {
-	uid, err := c.requireUserId()
+	uid, err := c.storyActorID()
 	if err != nil {
 		return 0, nil, err
 	}
@@ -285,11 +286,22 @@ func (c *ApiFullCore) ownStoryStore(peer *mtproto.InputPeer, user *mtproto.Input
 	return uid, stories, nil
 }
 
+// storyActorID resolves the account that owns a story mutation. Bot API story
+// methods execute through invokeWithBusinessConnection, where the MTProto
+// caller remains the bot and the business owner is carried in trusted scope
+// metadata. Native MTProto callers continue to use their authenticated user.
+func (c *ApiFullCore) storyActorID() (int64, error) {
+	if scope, ok := businessctx.ScopeFromContext(callContext(c)); ok && scope.OwnerID > 0 {
+		return scope.OwnerID, nil
+	}
+	return c.requireUserId()
+}
+
 // readStoryStore resolves a user peer for read-only story queries. Story
 // mutations continue to use ownStoryStore so a caller cannot write into
 // another user's local story namespace.
 func (c *ApiFullCore) readStoryStore(peer *mtproto.InputPeer) (int64, *userStoryStore, error) {
-	uid, err := c.requireUserId()
+	uid, err := c.storyActorID()
 	if err != nil {
 		return 0, nil, err
 	}
@@ -505,7 +517,7 @@ func (c *ApiFullCore) StoriesCanSendStory30EB63F0(in *mtproto.TLStoriesCanSendSt
 	if in == nil {
 		return nil, storiesProviderUnavailable(c)
 	}
-	uid, err := c.requireUserId()
+	uid, err := c.storyActorID()
 	if err != nil {
 		return nil, err
 	}
@@ -527,15 +539,12 @@ func (c *ApiFullCore) StoriesSendStory(in *mtproto.TLStoriesSendStory) (*mtproto
 	if in == nil {
 		return nil, storiesProviderUnavailable(c)
 	}
-	uid, err := c.requireUserId()
+	uid, err := c.storyActorID()
 	if err != nil {
 		return nil, err
 	}
 	if !storyPeerOwned(uid, in.GetPeer()) {
 		return nil, mtproto.ErrPeerIdInvalid
-	}
-	if in.GetMedia() == nil {
-		return nil, mtproto.ErrMediaEmpty
 	}
 	stories, err := loadUserStories(uid)
 	if err != nil {
@@ -551,9 +560,32 @@ func (c *ApiFullCore) StoriesSendStory(in *mtproto.TLStoriesSendStory) (*mtproto
 			return nil, mtproto.ErrInputRequestInvalid
 		}
 	}
-	media, err := c.uploadStoryMedia(uid, in.GetMedia())
-	if err != nil {
-		return nil, err
+	var media *mtproto.MessageMedia
+	var reposted *mtproto.StoryItem
+	if in.GetFwdFromId() != nil || in.GetFwdFromStory() != nil {
+		if in.GetFwdFromId() == nil || in.GetFwdFromStory() == nil || in.GetFwdFromStory().GetValue() <= 0 {
+			return nil, mtproto.ErrInputRequestInvalid
+		}
+		if in.GetFwdFromId().GetPredicateName() != mtproto.Predicate_inputPeerUser || in.GetFwdFromId().GetUserId() <= 0 {
+			return nil, mtproto.ErrPeerIdInvalid
+		}
+		sourceStories, loadErr := loadUserStories(in.GetFwdFromId().GetUserId())
+		if loadErr != nil {
+			return nil, loadErr
+		}
+		reposted = sourceStories.Items[in.GetFwdFromStory().GetValue()]
+		if reposted == nil || reposted.GetMedia() == nil {
+			return nil, mtproto.ErrStoryIdEmpty
+		}
+		media = reposted.GetMedia()
+	} else {
+		if in.GetMedia() == nil {
+			return nil, mtproto.ErrMediaEmpty
+		}
+		media, err = c.uploadStoryMedia(uid, in.GetMedia())
+		if err != nil {
+			return nil, err
+		}
 	}
 	var item *mtproto.StoryItem
 	_, err = mutateOwnStoriesE(uid, func(next *userStoryStore) error {
@@ -586,6 +618,15 @@ func (c *ApiFullCore) StoriesSendStory(in *mtproto.TLStoriesSendStory) (*mtproto
 			MediaAreas: in.GetMediaAreas(),
 			Albums:     append([]int32(nil), in.GetAlbums()...),
 		}).To_StoryItem()
+		if reposted != nil {
+			item.Caption = reposted.GetCaption()
+			item.Entities = append([]*mtproto.MessageEntity(nil), reposted.GetEntities()...)
+			item.MediaAreas = append([]*mtproto.MediaArea(nil), reposted.GetMediaAreas()...)
+			item.FwdFrom = mtproto.MakeTLStoryFwdHeader(&mtproto.StoryFwdHeader{
+				From:    mtproto.MakeTLPeerUser(&mtproto.Peer{UserId: in.GetFwdFromId().GetUserId()}).To_Peer(),
+				StoryId: in.GetFwdFromStory(),
+			}).To_StoryFwdHeader()
+		}
 		next.Items[item.GetId()] = item
 		next.Order = append(next.Order, item.GetId())
 		if in.GetRandomId() != 0 {
@@ -610,9 +651,6 @@ func (c *ApiFullCore) uploadStoryMedia(uid int64, input *mtproto.InputMedia) (*m
 	if d == nil || d.DfsClient == nil {
 		return nil, mtproto.ErrMethodNotImpl
 	}
-	if input.GetFile() == nil {
-		return nil, mtproto.ErrMediaInvalid
-	}
 	switch input.GetPredicateName() {
 	case mtproto.Predicate_inputMediaUploadedPhoto:
 		photo, err := d.DfsUploadPhotoFileV2(callContext(c), &dfs.TLDfsUploadPhotoFileV2{Creator: uid, File: input.GetFile()})
@@ -632,6 +670,22 @@ func (c *ApiFullCore) uploadStoryMedia(uid int64, input *mtproto.InputMedia) (*m
 			return nil, mtproto.ErrMediaInvalid
 		}
 		return mtproto.MakeTLMessageMediaDocument(&mtproto.MessageMedia{Document: document, TtlSeconds: input.GetTtlSeconds()}).To_MessageMedia(), nil
+	case mtproto.Predicate_inputMediaPhoto:
+		photo := input.GetId_INPUTPHOTO()
+		if photo == nil || photo.GetId() <= 0 {
+			return nil, mtproto.ErrMediaInvalid
+		}
+		return mtproto.MakeTLMessageMediaPhoto(&mtproto.MessageMedia{Photo_FLAGPHOTO: mtproto.MakeTLPhoto(&mtproto.Photo{
+			Id: photo.GetId(), AccessHash: photo.GetAccessHash(),
+		}).To_Photo(), TtlSeconds: input.GetTtlSeconds()}).To_MessageMedia(), nil
+	case mtproto.Predicate_inputMediaDocument:
+		document := input.GetId_INPUTDOCUMENT()
+		if document == nil || document.GetId() <= 0 {
+			return nil, mtproto.ErrMediaInvalid
+		}
+		return mtproto.MakeTLMessageMediaDocument(&mtproto.MessageMedia{Document: mtproto.MakeTLDocument(&mtproto.Document{
+			Id: document.GetId(), AccessHash: document.GetAccessHash(),
+		}).To_Document(), TtlSeconds: input.GetTtlSeconds()}).To_MessageMedia(), nil
 	default:
 		return nil, mtproto.ErrMediaInvalid
 	}
@@ -644,15 +698,19 @@ func (c *ApiFullCore) StoriesEditStory(in *mtproto.TLStoriesEditStory) (*mtproto
 	if in.GetId() <= 0 {
 		return nil, mtproto.ErrStoryIdEmpty
 	}
-	uid, err := c.requireUserId()
+	uid, err := c.storyActorID()
 	if err != nil {
 		return nil, err
 	}
 	if !storyPeerOwned(uid, in.GetPeer()) {
 		return nil, mtproto.ErrMethodNotImpl
 	}
+	var media *mtproto.MessageMedia
 	if in.GetMedia() != nil {
-		return nil, mtproto.ErrMethodNotImpl
+		media, err = c.uploadStoryMedia(uid, in.GetMedia())
+		if err != nil {
+			return nil, err
+		}
 	}
 	var item *mtproto.StoryItem
 	_, err = mutateOwnStoriesE(uid, func(stories *userStoryStore) error {
@@ -665,6 +723,12 @@ func (c *ApiFullCore) StoriesEditStory(in *mtproto.TLStoriesEditStory) (*mtproto
 		}
 		if in.GetEntities() != nil {
 			item.Entities = in.GetEntities()
+		}
+		if media != nil {
+			item.Media = media
+		}
+		if in.GetMediaAreas() != nil {
+			item.MediaAreas = in.GetMediaAreas()
 		}
 		item.Edited = true
 		return nil
@@ -682,7 +746,7 @@ func (c *ApiFullCore) StoriesDeleteStories(in *mtproto.TLStoriesDeleteStories) (
 	if len(in.GetId()) == 0 {
 		return nil, mtproto.ErrStoryIdEmpty
 	}
-	uid, err := c.requireUserId()
+	uid, err := c.storyActorID()
 	if err != nil {
 		return nil, err
 	}

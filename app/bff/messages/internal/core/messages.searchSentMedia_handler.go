@@ -20,6 +20,7 @@ package core
 
 import (
 	"github.com/teamgram/proto/mtproto"
+	"github.com/teamgram/teamgram-server/app/bff/apifull/channelview"
 	"github.com/teamgram/teamgram-server/app/service/biz/message/message"
 )
 
@@ -39,7 +40,7 @@ func (c *MessagesCore) MessagesSearchSentMedia(in *mtproto.TLMessagesSearchSentM
 		return nil, mtproto.ErrInputFilterInvalid
 	}
 	filterType := mtproto.FromMessagesFilter(in.GetFilter())
-	if filterType == mtproto.FilterEmpty && in.GetFilter().GetPredicateName() != mtproto.Predicate_inputMessagesFilterEmpty {
+	if filterType == mtproto.FilterEmpty && in.GetFilter().GetPredicateName() != mtproto.Predicate_inputMessagesFilterEmpty && in.GetFilter().GetPredicateName() != mtproto.Predicate_inputMessagesFilterPoll {
 		return nil, mtproto.ErrInputFilterInvalid
 	}
 
@@ -50,6 +51,11 @@ func (c *MessagesCore) MessagesSearchSentMedia(in *mtproto.TLMessagesSearchSentM
 	mediaType, err := sentMediaFilterType(in.GetFilter())
 	if err != nil {
 		return nil, err
+	}
+	// MessageSearchByMediaType has no query field. Do not silently return an
+	// unfiltered result for a non-empty q.
+	if in.GetQ() != "" {
+		return nil, mtproto.ErrMethodNotImpl
 	}
 	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.MessageClient == nil {
 		return nil, mtproto.ErrMethodNotImpl
@@ -77,10 +83,30 @@ func (c *MessagesCore) MessagesSearchSentMedia(in *mtproto.TLMessagesSearchSentM
 		Chats:    []*mtproto.Chat{},
 		Users:    []*mtproto.User{},
 	}).To_Messages_Messages()
-	if err := c.populateSearchResult(boxList, result); err != nil {
+	if err := c.populateSentMediaSearchResult(boxList, result); err != nil {
 		return nil, err
 	}
 	return result, nil
+}
+
+func (c *MessagesCore) populateSentMediaSearchResult(boxList *mtproto.MessageBoxList, result *mtproto.Messages_Messages) error {
+	if err := c.populateSearchResult(boxList, result); err != nil {
+		return err
+	}
+
+	var channelIDs []int64
+	boxList.Visit(c.MD.UserId, nil, nil, nil, func(ids []int64) {
+		channelIDs = append(channelIDs, ids...)
+	})
+	if len(channelIDs) == 0 {
+		return nil
+	}
+	chats := channelview.ChatsByID(c.MD.UserId, channelIDs)
+	if len(chats) != len(channelIDs) {
+		return mtproto.ErrMethodNotImpl
+	}
+	result.Chats = append(result.Chats, chats...)
+	return nil
 }
 
 func sentMediaFilterType(filter *mtproto.MessagesFilter) (int32, error) {
@@ -112,7 +138,12 @@ func sentMediaFilterType(filter *mtproto.MessagesFilter) (int32, error) {
 		return mtproto.MEDIA_AUDIO, nil
 	case mtproto.FilterRoundVideo:
 		return mtproto.MEDIA_ROUND_FILE, nil
+	case mtproto.FilterEmpty, mtproto.FilterMyMentions, mtproto.FilterGeo, mtproto.FilterContacts, mtproto.FilterPinned:
+		return 0, mtproto.ErrFilterNotSupported
 	default:
+		if filter.GetPredicateName() == mtproto.Predicate_inputMessagesFilterPoll {
+			return 0, mtproto.ErrFilterNotSupported
+		}
 		return 0, mtproto.ErrInputFilterInvalid
 	}
 }

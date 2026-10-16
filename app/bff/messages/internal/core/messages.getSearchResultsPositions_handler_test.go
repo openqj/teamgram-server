@@ -12,6 +12,8 @@ import (
 	"github.com/teamgram/teamgram-server/app/bff/messages/internal/svc"
 	messageclient "github.com/teamgram/teamgram-server/app/service/biz/message/client"
 	messagepb "github.com/teamgram/teamgram-server/app/service/biz/message/message"
+	userclient "github.com/teamgram/teamgram-server/app/service/biz/user/client"
+	userpb "github.com/teamgram/teamgram-server/app/service/biz/user/user"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -37,11 +39,29 @@ func (c *searchResultsPositionsMessageClient) MessageSearchByMediaType(_ context
 	return c.search(in)
 }
 
+type searchResultsPositionsUserClient struct {
+	userclient.UserClient
+}
+
+func (*searchResultsPositionsUserClient) UserGetMutableUsers(_ context.Context, in *userpb.TLUserGetMutableUsers) (*userpb.Vector_ImmutableUser, error) {
+	datas := make([]*mtproto.ImmutableUser, 0, len(in.GetId()))
+	for _, id := range in.GetId() {
+		datas = append(datas, mtproto.MakeTLImmutableUser(&mtproto.ImmutableUser{User: &mtproto.UserData{
+			Id:         id,
+			AccessHash: id + 100,
+		}}).To_ImmutableUser())
+	}
+	return &userpb.Vector_ImmutableUser{Datas: datas}, nil
+}
+
 func newSearchResultsPositionsCore(client messageclient.MessageClient, userID int64) *MessagesCore {
 	return &MessagesCore{
-		ctx:    context.Background(),
-		svcCtx: &svc.ServiceContext{Dao: &dao.Dao{MessageClient: client}},
-		MD:     &metadata.RpcMetadata{UserId: userID},
+		ctx: context.Background(),
+		svcCtx: &svc.ServiceContext{Dao: &dao.Dao{
+			MessageClient: client,
+			UserClient:    &searchResultsPositionsUserClient{},
+		}},
+		MD: &metadata.RpcMetadata{UserId: userID},
 	}
 }
 
@@ -76,10 +96,10 @@ func searchResultsPositionsFilter() *mtproto.MessagesFilter {
 
 func TestMessagesGetSearchResultsPositionsBuildsGlobalPhotoVideoPositions(t *testing.T) {
 	boxes := make([]*mtproto.MessageBox, 0, searchResultsPositionsPageSize+1)
-	for id := int32(3000); id >= 2001; id-- {
+	for id := int32(3000); id > 3000-searchResultsPositionsPageSize; id-- {
 		boxes = append(boxes, searchResultsPositionsBox(id, id+1000))
 	}
-	boxes = append(boxes, searchResultsPositionsBox(999, 1999))
+	boxes = append(boxes, searchResultsPositionsBox(2949, 3949))
 	client := &searchResultsPositionsMessageClient{
 		counter: &mtproto.Int32{V: int32(len(boxes))},
 		search:  searchResultsPositionsPages(boxes),
@@ -87,7 +107,7 @@ func TestMessagesGetSearchResultsPositionsBuildsGlobalPhotoVideoPositions(t *tes
 	core := newSearchResultsPositionsCore(client, 41)
 
 	got, err := core.MessagesGetSearchResultsPositions(&mtproto.TLMessagesGetSearchResultsPositions{
-		Peer: searchResultsPositionsPeer(42), Filter: searchResultsPositionsFilter(), OffsetId: 1500, Limit: 2,
+		Peer: searchResultsPositionsPeer(42), Filter: searchResultsPositionsFilter(), OffsetId: 2950, Limit: 2,
 	})
 	if err != nil {
 		t.Fatalf("MessagesGetSearchResultsPositions() error = %v", err)
@@ -96,8 +116,8 @@ func TestMessagesGetSearchResultsPositionsBuildsGlobalPhotoVideoPositions(t *tes
 		t.Fatalf("result = %+v, want count %d", got, len(boxes))
 	}
 	positions := got.GetPositions()
-	if len(positions) != 1 || positions[0].GetMsgId() != 999 || positions[0].GetDate() != 1999 || positions[0].GetOffset() != 1000 {
-		t.Fatalf("positions = %+v, want message 999 at global offset 1000", positions)
+	if len(positions) != 1 || positions[0].GetMsgId() != 2949 || positions[0].GetDate() != 3949 || positions[0].GetOffset() != searchResultsPositionsPageSize {
+		t.Fatalf("positions = %+v, want message 2949 at global offset %d", positions, searchResultsPositionsPageSize)
 	}
 	if len(client.counterIn) != 1 || client.counterIn[0].GetMediaType() != mtproto.MEDIA_PHOTOVIDEO {
 		t.Fatalf("counter request = %+v, want photo/video media type", client.counterIn)
@@ -105,8 +125,8 @@ func TestMessagesGetSearchResultsPositionsBuildsGlobalPhotoVideoPositions(t *tes
 	if len(client.searchIn) != 3 {
 		t.Fatalf("search calls = %d, want two rank pages and one result page", len(client.searchIn))
 	}
-	if client.searchIn[0].GetOffset() != math.MaxInt32 || client.searchIn[1].GetOffset() != 2001 || client.searchIn[2].GetOffset() != 1500 {
-		t.Fatalf("search offsets = (%d, %d, %d), want (max, 2001, 1500)", client.searchIn[0].GetOffset(), client.searchIn[1].GetOffset(), client.searchIn[2].GetOffset())
+	if client.searchIn[0].GetOffset() != math.MaxInt32 || client.searchIn[1].GetOffset() != 2951 || client.searchIn[2].GetOffset() != 2950 {
+		t.Fatalf("search offsets = (%d, %d, %d), want (max, 2951, 2950)", client.searchIn[0].GetOffset(), client.searchIn[1].GetOffset(), client.searchIn[2].GetOffset())
 	}
 	if err = got.Encode(mtproto.NewEncodeBuf(128), 229); err != nil {
 		t.Fatalf("encode search result positions: %v", err)
@@ -145,7 +165,7 @@ func TestMessagesGetSearchResultsPositionsHandlesEmptyAndMismatchedResults(t *te
 
 func TestMessagesGetSearchResultsPositionsHandlesOffsetBelowAFullResultPage(t *testing.T) {
 	boxes := make([]*mtproto.MessageBox, 0, searchResultsPositionsPageSize)
-	for id := int32(2000); id > 1000; id-- {
+	for id := int32(2000); id > 2000-searchResultsPositionsPageSize; id-- {
 		boxes = append(boxes, searchResultsPositionsBox(id, id+1000))
 	}
 	client := &searchResultsPositionsMessageClient{
@@ -159,8 +179,36 @@ func TestMessagesGetSearchResultsPositionsHandlesOffsetBelowAFullResultPage(t *t
 	if err != nil || got == nil || got.GetCount() != int32(len(boxes)) || len(got.GetPositions()) != 0 {
 		t.Fatalf("result = (%+v, %v), want an empty page after all %d results", got, err, len(boxes))
 	}
-	if len(client.searchIn) != 3 || client.searchIn[1].GetOffset() != 1001 || client.searchIn[2].GetOffset() != 1 {
-		t.Fatalf("search calls = %+v, want full-page confirmation then the requested empty page", client.searchIn)
+	if len(client.searchIn) != 2 || client.searchIn[0].GetOffset() != math.MaxInt32 || client.searchIn[1].GetOffset() != 1951 {
+		t.Fatalf("search calls = %+v, want full-page confirmation then the terminal page", client.searchIn)
+	}
+}
+
+func TestMessagesGetSearchResultsPositionsPaginatesProviderPages(t *testing.T) {
+	totalBoxes := searchResultsPositionsPageSize*2 + 3
+	boxes := make([]*mtproto.MessageBox, 0, totalBoxes)
+	for id := int32(500); id > 500-totalBoxes; id-- {
+		boxes = append(boxes, searchResultsPositionsBox(id, id+1000))
+	}
+	client := &searchResultsPositionsMessageClient{
+		counter: &mtproto.Int32{V: int32(len(boxes))},
+		search:  searchResultsPositionsPages(boxes),
+	}
+	got, err := newSearchResultsPositionsCore(client, 41).MessagesGetSearchResultsPositions(&mtproto.TLMessagesGetSearchResultsPositions{
+		Peer: searchResultsPositionsPeer(42), Filter: searchResultsPositionsFilter(), Limit: searchResultsPositionsPageSize + 10,
+	})
+	if err != nil {
+		t.Fatalf("MessagesGetSearchResultsPositions() error = %v", err)
+	}
+	if got == nil || got.GetCount() != int32(len(boxes)) || len(got.GetPositions()) != int(searchResultsPositionsPageSize+10) {
+		t.Fatalf("result = %+v, want count %d and %d positions", got, len(boxes), searchResultsPositionsPageSize+10)
+	}
+	positions := got.GetPositions()
+	if positions[0].GetOffset() != 0 || positions[0].GetMsgId() != 500 || positions[len(positions)-1].GetOffset() != searchResultsPositionsPageSize+9 {
+		t.Fatalf("positions = first=%+v last=%+v, want offsets 0..%d", positions[0], positions[len(positions)-1], searchResultsPositionsPageSize+9)
+	}
+	if len(client.searchIn) != 2 || client.searchIn[0].GetLimit() != searchResultsPositionsPageSize || client.searchIn[1].GetLimit() != 10 || client.searchIn[1].GetOffset() != 451 {
+		t.Fatalf("provider pages = %+v, want limits (50,10) and second offset 451", client.searchIn)
 	}
 }
 
@@ -210,11 +258,17 @@ func TestMessagesGetSearchResultsPositionsRejectsInvalidRequests(t *testing.T) {
 			return in
 		}(), want: mtproto.ErrLimitInvalid},
 		{name: "negative offset", in: func() *mtproto.TLMessagesGetSearchResultsPositions { in := valid(); in.OffsetId = -1; return in }(), want: mtproto.ErrOffsetInvalid},
+		{name: "user missing access hash", in: func() *mtproto.TLMessagesGetSearchResultsPositions {
+			in := valid()
+			in.Peer = mtproto.MakeTLInputPeerUser(&mtproto.InputPeer{UserId: 42}).To_InputPeer()
+			return in
+		}(), want: mtproto.ErrPeerIdInvalid},
 		{name: "saved peer", in: func() *mtproto.TLMessagesGetSearchResultsPositions {
 			in := valid()
 			in.SavedPeerId = searchResultsPositionsPeer(43)
 			return in
 		}(), want: mtproto.ErrMethodNotImpl},
+		{name: "channel missing access hash", in: &mtproto.TLMessagesGetSearchResultsPositions{Peer: mtproto.MakeTLInputPeerChannel(&mtproto.InputPeer{ChannelId: 42}).To_InputPeer(), Filter: searchResultsPositionsFilter(), Limit: 1}, want: mtproto.ErrChannelInvalid},
 		{name: "channel", in: &mtproto.TLMessagesGetSearchResultsPositions{Peer: mtproto.MakeTLInputPeerChannel(&mtproto.InputPeer{ChannelId: 42, AccessHash: 142}).To_InputPeer(), Filter: searchResultsPositionsFilter(), Limit: 1}, want: mtproto.ErrMethodNotImpl},
 		{name: "unsupported filter", in: &mtproto.TLMessagesGetSearchResultsPositions{Peer: searchResultsPositionsPeer(42), Filter: mtproto.MakeTLInputMessagesFilterEmpty(&mtproto.MessagesFilter{}).To_MessagesFilter(), Limit: 1}, want: mtproto.ErrFilterNotSupported},
 	}
@@ -236,5 +290,77 @@ func TestMessagesGetSearchResultsPositionsRejectsInvalidRequests(t *testing.T) {
 	got, err = core.MessagesGetSearchResultsPositions(valid())
 	if got != nil || err != mtproto.ErrActiveUserRequired {
 		t.Fatalf("unauthenticated result = (%v, %v), want ACTIVE_USER_REQUIRED", got, err)
+	}
+}
+
+func TestMessagesGetSearchResultsPositionsRejectsMismatchedUserAccessHash(t *testing.T) {
+	client := &searchResultsPositionsMessageClient{counter: &mtproto.Int32{V: 1}}
+	got, err := newSearchResultsPositionsCore(client, 41).MessagesGetSearchResultsPositions(&mtproto.TLMessagesGetSearchResultsPositions{
+		Peer: mtproto.MakeTLInputPeerUser(&mtproto.InputPeer{UserId: 42, AccessHash: 143}).To_InputPeer(), Filter: searchResultsPositionsFilter(), Limit: 1,
+	})
+	if got != nil || err != mtproto.ErrPeerIdInvalid {
+		t.Fatalf("result = (%v, %v), want nil and PEER_ID_INVALID", got, err)
+	}
+	if len(client.counterIn) != 0 {
+		t.Fatalf("counter calls = %d, want 0 after access hash rejection", len(client.counterIn))
+	}
+}
+
+func TestMessagesGetSearchResultsPositionsKeepsSavedPeerFailClosed(t *testing.T) {
+	client := &searchResultsPositionsMessageClient{
+		counter: &mtproto.Int32{V: 1},
+		search: func(*messagepb.TLMessageSearchByMediaType) (*mtproto.MessageBoxList, error) {
+			t.Fatal("saved-peer request reached ordinary media search provider")
+			return nil, nil
+		},
+	}
+	core := newSearchResultsPositionsCore(client, 41)
+	got, err := core.MessagesGetSearchResultsPositions(&mtproto.TLMessagesGetSearchResultsPositions{
+		Peer:        mtproto.MakeTLInputPeerSelf(nil).To_InputPeer(),
+		SavedPeerId: searchResultsPositionsPeer(42),
+		Filter:      searchResultsPositionsFilter(),
+		Limit:       1,
+	})
+	if got != nil || err != mtproto.ErrMethodNotImpl {
+		t.Fatalf("result = (%v, %v), want nil and METHOD_NOT_IMPL", got, err)
+	}
+	if len(client.counterIn) != 0 || len(client.searchIn) != 0 {
+		t.Fatalf("provider calls = counter %d, search %d; want none for saved-peer ranks", len(client.counterIn), len(client.searchIn))
+	}
+}
+
+func TestMessagesGetSearchResultsPositionsRequiresChatMembership(t *testing.T) {
+	client := &searchResultsPositionsMessageClient{counter: &mtproto.Int32{}}
+	core := newSearchResultsPositionsCore(client, 41)
+	core.svcCtx.Dao.ChatClient = newMessagesViewsChatClient(t, &messagesViewsChatRPCStub{chat: &mtproto.MutableChat{
+		ChatParticipants: []*mtproto.ImmutableChatParticipant{{UserId: 7, State: mtproto.ChatMemberStateNormal}},
+	}})
+
+	got, err := core.MessagesGetSearchResultsPositions(&mtproto.TLMessagesGetSearchResultsPositions{
+		Peer: mtproto.MakeTLInputPeerChat(&mtproto.InputPeer{ChatId: 42}).To_InputPeer(), Filter: searchResultsPositionsFilter(), Limit: 1,
+	})
+	if got != nil || err != mtproto.ErrUserNotParticipant {
+		t.Fatalf("result = (%v, %v), want nil and USER_NOT_PARTICIPANT", got, err)
+	}
+	if len(client.counterIn) != 0 {
+		t.Fatalf("counter calls = %d, want 0 before membership rejection", len(client.counterIn))
+	}
+}
+
+func TestMessagesGetSearchResultsPositionsAcceptsChatMember(t *testing.T) {
+	client := &searchResultsPositionsMessageClient{counter: &mtproto.Int32{}}
+	core := newSearchResultsPositionsCore(client, 41)
+	core.svcCtx.Dao.ChatClient = newMessagesViewsChatClient(t, &messagesViewsChatRPCStub{chat: &mtproto.MutableChat{
+		ChatParticipants: []*mtproto.ImmutableChatParticipant{{UserId: 41, State: mtproto.ChatMemberStateNormal}},
+	}})
+
+	got, err := core.MessagesGetSearchResultsPositions(&mtproto.TLMessagesGetSearchResultsPositions{
+		Peer: mtproto.MakeTLInputPeerChat(&mtproto.InputPeer{ChatId: 42}).To_InputPeer(), Filter: searchResultsPositionsFilter(), Limit: 1,
+	})
+	if err != nil || got == nil || got.GetCount() != 0 {
+		t.Fatalf("result = (%v, %v), want empty typed success", got, err)
+	}
+	if len(client.counterIn) != 1 || client.counterIn[0].GetPeerType() != mtproto.PEER_CHAT || client.counterIn[0].GetPeerId() != 42 {
+		t.Fatalf("counter request = %+v, want chat 42", client.counterIn)
 	}
 }

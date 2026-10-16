@@ -7,6 +7,7 @@ import (
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/proto/mtproto/rpc/metadata"
 	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/persist"
+	"github.com/teamgram/teamgram-server/pkg/mtprotoext"
 )
 
 func TestEphemeralSendAndDeleteRoundTrip(t *testing.T) {
@@ -96,6 +97,45 @@ func TestEphemeralSendAndDeleteRoundTrip(t *testing.T) {
 		if got, err := persist.Default.Get(key); err != nil || got != "" {
 			t.Fatalf("legacy key %q was written: %q, %v", key, got, err)
 		}
+	}
+}
+
+func TestEphemeralRichMessageRoundTrip(t *testing.T) {
+	const uid int64 = 81014005
+	c := &ApiFullCore{MD: &metadata.RpcMetadata{UserId: uid}}
+	peer := mtproto.MakeTLInputPeerSelf(nil).To_InputPeer()
+	_, key, err := ephemeralStoreKey(uid, peer, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := persist.Default.Set(key, ""); err != nil {
+		t.Fatal(err)
+	}
+	in := mtproto.MakeTLInputRichMessageHTML(&mtproto.InputRichMessage{Html: "<b>hello</b>"}).To_InputRichMessage()
+	updates, err := c.EphemeralSendMessage(&mtproto.TLEphemeralSendMessage{
+		Peer: peer, RichMessage: in, RandomId: 81014005,
+	})
+	if err != nil || updates == nil || len(updates.GetUpdates()) != 1 {
+		t.Fatalf("rich send: reply=%+v err=%v", updates, err)
+	}
+	ephemeral := updates.GetUpdates()[0].GetMessage_EPHEMERALMESSAGE()
+	rich, err := mtprotoext.EphemeralRichMessage(ephemeral)
+	if err != nil || rich == nil || len(rich.GetBlocks()) != 1 {
+		t.Fatalf("rich update sidecar: rich=%+v err=%v", rich, err)
+	}
+	raw, err := persist.Default.Get(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	records, err := ephemeralRecords(raw)
+	if err != nil || len(records) != 1 || records[0].RichMessage == nil {
+		t.Fatalf("rich record: records=%+v err=%v", records, err)
+	}
+	retry, err := c.EphemeralSendMessage(&mtproto.TLEphemeralSendMessage{
+		Peer: peer, RichMessage: in, RandomId: 81014005,
+	})
+	if err != nil || retry == nil || retry.GetUpdates()[0].GetMessage_EPHEMERALMESSAGE().GetId() != ephemeral.GetId() {
+		t.Fatalf("rich retry: reply=%+v err=%v", retry, err)
 	}
 }
 

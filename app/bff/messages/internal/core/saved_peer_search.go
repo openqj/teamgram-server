@@ -211,8 +211,7 @@ func (c *MessagesCore) searchSavedPeer(in *mtproto.TLMessagesSearch, rValues *mt
 		offsetID = math.MaxInt32
 	}
 	matched := make([]*mtproto.MessageBox, 0)
-	var total int32
-	truncated := false
+	exhausted := false
 	for page := 0; page < 10 && int32(len(matched)) < limit; page++ {
 		saved, err := c.loadSavedBoxes(in.SavedPeerId, offsetID, savedHistoryPage)
 		if err != nil {
@@ -222,9 +221,9 @@ func (c *MessagesCore) searchSavedPeer(in *mtproto.TLMessagesSearch, rValues *mt
 		boxes := []*mtproto.MessageBox{}
 		if saved != nil {
 			boxes = saved.GetBoxList()
-			total = saved.GetCount()
 		}
 		if len(boxes) == 0 {
+			exhausted = true
 			break
 		}
 		var oldest int32
@@ -249,22 +248,18 @@ func (c *MessagesCore) searchSavedPeer(in *mtproto.TLMessagesSearch, rValues *mt
 			}
 		}
 		if int32(len(boxes)) < savedHistoryPage || oldest == 0 || oldest == offsetID {
-			break
-		}
-		if total > 0 && int32(page+1)*savedHistoryPage >= total {
+			exhausted = true
 			break
 		}
 		offsetID = oldest
-		if page == 9 {
-			truncated = true
-		}
+	}
+	if int32(len(matched)) < limit && !exhausted {
+		// The provider exposes pages but no exact filtered total or continuation
+		// cursor. Do not return a silently truncated search result.
+		return nil, mtproto.ErrMethodNotImpl
 	}
 
 	boxList := &mtproto.MessageBoxList{BoxList: matched}
-	if truncated && total > int32(len(matched)) {
-		rValues.Count = total
-		rValues.PredicateName = mtproto.Predicate_messages_messagesSlice
-	}
 	if err := c.populateSearchResult(boxList, rValues); err != nil {
 		c.Logger.Errorf("messages.search - error: %v", err)
 		return nil, err
@@ -279,7 +274,6 @@ func (c *MessagesCore) savedCounters(savedPeer *mtproto.InputPeer, filters []*mt
 	}
 	offsetID := int32(math.MaxInt32)
 	boxes := make([]*mtproto.MessageBox, 0)
-	var total int32
 	truncated := false
 	for page := 0; page < 10; page++ {
 		saved, err := c.loadSavedBoxes(savedPeer, offsetID, savedHistoryPage)
@@ -289,7 +283,6 @@ func (c *MessagesCore) savedCounters(savedPeer *mtproto.InputPeer, filters []*mt
 		pageBoxes := []*mtproto.MessageBox{}
 		if saved != nil {
 			pageBoxes = saved.GetBoxList()
-			total = saved.GetCount()
 		}
 		if len(pageBoxes) == 0 {
 			break
@@ -308,12 +301,12 @@ func (c *MessagesCore) savedCounters(savedPeer *mtproto.InputPeer, filters []*mt
 		if int32(len(pageBoxes)) < savedHistoryPage || oldest == 0 || oldest == offsetID {
 			break
 		}
-		if total > 0 && int32(len(boxes)) >= total {
-			break
-		}
 		offsetID = oldest
 		if page == 9 {
-			truncated = total > int32(len(boxes))
+			// A full final page does not prove exhaustion when the provider did
+			// not return an authoritative total.
+			truncated = true
+			break
 		}
 	}
 	inexact := truncated
@@ -329,7 +322,9 @@ func (c *MessagesCore) savedCounters(savedPeer *mtproto.InputPeer, filters []*mt
 			for _, box := range boxes {
 				matches, err := c.savedBoxMatches(box, ft, "", 0, 0, 0, 0, 0, 0)
 				if err != nil {
-					c.Logger.Errorf("messages.getSearchCounters - error: %v", err)
+					if c.Logger != nil {
+						c.Logger.Errorf("messages.getSearchCounters - error: %v", err)
+					}
 					return nil, err
 				}
 				if matches {
@@ -353,7 +348,7 @@ func (c *MessagesCore) savedCounters(savedPeer *mtproto.InputPeer, filters []*mt
 			}
 		}
 		counters.Datas = append(counters.Datas, mtproto.MakeTLMessagesSearchCounter(&mtproto.Messages_SearchCounter{
-			Inexact: inexact && count > 0,
+			Inexact: inexact,
 			Filter:  filter,
 			Count:   count,
 		}).To_Messages_SearchCounter())

@@ -32,6 +32,26 @@ func TestStickerMethodsRequireAuthentication(t *testing.T) {
 	}
 }
 
+func TestGetMyStickersRejectsInvalidPage(t *testing.T) {
+	c := &ApiFullCore{MD: &metadata.RpcMetadata{UserId: 229904}}
+	cases := []struct {
+		name string
+		in   *mtproto.TLMessagesGetMyStickers
+		want error
+	}{
+		{name: "negative offset", in: &mtproto.TLMessagesGetMyStickers{OffsetId: -1, Limit: 1}, want: mtproto.ErrOffsetInvalid},
+		{name: "negative limit", in: &mtproto.TLMessagesGetMyStickers{OffsetId: 0, Limit: -1}, want: mtproto.ErrLimitInvalid},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			result, err := c.MessagesGetMyStickers(tc.in)
+			if !nilRPCResult(result) || !sameRPCErrorCode(err, tc.want) {
+				t.Fatalf("result=%v err=%v, want nil result and %v", result, err, tc.want)
+			}
+		})
+	}
+}
+
 func TestStickerMethodsFailClosedWithoutProvider(t *testing.T) {
 	uid := int64(229902)
 	c := &ApiFullCore{MD: &metadata.RpcMetadata{UserId: uid}}

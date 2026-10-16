@@ -782,11 +782,20 @@ func (c *ApiFullCore) BotsRequestWebViewButton(in *mtproto.TLBotsRequestWebViewB
 		return nil, err
 	}
 	button := in.GetButton()
-	if button == nil || (button.GetPredicateName() != mtproto.Predicate_keyboardButtonWebView && button.GetPredicateName() != mtproto.Predicate_keyboardButtonSimpleWebView) {
+	if button == nil {
 		return nil, mtproto.ErrButtonDataInvalid
 	}
-	if _, err = miniWebViewURL(button.GetUrl()); err != nil {
-		return nil, err
+	switch button.GetPredicateName() {
+	case mtproto.Predicate_keyboardButtonWebView, mtproto.Predicate_keyboardButtonSimpleWebView:
+		if _, err = miniWebViewURL(button.GetUrl()); err != nil {
+			return nil, err
+		}
+	case mtproto.Predicate_inputKeyboardButtonRequestPeer:
+		if err = validateRequestPeerKeyboardButton(button); err != nil {
+			return nil, err
+		}
+	default:
+		return nil, mtproto.ErrButtonDataInvalid
 	}
 	requestID, _, err := miniRequestID()
 	if err != nil {
@@ -834,7 +843,33 @@ func (c *ApiFullCore) BotsGetRequestedWebViewButton(in *mtproto.TLBotsGetRequest
 	if err = json.Unmarshal([]byte(request.Payload), &button); err != nil {
 		return nil, mtproto.ErrInternalServerError
 	}
+	if button.GetPredicateName() == mtproto.Predicate_inputKeyboardButtonRequestPeer {
+		return mtproto.MakeTLKeyboardButtonRequestPeer(&button).To_KeyboardButton(), nil
+	}
 	return &button, nil
+}
+
+func validateRequestPeerKeyboardButton(button *mtproto.KeyboardButton) error {
+	if button == nil || button.GetPeerType() == nil {
+		return mtproto.ErrButtonDataInvalid
+	}
+	switch button.GetPeerType().GetPredicateName() {
+	case mtproto.Predicate_requestPeerTypeUser:
+		if button.GetMaxQuantity() < 1 || button.GetMaxQuantity() > 10 {
+			return mtproto.ErrButtonDataInvalid
+		}
+	case mtproto.Predicate_requestPeerTypeChat, mtproto.Predicate_requestPeerTypeBroadcast:
+		if button.GetMaxQuantity() != 1 {
+			return mtproto.ErrButtonDataInvalid
+		}
+	case mtproto.Predicate_requestPeerTypeCreateBot:
+		if button.GetMaxQuantity() != 1 || !button.GetPeerType().GetBotManaged() {
+			return mtproto.ErrButtonDataInvalid
+		}
+	default:
+		return mtproto.ErrButtonDataInvalid
+	}
+	return nil
 }
 
 func (c *ApiFullCore) MessagesRequestSimpleWebView1A46500A(in *mtproto.TLMessagesRequestSimpleWebView1A46500A) (*mtproto.SimpleWebViewResult, error) {
@@ -852,10 +887,63 @@ func (c *ApiFullCore) MessagesRequestSimpleWebView1A46500A(in *mtproto.TLMessage
 }
 
 func (c *ApiFullCore) MessagesRequestAppWebView8C5A3B3C(in *mtproto.TLMessagesRequestAppWebView8C5A3B3C) (*mtproto.AppWebViewResult, error) {
-	if _, err := c.requireUserId(); err != nil {
+	callerID, err := c.requireUserId()
+	if err != nil {
 		return nil, err
 	}
-	return nil, mtproto.ErrMethodNotImpl
+	if in == nil || in.GetPeer() == nil || in.GetApp() == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if !persist.PostgresEnabled() {
+		return nil, mtproto.ErrMethodNotImpl
+	}
+	if err = validateInputBotApp(in.GetApp()); err != nil {
+		return nil, err
+	}
+	app := in.GetApp()
+	botID := app.GetBotId().GetUserId()
+	appKey := fmt.Sprintf("bot:%d:id:%d", botID, app.GetId())
+	if app.GetPredicateName() == mtproto.Predicate_inputBotAppShortName {
+		appKey = fmt.Sprintf("bot:%d:short:%s", botID, app.GetShortName())
+	}
+	scopeKey := miniAppWebViewScopeKey(appKey, callerID, in.GetPeer(), in.GetStartParam(), in.GetPlatform())
+	result := new(mtproto.WebViewResult)
+	if local, loadErr := c.loadLocalBusinessResultForCaller("messages.requestAppWebView", scopeKey, result); loadErr != nil {
+		return nil, loadErr
+	} else if local {
+		if err = validateWebViewResult(result); err != nil {
+			return nil, err
+		}
+		if verifiedBotID, verifyErr := c.verifyMiniBot(app.GetBotId()); verifyErr != nil || verifiedBotID != botID {
+			if verifyErr != nil {
+				return nil, verifyErr
+			}
+			return nil, mtproto.ErrUserIdInvalid
+		}
+		if err = persistAppWebViewResult(callerID, botID, result, in); err != nil {
+			return nil, err
+		}
+		return mtproto.MakeTLAppWebViewResultUrl(&mtproto.AppWebViewResult{Url: result.GetUrl()}).To_AppWebViewResult(), nil
+	}
+	if err = c.callBusinessProvider("messages.requestAppWebView", map[string]any{
+		"scope_key": scopeKey, "write_allowed": in.GetWriteAllowed(), "peer": in.GetPeer(), "app": in.GetApp(),
+		"start_param": in.GetStartParam(), "theme_params": in.GetThemeParams(), "platform": in.GetPlatform(),
+	}, result); err != nil {
+		return nil, err
+	}
+	if err = validateWebViewResult(result); err != nil {
+		return nil, err
+	}
+	if verifiedBotID, verifyErr := c.verifyMiniBot(app.GetBotId()); verifyErr != nil || verifiedBotID != botID {
+		if verifyErr != nil {
+			return nil, verifyErr
+		}
+		return nil, mtproto.ErrUserIdInvalid
+	}
+	if err = persistAppWebViewResult(callerID, botID, result, in); err != nil {
+		return nil, err
+	}
+	return mtproto.MakeTLAppWebViewResultUrl(&mtproto.AppWebViewResult{Url: result.GetUrl()}).To_AppWebViewResult(), nil
 }
 
 func (c *ApiFullCore) MessagesRequestSimpleWebView299BEC8E(in *mtproto.TLMessagesRequestSimpleWebView299BEC8E) (*mtproto.SimpleWebViewResult, error) {

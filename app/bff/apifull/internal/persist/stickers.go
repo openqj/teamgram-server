@@ -231,6 +231,73 @@ func GetStickerSet(ctx context.Context, userID, setID int64, shortName string) (
 }
 
 func ListStickerSets(ctx context.Context, userID int64, installedOnly, archivedOnly, featuredOnly bool, limit int32) ([]StickerSet, error) {
+	return listStickerSets(ctx, userID, installedOnly, archivedOnly, featuredOnly, false, limit)
+}
+
+func ListFeaturedEmojiStickerSets(ctx context.Context, userID int64, limit int32) ([]StickerSet, error) {
+	return listStickerSets(ctx, userID, false, false, true, true, limit)
+}
+
+func ListOwnedStickerSets(ctx context.Context, userID, offsetID int64, limit int32) ([]StickerSet, int64, error) {
+	db, err := stickerDB()
+	if err != nil {
+		return nil, 0, err
+	}
+	limit = normalizeStickerLimit(limit)
+	tx, err := db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
+	if err != nil {
+		return nil, 0, err
+	}
+	defer tx.Rollback()
+
+	var total int64
+	if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM apifull_sticker_set WHERE owner_user_id=$1`, userID).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+
+	query := `SELECT ` + stickerSetColumns + ` FROM apifull_sticker_set s
+ LEFT JOIN apifull_sticker_user_set us ON us.set_id=s.id AND us.user_id=$1
+ WHERE s.owner_user_id=$1`
+	args := []any{userID}
+	if offsetID > 0 {
+		query += ` AND s.id > $2`
+		args = append(args, offsetID)
+	}
+	query += fmt.Sprintf(` ORDER BY s.id LIMIT $%d`, len(args)+1)
+	args = append(args, limit)
+	rows, err := tx.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, 0, err
+	}
+	sets := make([]StickerSet, 0, limit)
+	for rows.Next() {
+		set, scanErr := scanStickerSet(rows)
+		if scanErr != nil {
+			rows.Close()
+			return nil, 0, scanErr
+		}
+		sets = append(sets, set)
+	}
+	if err = rows.Err(); err != nil {
+		rows.Close()
+		return nil, 0, err
+	}
+	if err = rows.Close(); err != nil {
+		return nil, 0, err
+	}
+	for i := range sets {
+		sets[i].Documents, err = loadStickerDocuments(ctx, tx, sets[i].ID)
+		if err != nil {
+			return nil, 0, err
+		}
+	}
+	if err = tx.Commit(); err != nil {
+		return nil, 0, err
+	}
+	return sets, total, nil
+}
+
+func listStickerSets(ctx context.Context, userID int64, installedOnly, archivedOnly, featuredOnly, emojiOnly bool, limit int32) ([]StickerSet, error) {
 	db, err := stickerDB()
 	if err != nil {
 		return nil, err
@@ -247,6 +314,9 @@ func ListStickerSets(ctx context.Context, userID int64, installedOnly, archivedO
 	}
 	if featuredOnly {
 		query += ` AND s.featured`
+	}
+	if emojiOnly {
+		query += ` AND s.emojis`
 	}
 	query += ` ORDER BY COALESCE(us.order_index, 2147483647), s.id LIMIT $2`
 	args = append(args, limit)

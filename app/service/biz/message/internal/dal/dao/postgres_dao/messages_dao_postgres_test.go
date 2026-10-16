@@ -111,6 +111,27 @@ func TestCountByMediaTypeIncludesPhotoVideoVariants(t *testing.T) {
 	if count != 1 {
 		t.Fatalf("photo-only count = %d, want 1", count)
 	}
+	if _, _, err := NewMessagesDAO(pool).InsertOrReturnId(ctx, &dataobject.MessagesDO{
+		UserId: userID, UserMessageBoxId: 4, DialogId1: dialogID1, DialogId2: dialogID2,
+		SenderUserId: userID, MessageFilterType: mtproto.MEDIA_FILE, Pinned: true, MessageData: "{}",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	count, err = NewMessagesDAO(pool).CountByMediaType(ctx, userID, dialogID1, dialogID2, mtproto.MEDIA_PINNED)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("pinned count = %d, want 1", count)
+	}
+
+	rows, err := NewMessagesDAO(pool).SelectSentByMediaType(ctx, userID, mtproto.MEDIA_PHOTOVIDEO, int32(^uint32(0)>>1), 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 3 {
+		t.Fatalf("sent photo/video rows = %v, want all three photo/video variants", messageBoxIDs(rows))
+	}
 }
 
 func TestMessagePaginationUsesStrictTelegramBoundaries(t *testing.T) {
