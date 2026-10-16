@@ -323,6 +323,24 @@ func (s *Server) enqueueGatewayWrite(connId int64, msg *mtproto.MTPRawMessage) b
 }
 
 func (s *Server) flushGatewayWrites(c gnet.Conn, connId int64) {
+	flushStarted := time.Now()
+	proto := "tcp"
+	if ctx, ok := c.Context().(*connContext); ok && ctx != nil {
+		if ctx.websocket {
+			proto = "websocket"
+		} else if ctx.http {
+			proto = "http"
+		}
+	}
+	// gnet.Write may complete synchronously or append to its outbound buffer
+	// when the kernel reports EAGAIN. Keep this measurement separate from the
+	// application queue wait so a burst can be attributed to socket backpressure.
+	socketBuffered := 0
+	defer func() {
+		metricGatewayWriteFlushDuration.ObserveFloat(time.Since(flushStarted).Seconds()*1000, proto)
+		metricGatewayWriteSocketBuffered.ObserveFloat(float64(socketBuffered), proto)
+	}()
+
 	s.writeMu.Lock()
 	q := s.writeQueues[connId]
 	s.writeMu.Unlock()
@@ -343,7 +361,7 @@ func (s *Server) flushGatewayWrites(c gnet.Conn, connId int64) {
 		_ = c.Close()
 		return
 	}
-	proto := "tcp"
+	proto = "tcp"
 	if ctx.websocket {
 		proto = "websocket"
 	} else if ctx.http {
@@ -382,6 +400,10 @@ func (s *Server) flushGatewayWrites(c gnet.Conn, connId int64) {
 			return
 		}
 	}
+	// This is a point-in-time backlog sample, not a claim that the remote
+	// client has read the bytes. A non-zero value means the event loop handed
+	// data to gnet but the kernel/socket buffer still needs to drain.
+	socketBuffered = c.OutboundBuffered()
 	if q.reschedule() {
 		s.eng.Trigger(connId, func(c gnet.Conn) { s.flushGatewayWrites(c, connId) })
 	}

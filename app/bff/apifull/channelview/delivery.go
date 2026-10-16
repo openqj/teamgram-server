@@ -14,8 +14,10 @@ type ChannelDeliveryPush func(context.Context, int64, []int64, *mtproto.Updates)
 const (
 	// Keep recipient pushes concurrent so a large channel does not make the
 	// sender RPC wait behind a long serial tail. Per-recipient completion is
-	// still persisted in bounded batches and the outbox remains retryable.
-	channelDeliveryFanoutConcurrency = 16
+	// still persisted in bounded batches and the outbox remains retryable. The
+	// cap is deliberately bounded: it raises throughput without turning one
+	// large channel post into an unbounded burst against Sync and Kafka.
+	channelDeliveryFanoutConcurrency = 64
 	channelDeliveryStateBatchSize    = 64
 )
 

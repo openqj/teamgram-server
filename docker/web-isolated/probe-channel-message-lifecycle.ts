@@ -2,6 +2,8 @@ import path from 'node:path';
 import { createRequire } from 'node:module';
 import process from 'node:process';
 import { authSession, loadFixtureAuthKey } from './fixture-auth';
+import { SessionProbe, MultiSessionProbeTracker } from './session-probe-framework';
+import * as fs from 'node:fs';
 
 const API_ID = 1;
 const API_HASH = '0123456789abcdef0123456789abcdef';
@@ -15,6 +17,7 @@ type Actor = {
   client: any;
   id: bigint | number;
   username: string;
+  probe?: SessionProbe;
 };
 
 const quietLogger = { debug() {}, info() {}, warn() {}, error() {} };
@@ -110,7 +113,12 @@ async function login(gram: any, fixture: typeof FIXTURES[number]): Promise<Actor
     }
     const me = await client.getMe();
     requireCondition(me?.id !== undefined, `login failed for ${fixture.username}`);
-    return { client, id: me.id, username: fixture.username };
+
+    const probe = new SessionProbe(`session_${fixture.username}`, client, me.id, authKey || '');
+    await probe.connect();
+    await probe.captureState();
+
+    return { client, id: me.id, username: fixture.username, probe };
   } catch (error) {
     client.destroy();
     throw error;
@@ -209,10 +217,21 @@ async function run() {
   let channelDeleted = false;
   let createdChannel: any;
 
+  const tracker = new MultiSessionProbeTracker();
+
   try {
     alice = await loginWithRetry(gram, FIXTURES[0]);
     bob = await loginWithRetry(gram, FIXTURES[1]);
     dave = await loginWithRetry(gram, FIXTURES[2]);
+
+    if (alice?.probe) tracker.registerSession('alice', alice.probe);
+    if (bob?.probe) tracker.registerSession('bob', bob.probe);
+    if (dave?.probe) tracker.registerSession('dave', dave.probe);
+
+    // Capture baseline state
+    if (alice?.probe) await alice.probe.captureState();
+    if (bob?.probe) await bob.probe.captureState();
+    if (dave?.probe) await dave.probe.captureState();
     const tag = `channel_message_${Date.now()}_${process.pid}`;
     const title = `${tag} public channel`;
     const created = await alice.client.invoke(new Api.channels.CreateChannel({
@@ -355,6 +374,25 @@ async function run() {
 	await expectRpcError('deleted channel rejection', 'CHANNEL_INVALID', () => alice.client.invoke(
 	  new Api.channels.GetFullChannel({ channel: ownerChannel }),
 	));
+    // Export session tracking report
+    const report = {
+      testName: 'probe-channel-message-lifecycle',
+      timestamp: Date.now(),
+      sessions: {
+        alice: alice?.probe?.getState(),
+        bob: bob?.probe?.getState(),
+        dave: dave?.probe?.getState(),
+      },
+      violations: {
+        alice: alice?.probe?.getViolations() || [],
+        bob: bob?.probe?.getViolations() || [],
+        dave: dave?.probe?.getViolations() || [],
+      },
+      crossSessionConsistency: tracker.getCrossSessionViolations(),
+    };
+    const reportFile = `/tmp/teamgram-probe-channel-message-lifecycle-${Date.now()}.json`;
+    fs.writeFileSync(reportFile, JSON.stringify(report, null, 2));
+    console.log(`\n✓ Session tracking report saved to ${reportFile}`);
   } finally {
     if (!channelDeleted && alice && createdChannel) {
       try {

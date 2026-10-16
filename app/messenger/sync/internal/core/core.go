@@ -11,6 +11,7 @@ package core
 
 import (
 	"context"
+	stdsync "sync"
 	"time"
 
 	"github.com/teamgram/proto/mtproto"
@@ -18,7 +19,7 @@ import (
 	"github.com/teamgram/teamgram-server/app/interface/session/session"
 	"github.com/teamgram/teamgram-server/app/messenger/sync/internal/dao"
 	"github.com/teamgram/teamgram-server/app/messenger/sync/internal/svc"
-	"github.com/teamgram/teamgram-server/app/messenger/sync/sync"
+	syncpb "github.com/teamgram/teamgram-server/app/messenger/sync/sync"
 	"github.com/teamgram/teamgram-server/app/service/status/status"
 
 	"github.com/zeromicro/go-zero/core/logx"
@@ -33,6 +34,56 @@ const (
 	syncTypeUserNotMe SyncType = 2 // 该用户除了某个设备
 	syncTypeUserMe    SyncType = 3 // 该用户指定某个设备
 )
+
+const maxConcurrentSessionPushes = 8
+
+type sessionPushTarget struct {
+	serverID  string
+	authKeyID int64
+	updates   *mtproto.Updates
+}
+
+func pushSessionTargets(ctx context.Context, targets []sessionPushTarget, concurrency int, push func(context.Context, sessionPushTarget) error) error {
+	if len(targets) == 0 {
+		return nil
+	}
+	if concurrency < 1 {
+		concurrency = 1
+	}
+	if concurrency > len(targets) {
+		concurrency = len(targets)
+	}
+
+	jobs := make(chan sessionPushTarget, len(targets))
+	for _, target := range targets {
+		jobs <- target
+	}
+	close(jobs)
+
+	errChan := make(chan error, 1)
+	var wg stdsync.WaitGroup
+	for i := 0; i < concurrency; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for target := range jobs {
+				if err := push(ctx, target); err != nil {
+					select {
+					case errChan <- err:
+					default:
+					}
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	select {
+	case err := <-errChan:
+		return err
+	default:
+		return nil
+	}
+}
 
 type SyncCore struct {
 	ctx    context.Context
@@ -207,6 +258,7 @@ func (c *SyncCore) pushUpdatesToSession(syncType SyncType, userId, permAuthKeyId
 	} else {
 		var (
 			pushExcludeList   = make([]int64, 0)
+			pushExcludeSet    = make(map[int64]struct{})
 			serverIdKeyIdList = make(map[string][]int64)
 		)
 
@@ -237,6 +289,7 @@ func (c *SyncCore) pushUpdatesToSession(syncType SyncType, userId, permAuthKeyId
 				continue
 			}
 			pushExcludeList = append(pushExcludeList, keyID)
+			pushExcludeSet[keyID] = struct{}{}
 			if keyIdList, ok := serverIdKeyIdList[sess.Gateway]; ok {
 				keyIdList = append(keyIdList, keyID)
 				serverIdKeyIdList[sess.Gateway] = keyIdList
@@ -246,39 +299,36 @@ func (c *SyncCore) pushUpdatesToSession(syncType SyncType, userId, permAuthKeyId
 		}
 
 		c.Logger.Debugf("serverIdKeyIdList - #%v", serverIdKeyIdList)
+		pushTargets := make([]sessionPushTarget, 0, len(pushExcludeList))
 		for serverId, keyIdList := range serverIdKeyIdList {
-			for _, keyId := range keyIdList {
-				// log.Debugf("serverIdKeyIdList - #%v", serverIdKeyIdList)
-				if err := c.svcCtx.Dao.PushUpdatesToSession(
-					c.ctx,
-					serverId,
-					&session.TLSessionPushUpdatesData{
-						PermAuthKeyId: keyId,
-						Notification:  notification,
-						Updates:       prepared.AuthUpdates[keyId],
-					}); err != nil {
-					return err
-				}
+			for _, keyID := range keyIdList {
+				pushTargets = append(pushTargets, sessionPushTarget{
+					serverID:  serverId,
+					authKeyID: keyID,
+					updates:   prepared.AuthUpdates[keyID],
+				})
 			}
+		}
+		if err := pushSessionTargets(c.ctx, pushTargets, maxConcurrentSessionPushes, func(ctx context.Context, target sessionPushTarget) error {
+			return c.svcCtx.Dao.PushUpdatesToSession(ctx, target.serverID, &session.TLSessionPushUpdatesData{
+				PermAuthKeyId: target.authKeyID,
+				Notification:  notification,
+				Updates:       target.updates,
+			})
+		}); err != nil {
+			return err
 		}
 
 		if syncType == syncTypeUser {
 			if c.svcCtx.Dao.PushClient != nil {
 				c.Logger.Debugf("push PushClient...")
 				for authID, updates := range prepared.AuthUpdates {
-					alreadyPushed := false
-					for _, pushedID := range pushExcludeList {
-						if pushedID == authID {
-							alreadyPushed = true
-							break
-						}
-					}
-					if alreadyPushed {
+					if _, alreadyPushed := pushExcludeSet[authID]; alreadyPushed {
 						continue
 					}
 					forward := proto.Clone(updates).(*mtproto.Updates)
 					forward.AuthKeyId = authID
-					if _, err := c.svcCtx.Dao.PushClient.SyncPushUpdatesIfNot(c.ctx, &sync.TLSyncPushUpdatesIfNot{
+					if _, err := c.svcCtx.Dao.PushClient.SyncPushUpdatesIfNot(c.ctx, &syncpb.TLSyncPushUpdatesIfNot{
 						UserId: userId, Excludes: pushExcludeList, Updates: forward,
 					}); err != nil {
 						return err

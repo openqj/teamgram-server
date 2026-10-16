@@ -7,6 +7,9 @@ import pwd
 node = os.environ["PATRONI_NAME"]
 password = os.environ["TEAMGRAM_RELIABILITY_DB_PASSWORD"]
 replication = os.environ["TEAMGRAM_RELIABILITY_REPLICATION_PASSWORD"]
+max_connections = int(os.environ.get("TEAMGRAM_RELIABILITY_PG_MAX_CONNECTIONS", "256"))
+if max_connections < 1:
+    raise ValueError("TEAMGRAM_RELIABILITY_PG_MAX_CONNECTIONS must be positive")
 config = {
     "scope": "teamgram-lab", "namespace": "/teamgram/", "name": node,
     "restapi": {"listen": "0.0.0.0:8008", "connect_address": f"{node}:8008"},
@@ -18,7 +21,7 @@ config = {
             "synchronous_mode": True, "synchronous_mode_strict": True,
             "synchronous_node_count": 1, "failsafe_mode": False,
             "postgresql": {"use_pg_rewind": True, "parameters": {
-                "max_connections": 100, "shared_buffers": "128MB",
+                "max_connections": max_connections, "shared_buffers": "128MB",
                 "wal_log_hints": "on", "synchronous_commit": "on",
             }},
         },

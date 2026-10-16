@@ -152,14 +152,14 @@ func probeMessageRandomID(t *testing.T, ctx context.Context, tx pgx.Tx, senderID
 	const insert = `
 		INSERT INTO messages (user_id, user_message_box_id, sender_user_id, peer_type, peer_id, random_id, date2)
 		VALUES ($1, $2, $3, 0, $4, $5, $6)
-		ON CONFLICT (sender_user_id, random_id) WHERE random_id <> 0 DO NOTHING`
+		ON CONFLICT (user_id, sender_user_id, random_id) WHERE random_id <> 0 DO NOTHING`
 	for _, boxID := range []int32{1, 2} {
 		if _, err := tx.Exec(ctx, insert, senderID, boxID, senderID, senderID+100, randomID, int64(boxID)); err != nil {
 			t.Fatalf("insert random-id message: %v", err)
 		}
 	}
 	var count int
-	if err := tx.QueryRow(ctx, `SELECT count(*) FROM messages WHERE sender_user_id=$1 AND random_id=$2`, senderID, randomID).Scan(&count); err != nil {
+	if err := tx.QueryRow(ctx, `SELECT count(*) FROM messages WHERE user_id=$1 AND sender_user_id=$2 AND random_id=$3`, senderID, senderID, randomID).Scan(&count); err != nil {
 		t.Fatalf("count random-id message: %v", err)
 	}
 	if count != 1 {

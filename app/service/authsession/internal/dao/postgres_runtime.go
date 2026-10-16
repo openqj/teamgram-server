@@ -6,7 +6,6 @@ import (
 	"context"
 	"crypto/rand"
 	"database/sql"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -94,31 +93,35 @@ func (d *Postgres) Close() {
 }
 
 func (d *Postgres) keyInfo(ctx context.Context, authKeyID int64) (*mtproto.AuthKeyInfo, error) {
-	info, err := d.store.AuthKeyInfos.SelectByAuthKeyId(ctx, authKeyID)
+	var (
+		body                                             []byte
+		authKeyType                                      int32
+		permAuthKeyID, tempAuthKeyID, mediaTempAuthKeyID int64
+		expiresAt                                        int64
+	)
+	err := d.pool.QueryRow(ctx, `
+		SELECT k.body, i.auth_key_type, i.perm_auth_key_id, i.temp_auth_key_id,
+		       i.media_temp_auth_key_id, i.expires_at
+		FROM auth_keys AS k
+		JOIN auth_key_infos AS i USING (auth_key_id)
+		WHERE k.auth_key_id = $1 AND k.deleted = FALSE AND i.deleted = FALSE`, authKeyID).
+		Scan(&body, &authKeyType, &permAuthKeyID, &tempAuthKeyID, &mediaTempAuthKeyID, &expiresAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
 	if err != nil {
 		return nil, err
 	}
-	key, err := d.store.AuthKeys.SelectByAuthKeyId(ctx, authKeyID)
-	if err != nil {
-		return nil, err
-	}
-	if info == nil || key == nil {
+	if expiresAt > 0 && expiresAt <= time.Now().Unix() {
 		return nil, mtproto.ErrAuthKeyUnregistered
-	}
-	if info.ExpiresAt > 0 && info.ExpiresAt <= time.Now().Unix() {
-		return nil, mtproto.ErrAuthKeyUnregistered
-	}
-	body, err := base64.RawStdEncoding.DecodeString(key.Body)
-	if err != nil {
-		return nil, fmt.Errorf("decode auth key: %w", err)
 	}
 	return mtproto.MakeTLAuthKeyInfo(&mtproto.AuthKeyInfo{
 		AuthKeyId:          authKeyID,
 		AuthKey:            body,
-		AuthKeyType:        info.AuthKeyType,
-		PermAuthKeyId:      info.PermAuthKeyId,
-		TempAuthKeyId:      info.TempAuthKeyId,
-		MediaTempAuthKeyId: info.MediaTempAuthKeyId,
+		AuthKeyType:        authKeyType,
+		PermAuthKeyId:      permAuthKeyID,
+		TempAuthKeyId:      tempAuthKeyID,
+		MediaTempAuthKeyId: mediaTempAuthKeyID,
 	}).To_AuthKeyInfo(), nil
 }
 

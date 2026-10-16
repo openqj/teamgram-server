@@ -37,6 +37,14 @@ scrape_configs:
       - targets: [backend-2:20111]
         labels:
           replica: backend-2
+  - job_name: interface.session
+    static_configs:
+      - targets: [backend:20121]
+        labels:
+          replica: backend-1
+      - targets: [backend-2:20121]
+        labels:
+          replica: backend-2
   - job_name: postgres-exporter
     static_configs:
       - targets: [postgres-exporter:9187]

@@ -38,7 +38,8 @@ Routine:
 
 Postgres:
   DSN: ${TEAMGRAM_POSTGRES_DSN}
-  MaxConns: 8
+  ApplicationName: teamgram-sync
+  MaxConns: ${TEAMGRAM_SYNC_POSTGRES_MAX_CONNS}
   MinConns: 1
   MaxConnLifetime: 1h
   MaxConnIdleTime: 30m

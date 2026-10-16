@@ -61,6 +61,7 @@ func (s *testDeadLetterSink) Close() error {
 }
 
 func (c *testClaim) Messages() <-chan *sarama.ConsumerMessage { return c.messages }
+func (*testClaim) HighWaterMarkOffset() int64                 { return 0 }
 
 func TestMetadataContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())

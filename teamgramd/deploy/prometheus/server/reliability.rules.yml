@@ -57,6 +57,14 @@ groups:
         annotations:
           summary: "Message service PostgreSQL pool is near capacity"
           description: "Inspect pool acquire wait, lock waits and slow queries. Increase pool size only after the database connection budget is recalculated."
+      - alert: TeamgramPostgresConnectionCapacity
+        expr: teamgram_postgres_connection_capacity_utilization > 0.8
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "PostgreSQL usable connection capacity is near exhaustion"
+          description: "Current client connections exceed 80% of max_connections minus superuser_reserved_connections. Check replica count and the sum of configured service pool limits before raising the database limit."
       - alert: TeamgramPostgresLockWaits
         expr: pg_lock_waits_waiting > 0
         for: 2m

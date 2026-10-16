@@ -21,6 +21,7 @@ package dao
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/interface/gnetway/client"
@@ -68,6 +69,9 @@ func (c *Gateway) Close() (err error) {
 // SendDataToGate
 // egate.sendDataToGateway auth_key_id:long session_id:long payload:bytes = Bool;
 func (c *Gateway) SendDataToGate(ctx context.Context, authKeyId, sessionId int64, payload []byte) (b bool, err error) {
+	started := time.Now()
+	defer func() { observeSessionGatewayDelivery("unary", started, b, err) }()
+
 	var (
 		res *mtproto.Bool
 	)

@@ -2,6 +2,10 @@ services:
   postgres:
     image: postgres:18
     container_name: teamgram-postgres
+    command:
+      - postgres
+      - -c
+      - max_connections=${TEAMGRAM_POSTGRES_MAX_CONNECTIONS:-256}
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-teamgram}
       POSTGRES_USER: ${POSTGRES_USER:-teamgram}
@@ -57,6 +61,7 @@ services:
     restart: always
     environment:
       TEAMGRAM_POSTGRES_DSN: postgresql://${POSTGRES_USER:-teamgram}:${POSTGRES_PASSWORD:-teamgram}@postgres:5432/${POSTGRES_DB:-teamgram}?sslmode=disable
+      TEAMGRAM_SYNC_POSTGRES_MAX_CONNS: ${TEAMGRAM_SYNC_POSTGRES_MAX_CONNS:-16}
     healthcheck:
       test: ["CMD", "/app/docker/healthcheck.sh"]
       interval: 10s

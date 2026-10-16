@@ -81,6 +81,10 @@ services:
   postgres:
     image: postgres:18
     container_name: teamgram-postgres
+    command:
+      - postgres
+      - -c
+      - max_connections=${TEAMGRAM_POSTGRES_MAX_CONNECTIONS:-256}
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-teamgram}
       POSTGRES_USER: ${POSTGRES_USER:-teamgram}

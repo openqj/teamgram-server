@@ -183,7 +183,10 @@ func (sg *StreamingGateway) handleStreamError(ns *gatewayNodeStream, err error) 
 	logx.Infof("StreamingGateway: removed stream for %s, will reconnect on next send", addr)
 }
 
-func (sg *StreamingGateway) SendDataToGateway(ctx context.Context, gatewayId string, authKeyId, sessionId int64, payload []byte) (bool, error) {
+func (sg *StreamingGateway) SendDataToGateway(ctx context.Context, gatewayId string, authKeyId, sessionId int64, payload []byte) (ok bool, err error) {
+	started := time.Now()
+	defer func() { observeSessionGatewayDelivery("stream", started, ok, err) }()
+
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	if err := ctx.Err(); err != nil {
@@ -227,7 +230,8 @@ func (sg *StreamingGateway) SendDataToGateway(ctx context.Context, gatewayId str
 	}
 	select {
 	case err := <-result:
-		return err == nil, err
+		ok = err == nil
+		return ok, err
 	case <-ctx.Done():
 		return false, ctx.Err()
 	case <-ns.ctx.Done():

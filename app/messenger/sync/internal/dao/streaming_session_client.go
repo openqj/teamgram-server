@@ -20,6 +20,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/keepalive"
 	grpcStatus "google.golang.org/grpc/status"
 )
 
@@ -28,6 +29,14 @@ const (
 	syncInitialReconnectBackoff = 100 * time.Millisecond
 	syncMaxReconnectBackoff     = 10 * time.Second
 )
+
+func sessionStreamKeepaliveParams() keepalive.ClientParameters {
+	return keepalive.ClientParameters{
+		Time:                5 * time.Minute,
+		Timeout:             20 * time.Second,
+		PermitWithoutStream: false,
+	}
+}
 
 // StreamingSession implements the same push interface as Session but uses
 // bidirectional gRPC streaming instead of unary RPCs.
@@ -52,6 +61,7 @@ func NewStreamingSession(addr string) (*StreamingSession, error) {
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 		grpc.WithReadBufferSize(16*1024*1024),
 		grpc.WithWriteBufferSize(16*1024*1024),
+		grpc.WithKeepaliveParams(sessionStreamKeepaliveParams()),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("dial session %s: %w", addr, err)

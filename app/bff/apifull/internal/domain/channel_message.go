@@ -109,6 +109,8 @@ func InsertChannelMessagesBatchForDelivery(channelID, sender, date int64, inputs
 }
 
 func insertChannelMessagesBatch(channelID, sender, date int64, inputs []ChannelMessageInput, excludeAuthKeyID int64) ([]ChannelMessage, error) {
+	started := time.Now()
+	defer observeChannelPersistence("batch_tx", started)
 	if db == nil {
 		return nil, errors.New("domain PostgreSQL is not open")
 	}
@@ -319,6 +321,8 @@ func validateChannelMessageWriteTx(tx *sql.Tx, channelID, sender int64) error {
 }
 
 func insertChannelMessage(channelID, sender, date int64, text string, replyToMsgID, replyToTopID int32, randomID int64, content ChannelMessageContent, requestFingerprint string, excludeAuthKeyID int64) (ChannelMessage, error) {
+	started := time.Now()
+	defer observeChannelPersistence("message_tx", started)
 	var row ChannelMessage
 	if db == nil {
 		return row, errors.New("domain PostgreSQL is not open")

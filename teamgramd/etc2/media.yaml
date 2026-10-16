@@ -24,6 +24,7 @@ Telemetry:
   
 Postgres:
   DSN: ${TEAMGRAM_POSTGRES_DSN}
+  ApplicationName: teamgram-media
   MaxConns: 32
   MinConns: 4
   MaxConnLifetime: 1h

@@ -16,7 +16,9 @@ type Postgres struct {
 	Pool *pgxpool.Pool
 	*postgres_dao.AuthSeqUpdatesDAO
 	*postgres_dao.UserPtsUpdatesDAO
-	BotAPI *store.Store
+	BotAPI          *store.Store
+	completionBatch *deliveryCompletionBatcher
+	stopPoolMetrics func()
 }
 
 func newPostgresDao(c config.Config) (*Postgres, error) {
@@ -51,16 +53,30 @@ func newPostgresDao(c config.Config) (*Postgres, error) {
 		pool.Close()
 		return nil, err
 	}
-	return &Postgres{
+	postgres := &Postgres{
 		Pool:              pool,
 		AuthSeqUpdatesDAO: postgres_dao.NewAuthSeqUpdatesDAO(pool),
 		UserPtsUpdatesDAO: postgres_dao.NewUserPtsUpdatesDAO(pool),
 		BotAPI:            store.NewWithPool(pool),
-	}, nil
+	}
+	postgres.completionBatch = newDeliveryCompletionBatcher(pool)
+	postgres.stopPoolMetrics = postgres.startPoolMetrics(context.Background())
+	return postgres, nil
 }
 
 func (d *Postgres) Close() {
-	if d != nil && d.Pool != nil {
+	if d == nil {
+		return
+	}
+	if d.stopPoolMetrics != nil {
+		d.stopPoolMetrics()
+		d.stopPoolMetrics = nil
+	}
+	if d.completionBatch != nil {
+		d.completionBatch.Close()
+		d.completionBatch = nil
+	}
+	if d.Pool != nil {
 		d.Pool.Close()
 	}
 }

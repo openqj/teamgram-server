@@ -155,4 +155,20 @@ var (
 		Help:      "Gateway write batches that failed and caused the connection to close.",
 		Labels:    []string{"reason"},
 	})
+	metricGatewayWriteFlushDuration = metric.NewHistogramVec(&metric.HistogramVecOpts{
+		Namespace: namespace,
+		Subsystem: "gateway_write",
+		Name:      "flush_duration_ms",
+		Help:      "Time spent encoding and submitting one gateway write batch on the gnet event loop.",
+		Labels:    []string{"proto"},
+		Buckets:   []float64{0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 25, 50, 100, 250, 500, 1000},
+	})
+	metricGatewayWriteSocketBuffered = metric.NewHistogramVec(&metric.HistogramVecOpts{
+		Namespace: namespace,
+		Subsystem: "gateway_write",
+		Name:      "socket_buffered_bytes",
+		Help:      "Outbound bytes remaining in the gnet socket buffer after a gateway write batch.",
+		Labels:    []string{"proto"},
+		Buckets:   []float64{0, 128, 512, 1024, 4096, 16384, 65536, 262144, 1048576, 4194304, 16777216},
+	})
 )

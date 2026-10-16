@@ -8,7 +8,9 @@ x-postgres-environment: &postgres-environment
   POSTGRES_PASSWORD: "${TEAMGRAM_RELIABILITY_DB_PASSWORD:?A disposable database password is required}"
   TEAMGRAM_REPLICATION_PASSWORD: "${TEAMGRAM_RELIABILITY_REPLICATION_PASSWORD:?A disposable replication password is required}"
   TEAMGRAM_RECOVERY_TIMEOUT: "${TEAMGRAM_RELIABILITY_RECOVERY_TIMEOUT:-120}"
-  TEAMGRAM_RELIABILITY_PG_MAX_CONNECTIONS: "${TEAMGRAM_RELIABILITY_PG_MAX_CONNECTIONS:-100}"
+  # The recovery lab keeps this override separate from production. Capacity
+  # probes set it explicitly when they need a larger disposable database.
+  TEAMGRAM_RELIABILITY_PG_MAX_CONNECTIONS: "${TEAMGRAM_RELIABILITY_PG_MAX_CONNECTIONS:-256}"
 
 services:
   postgres:
@@ -163,6 +165,7 @@ services:
         condition: service_healthy
     environment:
       TEAMGRAM_POSTGRES_DSN: "postgresql://teamgram_reliability:${TEAMGRAM_RELIABILITY_DB_PASSWORD:?A disposable database password is required}@postgres:5432/teamgram_reliability?sslmode=disable"
+      TEAMGRAM_SYNC_POSTGRES_MAX_CONNS: "${TEAMGRAM_SYNC_POSTGRES_MAX_CONNS:-16}"
       TEAMGRAM_KAFKA_HANDLER_CONCURRENCY: "${TEAMGRAM_KAFKA_HANDLER_CONCURRENCY:-64}"
       TEAMGRAM_APIFULL_SCHEMA_READONLY: "true"
       S3_ENDPOINT: minio:8333

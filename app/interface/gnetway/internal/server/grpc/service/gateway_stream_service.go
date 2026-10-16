@@ -11,12 +11,14 @@ import (
 	"fmt"
 	"strconv"
 	"sync"
+	"time"
 
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/interface/gnetway/gateway"
 	"github.com/teamgram/teamgram-server/pkg/keyedexecutor"
 
 	"github.com/zeromicro/go-zero/core/logx"
+	"github.com/zeromicro/go-zero/core/metric"
 	"google.golang.org/grpc"
 )
 
@@ -24,6 +26,15 @@ import (
 // parallel handling keeps the stream responsive while preserving ordering for
 // one auth key/session connection.
 const gatewayStreamHandlerConcurrency = 256
+
+var gatewayStreamHandlerDuration = metric.NewHistogramVec(&metric.HistogramVecOpts{
+	Namespace: "gnetway",
+	Subsystem: "gateway_stream",
+	Name:      "handler_duration_ms",
+	Help:      "Time from receiving a gateway stream request through the response ACK.",
+	Labels:    []string{"outcome"},
+	Buckets:   []float64{0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 25, 50, 100, 250, 500, 1000, 5000, 10000},
+})
 
 func gatewayStreamRequestKey(req *gateway.GatewayStreamRequest) string {
 	if data := req.GetSendData(); data != nil && data.GetAuthKeyId() != 0 && data.GetSessionId() != 0 {
@@ -58,6 +69,8 @@ func (s *Service) GatewayDataStream(stream grpc.BidiStreamingServer[gateway.Gate
 	}
 	executor := keyedexecutor.New(stream.Context(), gatewayStreamHandlerConcurrency,
 		func(ctx context.Context, req *gateway.GatewayStreamRequest) {
+			started := time.Now()
+			outcome := "invalid"
 			sendData := req.GetSendData()
 			resp := &gateway.GatewayStreamResponse{RequestId: req.GetRequestId()}
 			if sendData == nil {
@@ -67,10 +80,22 @@ func (s *Service) GatewayDataStream(stream grpc.BidiStreamingServer[gateway.Gate
 				// and queue admission have one implementation.
 				reply, rpcErr := s.RPCGatewayServer.GatewaySendDataToGateway(ctx, sendData)
 				resp.Success = rpcErr == nil && reply != nil && mtproto.FromBool(reply)
+				switch {
+				case rpcErr != nil:
+					outcome = "error"
+				case resp.Success:
+					outcome = "ok"
+				default:
+					outcome = "rejected"
+				}
 			}
 			sendMu.Lock()
 			err := stream.Send(resp)
 			sendMu.Unlock()
+			if err != nil {
+				outcome = "send_error"
+			}
+			gatewayStreamHandlerDuration.ObserveFloat(time.Since(started).Seconds()*1000, outcome)
 			recordSendError(err)
 		})
 	defer executor.Wait()

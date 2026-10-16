@@ -6,8 +6,10 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import os
 from pathlib import Path
 import secrets
+import shutil
 import time
 
 import messaging_online_capacity_probe as online_probe
@@ -17,6 +19,9 @@ from postgres_recovery_probe import Lab, ProbeError, redact
 
 
 FANOUT_STAGE_METRICS = {
+    "persistenceCount": 'teamgram_apifull_channel_persistence_seconds_count{job="bff.bff"}',
+    "persistenceSum": 'teamgram_apifull_channel_persistence_seconds_sum{job="bff.bff"}',
+    "persistenceBucket": 'teamgram_apifull_channel_persistence_seconds_bucket{job="bff.bff"}',
     "apifullStageCount": 'teamgram_apifull_channel_delivery_stage_seconds_count{job="bff.bff"}',
     "apifullStageSum": 'teamgram_apifull_channel_delivery_stage_seconds_sum{job="bff.bff"}',
     "apifullStageBucket": 'teamgram_apifull_channel_delivery_stage_seconds_bucket{job="bff.bff"}',
@@ -26,13 +31,36 @@ FANOUT_STAGE_METRICS = {
     "syncStageBucket": 'teamgram_sync_delivery_seconds_bucket{job="messenger.sync"}',
     "syncStageResults": 'teamgram_sync_delivery_total{job="messenger.sync"}',
     "syncRecordAgeBucket": 'mqconsumer_record_age_seconds_bucket{job="messenger.sync"}',
+    "syncHandlerQueueBucket": 'mqconsumer_handler_queue_seconds_bucket{job="messenger.sync"}',
+    "syncPartitionLag": 'mqconsumer_partition_lag{job="messenger.sync"}',
+    "syncHandlerInFlight": 'mqconsumer_handler_in_flight{job="messenger.sync"}',
     "syncOffsetCommitBucket": 'mqconsumer_offset_commit_seconds_bucket{job="messenger.sync"}',
     "syncHandlerRetries": 'mqconsumer_handler_retries_total{job="messenger.sync",group="Sync-MainCommunity-S",topic="Sync-T"}',
+    "syncPoolConnections": 'teamgram_sync_postgres_pool_connections{job="messenger.sync"}',
+    "syncPoolMaxConnections": 'teamgram_sync_postgres_pool_max_connections{job="messenger.sync"}',
+    "syncPoolAcquireCount": 'teamgram_sync_postgres_pool_acquire_count{job="messenger.sync"}',
+    "syncPoolAcquireDuration": 'teamgram_sync_postgres_pool_acquire_duration_seconds{job="messenger.sync"}',
+    "syncPoolEmptyAcquireCount": 'teamgram_sync_postgres_pool_empty_acquire_count{job="messenger.sync"}',
+    "syncPoolEmptyAcquireWait": 'teamgram_sync_postgres_pool_empty_acquire_wait_seconds{job="messenger.sync"}',
+    "syncPoolCanceledAcquireCount": 'teamgram_sync_postgres_pool_canceled_acquire_count{job="messenger.sync"}',
     "gatewayWriteQueueWaitCount": 'gnetway_gateway_write_queue_wait_ms_count{job="interface.gateway"}',
     "gatewayWriteQueueWaitSum": 'gnetway_gateway_write_queue_wait_ms_sum{job="interface.gateway"}',
     "gatewayWriteQueueWaitBucket": 'gnetway_gateway_write_queue_wait_ms_bucket{job="interface.gateway"}',
     "gatewayWriteRejected": 'gnetway_gateway_write_rejected_total{job="interface.gateway"}',
     "gatewayWriteFailed": 'gnetway_gateway_write_failed_total{job="interface.gateway"}',
+    "gatewayWriteFlushCount": 'gnetway_gateway_write_flush_duration_ms_count{job="interface.gateway"}',
+    "gatewayWriteFlushSum": 'gnetway_gateway_write_flush_duration_ms_sum{job="interface.gateway"}',
+    "gatewayWriteFlushBucket": 'gnetway_gateway_write_flush_duration_ms_bucket{job="interface.gateway"}',
+    "gatewayWriteSocketBufferedCount": 'gnetway_gateway_write_socket_buffered_bytes_count{job="interface.gateway"}',
+    "gatewayWriteSocketBufferedSum": 'gnetway_gateway_write_socket_buffered_bytes_sum{job="interface.gateway"}',
+    "gatewayWriteSocketBufferedBucket": 'gnetway_gateway_write_socket_buffered_bytes_bucket{job="interface.gateway"}',
+    "gatewayStreamHandlerCount": 'gnetway_gateway_stream_handler_duration_ms_count{job="interface.gateway"}',
+    "gatewayStreamHandlerSum": 'gnetway_gateway_stream_handler_duration_ms_sum{job="interface.gateway"}',
+    "gatewayStreamHandlerBucket": 'gnetway_gateway_stream_handler_duration_ms_bucket{job="interface.gateway"}',
+    "sessionGatewayDeliveryCount": 'teamgram_session_gateway_delivery_seconds_count{job="interface.session"}',
+    "sessionGatewayDeliverySum": 'teamgram_session_gateway_delivery_seconds_sum{job="interface.session"}',
+    "sessionGatewayDeliveryBucket": 'teamgram_session_gateway_delivery_seconds_bucket{job="interface.session"}',
+    "sessionGatewayDeliveryResults": 'teamgram_session_gateway_delivery_total{job="interface.session"}',
 }
 
 
@@ -61,6 +89,10 @@ def fanout_stage_metric_delta(before: dict, after: dict) -> dict:
             delta[name].append({"labels": item.get("labels", {}),
                                 "value": item.get("value", 0) - previous.get(key, 0)})
     return delta
+
+
+def sync_pool_metric_snapshot(metrics: dict) -> dict:
+    return {key: value for key, value in metrics.items() if key.startswith("syncPool")}
 
 
 def parse_evidence(result, phase: str) -> dict:
@@ -166,7 +198,13 @@ def run_ts(lab: Lab, executable: Path, phase: str, *, session_file: Path, channe
         "METRICS_PORT": str(args.metrics_port),
         "FANOUT_OWNER_AUTH_B64": lab.env["A_AUTH_B64"],
         "FANOUT_OWNER_USER_ID": lab.env["A_USER_ID"],
+        "FANOUT_CLIENT_PROCESSES": str(args.client_processes),
     })
+    if args.client_processes > 1:
+        diagnostic_dir = Path(args.output.parent) / f".{args.output.stem}-multiprocess"
+        diagnostic_dir.mkdir(parents=True, exist_ok=True)
+        lab.env["FANOUT_DIAGNOSTIC_DIR"] = str(diagnostic_dir)
+        lab.env["FANOUT_DIAGNOSTIC_WAIT_MS"] = str(args.diagnostic_wait_seconds * 1000)
     result = lab.run([str(executable), str(ROOT / "docker/production/probe-group-channel-fanout.ts")],
                      timeout=max(lab.timeout, args.delivery_timeout_seconds * 2 + 600), check=False)
     evidence = parse_evidence(result, phase)
@@ -260,9 +298,12 @@ ON CONFLICT (channel_id,user_id) DO NOTHING;""")
 
     try:
         stage_metrics_before = fanout_stage_metric_snapshot(args.metrics_port)
+        report["syncPoolMetricBefore"] = sync_pool_metric_snapshot(stage_metrics_before)
     except (OSError, ProbeError, ValueError, KeyError, TypeError):
         stage_metrics_before = {"error": "unavailable"}
-    report["fanout"] = run_ts(lab, executable, "fanout", session_file=session_file,
+        report["syncPoolMetricBefore"] = {"error": "unavailable"}
+    phase = "multiprocess" if args.client_processes > 1 else "fanout"
+    report["fanout"] = run_ts(lab, executable, phase, session_file=session_file,
                               channels_file=channels_file, args=args)
     channel_ids = [str(item["id"]) for item in fixtures]
     report["databaseDelivery"] = wait_for_outbox(lab, channel_ids, args.delivery_timeout_seconds)
@@ -271,12 +312,32 @@ ON CONFLICT (channel_id,user_id) DO NOTHING;""")
         try:
             stage_metrics_after = fanout_stage_metric_snapshot(args.metrics_port)
             report["deliveryStageMetricDelta"] = fanout_stage_metric_delta(stage_metrics_before, stage_metrics_after)
+            report["syncPoolMetricAfter"] = sync_pool_metric_snapshot(stage_metrics_after)
         except (OSError, ProbeError, ValueError, KeyError, TypeError):
             report["deliveryStageMetricDelta"] = {"error": "unavailable"}
+            report["syncPoolMetricAfter"] = {"error": "unavailable"}
     else:
         report["deliveryStageMetricDelta"] = stage_metrics_before
-    report["acceptance"] = evaluate(report["fanout"], report["databaseDelivery"], args.users, args.backend_instances)
+        report["syncPoolMetricAfter"] = {"error": "unavailable"}
     report["postgresDuringFanout"] = online_probe.postgres_connection_snapshot(lab)
+    if args.client_processes > 1:
+        database_complete = len(report["databaseDelivery"]) == len(channel_ids) and all(
+            item["events"] == 1 and item["completed_events"] == 1 and item["pending_events"] == 0
+            and item["recipient_rows"] == 0 and item["pending_recipients"] == 0
+            for item in report["databaseDelivery"]
+        )
+        diagnostic_complete = report["fanout"].get("status") in {"PASS", "BUDGET_EXCEEDED"}
+        report["acceptance"] = {
+            "status": "PASS" if diagnostic_complete and database_complete and report["fanout"].get("status") == "PASS"
+            else "BUDGET_EXCEEDED" if diagnostic_complete and database_complete else "FAIL",
+            "mode": "multi_process_listener_diagnostic",
+            "allRecipientsReceived": diagnostic_complete,
+            "databaseDeliveryComplete": database_complete,
+            "productionCapacityAccepted": False,
+        }
+        report["status"] = report["acceptance"]["status"]
+        return
+    report["acceptance"] = evaluate(report["fanout"], report["databaseDelivery"], args.users, args.backend_instances)
     if report["acceptance"]["status"] != "PASS":
         report["status"] = report["acceptance"]["status"]
         return
@@ -311,6 +372,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--mt-port-2", type=int, default=21546)
     parser.add_argument("--kafka-port", type=int, default=19096)
     parser.add_argument("--metrics-port", type=int, default=19092)
+    parser.add_argument("--client-processes", type=int, default=1,
+                        help="use multiple listener processes for a diagnostic fan-out run")
+    parser.add_argument("--diagnostic-wait-seconds", type=int, default=60)
     return parser
 
 
@@ -326,12 +390,16 @@ def main() -> int:
                             "postsPerTarget": 1, "recoveryUsersPerTarget": args.recovery_users,
                             "liveDeliveryBudgetMs": 2000, "ackBudgetMs": 1000},
               "started_at": dt.datetime.now(dt.timezone.utc).isoformat()}
+    if args.client_processes > 1:
+        report["scope"] = "multi-process Layer 229 listener diagnostic for one broadcast channel and one megagroup"
     session_file = args.output.parent / f"{secrets.token_hex(12)}-fanout-online-sessions.json"
     channels_file = args.output.parent / f"{secrets.token_hex(12)}-fanout-channels.json"
     lab = None
     try:
         if not 1 <= args.users <= 5000 or not 1 <= args.batch_size <= 200:
             raise ProbeError("users must be 1..5000 and batch-size 1..200")
+        if not 1 <= args.client_processes <= 16 or not 5 <= args.diagnostic_wait_seconds <= 600:
+            raise ProbeError("client-processes must be 1..16 and diagnostic-wait-seconds 5..600")
         if not 0 <= args.recovery_users < args.users:
             raise ProbeError("recovery-users must be 0..users-1")
         if not 6 <= args.sync_partitions <= 96:
@@ -349,7 +417,8 @@ def main() -> int:
                       "TEAMGRAM_RELIABILITY_IMAGE": args.image,
                       "TEAMGRAM_RELIABILITY_MT_PORT": str(args.mt_port),
                       "TEAMGRAM_RELIABILITY_MT_PORT_2": str(args.mt_port_2),
-                      "TEAMGRAM_RELIABILITY_PG_MAX_CONNECTIONS": "300",
+                      "TEAMGRAM_RELIABILITY_PG_MAX_CONNECTIONS": os.getenv(
+                          "TEAMGRAM_RELIABILITY_PG_MAX_CONNECTIONS", "300"),
                       "TEAMGRAM_RELIABILITY_KAFKA_PORT": str(args.kafka_port),
                       "TEAMGRAM_RELIABILITY_METRICS_PORT": str(args.metrics_port)})
         report["project"] = lab.project
@@ -367,6 +436,9 @@ def main() -> int:
                 report.update(status="FAIL", cleanup={"status": "FAIL", "reason": redact(str(error), lab.secret_values)})
         session_file.unlink(missing_ok=True)
         channels_file.unlink(missing_ok=True)
+        diagnostic_dir = args.output.parent / f".{args.output.stem}-multiprocess"
+        if args.client_processes > 1:
+            shutil.rmtree(diagnostic_dir, ignore_errors=True)
         report["finished_at"] = dt.datetime.now(dt.timezone.utc).isoformat()
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")

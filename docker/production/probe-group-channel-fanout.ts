@@ -3,6 +3,8 @@ import path from 'node:path';
 import { createRequire } from 'node:module';
 import { randomBytes } from 'node:crypto';
 import { monitorEventLoopDelay, performance } from 'node:perf_hooks';
+import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 
 const phase = process.env.FANOUT_PHASE || 'setup';
 const users = Number(process.env.FANOUT_USERS || '5000');
@@ -30,7 +32,7 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 type Seed = { userId: string; accessHash: string; authB64: string };
 type ChannelFixture = { kind: 'channel' | 'megagroup'; id: string; accessHash: string; title: string };
 type ClientRow = { seed: Seed; index: number; client: any; activated: boolean };
-type SeenEvent = { latencyMs: number; id: number; pts: number; update: string };
+type SeenEvent = { latencyMs: number; id: number; pts: number; update: string; observedAtMs: number };
 type RecoveryOutcome =
   | { ok: true; index: number; recoveryMs: number; pts: number }
   | { ok: false; index: number; code: string };
@@ -173,12 +175,12 @@ function registerListener(row: ClientRow): void {
         continue;
       }
       const dispatchAt = (globalThis as any).__fanoutDispatchAt?.get(marker);
-      if (typeof dispatchAt !== 'number') continue;
       bucket.set(row.index, {
-        latencyMs: observedAt - dispatchAt,
+        latencyMs: typeof dispatchAt === 'number' ? observedAt - dispatchAt : 0,
         id: event.id,
         pts: event.pts,
         update: event.update,
+        observedAtMs: Date.now(),
       });
     }
   }, { build: (update: any) => update });
@@ -238,11 +240,15 @@ async function connectOne(seed: Seed, index: number): Promise<ClientRow> {
 }
 
 async function connectAll(seeds: Seed[]): Promise<{ clients: ClientRow[]; failures: number }> {
+  return connectIndexed(seeds.map((seed, index) => ({ seed, index })));
+}
+
+async function connectIndexed(items: Array<{ seed: Seed; index: number }>): Promise<{ clients: ClientRow[]; failures: number }> {
   const clients: ClientRow[] = [];
   let failures = 0;
-  for (let offset = 0; offset < seeds.length; offset += batchSize) {
-    const batch = seeds.slice(offset, offset + batchSize);
-    let pending = batch.map((seed, index) => ({ seed, index: offset + index }));
+  for (let offset = 0; offset < items.length; offset += batchSize) {
+    const batch = items.slice(offset, offset + batchSize);
+    let pending = batch;
     for (let attempt = 0; pending.length && attempt < 3; attempt += 1) {
       const results = await Promise.allSettled(pending.map((item) => connectOne(item.seed, item.index)));
       const retry: typeof pending = [];
@@ -536,6 +542,231 @@ async function runFanout(): Promise<void> {
   }
 }
 
+type DiagnosticDispatch = Record<string, number>;
+
+function writeJsonFile(filename: string, value: unknown): void {
+  const temporary = `${filename}.tmp-${process.pid}`;
+  fs.writeFileSync(temporary, `${JSON.stringify(value)}\n`, { mode: 0o600 });
+  fs.renameSync(temporary, filename);
+}
+
+async function waitForFiles(filenames: string[], timeout: number): Promise<void> {
+  const deadline = performance.now() + timeout;
+  while (performance.now() < deadline) {
+    if (filenames.every((filename) => fs.existsSync(filename))) return;
+    await sleep(100);
+  }
+  check(false, 'MULTIPROCESS_DIAGNOSTIC_CHILD_TIMEOUT');
+}
+
+function diagnosticMarkers(channels: ChannelFixture[]): Map<string, ChannelFixture> {
+  const markers = new Map<string, ChannelFixture>();
+  for (const channel of channels) markers.set(`${tag}:${channel.kind}:message`, channel);
+  return markers;
+}
+
+function diagnosticDelivery(marker: string, expected: number, dispatchAt: number | undefined): any {
+  const bucket = received.get(marker) || new Map<number, SeenEvent>();
+  const latencies = [...bucket.values()]
+    .map((event) => typeof dispatchAt === 'number' ? event.observedAtMs - dispatchAt : event.latencyMs)
+    .filter((value) => Number.isFinite(value) && value >= 0);
+  const onTime = latencies.filter((value) => value <= 2000).length;
+  return {
+    marker,
+    expectedRecipients: expected,
+    uniqueRecipients: bucket.size,
+    missingRecipients: expected - bucket.size,
+    duplicateUpdates: duplicates.get(marker) || 0,
+    receiveWithin2s: onTime,
+    allWithin2s: bucket.size === expected && onTime === expected,
+    liveP50Ms: percentile(latencies, 0.50),
+    liveP95Ms: percentile(latencies, 0.95),
+    liveP99Ms: percentile(latencies, 0.99),
+    liveMaxMs: latencies.length ? Math.max(...latencies) : null,
+  };
+}
+
+async function runListenerShard(): Promise<void> {
+  const sessionFile = process.env.ONLINE_SESSIONS_FILE || '';
+  const channelsFile = process.env.FANOUT_CHANNELS_FILE || '';
+  const readyFile = process.env.FANOUT_SHARD_READY_FILE || '';
+  const resultFile = process.env.FANOUT_SHARD_RESULT_FILE || '';
+  const shardIndex = Number(process.env.FANOUT_SHARD_INDEX || '-1');
+  const shardCount = Number(process.env.FANOUT_SHARD_COUNT || '0');
+  const diagnosticWaitMs = Number(process.env.FANOUT_DIAGNOSTIC_WAIT_MS || String(waitMs));
+  check(sessionFile && fs.existsSync(sessionFile), 'MISSING_ONLINE_SESSION_FILE');
+  check(channelsFile && fs.existsSync(channelsFile), 'MISSING_FANOUT_CHANNELS_FILE');
+  check(readyFile && resultFile && shardIndex >= 0 && shardIndex < shardCount && shardCount >= 2,
+    'INVALID_MULTIPROCESS_SHARD');
+  const seeds: Seed[] = JSON.parse(fs.readFileSync(sessionFile, 'utf8'));
+  const channels: ChannelFixture[] = JSON.parse(fs.readFileSync(channelsFile, 'utf8'));
+  check(Array.isArray(seeds) && seeds.length === users, 'ONLINE_SESSION_COUNT_MISMATCH');
+  check(channels.length === 2, 'CHANNEL_FIXTURES_INVALID');
+  const markers = diagnosticMarkers(channels);
+  for (const marker of markers.keys()) {
+    received.set(marker, new Map<number, SeenEvent>());
+    duplicates.set(marker, 0);
+  }
+  const selected = seeds
+    .map((seed, index) => ({ seed, index }))
+    .filter((item) => item.index % shardCount === shardIndex);
+  const { clients, failures } = await connectIndexed(selected);
+  const ready = {
+    shardIndex,
+    shardCount,
+    requested: selected.length,
+    authenticated: clients.length,
+    activated: clients.filter((row) => row.activated).length,
+    failures,
+    endpointDistribution: Object.fromEntries(endpoints.map((endpoint, endpointIndex) => [
+      endpoint.replica, clients.filter((row) => row.index % endpoints.length === endpointIndex).length,
+    ])),
+  };
+  writeJsonFile(readyFile, ready);
+  let dispatch: DiagnosticDispatch = {};
+  try {
+    await sleep(diagnosticWaitMs);
+    const dispatchFile = process.env.FANOUT_DISPATCH_FILE || '';
+    if (dispatchFile && fs.existsSync(dispatchFile)) {
+      dispatch = JSON.parse(fs.readFileSync(dispatchFile, 'utf8')) as DiagnosticDispatch;
+    }
+    const deliveries = [...markers.keys()].map((marker) => diagnosticDelivery(marker, selected.length, dispatch[marker]));
+    const cpu = process.cpuUsage(runtimeCpuStarted);
+    writeJsonFile(resultFile, {
+      ...ready,
+      deliveries,
+      runtime: {
+        memory: process.memoryUsage(),
+        eventLoopDelayMs: {
+          mean: eventLoopDelay.mean / 1e6,
+          max: eventLoopDelay.max / 1e6,
+          p95: eventLoopDelay.percentile(95) / 1e6,
+          p99: eventLoopDelay.percentile(99) / 1e6,
+        },
+        cpuUsageMs: { user: cpu.user / 1000, system: cpu.system / 1000 },
+      },
+    });
+  } finally {
+    for (const row of clients) {
+      try { await bounded(Promise.resolve(row.client.disconnect())); } catch {}
+    }
+  }
+}
+
+async function runMultiprocessDiagnostic(): Promise<void> {
+  const processCount = Number(process.env.FANOUT_CLIENT_PROCESSES || '0');
+  check(Number.isInteger(processCount) && processCount >= 2 && processCount <= 16,
+    'INVALID_MULTIPROCESS_COUNT');
+  const sessionFile = process.env.ONLINE_SESSIONS_FILE || '';
+  const channelsFile = process.env.FANOUT_CHANNELS_FILE || '';
+  const diagnosticDir = process.env.FANOUT_DIAGNOSTIC_DIR || '';
+  check(sessionFile && fs.existsSync(sessionFile), 'MISSING_ONLINE_SESSION_FILE');
+  check(channelsFile && fs.existsSync(channelsFile), 'MISSING_FANOUT_CHANNELS_FILE');
+  check(diagnosticDir, 'MISSING_MULTIPROCESS_DIAGNOSTIC_DIR');
+  fs.mkdirSync(diagnosticDir, { recursive: true, mode: 0o700 });
+  const readyFiles = Array.from({ length: processCount }, (_, index) => path.join(diagnosticDir, `ready-${index}.json`));
+  const resultFiles = Array.from({ length: processCount }, (_, index) => path.join(diagnosticDir, `result-${index}.json`));
+  const dispatchFile = path.join(diagnosticDir, 'dispatch.json');
+  for (const filename of [...readyFiles, ...resultFiles, dispatchFile]) fs.rmSync(filename, { force: true });
+
+  const script = fileURLToPath(import.meta.url);
+  const gramjsDir = process.env.TEAMGRAM_GRAMJS_DIR || '';
+  const tsx = path.join(gramjsDir, 'node_modules/.bin/tsx');
+  check(fs.existsSync(tsx), 'MISSING_GRAMJS_TSX');
+  const children = readyFiles.map((readyFile, index) => {
+    const childEnv = {
+      ...process.env,
+      FANOUT_PHASE: 'listen-shard',
+      FANOUT_SHARD_INDEX: String(index),
+      FANOUT_SHARD_COUNT: String(processCount),
+      FANOUT_SHARD_READY_FILE: readyFile,
+      FANOUT_SHARD_RESULT_FILE: resultFiles[index],
+      FANOUT_DISPATCH_FILE: dispatchFile,
+      FANOUT_DIAGNOSTIC_WAIT_MS: String(waitMs),
+    };
+    return spawn(tsx, [script], { env: childEnv, stdio: ['ignore', 'ignore', 'ignore'] });
+  });
+  const stopChildren = () => {
+    for (const child of children) {
+      if (!child.killed) child.kill('SIGTERM');
+    }
+  };
+  let owner: any;
+  try {
+    await waitForFiles(readyFiles, Math.min(waitMs, 120000));
+    const ready = readyFiles.map((filename) => JSON.parse(fs.readFileSync(filename, 'utf8')));
+    check(ready.every((item) => item.authenticated === item.requested && item.activated === item.requested),
+      'MULTIPROCESS_CLIENT_AUTHENTICATION_FAILED');
+    owner = await connectOwner();
+    const dispatch: DiagnosticDispatch = {};
+    const channels: ChannelFixture[] = JSON.parse(fs.readFileSync(channelsFile, 'utf8'));
+    const markers = diagnosticMarkers(channels);
+    const acknowledgements: any[] = [];
+    for (const [marker, channel] of markers) {
+      dispatch[marker] = Date.now();
+      writeJsonFile(dispatchFile, dispatch);
+      const started = performance.now();
+      let error: string | undefined;
+      try {
+        const sent = await bounded(owner.invoke(new Api.messages.SendMessage({
+          peer: inputPeer(channel), message: marker, randomId: BigInt(`0x${randomBytes(8).toString('hex')}`),
+        })));
+        check(rpcName(sent).toLowerCase().includes('updates'), 'CHANNEL_SEND_INVALID_RESULT');
+      } catch (sendError) {
+        error = errorCode(sendError);
+      }
+      acknowledgements.push({ marker, ackMs: performance.now() - started, error });
+    }
+    writeJsonFile(dispatchFile, dispatch);
+    await waitForFiles(resultFiles, waitMs + 30000);
+    const shardResults = resultFiles.map((filename) => JSON.parse(fs.readFileSync(filename, 'utf8')));
+    const deliveries = [...markers.keys()].map((marker) => {
+      const shards = shardResults.map((item) => item.deliveries.find((delivery: any) => delivery.marker === marker));
+      const uniqueRecipients = shards.reduce((sum, item) => sum + Number(item?.uniqueRecipients || 0), 0);
+      const expectedRecipients = users;
+      return {
+        marker,
+        expectedRecipients,
+        uniqueRecipients,
+        missingRecipients: expectedRecipients - uniqueRecipients,
+        duplicateUpdates: shards.reduce((sum, item) => sum + Number(item?.duplicateUpdates || 0), 0),
+        receiveWithin2s: shards.reduce((sum, item) => sum + Number(item?.receiveWithin2s || 0), 0),
+        allWithin2s: uniqueRecipients === expectedRecipients && shards.every((item) => item?.allWithin2s === true),
+        shardP95Ms: shards.map((item) => item?.liveP95Ms ?? null),
+        shardP99Ms: shards.map((item) => item?.liveP99Ms ?? null),
+      };
+    });
+    const connections = {
+      requested: users,
+      authenticated: ready.reduce((sum, item) => sum + item.authenticated, 0),
+      activated: ready.reduce((sum, item) => sum + item.activated, 0),
+      failures: ready.reduce((sum, item) => sum + item.failures, 0),
+      processCount,
+      endpointDistribution: Object.fromEntries(endpoints.map((endpoint) => [
+        endpoint.replica, ready.reduce((sum, item) => sum + Number(item.endpointDistribution?.[endpoint.replica] || 0), 0),
+      ])),
+    };
+    const complete = connections.authenticated === users && connections.activated === users
+      && deliveries.every((item) => item.uniqueRecipients === users && item.missingRecipients === 0 && item.duplicateUpdates === 0);
+    report.processMode = 'multi_process_listener_diagnostic';
+    report.processCount = processCount;
+    report.connections = connections;
+    report.acknowledgements = acknowledgements;
+    report.deliveries = deliveries;
+    report.shards = shardResults.map((item) => ({ shardIndex: item.shardIndex, requested: item.requested, runtime: item.runtime }));
+    report.status = complete && deliveries.every((item) => item.allWithin2s) ? 'PASS' : (complete ? 'BUDGET_EXCEEDED' : 'FAIL');
+    report.ok = complete;
+  } finally {
+    try { if (owner) await bounded(Promise.resolve(owner.disconnect())); } catch {}
+    stopChildren();
+    await Promise.all(children.map((child) => new Promise<void>((resolve) => {
+      if (child.exitCode !== null || child.signalCode !== null) return resolve();
+      child.once('exit', () => resolve());
+      setTimeout(() => resolve(), 5000);
+    })));
+  }
+}
+
 async function main(): Promise<void> {
   try {
     configure();
@@ -545,6 +776,8 @@ async function main(): Promise<void> {
         && /^backend-[1-2]$/.test(endpoint.replica)), 'INVALID_FANOUT_ENDPOINTS');
     if (phase === 'setup') await createFixtures();
     else if (phase === 'fanout') await runFanout();
+    else if (phase === 'multiprocess') await runMultiprocessDiagnostic();
+    else if (phase === 'listen-shard') await runListenerShard();
     else check(false, 'INVALID_FANOUT_PHASE');
   } catch (error) {
     report.error = { code: errorCode(error) };

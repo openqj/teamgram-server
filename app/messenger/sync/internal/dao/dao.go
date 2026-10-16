@@ -24,6 +24,7 @@ import (
 	idgen_client "github.com/teamgram/teamgram-server/app/service/idgen/client"
 	status_client "github.com/teamgram/teamgram-server/app/service/status/client"
 	"github.com/teamgram/teamgram-server/pkg/mqproducer"
+	"github.com/zeromicro/go-zero/core/logx"
 	"github.com/zeromicro/go-zero/core/stores/kv"
 	"github.com/zeromicro/go-zero/zrpc"
 )
@@ -35,6 +36,9 @@ type Dao struct {
 	mu               sync.RWMutex
 	sessionServers   map[string]SessionPusher
 	useStreamSession bool
+	watchCancel      context.CancelFunc
+	watchWorkers     sync.WaitGroup
+	closeOnce        sync.Once
 	idgen_client.IDGenClient2
 	status_client.StatusClient
 	chat_client.ChatClient
@@ -71,6 +75,43 @@ func New(c config.Config) (*Dao, error) {
 		})
 	}
 
-	go d.watch(c.SessionClient)
+	watchCtx, watchCancel := context.WithCancel(context.Background())
+	d.watchCancel = watchCancel
+	d.watchWorkers.Add(1)
+	go func() {
+		defer d.watchWorkers.Done()
+		d.watch(watchCtx, c.SessionClient)
+	}()
 	return d, nil
+}
+
+// Close stops service discovery before closing the PostgreSQL pool. The
+// discovery retry loop is independent from the Kafka consumer lifecycle, so
+// leaving it running after shutdown would retain timers and session clients.
+func (d *Dao) Close() {
+	if d == nil {
+		return
+	}
+	d.closeOnce.Do(func() {
+		if d.watchCancel != nil {
+			d.watchCancel()
+			d.watchWorkers.Wait()
+		}
+
+		d.mu.Lock()
+		sessions := make([]SessionPusher, 0, len(d.sessionServers))
+		for key, session := range d.sessionServers {
+			sessions = append(sessions, session)
+			delete(d.sessionServers, key)
+		}
+		d.mu.Unlock()
+		for _, session := range sessions {
+			if err := session.Close(); err != nil {
+				logx.Errorf("close session client error: %v", err)
+			}
+		}
+		if d.Postgres != nil {
+			d.Postgres.Close()
+		}
+	})
 }

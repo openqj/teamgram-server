@@ -88,8 +88,18 @@ var (
 		Name: "mqconsumer_oldest_uncommitted_seconds", Help: "Age of the record currently blocking a Kafka partition.",
 	}, []string{"group", "topic", "partition"})
 	mqconsumerRecordAge = promauto.NewHistogramVec(prometheus.HistogramOpts{
-		Name: "mqconsumer_record_age_seconds", Help: "Age of a Kafka record at the start of handler processing.",
+		Name: "mqconsumer_record_age_seconds", Help: "Age of a Kafka record when it is delivered by Sarama.",
 		Buckets: prometheus.ExponentialBuckets(0.001, 2, 16),
+	}, []string{"group", "topic", "partition"})
+	mqconsumerHandlerQueueDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
+		Name: "mqconsumer_handler_queue_seconds", Help: "Time a Kafka record waits after Sarama delivery before handler execution.",
+		Buckets: prometheus.ExponentialBuckets(0.001, 2, 16),
+	}, []string{"group", "topic", "partition"})
+	mqconsumerPartitionLag = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "mqconsumer_partition_lag", Help: "Approximate Kafka records behind the partition high watermark at claim delivery.",
+	}, []string{"group", "topic", "partition"})
+	mqconsumerHandlerInFlight = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "mqconsumer_handler_in_flight", Help: "Kafka handler calls currently executing for a partition.",
 	}, []string{"group", "topic", "partition"})
 	mqconsumerOffsetCommitDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
 		Name: "mqconsumer_offset_commit_seconds", Help: "Synchronous Kafka consumer offset commit duration.",
@@ -101,10 +111,12 @@ const (
 	defaultMaxHandlerAttempts     = 10
 	defaultHandlerRetryDelay      = time.Second
 	commitBatchWindow             = 250 * time.Millisecond
-	commitBatchMaxMessages        = 8
+	commitBatchMaxMessages        = 64
+	maxCommitBatchMessages        = 1024
 	defaultSafeHandlerConcurrency = 8
 	maxHandlerConcurrency         = 1024
 	maxHandlerInFlightMultiplier  = 4
+	consumerMaxProcessingTime     = time.Second
 )
 
 type Consumer struct {
@@ -119,6 +131,7 @@ type Consumer struct {
 	deadLetterSink     DeadLetterSink
 	canBatchCommit     func(topic, method string) bool
 	handlerConcurrency int
+	commitBatchLimit   int
 }
 
 func New(conf kafka.KafkaConsumerConf, handler Handler) (*Consumer, error) {
@@ -154,6 +167,9 @@ func newConsumer(conf kafka.KafkaConsumerConf, handler Handler,
 	if err != nil {
 		return nil, err
 	}
+	if config.Consumer.MaxProcessingTime < consumerMaxProcessingTime {
+		config.Consumer.MaxProcessingTime = consumerMaxProcessingTime
+	}
 	group, err := sarama.NewConsumerGroup(conf.Brokers, conf.Group, config)
 	if err != nil {
 		return nil, err
@@ -169,7 +185,8 @@ func newConsumer(conf kafka.KafkaConsumerConf, handler Handler,
 	}
 	consumer := &Consumer{group: group, conf: conf, handler: handler, ctx: ctx, cancel: cancel,
 		maxHandlerAttempts: maxAttempts, handlerRetryDelay: time.Duration(retryDelayMillis) * time.Millisecond,
-		canBatchCommit: canBatchCommit, handlerConcurrency: normalizeHandlerConcurrency(handlerConcurrency)}
+		canBatchCommit: canBatchCommit, handlerConcurrency: normalizeHandlerConcurrency(handlerConcurrency),
+		commitBatchLimit: configuredCommitBatchLimit()}
 	if topic := os.Getenv("TEAMGRAM_KAFKA_DLQ_TOPIC"); topic != "" {
 		producer, err := mqproducer.New(&kafka.KafkaProducerConf{
 			Username: conf.Username, Password: conf.Password, TLS: conf.TLS, Brokers: conf.Brokers, Topic: topic,
@@ -210,6 +227,14 @@ func configuredHandlerConcurrency() int {
 	return value
 }
 
+func configuredCommitBatchLimit() int {
+	value := envInt("TEAMGRAM_KAFKA_SAFE_COMMIT_BATCH_SIZE", commitBatchMaxMessages)
+	if value < 1 || value > maxCommitBatchMessages {
+		return commitBatchMaxMessages
+	}
+	return value
+}
+
 func (*Consumer) Setup(sarama.ConsumerGroupSession) error   { return nil }
 func (*Consumer) Cleanup(sarama.ConsumerGroupSession) error { return nil }
 
@@ -228,11 +253,12 @@ func commitMarkedMessage(session sarama.ConsumerGroupSession, message *sarama.Co
 }
 
 type deliveryJob struct {
-	seq     uint64
-	key     string
-	ctx     context.Context
-	method  string
-	message *sarama.ConsumerMessage
+	seq        uint64
+	key        string
+	ctx        context.Context
+	method     string
+	receivedAt time.Time
+	message    *sarama.ConsumerMessage
 }
 
 type deliveryResult struct {
@@ -403,6 +429,13 @@ func (c *Consumer) processDelivery(job deliveryJob, executorCtx context.Context)
 		retryDelay = defaultHandlerRetryDelay
 	}
 	started := time.Now()
+	mqconsumerHandlerInFlight.WithLabelValues(c.conf.Group, job.message.Topic, partitionLabel).Inc()
+	defer mqconsumerHandlerInFlight.WithLabelValues(c.conf.Group, job.message.Topic, partitionLabel).Dec()
+	if !job.receivedAt.IsZero() {
+		if wait := time.Since(job.receivedAt); wait >= 0 {
+			mqconsumerHandlerQueueDuration.WithLabelValues(c.conf.Group, job.message.Topic, partitionLabel).Observe(wait.Seconds())
+		}
+	}
 	mqconsumerOldestUncommitted.WithLabelValues(c.conf.Group, job.message.Topic, partitionLabel).Set(0)
 	for attempt := 1; ; attempt++ {
 		if err := handlerCtx.Err(); err != nil {
@@ -457,6 +490,10 @@ func (c *Consumer) ConsumeClaim(session sarama.ConsumerGroupSession, claim saram
 	if concurrency < 1 {
 		concurrency = 1
 	}
+	batchLimit := c.commitBatchLimit
+	if batchLimit < 1 || batchLimit > maxCommitBatchMessages {
+		batchLimit = commitBatchMaxMessages
+	}
 	executor := newDeliveryExecutor(c, concurrency, session.Context())
 	defer executor.stopAndWait()
 
@@ -493,7 +530,12 @@ func (c *Consumer) ConsumeClaim(session sarama.ConsumerGroupSession, claim saram
 						mqconsumerRecordAge.WithLabelValues(c.conf.Group, message.Topic, partitionLabel).Observe(age.Seconds())
 					}
 				}
-				job := deliveryJob{seq: seq, key: string(message.Key), ctx: ctx, method: method, message: message}
+				if highWaterMark := claim.HighWaterMarkOffset(); highWaterMark > message.Offset {
+					mqconsumerPartitionLag.WithLabelValues(c.conf.Group, message.Topic, partitionLabel).Set(float64(highWaterMark - message.Offset - 1))
+				} else {
+					mqconsumerPartitionLag.WithLabelValues(c.conf.Group, message.Topic, partitionLabel).Set(0)
+				}
+				job := deliveryJob{seq: seq, key: string(message.Key), ctx: ctx, method: method, receivedAt: time.Now(), message: message}
 				if !executor.submit(job) {
 					return
 				}
@@ -538,7 +580,7 @@ func (c *Consumer) ConsumeClaim(session sarama.ConsumerGroupSession, claim saram
 		if safe {
 			pendingBatch = result.job.message
 			pendingCount++
-			if pendingCount >= commitBatchMaxMessages {
+			if pendingCount >= batchLimit {
 				flushBatch()
 			}
 		} else {

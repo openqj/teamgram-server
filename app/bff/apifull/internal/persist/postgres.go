@@ -755,6 +755,9 @@ func OpenPostgresDB(dsn string) (*sql.DB, error) {
 	if err != nil {
 		return nil, err
 	}
+	if strings.TrimSpace(config.RuntimeParams["application_name"]) == "" {
+		config.RuntimeParams["application_name"] = "teamgram-apifull"
+	}
 	if config.ConnectTimeout <= 0 {
 		config.ConnectTimeout = 10 * time.Second
 	}

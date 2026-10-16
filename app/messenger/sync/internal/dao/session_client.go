@@ -218,9 +218,21 @@ func NewSession(c zrpc.RpcClientConf, options SessionOptions) (*Session, error) 
 	return sess, nil
 }
 
-func (d *Dao) watch(c zrpc.RpcClientConf) {
-	sub, _ := discov.NewSubscriber(c.Etcd.Hosts, c.Etcd.Key)
+func (d *Dao) watch(ctx context.Context, c zrpc.RpcClientConf) {
+	sub, err := discov.NewSubscriber(c.Etcd.Hosts, c.Etcd.Key)
+	if err != nil {
+		logx.Errorf("watchComet NewSubscriber(%+v) error(%v)", c.Etcd.Hosts, err)
+		return
+	}
+	defer sub.Close()
+	var updateMu sync.Mutex
 	update := func() {
+		if ctx.Err() != nil {
+			return
+		}
+		updateMu.Lock()
+		defer updateMu.Unlock()
+
 		values := sub.Values()
 		if len(values) == 0 {
 			return
@@ -249,9 +261,11 @@ func (d *Dao) watch(c zrpc.RpcClientConf) {
 				})
 			}
 			if err != nil {
-				d.mu.Unlock()
 				logx.Errorf("watchComet NewClient(%+v) error(%v)", values, err)
-				return
+				// A node can be present in etcd before its gRPC listener is
+				// ready. Keep healthy nodes and let the periodic refresh below
+				// retry this node instead of permanently losing its shard.
+				continue
 			}
 			sessions[v] = cli
 		}
@@ -275,6 +289,20 @@ func (d *Dao) watch(c zrpc.RpcClientConf) {
 
 	sub.AddListener(update)
 	update()
+
+	// etcd membership does not change when a process is still starting. Retry
+	// failed stream creation without requiring a second membership event; this
+	// closes the startup race that otherwise leaves Sync with a stale shard map.
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			update()
+		}
+	}
 }
 
 func (d *Dao) PushUpdatesToSession(ctx context.Context, serverId string, msg *session.TLSessionPushUpdatesData) (err error) {

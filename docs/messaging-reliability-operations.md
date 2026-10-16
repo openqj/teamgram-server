@@ -32,10 +32,40 @@ The current runtime uses bounded `pgxpool` instances; PgBouncer is not part of
 this deployment. Keep each service pool's `MaxConns` explicit and budget the
 sum across all replicas and service processes below PostgreSQL `max_connections`,
 leaving room for migrations, exporters, operators, replication, and failover.
-Do not raise pool sizes from a single saturation alert. The message service
+The checked-in `teamgramd/etc2/sync.yaml` uses `MinConns: 1` and defaults
+`TEAMGRAM_SYNC_POSTGRES_MAX_CONNS` to 16 in the Compose deployments;
+two 5,000-recipient isolated A/B reruns kept message integrity and reduced the
+aggregate Sync database stages, but did not meet the 2-second live-delivery
+budget. Treat this as a measured local candidate, not a production capacity
+guarantee, and recalculate the pool budget when adding replicas.
+ A 32-connection, 1,000-user A/B did not produce a stable live-latency
+improvement, so do not raise the default without a fixed-resource workload.
+Do not raise pool sizes from a single saturation alert. Sync exports
+`teamgram_sync_postgres_pool_connections`,
+`teamgram_sync_postgres_pool_max_connections`, and pgxpool acquire, empty-pool
+wait, and canceled-acquire snapshots. The cumulative snapshots reset on process
+restart; compare their `delta()` over the same load window with
+`mqconsumer_handler_queue_seconds` and `mqconsumer_record_age_seconds`. A high
+empty-pool delta together with acquired connections near max supports a pool
+capacity investigation. A low empty-pool delta while Kafka queue age remains
+high points elsewhere in the pipeline. The message service
 exports its pool use and acquire wait; PostgreSQL exporter collectors cover
-lock waits, long queries, WAL bytes, checkpoint counters, archiver errors, and
-replication lag.
+connection usage and capacity, lock waits, long queries, WAL bytes, checkpoint
+counters, archiver errors, and replication lag. The Compose deployment defaults
+to `TEAMGRAM_POSTGRES_MAX_CONNECTIONS=256`, which leaves headroom for one
+`runall-docker.sh` instance; multiply the pool budget and override this value
+when running multiple backend replicas. The connection-capacity alert fires at
+80% of usable connections for five minutes.
+
+After a successful Sync fan-out, receipt completion updates are grouped into a
+transaction of at most 64 rows with a 2ms collection window. The handler waits
+for that transaction before Kafka acknowledgement, so retry and ordering
+semantics remain unchanged. In a 1,000-user isolated run this reduced Sync pool
+acquire count by 44.2% and cumulative empty-pool wait by 71.7%, while the full
+delivery and recovery checks still passed. This is database-pressure evidence,
+not an end-to-end live-latency guarantee; compare the pool snapshots with
+`mqconsumer_record_age_seconds`, handler queue, gateway queue and client-visible
+latency before changing the batch bounds.
 
 The production Compose overlay requires `TEAMGRAM_KAFKA_DLQ_TOPIC`. Provision
 that topic before rollout and manage its retention and ACLs as part of the
@@ -51,12 +81,25 @@ The Sync consumer also uses bounded per-key concurrency. Records with the same
 Kafka key (the recipient user ID) stay in order, while different keys can be
 handled concurrently; offset marks are committed only after all earlier
 records in the partition have completed. `TEAMGRAM_KAFKA_HANDLER_CONCURRENCY`
-defaults to `8` in the production overlay. Increase it only after checking
-`mqconsumer_record_age_seconds`, `mqconsumer_oldest_uncommitted_seconds`,
-gateway push latency, CPU, and PostgreSQL pool wait under the same workload.
-The setting is intentionally process-local, so scale Sync replicas with Kafka
-partition count and keep the total handler concurrency within the measured
-gateway, database, and session-service budget.
+defaults to `64` in the production overlay. Safe, receipt-backed Sync push
+records use a bounded offset batch of up to 64 messages or 250ms; override
+`TEAMGRAM_KAFKA_SAFE_COMMIT_BATCH_SIZE` only within the checked-in bound when
+replaying a measured workload. Failed or non-idempotent records still force an
+immediate commit boundary. Check `mqconsumer_record_age_seconds`,
+`mqconsumer_handler_queue_seconds`, `mqconsumer_partition_lag`,
+`mqconsumer_offset_commit_seconds`, `mqconsumer_oldest_uncommitted_seconds`,
+gateway push latency, CPU, and PostgreSQL pool wait under the same workload
+before changing either setting. The settings are process-local, so scale Sync
+replicas with Kafka partition count and keep total handler concurrency within
+the measured gateway, database, and session-service budget.
+
+APIFull channel writes also expose
+`teamgram_apifull_channel_persistence_seconds` with `stage=message_tx` and
+`stage=outbox_write`. Compare these stages with client ACK and live-delivery
+latency before attributing fan-out delay to PostgreSQL; the histogram covers
+the backend persistence phase only. Channel send RPCs enqueue live delivery
+after the canonical/outbox commit; the bounded background dispatch and the
+outbox reconciler own retries after the client ACK returns.
 
 Inspect dead letters without deleting or rewriting them:
 

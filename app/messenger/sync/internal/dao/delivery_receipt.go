@@ -43,17 +43,18 @@ func loadDeliveryReceipt(ctx context.Context, tx pgx.Tx, userID int64) (*Prepare
 	if receipt.ConsumerGroup == "" || receipt.Topic == "" || receipt.Partition < 0 || receipt.Offset < 0 || len(receipt.RequestHash) != 32 {
 		return nil, errors.New("sync: invalid Kafka delivery identity")
 	}
-	if _, err := tx.Exec(ctx, `INSERT INTO sync_delivery_receipts
- (consumer_group,topic,partition_id,message_offset,user_id,request_hash)
- VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT DO NOTHING`,
-		receipt.ConsumerGroup, receipt.Topic, receipt.Partition, receipt.Offset, userID, receipt.RequestHash); err != nil {
-		return nil, err
-	}
 	var hash, data []byte
 	var delivered bool
-	if err := tx.QueryRow(ctx, `SELECT request_hash,delivery_data,delivered FROM sync_delivery_receipts
- WHERE consumer_group=$1 AND topic=$2 AND partition_id=$3 AND message_offset=$4 AND user_id=$5 FOR UPDATE`,
-		receipt.ConsumerGroup, receipt.Topic, receipt.Partition, receipt.Offset, userID).Scan(&hash, &data, &delivered); err != nil {
+	// A no-op conflict update makes PostgreSQL return either the newly inserted
+	// row or the existing row in one round trip. It also takes the row lock that
+	// the previous INSERT-plus-SELECT path used for concurrent retries.
+	if err := tx.QueryRow(ctx, `INSERT INTO sync_delivery_receipts
+	 (consumer_group,topic,partition_id,message_offset,user_id,request_hash)
+	 VALUES ($1,$2,$3,$4,$5,$6)
+	 ON CONFLICT (consumer_group,topic,partition_id,message_offset,user_id)
+	 DO UPDATE SET request_hash=sync_delivery_receipts.request_hash
+	 RETURNING request_hash,delivery_data,delivered`, receipt.ConsumerGroup, receipt.Topic, receipt.Partition, receipt.Offset, userID, receipt.RequestHash).
+		Scan(&hash, &data, &delivered); err != nil {
 		return nil, err
 	}
 	if !bytes.Equal(hash, receipt.RequestHash) {
@@ -95,7 +96,16 @@ func (d *Dao) MarkDeliveryComplete(ctx context.Context, userID int64) error {
 	if err := d.updateStoreAvailable(); err != nil {
 		return err
 	}
-	return postgres.WithTx(ctx, d.Pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+	if d.Postgres != nil && d.Postgres.completionBatch != nil {
+		return d.Postgres.completionBatch.Submit(ctx, userID, receipt)
+	}
+	return markDeliveryCompleteNow(ctx, d.Pool, userID, receipt)
+}
+
+func markDeliveryCompleteNow(ctx context.Context, pool interface {
+	BeginTx(context.Context, pgx.TxOptions) (pgx.Tx, error)
+}, userID int64, receipt DeliveryReceipt) error {
+	return postgres.WithTx(ctx, pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
 		_, err := tx.Exec(ctx, `UPDATE sync_delivery_receipts SET delivered=TRUE,delivered_at=clock_timestamp()
  WHERE consumer_group=$1 AND topic=$2 AND partition_id=$3 AND message_offset=$4
  AND user_id=$5 AND request_hash=$6 AND delivery_data IS NOT NULL`, receipt.ConsumerGroup, receipt.Topic, receipt.Partition, receipt.Offset, userID, receipt.RequestHash)

@@ -66,6 +66,8 @@ func insertChannelDeliveryTx(tx *sql.Tx, channelID, senderID, excludeAuthKeyID i
 // The recipient snapshot is created in the same transaction as the canonical
 // write so a worker restart cannot lose an event between those two steps.
 func insertChannelDeliveryEventTx(tx *sql.Tx, channelID, senderID, excludeAuthKeyID int64, eventType string, rows []ChannelMessage, messageIDs []int32, pinned bool, ptsFrom, ptsTo int32) error {
+	started := time.Now()
+	defer observeChannelPersistence("outbox_write", started)
 	if eventType == "" || channelID <= 0 || ptsFrom <= 0 || ptsTo < ptsFrom {
 		return ErrInvalidMessageID
 	}

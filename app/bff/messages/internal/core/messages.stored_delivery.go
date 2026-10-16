@@ -12,6 +12,10 @@ import (
 	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
+const channelPushConcurrency = 2
+
+var channelPushSlots = make(chan struct{}, channelPushConcurrency)
+
 func schedulePeer(userID int64, peer *mtproto.PeerUtil) (*mtproto.Peer, error) {
 	if userID <= 0 {
 		return nil, mtproto.ErrAuthKeyUnregistered
@@ -59,7 +63,7 @@ func (c *MessagesCore) deliverStored(inputPeer *mtproto.InputPeer, peer *mtproto
 		if err != nil {
 			return nil, true, err
 		}
-		if err = c.pushChannelUpdates(up); err != nil {
+		if err = c.pushChannelUpdatesAsync(up); err != nil {
 			return up, true, err
 		}
 		return up, true, nil
@@ -67,7 +71,35 @@ func (c *MessagesCore) deliverStored(inputPeer *mtproto.InputPeer, peer *mtproto
 	return nil, false, nil
 }
 
-func (c *MessagesCore) pushChannelUpdates(updates *mtproto.Updates) error {
+func (c *MessagesCore) pushChannelUpdatesAsync(updates *mtproto.Updates) error {
+	if err := c.prepareChannelUpdates(updates); err != nil {
+		return err
+	}
+	select {
+	case channelPushSlots <- struct{}{}:
+	default:
+		// The durable outbox reconciler will pick up this delivery. Keeping the
+		// request path non-blocking prevents concurrent channel posts from
+		// creating an unbounded goroutine burst.
+		return nil
+	}
+
+	pushCtx := context.Background()
+	if c.ctx != nil {
+		pushCtx = context.WithoutCancel(c.ctx)
+	}
+	go func() {
+		defer func() { <-channelPushSlots }()
+		ctx, cancel := context.WithTimeout(pushCtx, 30*time.Second)
+		defer cancel()
+		if err := c.pushChannelUpdates(ctx, updates); err != nil {
+			c.Logger.Errorf("channel delivery dispatch failed: %v", err)
+		}
+	}()
+	return nil
+}
+
+func (c *MessagesCore) prepareChannelUpdates(updates *mtproto.Updates) error {
 	if c == nil || c.MD == nil || c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.SyncClient == nil {
 		return mtproto.ErrMethodNotImpl
 	}
@@ -80,7 +112,15 @@ func (c *MessagesCore) pushChannelUpdates(updates *mtproto.Updates) error {
 		return err
 	}
 	updates.Chats = []*mtproto.Chat{chat}
-	_, err = channelview.DeliverPendingChannelUpdates(c.ctx, key, false, func(pushCtx context.Context, userID int64, excludes []int64, recipientUpdates *mtproto.Updates) error {
+	return nil
+}
+
+func (c *MessagesCore) pushChannelUpdates(ctx context.Context, updates *mtproto.Updates) error {
+	key, err := channelview.DeliveryKeyFromUpdates(updates)
+	if err != nil {
+		return err
+	}
+	_, err = channelview.DeliverPendingChannelUpdates(ctx, key, false, func(pushCtx context.Context, userID int64, excludes []int64, recipientUpdates *mtproto.Updates) error {
 		callCtx, cancel := context.WithTimeout(pushCtx, 10*time.Second)
 		defer cancel()
 		result, pushErr := c.svcCtx.Dao.SyncClient.SyncPushUpdatesIfNot(callCtx, &syncpb.TLSyncPushUpdatesIfNot{

@@ -2,6 +2,10 @@ services:
   postgres:
     image: postgres:18
     container_name: teamgram-postgres
+    command:
+      - postgres
+      - -c
+      - "max_connections=${TEAMGRAM_POSTGRES_MAX_CONNECTIONS:-256}"
     environment:
       POSTGRES_DB: "${POSTGRES_DB:?POSTGRES_DB is required}"
       POSTGRES_USER: "${POSTGRES_USER:?POSTGRES_USER is required}"
@@ -56,6 +60,7 @@ services:
     # PostgreSQL-only runtime contract even when TEAMGRAM_POSTGRES_DSN is set.
     environment: !override
       TEAMGRAM_POSTGRES_DSN: "${TEAMGRAM_POSTGRES_DSN:?TEAMGRAM_POSTGRES_DSN is required}"
+      TEAMGRAM_SYNC_POSTGRES_MAX_CONNS: "${TEAMGRAM_SYNC_POSTGRES_MAX_CONNS:-16}"
       TEAMGRAM_KAFKA_DLQ_TOPIC: "${TEAMGRAM_KAFKA_DLQ_TOPIC:?Pre-create a Kafka dead-letter topic}"
       TEAMGRAM_KAFKA_MAX_HANDLER_ATTEMPTS: "${TEAMGRAM_KAFKA_MAX_HANDLER_ATTEMPTS:-10}"
       TEAMGRAM_KAFKA_RETRY_DELAY_MS: "${TEAMGRAM_KAFKA_RETRY_DELAY_MS:-1000}"

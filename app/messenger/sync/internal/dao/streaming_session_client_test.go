@@ -62,6 +62,19 @@ func ackResponse(requestID string, success bool) *session.SessionStreamResponse 
 	return &session.SessionStreamResponse{RequestId: requestID, Payload: &session.SessionStreamResponse_Ack{Ack: &session.SessionStreamAck{Success: success}}}
 }
 
+func TestSessionStreamKeepaliveUsesServerCompatibleInterval(t *testing.T) {
+	params := sessionStreamKeepaliveParams()
+	if params.Time < 5*time.Minute {
+		t.Fatalf("keepalive interval=%s, want at least 5m", params.Time)
+	}
+	if params.Timeout <= 0 {
+		t.Fatalf("keepalive timeout=%s, want a positive timeout", params.Timeout)
+	}
+	if params.PermitWithoutStream {
+		t.Fatal("keepalive must not ping without an active stream")
+	}
+}
+
 func TestStreamingSessionRequiresMatchingSuccessfulAck(t *testing.T) {
 	for _, fixture := range []struct {
 		name     string

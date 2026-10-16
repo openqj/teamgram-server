@@ -1,0 +1,208 @@
+name: Layer 229 Session Verification
+
+on:
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'app/**'
+      - 'proto/**'
+      - 'docker/web-isolated/**'
+      - '.github/workflows/layer229-session-verification.yml'
+  workflow_dispatch:
+
+jobs:
+  session-probes:
+    name: Run Session Tracking Probes
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: teamgram
+          POSTGRES_PASSWORD: teamgram
+          POSTGRES_DB: teamgram
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Start backend service
+        run: |
+          docker-compose -f docker-compose.yml up -d teamgram
+          # Wait for backend to be ready
+          for i in {1..30}; do
+            if docker exec teamgram curl -f http://localhost:8443/health 2>/dev/null; then
+              echo "Backend is healthy"
+              exit 0
+            fi
+            echo "Waiting for backend... ($i/30)"
+            sleep 2
+          done
+          echo "Backend failed to start"
+          exit 1
+
+      - name: Install GramJS dependencies
+        run: |
+          cd docker/web-isolated
+          npm ci
+        env:
+          TEAMGRAM_GRAMJS_DIR: ../../src/lib/gramjs
+
+      - name: Run probe-account-session-settings
+        continue-on-error: true
+        run: |
+          cd docker/web-isolated
+          npx ts-node probe-account-session-settings.ts
+        env:
+          TG_DC_HOST: 127.0.0.1
+          TG_DC_PORT: 31443
+          TEAMGRAM_GRAMJS_DIR: ../../src/lib/gramjs
+          POSTGRES_HOST: localhost
+          POSTGRES_USER: teamgram
+          POSTGRES_PASSWORD: teamgram
+          POSTGRES_DB: teamgram
+
+      - name: Run probe-channel-message-lifecycle
+        continue-on-error: true
+        run: |
+          cd docker/web-isolated
+          npx ts-node probe-channel-message-lifecycle.ts
+        env:
+          TG_DC_HOST: 127.0.0.1
+          TG_DC_PORT: 31443
+          TEAMGRAM_GRAMJS_DIR: ../../src/lib/gramjs
+
+      - name: Run restart-recovery-test
+        continue-on-error: true
+        run: |
+          cd tools
+          npx ts-node restart-recovery-test.ts
+        env:
+          TG_DC_HOST: 127.0.0.1
+          TG_DC_PORT: 31443
+          TG_TEST_USER: testuser
+          TG_TEST_CHANNEL_ID: 1
+          TEAMGRAM_GRAMJS_DIR: ../src/lib/gramjs
+          POSTGRES_HOST: localhost
+          POSTGRES_USER: teamgram
+          POSTGRES_PASSWORD: teamgram
+          POSTGRES_DB: teamgram
+
+      - name: Run multi-session-update-probe
+        continue-on-error: true
+        run: |
+          cd docker/web-isolated
+          npx ts-node multi-session-update-probe.ts
+        env:
+          TG_DC_HOST: 127.0.0.1
+          TG_DC_PORT: 31443
+          TG_USER_A: testuser_a
+          TG_USER_B: testuser_b
+          TG_TEST_CHANNEL_ID: 1
+          TEAMGRAM_GRAMJS_DIR: ../../src/lib/gramjs
+
+      - name: Collect probe reports
+        if: always()
+        run: |
+          mkdir -p probe-reports
+          cp /tmp/teamgram-probe-*.json probe-reports/ 2>/dev/null || true
+          cp /tmp/teamgram-restart-recovery-*.json probe-reports/ 2>/dev/null || true
+          cp /tmp/teamgram-multi-session-update-*.json probe-reports/ 2>/dev/null || true
+
+          if [ -d probe-reports ] && [ "$(ls -A probe-reports)" ]; then
+            echo "## Session Verification Reports" > probe-summary.md
+            echo "" >> probe-summary.md
+            echo "Generated at: $(date -u)" >> probe-summary.md
+            echo "" >> probe-summary.md
+            ls -lh probe-reports/ | tail -n +2 | awk '{print "- " $9 " (" $5 ")"}' >> probe-summary.md
+          else
+            echo "No probe reports generated"
+          fi
+
+      - name: Upload probe reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: layer229-session-verification-reports
+          path: probe-reports/
+          retention-days: 30
+
+      - name: Comment PR with results
+        if: always() && github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+
+            let summary = '## Layer 229 Session Verification Results\n\n';
+
+            const reportDir = 'probe-reports';
+            if (fs.existsSync(reportDir)) {
+              const files = fs.readdirSync(reportDir);
+              if (files.length > 0) {
+                summary += `Found ${files.length} probe reports:\n`;
+                files.forEach(file => {
+                  const fullPath = path.join(reportDir, file);
+                  const stats = fs.statSync(fullPath);
+                  summary += `- ${file} (${stats.size} bytes)\n`;
+
+                  try {
+                    const report = JSON.parse(fs.readFileSync(fullPath, 'utf8'));
+                    if (report.violations) {
+                      const allViolations = Object.values(report.violations).flat();
+                      if (allViolations.length > 0) {
+                        summary += `  - ⚠️ ${allViolations.length} Layer 229 violations detected\n`;
+                      } else {
+                        summary += `  - ✓ No violations\n`;
+                      }
+                    }
+                  } catch (e) {
+                    summary += `  - Could not parse report\n`;
+                  }
+                });
+              } else {
+                summary += 'No probe reports were generated.\n';
+              }
+            } else {
+              summary += 'Probe reports directory not found.\n';
+            }
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: summary
+            });
+
+      - name: Fail if Layer 229 violations detected
+        if: always()
+        run: |
+          violation_count=0
+          for report in probe-reports/*.json; do
+            if [ -f "$report" ]; then
+              violations=$(jq '.violations[] | .[] | length' "$report" 2>/dev/null || echo 0)
+              violation_count=$((violation_count + violations))
+            fi
+          done
+
+          if [ $violation_count -gt 0 ]; then
+            echo "❌ Found $violation_count Layer 229 violations across all probes"
+            exit 1
+          else
+            echo "✅ All probes passed Layer 229 verification"
+            exit 0
+          fi

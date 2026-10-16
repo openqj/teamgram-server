@@ -23,7 +23,9 @@ import (
 
 // A single session stream serves all auth keys assigned to one session node.
 // Keep the stream bounded while preserving the order of updates for one
-// permanent auth key. Unrelated users continue concurrently.
+// permanent auth key. Unrelated users continue concurrently. The 128 limit
+// keeps a 2,500-user node from overloading the gateway event loops while the
+// keyed executor still prevents same-auth reordering.
 const sessionStreamHandlerConcurrency = 128
 
 func sessionStreamRequestKey(req *session.SessionStreamRequest) string {

@@ -1,5 +1,49 @@
 # Custom postgres_exporter collectors for the production database runbook.
 # Keep this file read-only: values are diagnostics, never a cleanup command.
+teamgram_connections:
+  query: |
+    SELECT COALESCE(NULLIF(application_name, ''), '(unset)') AS application_name,
+           state,
+           count(*)::double precision AS connection_count
+    FROM pg_stat_activity
+    WHERE backend_type = 'client backend'
+    GROUP BY 1, 2
+  metrics:
+    - application_name:
+        usage: "LABEL"
+    - state:
+        usage: "LABEL"
+    - connection_count:
+        usage: "GAUGE"
+        description: "PostgreSQL client connections by application and state"
+teamgram_postgres_connection_capacity:
+  query: |
+    WITH settings AS (
+      SELECT current_setting('max_connections')::double precision AS max_connections,
+             current_setting('superuser_reserved_connections')::double precision AS superuser_reserved_connections
+    ), activity AS (
+      SELECT count(*) FILTER (WHERE backend_type = 'client backend')::double precision AS client_connections
+      FROM pg_stat_activity
+    )
+    SELECT settings.max_connections,
+           settings.superuser_reserved_connections,
+           activity.client_connections,
+           activity.client_connections /
+             GREATEST(settings.max_connections - settings.superuser_reserved_connections, 1) AS utilization
+    FROM settings CROSS JOIN activity
+  metrics:
+    - max_connections:
+        usage: "GAUGE"
+        description: "PostgreSQL max_connections setting"
+    - superuser_reserved_connections:
+        usage: "GAUGE"
+        description: "PostgreSQL connections reserved for superusers"
+    - client_connections:
+        usage: "GAUGE"
+        description: "Current PostgreSQL client backend connections"
+    - utilization:
+        usage: "GAUGE"
+        description: "Current client connections divided by usable PostgreSQL connections"
 pg_lock_waits:
   query: |
     SELECT count(*)::double precision AS waiting

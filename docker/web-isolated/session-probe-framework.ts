@@ -1,6 +1,4 @@
 import { execFileSync } from 'node:child_process';
-import { TelegramClient } from 'telegram';
-import { Api } from 'telegram/tl';
 
 type SessionEvent = {
   timestamp: number;
@@ -35,10 +33,11 @@ type Layer229Violation = {
 
 export class SessionProbe {
   private state: SessionState;
-  private client: TelegramClient;
+  private client: any;
   private violations: Layer229Violation[] = [];
+  private Api: any;
 
-  constructor(sessionId: string, client: TelegramClient, userId: number, authKeyId: string) {
+  constructor(sessionId: string, client: any, userId: number, authKeyId: string, Api?: any) {
     this.state = {
       sessionId,
       userId,
@@ -52,6 +51,7 @@ export class SessionProbe {
       events: [],
     };
     this.client = client;
+    this.Api = Api;
   }
 
   async connect(): Promise<void> {
@@ -125,7 +125,10 @@ export class SessionProbe {
 
   async captureState(): Promise<void> {
     try {
-      const stateResp = await this.rpc('updates.getState', new Api.updates.GetState(), 'updates.State');
+      if (!this.Api) {
+        throw new Error('Api object not provided to SessionProbe');
+      }
+      const stateResp = await this.rpc('updates.getState', new this.Api.updates.GetState(), 'updates.State');
       if (stateResp.pts !== undefined) this.state.pts = stateResp.pts;
       if (stateResp.seq !== undefined) this.state.seq = stateResp.seq;
       if (stateResp.qts !== undefined) this.state.qts = stateResp.qts;

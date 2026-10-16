@@ -10,8 +10,11 @@
 package core
 
 import (
+	"time"
+
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/interface/session/session"
+	"github.com/teamgram/teamgram-server/app/messenger/sync/internal/dao"
 	"github.com/teamgram/teamgram-server/app/messenger/sync/sync"
 	"github.com/teamgram/teamgram-server/app/service/status/status"
 )
@@ -37,7 +40,9 @@ func (c *SyncCore) SyncPushUpdatesIfNot(in *sync.TLSyncPushUpdatesIfNot) (*mtpro
 		c.Logger.Errorf("sync.pushUpdatesIfNot - process updates error: %v", err)
 		return nil, err
 	}
+	stageStarted := time.Now()
 	prepared, err := c.svcCtx.Dao.PrepareUpdates(c.ctx, in.GetUserId(), in.GetUpdates(), in.GetUpdates().GetAuthKeyId(), in.GetExcludes())
+	dao.ObserveDeliveryStage("prepare_if_not", stageStarted, err)
 	if err != nil {
 		return nil, err
 	}
@@ -45,9 +50,11 @@ func (c *SyncCore) SyncPushUpdatesIfNot(in *sync.TLSyncPushUpdatesIfNot) (*mtpro
 		return mtproto.EmptyVoid, nil
 	}
 
+	stageStarted = time.Now()
 	statusList, err := c.svcCtx.Dao.StatusClient.StatusGetUserOnlineSessions(c.ctx, &status.TLStatusGetUserOnlineSessions{
 		UserId: in.GetUserId(),
 	})
+	dao.ObserveDeliveryStage("status_lookup_if_not", stageStarted, err)
 	if err != nil {
 		c.Logger.Errorf("sync.pushUpdatesIfNot - get online sessions error: %v", err)
 		return nil, err
@@ -64,6 +71,7 @@ func (c *SyncCore) SyncPushUpdatesIfNot(in *sync.TLSyncPushUpdatesIfNot) (*mtpro
 		}
 	}
 
+	stageStarted = time.Now()
 	for _, sess := range statusList.GetUserSessions() {
 		if sess == nil {
 			continue
@@ -93,9 +101,17 @@ func (c *SyncCore) SyncPushUpdatesIfNot(in *sync.TLSyncPushUpdatesIfNot) (*mtpro
 			return nil, err
 		}
 	}
-	if err := c.svcCtx.Dao.MarkDeliveryComplete(c.ctx, in.GetUserId()); err != nil {
+	dao.ObserveDeliveryStage("session_dispatch_if_not", stageStarted, err)
+	if err != nil {
 		return nil, err
 	}
+
+	stageStarted = time.Now()
+	if err := c.svcCtx.Dao.MarkDeliveryComplete(c.ctx, in.GetUserId()); err != nil {
+		dao.ObserveDeliveryStage("mark_complete_if_not", stageStarted, err)
+		return nil, err
+	}
+	dao.ObserveDeliveryStage("mark_complete_if_not", stageStarted, nil)
 
 	return mtproto.EmptyVoid, nil
 }
