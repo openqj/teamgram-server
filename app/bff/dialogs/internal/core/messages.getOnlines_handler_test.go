@@ -88,6 +88,31 @@ func TestMessagesGetOnlinesRejectsInvalidPeer(t *testing.T) {
 	}
 }
 
+func TestMessagesGetOnlinesRequiresAuthAndProviders(t *testing.T) {
+	peer := mtproto.MakeTLInputPeerChat(&mtproto.InputPeer{ChatId: 77}).To_InputPeer()
+	cases := []struct {
+		name string
+		core *DialogsCore
+		want error
+	}{
+		{name: "nil core", core: nil, want: mtproto.ErrAuthKeyUnregistered},
+		{name: "missing metadata", core: &DialogsCore{}, want: mtproto.ErrAuthKeyUnregistered},
+		{name: "nil service context", core: &DialogsCore{MD: &metadata.RpcMetadata{UserId: 42}}, want: mtproto.ErrInternalServerError},
+		{name: "nil dao", core: &DialogsCore{MD: &metadata.RpcMetadata{UserId: 42}, svcCtx: &svc.ServiceContext{}}, want: mtproto.ErrInternalServerError},
+		{name: "nil chat client", core: &DialogsCore{svcCtx: &svc.ServiceContext{Dao: &dao.Dao{UserClient: &getOnlinesUserClientStub{}}}, MD: &metadata.RpcMetadata{UserId: 42}}, want: mtproto.ErrInternalServerError},
+		{name: "nil user client", core: &DialogsCore{svcCtx: &svc.ServiceContext{Dao: &dao.Dao{ChatClient: &getOnlinesChatClientStub{}}}, MD: &metadata.RpcMetadata{UserId: 42}}, want: mtproto.ErrInternalServerError},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := tc.core.MessagesGetOnlines(&mtproto.TLMessagesGetOnlines{Peer: peer})
+			if got != nil || !errors.Is(err, tc.want) {
+				t.Fatalf("MessagesGetOnlines() = (%v, %v), want (nil, %v)", got, err, tc.want)
+			}
+		})
+	}
+}
+
 func TestMessagesGetOnlinesFailsWhenPresenceUnavailable(t *testing.T) {
 	core := newGetOnlinesTestCore(&getOnlinesChatClientStub{err: errors.New("chat service unavailable")}, &getOnlinesUserClientStub{})
 	result, err := core.MessagesGetOnlines(&mtproto.TLMessagesGetOnlines{Peer: mtproto.MakeTLInputPeerChat(&mtproto.InputPeer{ChatId: 77}).To_InputPeer()})

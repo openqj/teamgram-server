@@ -23,6 +23,40 @@ type botAPIInputProfilePhoto struct {
 	MainFrameTimestamp float64 `json:"main_frame_timestamp"`
 }
 
+// The profile adapters currently persist one global bot profile. Telegram's
+// scoped and localized variants need separate storage, so reject non-default
+// variants instead of silently applying them globally.
+func botAPIProfileOptionsResult(request *botAPIRequest) (int, int, string, bool) {
+	if request == nil {
+		return 0, 0, "", false
+	}
+	if request.has("scope") {
+		raw := strings.TrimSpace(string(request.raw("scope")))
+		if raw != "" && raw != "null" {
+			var scope struct {
+				Type string `json:"type"`
+			}
+			if err := request.json("scope", &scope); err != nil || strings.TrimSpace(scope.Type) == "" {
+				return http.StatusBadRequest, 400, "Bad Request: scope is invalid", true
+			}
+			if strings.TrimSpace(scope.Type) != "default" {
+				return http.StatusNotImplemented, 501, "Not Implemented: scope variants are not supported by the Layer 229 profile adapter", true
+			}
+		}
+	}
+	if request.has("language_code") {
+		raw := strings.TrimSpace(string(request.raw("language_code")))
+		if raw != "" && raw != "null" && request.string("language_code") != "" {
+			languageCode := request.string("language_code")
+			if len(languageCode) != 2 || (languageCode[0] < 'A' || languageCode[0] > 'Z') && (languageCode[0] < 'a' || languageCode[0] > 'z') || (languageCode[1] < 'A' || languageCode[1] > 'Z') && (languageCode[1] < 'a' || languageCode[1] > 'z') {
+				return http.StatusBadRequest, 400, "Bad Request: language_code is invalid", true
+			}
+			return http.StatusNotImplemented, 501, "Not Implemented: language_code variants are not supported by the Layer 229 profile adapter", true
+		}
+	}
+	return 0, 0, "", false
+}
+
 func setMyProfilePhoto(ctx *svc.ServiceContext, r *http.Request, botID int64, request *botAPIRequest) (any, int, int, string) {
 	if ctx == nil || ctx.UserChannelProfilesClient == nil {
 		return nil, http.StatusNotImplemented, 501, "Not Implemented: profile photo service is not configured"

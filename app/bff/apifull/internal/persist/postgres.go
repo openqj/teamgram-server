@@ -46,6 +46,7 @@ var requiredReadOnlyPostgresMigrations = []string{
 	"096_user_premium_payment_recovery",
 	"097_apifull_payment_recovery",
 	"101_apifull_channel_peek_access",
+	"103_apifull_gift_payment_request",
 }
 
 var requiredReadOnlyPostgresSchemaQueries = []string{
@@ -61,6 +62,7 @@ var requiredReadOnlyPostgresSchemaQueries = []string{
 	`SELECT id, source_channel_id, source_message_id, destination_peer_type, destination_peer_id, destination_message_id, message_json FROM apifull_public_forward_message LIMIT 0`,
 	`SELECT id, source_user_id, source_story_id, destination_peer_type, destination_peer_id, destination_story_id, story_json, peer_json FROM apifull_public_forward_story LIMIT 0`,
 	`SELECT gift_id FROM apifull_gift_chat_theme LIMIT 0`,
+	`SELECT id, payment_request_id FROM apifull_gift LIMIT 0`,
 	`SELECT connection_id, owner_user_id, bot_user_id, dc_id, qts FROM apifull_business_connection LIMIT 0`,
 	`SELECT id, bot_user_id, connection_id, qts, state, claim_token, payload FROM apifull_business_connection_outbox LIMIT 0`,
 	`SELECT query_id, bot_user_id, buyer_user_id, stage, payload, currency, amount, shipping_options, expires_at FROM apifull_bot_payment_query LIMIT 0`,
@@ -643,7 +645,7 @@ func openPostgres(dsn string, createSchema bool) error {
 			`SELECT request_id, user_id, provider, transaction_id, months, state FROM apifull_payment_entitlement_outbox LIMIT 0`,
 			`SELECT user_id, name, phone, email, credentials_saved FROM apifull_payment_saved_info LIMIT 0`,
 			`SELECT user_id, token_digest, valid_until FROM apifull_tmp_password LIMIT 0`,
-			`SELECT id, from_user, to_user, slug, stars, saved FROM apifull_gift LIMIT 0`,
+			`SELECT id, from_user, to_user, slug, stars, saved, payment_request_id FROM apifull_gift LIMIT 0`,
 			`SELECT id, owner_user_id, title, position FROM apifull_gift_collection LIMIT 0`,
 			`SELECT collection_id, gift_id, position FROM apifull_gift_collection_item LIMIT 0`,
 			`SELECT owner_user_id, peer_type, peer_id, enabled FROM apifull_gift_notification_setting LIMIT 0`,

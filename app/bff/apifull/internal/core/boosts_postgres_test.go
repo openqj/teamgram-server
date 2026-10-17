@@ -27,7 +27,7 @@ func TestBoostMethodsUsePostgresInventory(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = domain.DeleteChannel(uid, channelID) })
 	c := &ApiFullCore{MD: &metadata.RpcMetadata{UserId: uid}}
-	peer := &mtproto.InputPeer{ChannelId: channelID}
+	peer := mtproto.MakeTLInputPeerChannel(&mtproto.InputPeer{ChannelId: channelID, AccessHash: channelID}).To_InputPeer()
 	my, err := c.PremiumApplyBoost(&mtproto.TLPremiumApplyBoost{Slots: []int32{1}, Peer: peer})
 	if err != nil || my == nil || len(my.GetMyBoosts()) != 1 {
 		t.Fatalf("apply = %#v, %v", my, err)
@@ -41,7 +41,7 @@ func TestBoostMethodsUsePostgresInventory(t *testing.T) {
 		t.Fatalf("status = %#v, %v", status, err)
 	}
 	if _, err = c.ChannelsSetBoostsToUnblockRestrictions(&mtproto.TLChannelsSetBoostsToUnblockRestrictions{
-		Channel: &mtproto.InputChannel{ChannelId: channelID}, Boosts: 1,
+		Channel: mtproto.MakeTLInputChannel(&mtproto.InputChannel{ChannelId: channelID, AccessHash: channelID}).To_InputChannel(), Boosts: 1,
 	}); err != nil {
 		t.Fatalf("set restrictions: %v", err)
 	}

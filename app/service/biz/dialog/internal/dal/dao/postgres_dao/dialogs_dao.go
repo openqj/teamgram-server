@@ -428,6 +428,34 @@ func (d *DialogsDAO) UpdateFolderUnPinnedNotIdListForFolder(ctx context.Context,
 func (d *DialogsDAO) SelectAllDialogs(ctx context.Context, userID int64) ([]dataobject.DialogsDO, error) {
 	return d.selectList(ctx, `WHERE user_id = $1 AND deleted = FALSE ORDER BY date2 DESC`, userID)
 }
+
+// SelectActiveUserIDs returns users with a non-deleted dialog updated in the
+// requested window, ordered by their most recent dialog activity.
+func (d *DialogsDAO) SelectActiveUserIDs(ctx context.Context, since int64, limit int32) ([]int64, error) {
+	if limit <= 0 {
+		limit = 10000
+	}
+	rows, err := d.db.Query(ctx, `
+		SELECT user_id
+		FROM dialogs
+		WHERE deleted = FALSE AND date2 >= $1
+		GROUP BY user_id
+		ORDER BY MAX(date2) DESC, user_id
+		LIMIT $2`, since, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	userIDs := make([]int64, 0)
+	for rows.Next() {
+		var userID int64
+		if err := rows.Scan(&userID); err != nil {
+			return nil, err
+		}
+		userIDs = append(userIDs, userID)
+	}
+	return userIDs, rows.Err()
+}
 func (d *DialogsDAO) SelectAllDialogsWithCB(ctx context.Context, userID int64, cb func(int, int, *dataobject.DialogsDO)) ([]dataobject.DialogsDO, error) {
 	list, err := d.SelectAllDialogs(ctx, userID)
 	callbackDialogs(list, cb)

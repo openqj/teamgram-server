@@ -1,3 +1,5 @@
+//go:build recommendation_experimental
+
 /*
  * Copyright (c) 2024-present,  Teamgram Authors.
  *  All rights reserved.
@@ -77,8 +79,8 @@ func (c *MessagesCore) MessagesGetRecommendedDialogs(in *mtproto.TLMessagesGetRe
 	result := mtproto.MakeTLMessagesDialogs(&mtproto.Messages_Dialogs{
 		Dialogs:  dialogList,
 		Messages: messageList,
-		Users:    []*mtproto.User{},   // TODO: 填充用户列表
-		Chats:    []*mtproto.Chat{},   // TODO: 填充聊天列表
+		Users:    []*mtproto.User{}, // TODO: 填充用户列表
+		Chats:    []*mtproto.Chat{}, // TODO: 填充聊天列表
 	}).To_Messages_Dialogs()
 
 	return result, nil

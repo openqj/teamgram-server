@@ -8,10 +8,7 @@
 package core
 
 import (
-	"context"
 	"testing"
-
-	"github.com/teamgram/teamgram-server/app/service/biz/dialog/internal/dal/dataobject"
 )
 
 // TestRecommendationAlgorithm_CalculateScore 测试推荐评分计算

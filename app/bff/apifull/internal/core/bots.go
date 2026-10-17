@@ -41,6 +41,9 @@ func (c *ApiFullCore) BotsSetBotCommands(in *mtproto.TLBotsSetBotCommands) (*mtp
 	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.UserClient == nil {
 		return nil, mtproto.ErrMethodNotImpl
 	}
+	if err = c.requireBotCaller(userId); err != nil {
+		return nil, err
+	}
 	return c.svcCtx.Dao.UserSetBotCommands(c.ctx, &userpb.TLUserSetBotCommands{
 		UserId:   userId,
 		BotId:    userId,
@@ -62,6 +65,9 @@ func (c *ApiFullCore) BotsResetBotCommands(in *mtproto.TLBotsResetBotCommands) (
 	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.UserClient == nil {
 		return nil, mtproto.ErrMethodNotImpl
 	}
+	if err = c.requireBotCaller(userId); err != nil {
+		return nil, err
+	}
 	return c.svcCtx.Dao.UserSetBotCommands(c.ctx, &userpb.TLUserSetBotCommands{
 		UserId: userId,
 		BotId:  userId,
@@ -81,6 +87,9 @@ func (c *ApiFullCore) BotsGetBotCommands(in *mtproto.TLBotsGetBotCommands) (*mtp
 	}
 	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.UserClient == nil {
 		return nil, mtproto.ErrMethodNotImpl
+	}
+	if err = c.requireBotCaller(userId); err != nil {
+		return nil, err
 	}
 	info, err := c.svcCtx.Dao.UserGetBotInfo(c.ctx, &userpb.TLUserGetBotInfo{BotId: userId})
 	if err != nil {

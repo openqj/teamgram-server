@@ -53,11 +53,11 @@ func (c *ContactsCore) ContactsGetStatuses(in *mtproto.TLContactsGetStatuses) (*
 
 	idList := make([]int64, 0, len(cList.GetDatas()))
 	for _, id := range cList.GetDatas() {
-		if id == nil {
-			c.Logger.Errorf("contacts.getStatuses - user.getContactList returned a nil contact")
+		if id == nil || id.GetContactUserId() <= 0 {
+			c.Logger.Errorf("contacts.getStatuses - user.getContactList returned an invalid contact")
 			return nil, mtproto.ErrInternalServerError
 		}
-		idList = append(idList, id.ContactUserId)
+		idList = append(idList, id.GetContactUserId())
 	}
 	if len(idList) == 0 {
 		return rList, nil

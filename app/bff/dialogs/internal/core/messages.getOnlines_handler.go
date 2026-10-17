@@ -29,9 +29,15 @@ import (
 // MessagesGetOnlines
 // messages.getOnlines#6e2be050 peer:InputPeer = ChatOnlines;
 func (c *DialogsCore) MessagesGetOnlines(in *mtproto.TLMessagesGetOnlines) (*mtproto.ChatOnlines, error) {
+	if c == nil || c.MD == nil || c.MD.UserId <= 0 {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
 	if in == nil || in.GetPeer() == nil {
 		c.Logger.Errorf("messages.getOnlines - error: %v", mtproto.ErrPeerIdInvalid)
 		return nil, mtproto.ErrPeerIdInvalid
+	}
+	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.ChatClient == nil || c.svcCtx.Dao.UserClient == nil {
+		return nil, mtproto.ErrInternalServerError
 	}
 	peer := mtproto.FromInputPeer2(c.MD.UserId, in.Peer)
 	if peer == nil || peer.PeerType != mtproto.PEER_CHAT || peer.PeerId == 0 {

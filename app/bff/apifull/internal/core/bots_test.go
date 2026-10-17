@@ -33,20 +33,29 @@ import (
 
 type botCommandsUserClient struct {
 	user_client.UserClient
-	commands []*mtproto.BotCommand
+	commands  []*mtproto.BotCommand
+	profile   *mtproto.ImmutableUser
+	setCalls  int
+	infoCalls int
 }
 
 func (c *botCommandsUserClient) UserSetBotCommands(_ context.Context, in *userpb.TLUserSetBotCommands) (*mtproto.Bool, error) {
+	c.setCalls++
 	c.commands = in.GetCommands()
 	return mtproto.BoolTrue, nil
 }
 
 func (c *botCommandsUserClient) UserGetBotInfo(_ context.Context, _ *userpb.TLUserGetBotInfo) (*mtproto.BotInfo, error) {
+	c.infoCalls++
 	return mtproto.MakeTLBotInfo(&mtproto.BotInfo{Commands: c.commands}).To_BotInfo(), nil
 }
 
+func (c *botCommandsUserClient) UserGetImmutableUser(context.Context, *userpb.TLUserGetImmutableUser) (*mtproto.ImmutableUser, error) {
+	return c.profile, nil
+}
+
 func TestBotCommandsAndMenuButtonRoundTrip(t *testing.T) {
-	userClient := &botCommandsUserClient{}
+	userClient := &botCommandsUserClient{profile: &mtproto.ImmutableUser{User: &mtproto.UserData{Id: 1, Bot: &mtproto.BotData{}}}}
 	c := &ApiFullCore{
 		svcCtx: &svc.ServiceContext{Dao: &apifullDao.Dao{UserClient: userClient}},
 		MD:     &metadata.RpcMetadata{UserId: 1},

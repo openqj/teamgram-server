@@ -115,7 +115,7 @@ func (d *SavedDialogsDAO) UpdateUserUnPinned(ctx context.Context, userID int64) 
 	return rowsAffected(tag), nil
 }
 func (d *SavedDialogsDAO) UpdateUserPeerPinned(ctx context.Context, pinned int64, userID int64, peerType int32, peerID int64) (int64, error) {
-	tag, err := d.db.Exec(ctx, `UPDATE saved_dialogs SET pinned = $1 WHERE user_id = $2 AND peer_type = $3 AND peer_id = $4`, pinned, userID, peerType, peerID)
+	tag, err := d.db.Exec(ctx, `UPDATE saved_dialogs SET pinned = $1 WHERE user_id = $2 AND peer_type = $3 AND peer_id = $4 AND deleted = FALSE`, pinned, userID, peerType, peerID)
 	if err != nil {
 		return 0, err
 	}

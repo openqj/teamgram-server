@@ -104,6 +104,10 @@ func (c *AccountCore) AccountSendChangePhoneCode(in *mtproto.TLAccountSendChange
 			return nil, err
 		}
 	} else {
+		if user == nil || user.GetUser() == nil {
+			c.Logger.Errorf("checkPhoneNumberExist - user service returned no user")
+			return nil, mtproto.ErrInternalServerError
+		}
 		c.Logger.Errorf("checkPhoneNumberExist - user: %s", user)
 		return nil, mtproto.ErrPhoneNumberOccupied
 	}

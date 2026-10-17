@@ -29,13 +29,19 @@ import (
 // MessagesSetHistoryTTL
 // messages.setHistoryTTL#b80e5fe4 peer:InputPeer period:int = Updates;
 func (c *DialogsCore) MessagesSetHistoryTTL(in *mtproto.TLMessagesSetHistoryTTL) (*mtproto.Updates, error) {
-	if in.GetPeer() == nil {
+	if c == nil || c.MD == nil || c.MD.UserId <= 0 {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
+	if in == nil || in.GetPeer() == nil {
 		c.Logger.Errorf("messages.setHistoryTTL - error: %v", mtproto.ErrPeerIdInvalid)
 		return nil, mtproto.ErrPeerIdInvalid
 	}
 	if in.GetPeriod() < 0 {
 		c.Logger.Errorf("messages.setHistoryTTL - error: %v", mtproto.ErrTtlPeriodInvalid)
 		return nil, mtproto.ErrTtlPeriodInvalid
+	}
+	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.DialogClient == nil || c.svcCtx.Dao.SyncClient == nil {
+		return nil, mtproto.ErrInternalServerError
 	}
 
 	peer := mtproto.FromInputPeer2(c.MD.UserId, in.Peer)
@@ -46,6 +52,9 @@ func (c *DialogsCore) MessagesSetHistoryTTL(in *mtproto.TLMessagesSetHistoryTTL)
 
 	var chats []*mtproto.Chat
 	if peer.IsChat() {
+		if c.svcCtx.Dao.ChatClient == nil {
+			return nil, mtproto.ErrInternalServerError
+		}
 		mChat, err := c.svcCtx.Dao.ChatClient.ChatSetHistoryTTL(c.ctx, &chatpb.TLChatSetHistoryTTL{
 			SelfId:    c.MD.UserId,
 			ChatId:    peer.PeerId,

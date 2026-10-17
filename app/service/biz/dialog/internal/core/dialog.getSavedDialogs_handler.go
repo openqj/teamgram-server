@@ -28,6 +28,15 @@ import (
 // DialogGetSavedDialogs
 // dialog.getSavedDialogs user_id:long exclude_pinned:Bool offset_date:int offset_id:int offset_peer:PeerUtil limit:int = SavedDialogList;
 func (c *DialogCore) DialogGetSavedDialogs(in *dialog.TLDialogGetSavedDialogs) (*dialog.SavedDialogList, error) {
+	if in == nil || in.GetUserId() <= 0 {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if in.GetOffsetDate() < 0 || in.GetOffsetId() < 0 {
+		return nil, mtproto.ErrOffsetInvalid
+	}
+	if in.GetLimit() < 0 {
+		return nil, mtproto.ErrLimitInvalid
+	}
 	if c == nil || c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.Postgres == nil || c.svcCtx.Dao.Postgres.Store == nil || c.svcCtx.Dao.Postgres.Store.SavedDialogs == nil {
 		return nil, mtproto.ErrMethodNotImpl
 	}
@@ -53,6 +62,9 @@ func (c *DialogCore) DialogGetSavedDialogs(in *dialog.TLDialogGetSavedDialogs) (
 	if excludePinned {
 		rows, err := c.svcCtx.Dao.Postgres.Store.SavedDialogs.SelectExcludePinnedDialogs(c.ctx, meId, offsetId, limit)
 		if err != nil {
+			if c.Logger != nil {
+				c.Logger.Errorf("dialog.getSavedDialogs - select dialogs error: %v", err)
+			}
 			return nil, err
 		}
 		for i := range rows {
@@ -60,12 +72,18 @@ func (c *DialogCore) DialogGetSavedDialogs(in *dialog.TLDialogGetSavedDialogs) (
 		}
 		count, err := c.svcCtx.Dao.Postgres.Store.SavedDialogs.Count(c.ctx, meId, true)
 		if err != nil {
+			if c.Logger != nil {
+				c.Logger.Errorf("dialog.getSavedDialogs - count dialogs error: %v", err)
+			}
 			return nil, err
 		}
 		dList.Count = int32(count)
 	} else {
 		rows, err := c.svcCtx.Dao.Postgres.Store.SavedDialogs.SelectDialogs(c.ctx, meId, offsetId, limit)
 		if err != nil {
+			if c.Logger != nil {
+				c.Logger.Errorf("dialog.getSavedDialogs - select dialogs error: %v", err)
+			}
 			return nil, err
 		}
 		for i := range rows {
@@ -73,6 +91,9 @@ func (c *DialogCore) DialogGetSavedDialogs(in *dialog.TLDialogGetSavedDialogs) (
 		}
 		count, err := c.svcCtx.Dao.Postgres.Store.SavedDialogs.Count(c.ctx, meId, false)
 		if err != nil {
+			if c.Logger != nil {
+				c.Logger.Errorf("dialog.getSavedDialogs - count dialogs error: %v", err)
+			}
 			return nil, err
 		}
 		dList.Count = int32(count)

@@ -28,6 +28,19 @@ import (
 // DialogReorderPinnedSavedDialogs
 // dialog.reorderPinnedSavedDialogs user_id:long force:Bool order:Vector<PeerUtil> = Bool;
 func (c *DialogCore) DialogReorderPinnedSavedDialogs(in *dialog.TLDialogReorderPinnedSavedDialogs) (*mtproto.Bool, error) {
+	if in == nil || in.GetUserId() <= 0 {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	for _, peer := range in.GetOrder() {
+		if peer == nil || peer.GetPeerId() <= 0 {
+			return nil, mtproto.ErrPeerIdInvalid
+		}
+		switch peer.GetPeerType() {
+		case mtproto.PEER_SELF, mtproto.PEER_USER, mtproto.PEER_CHAT, mtproto.PEER_CHANNEL:
+		default:
+			return nil, mtproto.ErrPeerIdInvalid
+		}
+	}
 	if c == nil || c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.Postgres == nil ||
 		c.svcCtx.Dao.Postgres.Pool == nil || c.svcCtx.Dao.Postgres.Store == nil ||
 		c.svcCtx.Dao.Postgres.Store.SavedDialogs == nil {
@@ -48,7 +61,7 @@ func (c *DialogCore) DialogReorderPinnedSavedDialogs(in *dialog.TLDialogReorderP
 			return nil, err
 		}
 	}
-	for _, id := range in.Order {
+	for _, id := range in.GetOrder() {
 		if _, err = c.svcCtx.Dao.Postgres.Store.SavedDialogs.UpdateUserPeerPinnedTx(c.ctx, tx, orderPinned<<32, userId, id.PeerType, id.PeerId); err != nil {
 			return nil, err
 		}

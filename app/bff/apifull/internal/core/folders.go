@@ -874,6 +874,7 @@ func (c *ApiFullCore) chatlistEntities(userId int64, peers []*mtproto.InputPeer)
 	userIDs := make([]int64, 0)
 	chatIDs := make([]int64, 0)
 	channelPeers := make([]*mtproto.InputPeer, 0)
+	userAccessHashes := make(map[int64]int64)
 	seenUsers := make(map[int64]struct{})
 	seenChats := make(map[int64]struct{})
 	seenChannels := make(map[int64]struct{})
@@ -884,6 +885,15 @@ func (c *ApiFullCore) chatlistEntities(userId int64, peers []*mtproto.InputPeer)
 		peer := folderInputPeerUtil(userId, inputPeer)
 		switch peer.PeerType {
 		case mtproto.PEER_SELF, mtproto.PEER_USER:
+			if inputPeer.GetPredicateName() == mtproto.Predicate_inputPeerUser {
+				if peer.PeerId <= 0 || inputPeer.GetAccessHash() == 0 {
+					return nil, nil, mtproto.ErrUserIdInvalid
+				}
+				if previous, ok := userAccessHashes[peer.PeerId]; ok && previous != inputPeer.GetAccessHash() {
+					return nil, nil, mtproto.ErrUserIdInvalid
+				}
+				userAccessHashes[peer.PeerId] = inputPeer.GetAccessHash()
+			}
 			if _, ok := seenUsers[peer.PeerId]; !ok {
 				seenUsers[peer.PeerId] = struct{}{}
 				userIDs = append(userIDs, peer.PeerId)
@@ -916,6 +926,12 @@ func (c *ApiFullCore) chatlistEntities(userId int64, peers []*mtproto.InputPeer)
 		}
 		if mutableUsers == nil || !mutableUsers.CheckExistUser(userIDs...) {
 			return nil, nil, mtproto.ErrUserIdInvalid
+		}
+		for id, accessHash := range userAccessHashes {
+			user, ok := mutableUsers.GetImmutableUser(id)
+			if !ok || user == nil || user.GetUser() == nil || user.GetUser().GetAccessHash() != accessHash {
+				return nil, nil, mtproto.ErrUserIdInvalid
+			}
 		}
 		users = mutableUsers.GetUserListByIdList(userId, userIDs...)
 	}

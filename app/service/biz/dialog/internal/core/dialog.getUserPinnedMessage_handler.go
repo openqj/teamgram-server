@@ -18,12 +18,22 @@ import (
 // DialogGetUserPinnedMessage
 // dialog.getUserPinnedMessage user_id:long peer_type:int peer_id:long = Int32;
 func (c *DialogCore) DialogGetUserPinnedMessage(in *dialog.TLDialogGetUserPinnedMessage) (*mtproto.Int32, error) {
+	if in == nil || in.GetUserId() <= 0 || in.GetPeerId() <= 0 {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	switch in.GetPeerType() {
+	case mtproto.PEER_SELF, mtproto.PEER_USER, mtproto.PEER_CHAT, mtproto.PEER_CHANNEL:
+	default:
+		return nil, mtproto.ErrPeerIdInvalid
+	}
 	if c == nil || c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.Postgres == nil || c.svcCtx.Dao.Postgres.Store == nil || c.svcCtx.Dao.Postgres.Store.Dialogs == nil {
 		return nil, mtproto.ErrMethodNotImpl
 	}
 	dlg, err := c.svcCtx.Dao.Postgres.Store.Dialogs.SelectDialog(c.ctx, in.GetUserId(), in.GetPeerType(), in.GetPeerId())
 	if err != nil {
-		c.Logger.Errorf("dialog.getUserPinnedMessage - error: %v", err)
+		if c.Logger != nil {
+			c.Logger.Errorf("dialog.getUserPinnedMessage - error: %v", err)
+		}
 		return nil, err
 	}
 

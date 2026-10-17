@@ -100,8 +100,9 @@ are stored in PostgreSQL.
   through their Layer 229 adapters. Gift mutation is limited to the bot's
   local owner ledger until business-account gift scope is available.
 - Lifecycle and Mini App helpers: `logOut`, `close`, and
-  `savePreparedInlineMessage` use Telegram's boolean/result contracts and the
-  Layer 229 prepared-inline persistence service. `deleteEphemeralMessage` and
+  `savePreparedInlineMessage` and `savePreparedKeyboardButton` use Telegram's
+  result contracts and the Layer 229 prepared-inline/Mini App button services.
+  `deleteEphemeralMessage` and
   the four ephemeral edit methods use the native Layer 229 ephemeral-message
   service; photo, video, document, audio, and animation edits resolve through
   the existing DFS/media path.
@@ -109,11 +110,21 @@ are stored in PostgreSQL.
   the poll in both ordinary message storage and the PostgreSQL channel store.
   Business account name, username, bio, and profile-photo methods enforce the
   connection rights before calling the corresponding Layer 229 services.
+  `setBusinessAccountGiftSettings` updates only the gift privacy fields while
+  preserving the owner's other global privacy settings; `getBusinessAccountStarBalance`
+  requires the view-gifts-and-stars right and returns `StarAmount`.
 - Message input accepts JSON, URL encoded forms, multipart uploads, existing
   Bot API file ids, UTF-16 entity offsets, inline keyboards, reply keyboards,
   force replies, Web App buttons, disabled link previews, empty inline keyboard
   removal, and HTTP(S) media URLs. Method names are case-insensitive, and
   message/caption whitespace is preserved.
+- Message options preserve `allow_paid_broadcast` through the Layer 229
+  `allow_paid_floodskip` flag. `message_effect_id` maps to the Layer 229
+  `Effect` field for business, media, rich, and forwarding paths; ordinary
+  PostgreSQL outbox messages return a method-specific `501` because that
+  outbox record has no effect field. `show_caption_above_media` maps to the
+  existing Layer 229 `invert_media` flag for ordinary media and media-group
+  sends.
 - The Bot API response type supports Telegram's `parameters` envelope, and
   updates include forwarding origin, topic/offline/effect fields, inline callback queries,
   polls, poll answers, join requests, reactions, chat boosts, and paid-media
@@ -129,14 +140,15 @@ Compatibility snapshot (2026-10-17): the live Telegram documentation exposes
 183 official method names. All 183 are accepted case-insensitively by the
 canonical HTTP route table, which also keeps the project extensions
 `sendRichMessage`/`sendRichMessageDraft` and the legacy `kickChatMember` alias.
-178 official methods have concrete dispatch adapters. Five route names return a
+180 official methods have concrete dispatch adapters. Three route names return a
 Telegram-shaped method-specific `501` because their Layer 229/service contract
-is not available: `sendGift`, `giftPremiumSubscription`,
-`setBusinessAccountGiftSettings`, `transferBusinessAccountStars`, and
-`savePreparedKeyboardButton`. Other dispatched methods can still return `501`
+is not available: `sendGift`, `giftPremiumSubscription`, and
+`transferBusinessAccountStars`. Other dispatched methods can still return `501`
 when their configured backing service is unavailable. Rich message `html`,
-`markdown`, and text-block requests are supported; rich media blocks and draft
-stop controls remain explicitly unsupported.
+`markdown`, text blocks, and photo/video/audio blocks are supported. Rich media
+blocks resolve existing Bot API photo/document file ids into the corresponding
+Layer 229 input vectors; upload and URL references remain invalid. Draft stop
+controls remain explicitly unsupported.
 
 The following contract details still differ from Telegram's current behavior:
 
@@ -146,14 +158,19 @@ The following contract details still differ from Telegram's current behavior:
 - Message methods: `stopPoll` and ephemeral text, caption, media, and reply
   markup edits are implemented. Ephemeral `show_caption_above_media` and rich
   draft stop controls return a method-specific `501` because the current
-  Layer 229 records have no matching flags. `deleteMessages`,
+  Layer 229 records have no matching flags. `direct_messages_topic_id`,
+  `ephemeral_message_parameters`, and `suggested_post_parameters` likewise
+  return a method-specific `501` because the current message adapters do not
+  expose equivalent Layer 229 state. `deleteMessages`,
   `deleteMessageReaction`, and `deleteAllMessageReactions` use the existing
   message and reaction services.
 - Gifts: `getAvailableGifts` is complete. Gift conversion, upgrade, and
   transfer currently accept the project's local `user_id`/`owned_gift_id`
   ledger shape and reject non-owner accounts or positive `star_count`; the
   current official `business_connection_id` flow still needs a business gift
-  adapter. `sendGift` and `giftPremiumSubscription` remain unsupported.
+  adapter. `sendGift`, `giftPremiumSubscription`, and
+  `transferBusinessAccountStars` remain unsupported because the available
+  Layer 229 services do not expose the required authoritative settlement path.
 - Chat administration: hidden member details and some channel-only
   administrative fields still need dedicated Bot API adapters.
 - Inline mode and Mini Apps: external inline media is retained as WebDocument

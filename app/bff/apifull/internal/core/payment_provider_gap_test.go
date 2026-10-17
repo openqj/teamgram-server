@@ -19,7 +19,7 @@ func paymentRPCErrorCode(got, want error) bool {
 func TestPaymentProviderGapsFailClosed(t *testing.T) {
 	const userID int64 = 17001
 	core := &ApiFullCore{MD: &metadata.RpcMetadata{UserId: userID}}
-	selfPeer := mtproto.MakeTLInputPeerUser(&mtproto.InputPeer{UserId: userID}).To_InputPeer()
+	selfPeer := mtproto.MakeTLInputPeerSelf(nil).To_InputPeer()
 
 	tests := []struct {
 		name string

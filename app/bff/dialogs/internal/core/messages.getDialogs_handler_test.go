@@ -32,11 +32,15 @@ func (s *getDialogsDialogClientStub) DialogGetDialogs(context.Context, *dialog.T
 
 type getDialogsMessageClientStub struct {
 	messageclient.MessageClient
-	response *messagepb.Vector_MessageBox
-	listErr  error
+	response    *messagepb.Vector_MessageBox
+	listErr     error
+	nilResponse bool
 }
 
 func (s *getDialogsMessageClientStub) MessageGetUserMessageList(context.Context, *messagepb.TLMessageGetUserMessageList) (*messagepb.Vector_MessageBox, error) {
+	if s.nilResponse {
+		return nil, s.listErr
+	}
 	if s.response != nil {
 		return s.response, s.listErr
 	}
@@ -176,5 +180,22 @@ func TestMessagesGetDialogsCapsLimitAtLayer229Maximum(t *testing.T) {
 	}
 	if got == nil || len(got.GetDialogs()) != 500 {
 		t.Fatalf("MessagesGetDialogs() returned %d dialogs, want 500", len(got.GetDialogs()))
+	}
+}
+
+func TestMessagesGetDialogsFailsClosedOnNilTopMessageResponse(t *testing.T) {
+	core := newGetDialogsTestCore(
+		&getDialogsDialogClientStub{response: getDialogsFixture(mtproto.MakePeerUser(84))},
+		&getDialogsMessageClientStub{nilResponse: true},
+		&getDialogsUserClientStub{},
+		&getDialogsChatClientStub{},
+	)
+
+	got, err := core.MessagesGetDialogs(&mtproto.TLMessagesGetDialogs{
+		OffsetPeer: mtproto.MakeTLInputPeerEmpty(nil).To_InputPeer(),
+		Limit:      20,
+	})
+	if got != nil || !errors.Is(err, mtproto.ErrInternalServerError) {
+		t.Fatalf("MessagesGetDialogs() = (%v, %v), want nil result and INTERNAL_SERVER_ERROR", got, err)
 	}
 }

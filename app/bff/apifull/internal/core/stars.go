@@ -328,6 +328,15 @@ func (c *ApiFullCore) PaymentsSendStarsForm(in *mtproto.TLPaymentsSendStarsForm)
 	if in == nil || in.GetFormId() <= 0 || in.GetInvoice() == nil {
 		return nil, mtproto.ErrPaymentProviderInvalid
 	}
+	switch in.GetInvoice().GetPredicateName() {
+	case mtproto.Predicate_inputInvoiceStarGift,
+		mtproto.Predicate_inputInvoicePremiumGiftStars,
+		mtproto.Predicate_inputInvoiceBusinessBotTransferStars:
+		if !domain.Ready() {
+			return nil, mtproto.ErrPaymentUnsupported
+		}
+		return c.settleLocalStarsForm(in)
+	}
 	offer, found, err := starsTopupOfferFromInvoice(in.GetInvoice())
 	if err != nil {
 		return nil, err

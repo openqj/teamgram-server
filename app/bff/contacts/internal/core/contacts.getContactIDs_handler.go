@@ -28,7 +28,7 @@ import (
 // ContactsGetContactIDs
 // contacts.getContactIDs#7adc669d hash:long = Vector<int>;
 func (c *ContactsCore) ContactsGetContactIDs(in *mtproto.TLContactsGetContactIDs) (*mtproto.Vector_Int, error) {
-	if c.MD == nil || c.MD.UserId == 0 {
+	if c == nil || c.MD == nil || c.MD.UserId == 0 {
 		return nil, mtproto.ErrAuthKeyUnregistered
 	}
 	if in == nil {

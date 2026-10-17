@@ -206,22 +206,56 @@ func businessRecipientsFromInput(in *mtproto.InputBusinessRecipients) *mtproto.B
 	}).To_BusinessRecipients()
 }
 
+func (c *ApiFullCore) verifyConnectedBot(input *mtproto.InputUser) (int64, error) {
+	callerID, err := c.requireUserId()
+	if err != nil {
+		return 0, err
+	}
+	if input == nil {
+		return 0, mtproto.ErrInputRequestInvalid
+	}
+	botID := callerID
+	explicitInputUser := false
+	switch input.GetPredicateName() {
+	case mtproto.Predicate_inputUserSelf:
+	case mtproto.Predicate_inputUser:
+		explicitInputUser = true
+		botID = input.GetUserId()
+		if botID <= 0 || input.GetAccessHash() == 0 {
+			return 0, mtproto.ErrUserIdInvalid
+		}
+	default:
+		return 0, mtproto.ErrInputConstructorInvalid
+	}
+	d := c.apifullDao()
+	if d == nil || d.UserClient == nil {
+		return 0, mtproto.ErrMethodNotImpl
+	}
+	profile, err := d.UserGetImmutableUser(callContext(c), &userpb.TLUserGetImmutableUser{Id: botID})
+	if err != nil {
+		return 0, err
+	}
+	if profile == nil || profile.GetUser() == nil || profile.GetUser().GetId() != botID || profile.Deleted() || profile.GetUser().GetBot() == nil {
+		return 0, mtproto.ErrBotInvalid
+	}
+	if explicitInputUser && profile.GetUser().GetAccessHash() != input.GetAccessHash() {
+		return 0, mtproto.ErrUserIdInvalid
+	}
+	return botID, nil
+}
+
 func (c *ApiFullCore) AccountUpdateConnectedBot(in *mtproto.TLAccountUpdateConnectedBot) (*mtproto.Updates, error) {
 	if err := c.requirePremium(); err != nil {
 		return nil, err
 	}
-	var deleted, canReply bool
-	var botId int64
-	if in != nil {
-		deleted = in.GetDeleted()
-		canReply = in.GetCanReply()
-		if in.GetBot() != nil {
-			botId = in.GetBot().GetUserId()
-		}
-	}
-	if in == nil || botId <= 0 {
+	if in == nil {
 		return nil, mtproto.ErrInputRequestInvalid
 	}
+	botID, err := c.verifyConnectedBot(in.GetBot())
+	if err != nil {
+		return nil, err
+	}
+	deleted, canReply := in.GetDeleted(), in.GetCanReply()
 	if domain.Ready() {
 		dcID := int32(0)
 		if c.svcCtx != nil {
@@ -250,7 +284,7 @@ func (c *ApiFullCore) AccountUpdateConnectedBot(in *mtproto.TLAccountUpdateConne
 		if in.GetRecipients_INPUTBUSINESSRECIPIENTS() == nil {
 			recipients = nil
 		}
-		if _, err := domain.UpsertConnectedBotAndConnection(c.MD.UserId, botId, canReply,
+		if _, err := domain.UpsertConnectedBotAndConnection(c.MD.UserId, botID, canReply,
 			rights, recipientsBot, recipients, dcID, deleted); err != nil {
 			return nil, err
 		}
@@ -261,12 +295,12 @@ func (c *ApiFullCore) AccountUpdateConnectedBot(in *mtproto.TLAccountUpdateConne
 		return nil, err
 	}
 	if deleted {
-		if botId == 0 {
+		if botID == 0 {
 			list = []connectedBotJSON{}
 		} else {
 			next := list[:0]
 			for _, row := range list {
-				if row.BotId != botId {
+				if row.BotId != botID {
 					next = append(next, row)
 				}
 			}
@@ -286,7 +320,7 @@ func (c *ApiFullCore) AccountUpdateConnectedBot(in *mtproto.TLAccountUpdateConne
 		rec = businessRecipientsFromInput(in.GetRecipients_INPUTBUSINESSRECIPIENTS())
 	}
 	row := connectedBotJSON{
-		BotId:         botId,
+		BotId:         botID,
 		CanReply:      canReply,
 		Rights:        rights,
 		RecipientsBot: recBot,
@@ -294,7 +328,7 @@ func (c *ApiFullCore) AccountUpdateConnectedBot(in *mtproto.TLAccountUpdateConne
 	}
 	found := false
 	for i := range list {
-		if list[i].BotId == botId {
+		if list[i].BotId == botID {
 			list[i] = row
 			found = true
 			break

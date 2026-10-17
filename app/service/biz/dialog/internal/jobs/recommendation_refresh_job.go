@@ -11,51 +11,56 @@ import (
 	"context"
 	"time"
 
+	dialogclient "github.com/teamgram/teamgram-server/app/service/biz/dialog/client"
 	"github.com/teamgram/teamgram-server/app/service/biz/dialog/dialog"
+	"github.com/teamgram/teamgram-server/app/service/biz/dialog/internal/dal/dao/postgres_dao"
 	"github.com/zeromicro/go-zero/core/logx"
 )
 
 // RecommendationRefreshJob 推荐刷新定时任务
 type RecommendationRefreshJob struct {
-	dialogClient dialog.DialogClient
+	dialogClient dialogclient.DialogClient
+	store        *postgres_dao.Store
 }
 
 // NewRecommendationRefreshJob 创建推荐刷新任务
-func NewRecommendationRefreshJob(dialogClient dialog.DialogClient) *RecommendationRefreshJob {
+func NewRecommendationRefreshJob(dialogClient dialogclient.DialogClient, store *postgres_dao.Store) *RecommendationRefreshJob {
 	return &RecommendationRefreshJob{
 		dialogClient: dialogClient,
+		store:        store,
 	}
 }
 
 // Run 执行推荐刷新
 // 每6小时执行一次，为活跃用户刷新推荐列表
 func (j *RecommendationRefreshJob) Run() {
-	ctx := context.Background()
 	logx.Info("RecommendationRefreshJob: starting recommendation refresh")
+	if j == nil || j.dialogClient == nil || j.store == nil || j.store.Dialogs == nil {
+		logx.Error("RecommendationRefreshJob: dialog client and PostgreSQL store are required")
+		return
+	}
 
-	// TODO: 获取需要刷新推荐的用户列表
-	// 策略：
-	// 1. 最近7天活跃的用户
-	// 2. 推荐列表为空或接近过期的用户
-	// 3. 批量处理，避免一次性加载所有用户
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	userIDs, err := j.store.Dialogs.SelectActiveUserIDs(ctx, time.Now().Add(-7*24*time.Hour).Unix(), 10000)
+	if err != nil {
+		logx.Errorf("RecommendationRefreshJob: failed to load active users: %v", err)
+		return
+	}
 
-	// 示例：假设从配置或数据库获取活跃用户列表
-	// activeUserIds := getActiveUsers(ctx)
+	for _, userID := range userIDs {
+		if _, err := j.dialogClient.DialogRefreshRecommendations(ctx, &dialog.TLDialogRefreshRecommendations{UserId: userID}); err != nil {
+			logx.Errorf("RecommendationRefreshJob: failed to refresh recommendations for user %d: %v", userID, err)
+		}
+		select {
+		case <-ctx.Done():
+			logx.Errorf("RecommendationRefreshJob: stopped after context deadline: %v", ctx.Err())
+			return
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
 
-	// for _, userId := range activeUserIds {
-	// 	_, err := j.dialogClient.DialogRefreshRecommendations(ctx, &dialog.TLDialogRefreshRecommendations{
-	// 		UserId: userId,
-	// 	})
-	// 	if err != nil {
-	// 		logx.Errorf("RecommendationRefreshJob: failed to refresh recommendations for user %d: %v", userId, err)
-	// 		continue
-	// 	}
-	//
-	// 	// 避免瞬时压力过大，添加小延迟
-	// 	time.Sleep(10 * time.Millisecond)
-	// }
-
-	logx.Info("RecommendationRefreshJob: completed recommendation refresh")
+	logx.Infof("RecommendationRefreshJob: completed recommendation refresh for %d users", len(userIDs))
 }
 
 // Schedule 返回任务执行计划

@@ -165,6 +165,11 @@ func TestContactsGetLocatedKeepsOwnLocationVisible(t *testing.T) {
 }
 
 func TestContactsGetLocatedFailsClosedWhenContactLookupFails(t *testing.T) {
+	var nilCore *ContactsCore
+	if updates, err := nilCore.ContactsGetLocated(locatedRequest(nil)); updates != nil || !errors.Is(err, mtproto.ErrAuthKeyUnregistered) {
+		t.Fatalf("nil core = (%v, %v), want AUTH_KEY_UNREGISTERED", updates, err)
+	}
+
 	store := &locatedStore{data: map[string]string{locatedIndexKey: `[{"user_id":50,"lat":31.24,"long":121.48,"expires":2147483647}]`}}
 	withLocatedStore(t, store)
 	lookupErr := errors.New("contact lookup failed")
@@ -176,5 +181,31 @@ func TestContactsGetLocatedFailsClosedWhenContactLookupFails(t *testing.T) {
 	}
 	if got := store.data[locatedIndexKey]; got != `[{"user_id":50,"lat":31.24,"long":121.48,"expires":2147483647}]` {
 		t.Fatalf("live index changed after failed contact lookup: %q", got)
+	}
+}
+
+func TestContactsGetLocatedRejectsNilUserProviderResult(t *testing.T) {
+	const caller, mutual int64 = 42, 50
+	store := &locatedStore{data: map[string]string{locatedIndexKey: `[{"user_id":50,"lat":31.24,"long":121.48,"expires":2147483647}]`}}
+	withLocatedStore(t, store)
+	client := &locatedUserClientStub{
+		contacts: &userpb.Vector_ContactData{Datas: []*mtproto.ContactData{{ContactUserId: mutual, MutualContact: true}}},
+	}
+
+	updates, err := newLocatedTestCore(caller, client).ContactsGetLocated(locatedRequest(nil))
+	if updates != nil || !errors.Is(err, mtproto.ErrInternalServerError) {
+		t.Fatalf("nil user provider result = (%v, %v), want (nil, INTERNAL_SERVER_ERROR)", updates, err)
+	}
+}
+
+func TestContactsGetLocatedRejectsMissingStore(t *testing.T) {
+	previous := persist.Default
+	persist.Default = nil
+	t.Cleanup(func() { persist.Default = previous })
+
+	client := &locatedUserClientStub{contacts: &userpb.Vector_ContactData{}}
+	updates, err := newLocatedTestCore(42, client).ContactsGetLocated(locatedRequest(nil))
+	if updates != nil || !errors.Is(err, mtproto.ErrInternalServerError) {
+		t.Fatalf("missing located store = (%v, %v), want (nil, INTERNAL_SERVER_ERROR)", updates, err)
 	}
 }

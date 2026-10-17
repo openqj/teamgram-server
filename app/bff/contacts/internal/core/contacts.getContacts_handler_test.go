@@ -91,6 +91,11 @@ func TestContactsGetContactsReturnsEmptyWithoutContactLookup(t *testing.T) {
 }
 
 func TestContactsGetContactsPropagatesAndRejectsMalformedDependencies(t *testing.T) {
+	var nilCore *ContactsCore
+	if got, err := nilCore.ContactsGetContacts(&mtproto.TLContactsGetContacts{}); got != nil || !errors.Is(err, mtproto.ErrAuthKeyUnregistered) {
+		t.Fatalf("nil core = (%+v, %v), want AUTH_KEY_UNREGISTERED", got, err)
+	}
+
 	contactErr := errors.New("contact list unavailable")
 	client := &getContactsUserClientStub{contactErr: contactErr}
 	if got, err := newGetContactsTestCore(client).ContactsGetContacts(&mtproto.TLContactsGetContacts{}); got != nil || err != contactErr {

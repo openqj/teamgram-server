@@ -149,6 +149,14 @@ func TestContactsGetStatusesRejectsNilEntries(t *testing.T) {
 			contactList: &userpb.Vector_ContactData{Datas: []*mtproto.ContactData{nil}},
 		},
 		{
+			name:        "invalid contact id",
+			contactList: &userpb.Vector_ContactData{Datas: []*mtproto.ContactData{{ContactUserId: 0}}},
+		},
+		{
+			name:        "negative contact id",
+			contactList: &userpb.Vector_ContactData{Datas: []*mtproto.ContactData{{ContactUserId: -1}}},
+		},
+		{
 			name: "nil last seen",
 			contactList: &userpb.Vector_ContactData{
 				Datas: []*mtproto.ContactData{{ContactUserId: 84}},

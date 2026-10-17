@@ -18,6 +18,18 @@ import (
 // DialogGetDialogsByIdList
 // dialog.getDialogsByIdList user_id:long id_list:Vector<long> = Vector<DialogExt>;
 func (c *DialogCore) DialogGetDialogsByIdList(in *dialog.TLDialogGetDialogsByIdList) (*dialog.Vector_DialogExt, error) {
+	if in == nil || in.GetUserId() <= 0 {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	for _, id := range in.GetIdList() {
+		if id == 0 {
+			return nil, mtproto.ErrPeerIdInvalid
+		}
+	}
+	if c == nil || c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.Postgres == nil || c.svcCtx.Dao.Postgres.Store == nil || c.svcCtx.Dao.Postgres.Store.Dialogs == nil {
+		return nil, mtproto.ErrMethodNotImpl
+	}
+
 	var (
 		meId   = in.GetUserId()
 		idList = in.GetIdList()

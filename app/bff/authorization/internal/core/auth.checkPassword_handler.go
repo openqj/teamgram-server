@@ -32,13 +32,13 @@ func (c *AuthorizationCore) AuthCheckPassword(in *mtproto.TLAuthCheckPassword) (
 	if c.MD.UserId <= 0 {
 		return nil, mtproto.ErrPasswordHashInvalid
 	}
+	if in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
 	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.UserClient == nil {
 		return nil, mtproto.ErrInternalServerError
 	}
-	var proof *mtproto.InputCheckPasswordSRP
-	if in != nil {
-		proof = in.GetPassword()
-	}
+	proof := in.GetPassword()
 	if err := c.svcCtx.Dao.CheckPassword(c.MD.UserId, proof); err != nil {
 		c.Logger.Errorf("auth.checkPassword - proof rejected: %v", err)
 		return nil, err

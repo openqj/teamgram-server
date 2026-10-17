@@ -6,6 +6,8 @@ import (
 
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/proto/mtproto/rpc/metadata"
+	apifullDao "github.com/teamgram/teamgram-server/app/bff/apifull/internal/dao"
+	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/svc"
 )
 
 func TestBotResetCommandsRejectsNilRequest(t *testing.T) {
@@ -52,5 +54,42 @@ func TestBotCommandMethodsRejectUnsupportedScopeOrLanguage(t *testing.T) {
 				t.Fatalf("got %v, want METHOD_NOT_IMPL", err)
 			}
 		})
+	}
+}
+
+func TestBotCommandMethodsRejectHumanCallers(t *testing.T) {
+	const userID = int64(81024001)
+	client := &botCommandsUserClient{profile: &mtproto.ImmutableUser{User: &mtproto.UserData{Id: userID}}}
+	c := &ApiFullCore{
+		svcCtx: &svc.ServiceContext{Dao: &apifullDao.Dao{UserClient: client}},
+		MD:     &metadata.RpcMetadata{UserId: userID},
+	}
+	scope := mtproto.MakeTLBotCommandScopeDefault(&mtproto.BotCommandScope{}).To_BotCommandScope()
+	tests := []struct {
+		name string
+		call func() error
+	}{
+		{name: "set", call: func() error {
+			_, err := c.BotsSetBotCommands(&mtproto.TLBotsSetBotCommands{Scope: scope})
+			return err
+		}},
+		{name: "reset", call: func() error {
+			_, err := c.BotsResetBotCommands(&mtproto.TLBotsResetBotCommands{Scope: scope})
+			return err
+		}},
+		{name: "get", call: func() error {
+			_, err := c.BotsGetBotCommands(&mtproto.TLBotsGetBotCommands{Scope: scope})
+			return err
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if err := test.call(); !errors.Is(err, mtproto.ErrBotMethodInvalid) {
+				t.Fatalf("human caller error = %v, want BOT_METHOD_INVALID", err)
+			}
+		})
+	}
+	if client.setCalls != 0 || client.infoCalls != 0 {
+		t.Fatalf("human caller reached command provider: set=%d info=%d", client.setCalls, client.infoCalls)
 	}
 }

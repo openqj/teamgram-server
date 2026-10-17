@@ -26,6 +26,9 @@ import (
 // DialogGetPinnedSavedDialogs
 // dialog.getPinnedSavedDialogs user_id:long = SavedDialogList;
 func (c *DialogCore) DialogGetPinnedSavedDialogs(in *dialog.TLDialogGetPinnedSavedDialogs) (*dialog.SavedDialogList, error) {
+	if in == nil || in.GetUserId() <= 0 {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
 	if c == nil || c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.Postgres == nil || c.svcCtx.Dao.Postgres.Store == nil || c.svcCtx.Dao.Postgres.Store.SavedDialogs == nil {
 		return nil, mtproto.ErrMethodNotImpl
 	}
@@ -39,6 +42,9 @@ func (c *DialogCore) DialogGetPinnedSavedDialogs(in *dialog.TLDialogGetPinnedSav
 
 	rows, err := c.svcCtx.Dao.Postgres.Store.SavedDialogs.SelectPinnedDialogs(c.ctx, meId)
 	if err != nil {
+		if c.Logger != nil {
+			c.Logger.Errorf("dialog.getPinnedSavedDialogs - select dialogs error: %v", err)
+		}
 		return nil, err
 	}
 	for i := range rows {

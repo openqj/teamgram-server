@@ -70,6 +70,11 @@ const (
 	RPCDialog_DialogToggleDialogFilterTags_FullMethodName            = "/dialog.RPCDialog/dialog_toggleDialogFilterTags"
 	RPCDialog_DialogGetDialogFilterTags_FullMethodName               = "/dialog.RPCDialog/dialog_getDialogFilterTags"
 	RPCDialog_DialogSetChatWallpaper_FullMethodName                  = "/dialog.RPCDialog/dialog_setChatWallpaper"
+	RPCDialog_DialogGetRecommendedDialogs_FullMethodName             = "/dialog.RPCDialog/dialog_getRecommendedDialogs"
+	RPCDialog_DialogRefreshRecommendations_FullMethodName            = "/dialog.RPCDialog/dialog_refreshRecommendations"
+	RPCDialog_DialogReportRecommendationFeedback_FullMethodName      = "/dialog.RPCDialog/dialog_reportRecommendationFeedback"
+	RPCDialog_DialogAddPromotedDialog_FullMethodName                 = "/dialog.RPCDialog/dialog_addPromotedDialog"
+	RPCDialog_DialogRemovePromotedDialog_FullMethodName              = "/dialog.RPCDialog/dialog_removePromotedDialog"
 )
 
 // RPCDialogClient is the client API for RPCDialog service.
@@ -117,6 +122,12 @@ type RPCDialogClient interface {
 	DialogToggleDialogFilterTags(ctx context.Context, in *TLDialogToggleDialogFilterTags, opts ...grpc.CallOption) (*mtproto.Bool, error)
 	DialogGetDialogFilterTags(ctx context.Context, in *TLDialogGetDialogFilterTags, opts ...grpc.CallOption) (*mtproto.Bool, error)
 	DialogSetChatWallpaper(ctx context.Context, in *TLDialogSetChatWallpaper, opts ...grpc.CallOption) (*mtproto.Bool, error)
+	// Recommendation methods
+	DialogGetRecommendedDialogs(ctx context.Context, in *TLDialogGetRecommendedDialogs, opts ...grpc.CallOption) (*RecommendedDialogs, error)
+	DialogRefreshRecommendations(ctx context.Context, in *TLDialogRefreshRecommendations, opts ...grpc.CallOption) (*mtproto.Bool, error)
+	DialogReportRecommendationFeedback(ctx context.Context, in *TLDialogReportRecommendationFeedback, opts ...grpc.CallOption) (*mtproto.Bool, error)
+	DialogAddPromotedDialog(ctx context.Context, in *TLDialogAddPromotedDialog, opts ...grpc.CallOption) (*mtproto.Bool, error)
+	DialogRemovePromotedDialog(ctx context.Context, in *TLDialogRemovePromotedDialog, opts ...grpc.CallOption) (*mtproto.Bool, error)
 }
 
 type rPCDialogClient struct {
@@ -537,6 +548,56 @@ func (c *rPCDialogClient) DialogSetChatWallpaper(ctx context.Context, in *TLDial
 	return out, nil
 }
 
+func (c *rPCDialogClient) DialogGetRecommendedDialogs(ctx context.Context, in *TLDialogGetRecommendedDialogs, opts ...grpc.CallOption) (*RecommendedDialogs, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RecommendedDialogs)
+	err := c.cc.Invoke(ctx, RPCDialog_DialogGetRecommendedDialogs_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *rPCDialogClient) DialogRefreshRecommendations(ctx context.Context, in *TLDialogRefreshRecommendations, opts ...grpc.CallOption) (*mtproto.Bool, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(mtproto.Bool)
+	err := c.cc.Invoke(ctx, RPCDialog_DialogRefreshRecommendations_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *rPCDialogClient) DialogReportRecommendationFeedback(ctx context.Context, in *TLDialogReportRecommendationFeedback, opts ...grpc.CallOption) (*mtproto.Bool, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(mtproto.Bool)
+	err := c.cc.Invoke(ctx, RPCDialog_DialogReportRecommendationFeedback_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *rPCDialogClient) DialogAddPromotedDialog(ctx context.Context, in *TLDialogAddPromotedDialog, opts ...grpc.CallOption) (*mtproto.Bool, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(mtproto.Bool)
+	err := c.cc.Invoke(ctx, RPCDialog_DialogAddPromotedDialog_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *rPCDialogClient) DialogRemovePromotedDialog(ctx context.Context, in *TLDialogRemovePromotedDialog, opts ...grpc.CallOption) (*mtproto.Bool, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(mtproto.Bool)
+	err := c.cc.Invoke(ctx, RPCDialog_DialogRemovePromotedDialog_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // RPCDialogServer is the server API for RPCDialog service.
 // All implementations should embed UnimplementedRPCDialogServer
 // for forward compatibility.
@@ -582,6 +643,12 @@ type RPCDialogServer interface {
 	DialogToggleDialogFilterTags(context.Context, *TLDialogToggleDialogFilterTags) (*mtproto.Bool, error)
 	DialogGetDialogFilterTags(context.Context, *TLDialogGetDialogFilterTags) (*mtproto.Bool, error)
 	DialogSetChatWallpaper(context.Context, *TLDialogSetChatWallpaper) (*mtproto.Bool, error)
+	// Recommendation methods
+	DialogGetRecommendedDialogs(context.Context, *TLDialogGetRecommendedDialogs) (*RecommendedDialogs, error)
+	DialogRefreshRecommendations(context.Context, *TLDialogRefreshRecommendations) (*mtproto.Bool, error)
+	DialogReportRecommendationFeedback(context.Context, *TLDialogReportRecommendationFeedback) (*mtproto.Bool, error)
+	DialogAddPromotedDialog(context.Context, *TLDialogAddPromotedDialog) (*mtproto.Bool, error)
+	DialogRemovePromotedDialog(context.Context, *TLDialogRemovePromotedDialog) (*mtproto.Bool, error)
 }
 
 // UnimplementedRPCDialogServer should be embedded to have
@@ -713,6 +780,21 @@ func (UnimplementedRPCDialogServer) DialogGetDialogFilterTags(context.Context, *
 }
 func (UnimplementedRPCDialogServer) DialogSetChatWallpaper(context.Context, *TLDialogSetChatWallpaper) (*mtproto.Bool, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method DialogSetChatWallpaper not implemented")
+}
+func (UnimplementedRPCDialogServer) DialogGetRecommendedDialogs(context.Context, *TLDialogGetRecommendedDialogs) (*RecommendedDialogs, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method DialogGetRecommendedDialogs not implemented")
+}
+func (UnimplementedRPCDialogServer) DialogRefreshRecommendations(context.Context, *TLDialogRefreshRecommendations) (*mtproto.Bool, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method DialogRefreshRecommendations not implemented")
+}
+func (UnimplementedRPCDialogServer) DialogReportRecommendationFeedback(context.Context, *TLDialogReportRecommendationFeedback) (*mtproto.Bool, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method DialogReportRecommendationFeedback not implemented")
+}
+func (UnimplementedRPCDialogServer) DialogAddPromotedDialog(context.Context, *TLDialogAddPromotedDialog) (*mtproto.Bool, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method DialogAddPromotedDialog not implemented")
+}
+func (UnimplementedRPCDialogServer) DialogRemovePromotedDialog(context.Context, *TLDialogRemovePromotedDialog) (*mtproto.Bool, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method DialogRemovePromotedDialog not implemented")
 }
 func (UnimplementedRPCDialogServer) testEmbeddedByValue() {}
 
@@ -1472,6 +1554,96 @@ func _RPCDialog_DialogSetChatWallpaper_Handler(srv interface{}, ctx context.Cont
 	return interceptor(ctx, in, info, handler)
 }
 
+func _RPCDialog_DialogGetRecommendedDialogs_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(TLDialogGetRecommendedDialogs)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RPCDialogServer).DialogGetRecommendedDialogs(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RPCDialog_DialogGetRecommendedDialogs_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RPCDialogServer).DialogGetRecommendedDialogs(ctx, req.(*TLDialogGetRecommendedDialogs))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _RPCDialog_DialogRefreshRecommendations_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(TLDialogRefreshRecommendations)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RPCDialogServer).DialogRefreshRecommendations(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RPCDialog_DialogRefreshRecommendations_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RPCDialogServer).DialogRefreshRecommendations(ctx, req.(*TLDialogRefreshRecommendations))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _RPCDialog_DialogReportRecommendationFeedback_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(TLDialogReportRecommendationFeedback)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RPCDialogServer).DialogReportRecommendationFeedback(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RPCDialog_DialogReportRecommendationFeedback_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RPCDialogServer).DialogReportRecommendationFeedback(ctx, req.(*TLDialogReportRecommendationFeedback))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _RPCDialog_DialogAddPromotedDialog_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(TLDialogAddPromotedDialog)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RPCDialogServer).DialogAddPromotedDialog(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RPCDialog_DialogAddPromotedDialog_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RPCDialogServer).DialogAddPromotedDialog(ctx, req.(*TLDialogAddPromotedDialog))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _RPCDialog_DialogRemovePromotedDialog_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(TLDialogRemovePromotedDialog)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RPCDialogServer).DialogRemovePromotedDialog(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RPCDialog_DialogRemovePromotedDialog_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RPCDialogServer).DialogRemovePromotedDialog(ctx, req.(*TLDialogRemovePromotedDialog))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // RPCDialog_ServiceDesc is the grpc.ServiceDesc for RPCDialog service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -1642,6 +1814,26 @@ var RPCDialog_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "dialog_setChatWallpaper",
 			Handler:    _RPCDialog_DialogSetChatWallpaper_Handler,
+		},
+		{
+			MethodName: "dialog_getRecommendedDialogs",
+			Handler:    _RPCDialog_DialogGetRecommendedDialogs_Handler,
+		},
+		{
+			MethodName: "dialog_refreshRecommendations",
+			Handler:    _RPCDialog_DialogRefreshRecommendations_Handler,
+		},
+		{
+			MethodName: "dialog_reportRecommendationFeedback",
+			Handler:    _RPCDialog_DialogReportRecommendationFeedback_Handler,
+		},
+		{
+			MethodName: "dialog_addPromotedDialog",
+			Handler:    _RPCDialog_DialogAddPromotedDialog_Handler,
+		},
+		{
+			MethodName: "dialog_removePromotedDialog",
+			Handler:    _RPCDialog_DialogRemovePromotedDialog_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

@@ -111,13 +111,13 @@ func TestContactsBlockReturnsSuccessAfterPersistenceAndSync(t *testing.T) {
 }
 
 func blockTestRequest(peerID int64) *mtproto.TLContactsBlock {
-	return &mtproto.TLContactsBlock{Id: mtproto.MakeTLInputPeerUser(&mtproto.InputPeer{UserId: peerID}).To_InputPeer()}
+	return &mtproto.TLContactsBlock{Id: mtproto.MakeTLInputPeerUser(&mtproto.InputPeer{UserId: peerID, AccessHash: peerID + 100}).To_InputPeer()}
 }
 
 func blockTestUsers(selfID, peerID int64) *userpb.Vector_ImmutableUser {
 	return &userpb.Vector_ImmutableUser{Datas: []*mtproto.ImmutableUser{
-		mtproto.MakeTLImmutableUser(&mtproto.ImmutableUser{User: &mtproto.UserData{Id: selfID, FirstName: "Owner"}}).To_ImmutableUser(),
-		mtproto.MakeTLImmutableUser(&mtproto.ImmutableUser{User: &mtproto.UserData{Id: peerID, FirstName: "Peer"}}).To_ImmutableUser(),
+		mtproto.MakeTLImmutableUser(&mtproto.ImmutableUser{User: &mtproto.UserData{Id: selfID, AccessHash: selfID + 100, FirstName: "Owner"}}).To_ImmutableUser(),
+		mtproto.MakeTLImmutableUser(&mtproto.ImmutableUser{User: &mtproto.UserData{Id: peerID, AccessHash: peerID + 100, FirstName: "Peer"}}).To_ImmutableUser(),
 	}}
 }
 

@@ -1,3 +1,5 @@
+//go:build recommendation_experimental
+
 /*
  * Copyright (c) 2024-present,  Teamgram Authors.
  *  All rights reserved.

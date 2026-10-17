@@ -79,6 +79,10 @@ func (c *ContactsCore) ContactsDeleteContacts(in *mtproto.TLContactsDeleteContac
 		c.Logger.Errorf("contacts.deleteContacts - error: %v", err)
 		return nil, err
 	}
+	if deleteUsers == nil {
+		c.Logger.Errorf("contacts.deleteContacts - user service returned no users")
+		return nil, mtproto.ErrInternalServerError
+	}
 
 	var deleteErr error
 	deleteUsers.VisitByMe(c.MD.UserId, func(me, it *mtproto.ImmutableUser) {

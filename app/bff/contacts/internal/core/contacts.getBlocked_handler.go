@@ -101,10 +101,18 @@ func (c *ContactsCore) ContactsGetBlocked(in *mtproto.TLContactsGetBlocked) (*mt
 					readErr = err
 					return
 				}
+				if users == nil {
+					readErr = mtproto.ErrInternalServerError
+					return
+				}
 				contactsBlocked.Users = users.GetUserListByIdList(c.MD.UserId, userIdList...)
 			},
 			func(chatIdList []int64) {
 				if readErr != nil {
+					return
+				}
+				if c.svcCtx.Dao.ChatClient == nil {
+					readErr = mtproto.ErrInternalServerError
 					return
 				}
 				chats, err := c.svcCtx.Dao.ChatClient.ChatGetChatListByIdList(c.ctx, &chatpb.TLChatGetChatListByIdList{
@@ -113,6 +121,10 @@ func (c *ContactsCore) ContactsGetBlocked(in *mtproto.TLContactsGetBlocked) (*mt
 				})
 				if err != nil {
 					readErr = err
+					return
+				}
+				if chats == nil {
+					readErr = mtproto.ErrInternalServerError
 					return
 				}
 				contactsBlocked.Chats = append(contactsBlocked.Chats, chats.GetChatListByIdList(c.MD.UserId, chatIdList...)...)

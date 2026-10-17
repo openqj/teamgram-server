@@ -18,6 +18,14 @@ import (
 // DialogInsertOrUpdateDialog
 // dialog.insertOrUpdateDialog flags:# user_id:long peer_type:int peer_id:long top_message:flags.0?int read_outbox_max_id:flags.1?int read_inbox_max_id:flags.2?int unread_count:flags.3?int unread_mark:flags.4?true pinned_msg_id:flags.6?int date2:flags.5?long = Bool;
 func (c *DialogCore) DialogInsertOrUpdateDialog(in *dialog.TLDialogInsertOrUpdateDialog) (*mtproto.Bool, error) {
+	if in == nil || in.GetUserId() <= 0 || in.GetPeerId() <= 0 {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	switch in.GetPeerType() {
+	case mtproto.PEER_SELF, mtproto.PEER_USER, mtproto.PEER_CHAT, mtproto.PEER_CHANNEL:
+	default:
+		return nil, mtproto.ErrPeerIdInvalid
+	}
 	store, err := c.pgStore()
 	if err != nil || store.Dialogs == nil {
 		return nil, mtproto.ErrMethodNotImpl
@@ -50,7 +58,9 @@ func (c *DialogCore) DialogInsertOrUpdateDialog(in *dialog.TLDialogInsertOrUpdat
 
 	rowsAffected, err := store.Dialogs.UpdateCustomMap(c.ctx, cMap, in.UserId, in.PeerType, in.PeerId)
 	if err != nil {
-		c.Logger.Errorf("dialog.insertOrUpdateDialog - error: %v", err)
+		if c.Logger != nil {
+			c.Logger.Errorf("dialog.insertOrUpdateDialog - error: %v", err)
+		}
 		return nil, err
 	}
 
@@ -85,7 +95,9 @@ func (c *DialogCore) DialogInsertOrUpdateDialog(in *dialog.TLDialogInsertOrUpdat
 
 		_, _, err = store.Dialogs.InsertIgnore(c.ctx, dlgDO)
 		if err != nil {
-			c.Logger.Errorf("dialog.insertOrUpdateDialog - insert missing dialog error: %v", err)
+			if c.Logger != nil {
+				c.Logger.Errorf("dialog.insertOrUpdateDialog - insert missing dialog error: %v", err)
+			}
 			return nil, err
 		}
 	}

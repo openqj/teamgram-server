@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"github.com/teamgram/proto/mtproto"
+	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/domain"
 	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/persist"
 	userpb "github.com/teamgram/teamgram-server/app/service/biz/user/user"
 	"google.golang.org/protobuf/types/known/wrapperspb"
@@ -256,6 +257,128 @@ func validateInputBotApp(app *mtproto.InputBotApp) error {
 		}
 	default:
 		return mtproto.ErrInputConstructorInvalid
+	}
+	return nil
+}
+
+// validateMiniAppPeer checks the peer before it becomes part of a durable
+// WebView scope. Explicit user and channel peers carry access hashes and must
+// match the authoritative stores. Message-derived peers have no target hash,
+// so their source shape and target existence are checked instead.
+func (c *ApiFullCore) validateMiniAppPeer(callerID int64, peer *mtproto.InputPeer) error {
+	if callerID <= 0 || peer == nil {
+		return mtproto.ErrInputRequestInvalid
+	}
+
+	predicate := peer.GetPredicateName()
+	if predicate == "" {
+		switch {
+		case peer.GetPeer() != nil || peer.GetMsgId() != 0:
+			if peer.GetChannelId() > 0 {
+				predicate = mtproto.Predicate_inputPeerChannelFromMessage
+			} else if peer.GetUserId() > 0 {
+				predicate = mtproto.Predicate_inputPeerUserFromMessage
+			} else {
+				return mtproto.ErrPeerIdInvalid
+			}
+		case peer.GetChannelId() > 0:
+			predicate = mtproto.Predicate_inputPeerChannel
+		case peer.GetChatId() > 0:
+			predicate = mtproto.Predicate_inputPeerChat
+		case peer.GetUserId() > 0:
+			predicate = mtproto.Predicate_inputPeerUser
+		default:
+			predicate = mtproto.Predicate_inputPeerSelf
+		}
+	}
+
+	switch predicate {
+	case mtproto.Predicate_inputPeerSelf:
+		if peer.GetUserId() != 0 || peer.GetChatId() != 0 || peer.GetChannelId() != 0 ||
+			peer.GetAccessHash() != 0 || peer.GetPeer() != nil || peer.GetMsgId() != 0 || peer.GetUsername() != "" {
+			return mtproto.ErrPeerIdInvalid
+		}
+		return nil
+	case mtproto.Predicate_inputPeerUser:
+		if peer.GetUserId() <= 0 || peer.GetAccessHash() == 0 || peer.GetChatId() != 0 || peer.GetChannelId() != 0 ||
+			peer.GetPeer() != nil || peer.GetMsgId() != 0 || peer.GetUsername() != "" {
+			return mtproto.ErrUserIdInvalid
+		}
+		return c.validateMiniAppUserPeer(peer.GetUserId(), peer.GetAccessHash())
+	case mtproto.Predicate_inputPeerChat:
+		if peer.GetChatId() <= 0 || peer.GetUserId() != 0 || peer.GetChannelId() != 0 || peer.GetAccessHash() != 0 ||
+			peer.GetPeer() != nil || peer.GetMsgId() != 0 || peer.GetUsername() != "" {
+			return mtproto.ErrPeerIdInvalid
+		}
+		return nil
+	case mtproto.Predicate_inputPeerChannel:
+		if peer.GetChannelId() <= 0 || peer.GetAccessHash() == 0 || peer.GetUserId() != 0 || peer.GetChatId() != 0 ||
+			peer.GetPeer() != nil || peer.GetMsgId() != 0 || peer.GetUsername() != "" {
+			return mtproto.ErrChannelInvalid
+		}
+		return c.validateMiniAppChannelPeer(peer.GetChannelId(), peer.GetAccessHash(), true)
+	case mtproto.Predicate_inputPeerUserFromMessage:
+		if peer.GetUserId() <= 0 || peer.GetMsgId() <= 0 || peer.GetPeer() == nil || peer.GetAccessHash() != 0 ||
+			peer.GetChatId() != 0 || peer.GetChannelId() != 0 || peer.GetUsername() != "" {
+			return mtproto.ErrPeerIdInvalid
+		}
+		if err := c.validateMiniAppPeer(callerID, peer.GetPeer()); err != nil {
+			return err
+		}
+		return c.validateMiniAppUserPeer(peer.GetUserId(), 0)
+	case mtproto.Predicate_inputPeerChannelFromMessage:
+		if peer.GetChannelId() <= 0 || peer.GetMsgId() <= 0 || peer.GetPeer() == nil || peer.GetAccessHash() != 0 ||
+			peer.GetUserId() != 0 || peer.GetChatId() != 0 || peer.GetUsername() != "" {
+			return mtproto.ErrPeerIdInvalid
+		}
+		if err := c.validateMiniAppPeer(callerID, peer.GetPeer()); err != nil {
+			return err
+		}
+		return c.validateMiniAppChannelPeer(peer.GetChannelId(), 0, false)
+	case mtproto.Predicate_inputPeerUsername:
+		if strings.TrimSpace(peer.GetUsername()) == "" || peer.GetUsername() != strings.TrimSpace(peer.GetUsername()) {
+			return mtproto.ErrPeerIdInvalid
+		}
+		return mtproto.ErrMethodNotImpl
+	default:
+		return mtproto.ErrInputConstructorInvalid
+	}
+}
+
+func (c *ApiFullCore) validateMiniAppUserPeer(userID, accessHash int64) error {
+	if userID <= 0 {
+		return mtproto.ErrUserIdInvalid
+	}
+	d := c.apifullDao()
+	if d == nil || d.UserClient == nil {
+		return mtproto.ErrMethodNotImpl
+	}
+	profile, err := d.UserGetImmutableUser(callContext(c), &userpb.TLUserGetImmutableUser{Id: userID})
+	if err != nil {
+		return err
+	}
+	if profile == nil || profile.GetUser() == nil || profile.GetUser().GetId() != userID || profile.Deleted() {
+		return mtproto.ErrUserIdInvalid
+	}
+	if accessHash != 0 && profile.GetUser().GetAccessHash() != accessHash {
+		return mtproto.ErrUserIdInvalid
+	}
+	return nil
+}
+
+func (c *ApiFullCore) validateMiniAppChannelPeer(channelID, accessHash int64, requireAccessHash bool) error {
+	if channelID <= 0 || (requireAccessHash && accessHash == 0) {
+		return mtproto.ErrChannelInvalid
+	}
+	if !domain.Ready() {
+		return mtproto.ErrMethodNotImpl
+	}
+	channel, ok, err := domain.LoadChannel(channelID)
+	if err != nil {
+		return mtproto.ErrInternalServerError
+	}
+	if !ok || (requireAccessHash && channel.AccessHash != accessHash) {
+		return mtproto.ErrChannelInvalid
 	}
 	return nil
 }
@@ -570,6 +693,9 @@ func (c *ApiFullCore) MessagesRequestAppWebView53618BCE(in *mtproto.TLMessagesRe
 	}
 	if in == nil || in.GetPeer() == nil || in.GetApp() == nil {
 		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if err := c.validateMiniAppPeer(callerID, in.GetPeer()); err != nil {
+		return nil, err
 	}
 	if !persist.PostgresEnabled() {
 		return nil, mtproto.ErrMethodNotImpl
@@ -893,6 +1019,9 @@ func (c *ApiFullCore) MessagesRequestAppWebView8C5A3B3C(in *mtproto.TLMessagesRe
 	}
 	if in == nil || in.GetPeer() == nil || in.GetApp() == nil {
 		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if err = c.validateMiniAppPeer(callerID, in.GetPeer()); err != nil {
+		return nil, err
 	}
 	if !persist.PostgresEnabled() {
 		return nil, mtproto.ErrMethodNotImpl

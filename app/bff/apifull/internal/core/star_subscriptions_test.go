@@ -9,6 +9,7 @@ import (
 
 func TestStarsSubscriptionsFailClosedWithoutBillingProvider(t *testing.T) {
 	c := &ApiFullCore{MD: &metadata.RpcMetadata{UserId: 81016}}
+	selfPeer := mtproto.MakeTLInputPeerSelf(nil).To_InputPeer()
 	calls := []struct {
 		name   string
 		invoke func() (bool, error)
@@ -19,11 +20,11 @@ func TestStarsSubscriptionsFailClosedWithoutBillingProvider(t *testing.T) {
 			return result != nil, err
 		}, mtproto.ErrInputConstructorInvalid},
 		{"change", func() (bool, error) {
-			result, err := c.PaymentsChangeStarsSubscription(&mtproto.TLPaymentsChangeStarsSubscription{SubscriptionId: "sub", Canceled: mtproto.BoolTrue})
+			result, err := c.PaymentsChangeStarsSubscription(&mtproto.TLPaymentsChangeStarsSubscription{SubscriptionId: "sub", Peer: selfPeer, Canceled: mtproto.BoolTrue})
 			return result != nil, err
 		}, mtproto.ErrPaymentUnsupported},
 		{"fulfill", func() (bool, error) {
-			result, err := c.PaymentsFulfillStarsSubscription(&mtproto.TLPaymentsFulfillStarsSubscription{SubscriptionId: "sub"})
+			result, err := c.PaymentsFulfillStarsSubscription(&mtproto.TLPaymentsFulfillStarsSubscription{SubscriptionId: "sub", Peer: selfPeer})
 			return result != nil, err
 		}, mtproto.ErrPaymentUnsupported},
 		{"cancel", func() (bool, error) {

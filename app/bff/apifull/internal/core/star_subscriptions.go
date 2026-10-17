@@ -49,6 +49,20 @@ type starsSubscriptionMutationProviderResponse struct {
 	Result         *mtproto.Bool `json:"result"`
 }
 
+// validRequiredStarsPeer matches the mandatory InputPeer fields on the
+// subscription methods. validStarsPeer is shared with methods whose peer is
+// optional, so it intentionally accepts nil; subscription RPCs must reject
+// nil and cannot accept an inputPeerUser without its required access hash.
+func validRequiredStarsPeer(selfID int64, peer *mtproto.InputPeer) bool {
+	if peer == nil || !validStarsPeer(selfID, peer) {
+		return false
+	}
+	if peer.GetPredicateName() == mtproto.Predicate_inputPeerUser {
+		return peer.GetAccessHash() != 0
+	}
+	return true
+}
+
 // callStarsSubscriptionMutationProvider gives each authoritative mutation a
 // stable idempotency key. The provider must deduplicate this key before it
 // changes a recurring charge, and every response remains HMAC authenticated.
@@ -127,7 +141,7 @@ func (c *ApiFullCore) starsSubscriptionStatus(uid int64, in *mtproto.TLPaymentsG
 	if in == nil {
 		return nil, mtproto.ErrInputConstructorInvalid
 	}
-	if !validStarsPeer(uid, in.GetPeer()) {
+	if !validRequiredStarsPeer(uid, in.GetPeer()) {
 		return nil, mtproto.ErrPeerIdInvalid
 	}
 	if _, err := parseStarsOffset(in.GetOffset()); err != nil {
@@ -173,7 +187,7 @@ func (c *ApiFullCore) starSubscriptionMutation(uid int64, operation, subscriptio
 	if strings.TrimSpace(subscriptionID) == "" {
 		return nil, mtproto.ErrInputConstructorInvalid
 	}
-	if !validStarsPeer(uid, peer) {
+	if !validRequiredStarsPeer(uid, peer) {
 		return nil, mtproto.ErrPeerIdInvalid
 	}
 	if canceled != nil && canceled.GetPredicateName() != mtproto.Predicate_boolTrue && canceled.GetPredicateName() != mtproto.Predicate_boolFalse {

@@ -93,7 +93,7 @@ func haversineMeters(lat1, lon1, lat2, lon2 float64) int32 {
 // ContactsGetLocated
 // contacts.getLocated#d348bc44 flags:# background:flags.1?true geo_point:InputGeoPoint self_expires:flags.0?int = Updates;
 func (c *ContactsCore) ContactsGetLocated(in *mtproto.TLContactsGetLocated) (*mtproto.Updates, error) {
-	if c.MD == nil || c.MD.UserId == 0 {
+	if c == nil || c.MD == nil || c.MD.UserId == 0 {
 		return nil, mtproto.ErrAuthKeyUnregistered
 	}
 	if in == nil {
@@ -105,6 +105,9 @@ func (c *ContactsCore) ContactsGetLocated(in *mtproto.TLContactsGetLocated) (*mt
 		return nil, mtproto.ErrGeoPointInvalid
 	}
 	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.UserClient == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
+	if persist.Default == nil {
 		return nil, mtproto.ErrInternalServerError
 	}
 
@@ -238,6 +241,10 @@ func (c *ContactsCore) ContactsGetLocated(in *mtproto.TLContactsGetLocated) (*mt
 		if uErr != nil {
 			c.Logger.Errorf("contacts.getLocated - error: %v", uErr)
 			return nil, uErr
+		}
+		if users == nil {
+			c.Logger.Errorf("contacts.getLocated - user service returned no users")
+			return nil, mtproto.ErrInternalServerError
 		}
 		userObjs = users.GetUserListByIdList(c.MD.UserId, ids...)
 		if userObjs == nil {

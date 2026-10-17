@@ -17,6 +17,7 @@ import (
 
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/domain"
+	userpb "github.com/teamgram/teamgram-server/app/service/biz/user/user"
 	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
@@ -46,6 +47,21 @@ func boostPeerRefFromInput(self int64, scope string, peer *mtproto.InputPeer) (b
 		// that resolver can provide a canonical peer id.
 		return boostPeerRef{}, mtproto.ErrMethodNotImpl
 	}
+	if peer.GetPredicateName() == mtproto.Predicate_inputPeerChannel {
+		if peer.GetChannelId() <= 0 || peer.GetAccessHash() == 0 {
+			return boostPeerRef{}, mtproto.ErrChannelInvalid
+		}
+		stored, ok, err := domain.LoadChannel(peer.GetChannelId())
+		if err != nil {
+			if !domain.Ready() {
+				return boostPeerRef{}, mtproto.ErrMethodNotImpl
+			}
+			return boostPeerRef{}, mtproto.ErrInternalServerError
+		}
+		if !ok || stored.AccessHash != peer.GetAccessHash() {
+			return boostPeerRef{}, mtproto.ErrChannelInvalid
+		}
+	}
 	return boostPeerRef{Scope: scope, PeerType: peerType, PeerID: peerID}, nil
 }
 
@@ -56,20 +72,48 @@ func boostInputChannel(self int64, channel *mtproto.InputChannel) (boostPeerRef,
 	if channel.GetPeer() != nil {
 		return boostPeerRefFromInput(self, domain.BoostScopePremium, channel.GetPeer())
 	}
+	if channel.GetAccessHash() == 0 {
+		return boostPeerRef{}, mtproto.ErrChannelInvalid
+	}
+	stored, ok, err := domain.LoadChannel(channel.GetChannelId())
+	if err != nil {
+		if !domain.Ready() {
+			return boostPeerRef{}, mtproto.ErrMethodNotImpl
+		}
+		return boostPeerRef{}, mtproto.ErrInternalServerError
+	}
+	if !ok || stored.AccessHash != channel.GetAccessHash() {
+		return boostPeerRef{}, mtproto.ErrChannelInvalid
+	}
 	return boostPeerRef{Scope: domain.BoostScopePremium, PeerType: mtproto.PEER_CHANNEL, PeerID: channel.GetChannelId()}, nil
 }
 
-func boostInputUserID(self int64, user *mtproto.InputUser) (int64, error) {
+func (c *ApiFullCore) boostInputUserID(self int64, user *mtproto.InputUser) (int64, error) {
 	if user == nil {
 		return 0, mtproto.ErrInputConstructorInvalid
 	}
-	if user.GetPredicateName() == mtproto.Predicate_inputUserSelf {
+	switch user.GetPredicateName() {
+	case mtproto.Predicate_inputUserSelf:
 		return self, nil
+	case mtproto.Predicate_inputUser:
+		if user.GetUserId() <= 0 || user.GetAccessHash() == 0 {
+			return 0, mtproto.ErrUserIdInvalid
+		}
+		d := c.apifullDao()
+		if d == nil || d.UserClient == nil {
+			return 0, mtproto.ErrMethodNotImpl
+		}
+		profile, err := d.UserGetImmutableUser(callContext(c), &userpb.TLUserGetImmutableUser{Id: user.GetUserId()})
+		if err != nil {
+			return 0, err
+		}
+		if profile == nil || profile.GetUser() == nil || profile.GetUser().GetId() != user.GetUserId() || profile.Deleted() || profile.GetUser().GetAccessHash() != user.GetAccessHash() {
+			return 0, mtproto.ErrUserIdInvalid
+		}
+		return user.GetUserId(), nil
+	default:
+		return 0, mtproto.ErrInputConstructorInvalid
 	}
-	if user.GetUserId() <= 0 {
-		return 0, mtproto.ErrUserIdInvalid
-	}
-	return user.GetUserId(), nil
 }
 
 func boostDomainError(err error) error {
@@ -341,7 +385,7 @@ func (c *ApiFullCore) PremiumGetUserBoosts(in *mtproto.TLPremiumGetUserBoosts) (
 	if err != nil {
 		return nil, err
 	}
-	userID, err := boostInputUserID(uid, in.GetUserId())
+	userID, err := c.boostInputUserID(uid, in.GetUserId())
 	if err != nil {
 		return nil, err
 	}

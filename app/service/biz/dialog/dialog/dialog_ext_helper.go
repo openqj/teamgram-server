@@ -50,7 +50,7 @@ func (m DialogExtList) GetDialogsByOffsetLimit(offsetDate int32, offsetId int32,
 		dialogExtList2 DialogExtList
 	)
 
-	if offsetPeer.IsEmpty() {
+	if offsetPeer == nil || offsetPeer.IsEmpty() {
 		if (offsetId == 0 || offsetId == 2147483647) && (offsetDate == 0 || offsetDate == 2147483647) {
 			if m.Len() >= int(limit) {
 				dialogExtList2 = m[:limit]
@@ -76,12 +76,13 @@ func (m DialogExtList) GetDialogsByOffsetLimit(offsetDate int32, offsetId int32,
 					}
 				}
 			}
-			if idx > 0 {
-				if idx+1+int(limit) > m.Len() {
-					dialogExtList2 = m[idx+1:]
-				} else {
-					dialogExtList2 = m[idx+1 : idx+1+int(limit)]
+			if idx >= 0 {
+				start := idx + 1
+				end := start + int(limit)
+				if end > m.Len() {
+					end = m.Len()
 				}
+				dialogExtList2 = m[start:end]
 			} else {
 				dialogExtList2 = m[:0]
 			}
@@ -118,12 +119,13 @@ func (m DialogExtList) GetDialogsByOffsetLimit(offsetDate int32, offsetId int32,
 				}
 			}
 		}
-		if idx > 0 {
-			if idx+int(limit) > m.Len()-2 {
-				dialogExtList2 = m[idx+1:]
-			} else {
-				dialogExtList2 = m[idx+1 : idx+1+int(limit)]
+		if idx >= 0 {
+			start := idx + 1
+			end := start + int(limit)
+			if end > m.Len() {
+				end = m.Len()
 			}
+			dialogExtList2 = m[start:end]
 		} else {
 			dialogExtList2 = m[:0]
 		}

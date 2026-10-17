@@ -54,6 +54,11 @@ func TestContactsGetContactIDsSortsAndReturnsProtocolInts(t *testing.T) {
 }
 
 func TestContactsGetContactIDsFailsClosedOnInvalidDependencies(t *testing.T) {
+	var nilCore *ContactsCore
+	if got, err := nilCore.ContactsGetContactIDs(&mtproto.TLContactsGetContactIDs{}); got != nil || !errors.Is(err, mtproto.ErrAuthKeyUnregistered) {
+		t.Fatalf("nil core = (%+v, %v), want AUTH_KEY_UNREGISTERED", got, err)
+	}
+
 	wantErr := errors.New("contact list unavailable")
 	client := &getContactIDsUserClientStub{err: wantErr}
 	if got, err := newGetContactIDsTestCore(client).ContactsGetContactIDs(&mtproto.TLContactsGetContactIDs{}); got != nil || err != wantErr {

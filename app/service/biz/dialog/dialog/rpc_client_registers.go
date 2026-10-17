@@ -66,6 +66,11 @@ var rpcContextRegisters = map[string]RPCContextTuple{
 	"TLDialogToggleDialogFilterTags":            RPCContextTuple{"/mtproto.RPCDialog/dialog_toggleDialogFilterTags", func() interface{} { return new(mtproto.Bool) }},
 	"TLDialogGetDialogFilterTags":               RPCContextTuple{"/mtproto.RPCDialog/dialog_getDialogFilterTags", func() interface{} { return new(mtproto.Bool) }},
 	"TLDialogSetChatWallpaper":                  RPCContextTuple{"/mtproto.RPCDialog/dialog_setChatWallpaper", func() interface{} { return new(mtproto.Bool) }},
+	"TLDialogGetRecommendedDialogs":             RPCContextTuple{"/mtproto.RPCDialog/dialog_getRecommendedDialogs", func() interface{} { return new(RecommendedDialogs) }},
+	"TLDialogRefreshRecommendations":            RPCContextTuple{"/mtproto.RPCDialog/dialog_refreshRecommendations", func() interface{} { return new(mtproto.Bool) }},
+	"TLDialogReportRecommendationFeedback":      RPCContextTuple{"/mtproto.RPCDialog/dialog_reportRecommendationFeedback", func() interface{} { return new(mtproto.Bool) }},
+	"TLDialogAddPromotedDialog":                 RPCContextTuple{"/mtproto.RPCDialog/dialog_addPromotedDialog", func() interface{} { return new(mtproto.Bool) }},
+	"TLDialogRemovePromotedDialog":              RPCContextTuple{"/mtproto.RPCDialog/dialog_removePromotedDialog", func() interface{} { return new(mtproto.Bool) }},
 }
 
 func FindRPCContextTuple(t interface{}) *RPCContextTuple {

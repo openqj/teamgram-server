@@ -146,6 +146,10 @@ func (c *DialogsCore) MessagesGetDialogs(in *mtproto.TLMessagesGetDialogs) (*mtp
 					recordLoadErr(err)
 					return nil
 				}
+				if boxList == nil {
+					recordLoadErr(mtproto.ErrInternalServerError)
+					return nil
+				}
 				boxList.Walk(func(idx int, v *mtproto.MessageBox) {
 					msgList = append(msgList, v.ToMessage(c.MD.UserId))
 				})

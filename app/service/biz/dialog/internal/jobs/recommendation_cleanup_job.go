@@ -30,6 +30,10 @@ func NewRecommendationCleanupJob(store *postgres_dao.Store) *RecommendationClean
 // Run 执行过期推荐清理
 // 每天执行一次，清理已过期的推荐记录
 func (j *RecommendationCleanupJob) Run() {
+	if j == nil || j.store == nil || j.store.DialogRecommendations == nil {
+		logx.Error("RecommendationCleanupJob: PostgreSQL store is required")
+		return
+	}
 	ctx := context.Background()
 	now := time.Now().Unix()
 

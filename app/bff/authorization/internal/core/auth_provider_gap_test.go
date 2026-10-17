@@ -164,6 +164,14 @@ func TestAuthCheckPasswordRejectsMissingRuntimeContext(t *testing.T) {
 	}
 }
 
+func TestAuthCheckPasswordRejectsNilRequest(t *testing.T) {
+	c := newProviderGapCore()
+	c.MD.UserId = 91
+	if result, err := c.AuthCheckPassword(nil); result != nil || !errors.Is(err, mtproto.ErrInputRequestInvalid) {
+		t.Fatalf("nil check-password request = (%v, %v), want (nil, INPUT_REQUEST_INVALID)", result, err)
+	}
+}
+
 func TestAuthDropTempAuthKeysUsesAuthsessionProvider(t *testing.T) {
 	client := &tempAuthKeyDropClient{}
 	c := newProviderGapCore()

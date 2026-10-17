@@ -27,7 +27,7 @@ import (
 // ContactsResolvePhone
 // contacts.resolvePhone#8af94344 phone:string = contacts.ResolvedPeer;
 func (c *UsersCore) ContactsResolvePhone(in *mtproto.TLContactsResolvePhone) (*mtproto.Contacts_ResolvedPeer, error) {
-	if c.MD == nil || c.MD.UserId <= 0 {
+	if c == nil || c.MD == nil || c.MD.UserId <= 0 {
 		return nil, mtproto.ErrAuthKeyUnregistered
 	}
 	if in == nil {
@@ -67,11 +67,8 @@ func (c *UsersCore) ContactsResolvePhone(in *mtproto.TLContactsResolvePhone) (*m
 		return nil, mtproto.ErrInternalServerError
 	}
 
-	me, _ := contactList.GetImmutableUser(c.MD.UserId)
-	resolved, _ := contactList.GetImmutableUser(id.GetV())
-
-	if me == nil || resolved == nil {
-		err = mtproto.ErrInternalServerError
+	me, resolved, err := getFullUserUsers(contactList, c.MD.UserId, id.GetV())
+	if err != nil {
 		c.Logger.Errorf("users.getFullUser - error: %v", err)
 		return nil, err
 	}

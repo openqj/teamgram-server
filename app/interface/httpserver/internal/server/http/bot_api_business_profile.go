@@ -184,7 +184,7 @@ func getBusinessAccountStarBalance(ctx *svc.ServiceContext, r *http.Request, bot
 	if ctx == nil || ctx.StarsClient == nil {
 		return nil, http.StatusNotImplemented, 501, "Not Implemented: payment service is not configured"
 	}
-	scope, status, code, description := botAPIBusinessProfileScope(ctx, r, botID, request, func(scope businessctx.Scope) bool { return scope.CanTransferStars })
+	scope, status, code, description := botAPIBusinessProfileScope(ctx, r, botID, request, func(scope businessctx.Scope) bool { return scope.CanViewGifts })
 	if code != 0 {
 		return nil, status, code, description
 	}

@@ -57,6 +57,10 @@ func (c *ContactsCore) ContactsSetBlocked(in *mtproto.TLContactsSetBlocked) (*mt
 		c.Logger.Errorf("contacts.setBlocked - error: %v", err)
 		return nil, err
 	}
+	if blockedList == nil {
+		c.Logger.Errorf("contacts.setBlocked - user.getBlockedList returned no response")
+		return nil, mtproto.ErrInternalServerError
+	}
 
 	have := make(map[int64]struct{}, len(blockedList.GetDatas()))
 	for _, blocked := range blockedList.GetDatas() {

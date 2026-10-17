@@ -37,6 +37,7 @@ func botAPIInputRichMessage(request *botAPIRequest) (*mtproto.InputRichMessage, 
 	var (
 		html, markdown string
 		blocks         []*mtproto.PageBlock
+		media          = &botAPIRichMediaState{}
 		hasHTML        = richFieldPresent(fields, "html")
 		hasMarkdown    = richFieldPresent(fields, "markdown")
 		hasBlocks      = richFieldPresent(fields, "blocks")
@@ -53,7 +54,7 @@ func botAPIInputRichMessage(request *botAPIRequest) (*mtproto.InputRichMessage, 
 	}
 	if hasBlocks {
 		var err error
-		blocks, err = botAPIRichBlocks(fields["blocks"])
+		blocks, media, err = botAPIRichBlocksWithState(fields["blocks"])
 		if err != nil {
 			return nil, err
 		}
@@ -82,7 +83,13 @@ func botAPIInputRichMessage(request *botAPIRequest) (*mtproto.InputRichMessage, 
 	if err != nil {
 		return nil, errBotAPIRichMessageInvalid
 	}
-	value := &mtproto.InputRichMessage{Rtl: rtl, Noautolink: noautolink, Blocks: blocks}
+	value := &mtproto.InputRichMessage{
+		Rtl:        rtl,
+		Noautolink: noautolink,
+		Blocks:     blocks,
+		Photos:     media.photos,
+		Documents:  media.documents,
+	}
 	switch {
 	case hasHTML:
 		value.Html = html
@@ -122,28 +129,53 @@ type botAPIRichBlockInput struct {
 	Name       string            `json:"name"`
 	Size       int               `json:"size"`
 	IsOpen     bool              `json:"is_open"`
+	Photo      json.RawMessage   `json:"photo"`
+	Video      json.RawMessage   `json:"video"`
+	Audio      json.RawMessage   `json:"audio"`
+	Caption    json.RawMessage   `json:"caption"`
+	IsSpoiler  bool              `json:"is_spoiler"`
+	IsAutoplay bool              `json:"is_autoplay"`
+	IsLoop     bool              `json:"is_loop"`
 }
 
 func botAPIRichBlocks(raw json.RawMessage) ([]*mtproto.PageBlock, error) {
+	blocks, _, err := botAPIRichBlocksWithState(raw)
+	return blocks, err
+}
+
+type botAPIRichMediaState struct {
+	photos    []*mtproto.InputPhoto
+	documents []*mtproto.InputDocument
+}
+
+func botAPIRichBlocksWithState(raw json.RawMessage) ([]*mtproto.PageBlock, *botAPIRichMediaState, error) {
 	var inputs []json.RawMessage
 	if err := json.Unmarshal(raw, &inputs); err != nil || len(inputs) == 0 {
-		return nil, errBotAPIRichMessageInvalid
+		return nil, nil, errBotAPIRichMessageInvalid
 	}
+	media := &botAPIRichMediaState{}
 	blocks := make([]*mtproto.PageBlock, 0, len(inputs))
 	for _, rawBlock := range inputs {
-		block, err := botAPIRichBlock(rawBlock)
+		block, err := botAPIRichBlockWithState(rawBlock, media)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		blocks = append(blocks, block)
 	}
-	return blocks, nil
+	return blocks, media, nil
 }
 
 func botAPIRichBlock(raw json.RawMessage) (*mtproto.PageBlock, error) {
+	return botAPIRichBlockWithState(raw, &botAPIRichMediaState{})
+}
+
+func botAPIRichBlockWithState(raw json.RawMessage, media *botAPIRichMediaState) (*mtproto.PageBlock, error) {
 	var input botAPIRichBlockInput
 	if err := json.Unmarshal(raw, &input); err != nil || strings.TrimSpace(input.Type) == "" {
 		return nil, errBotAPIRichMessageInvalid
+	}
+	if media == nil {
+		media = &botAPIRichMediaState{}
 	}
 	text, err := botAPIRichText(input.Text)
 	requiresText := false
@@ -194,7 +226,7 @@ func botAPIRichBlock(raw json.RawMessage) (*mtproto.PageBlock, error) {
 		}
 		return mtproto.MakeTLPageBlockAnchor(base).To_PageBlock(), nil
 	case "blockquote":
-		children, childErr := botAPIRichNestedBlocks(input.Blocks)
+		children, childErr := botAPIRichNestedBlocksWithState(input.Blocks, media)
 		if childErr != nil {
 			return nil, childErr
 		}
@@ -207,8 +239,51 @@ func botAPIRichBlock(raw json.RawMessage) (*mtproto.PageBlock, error) {
 	case "pullquote":
 		base.Author_RICHTEXT, _ = botAPIRichText(input.Credit)
 		return mtproto.MakeTLPageBlockPullquote(base).To_PageBlock(), nil
+	case "photo":
+		photoID, fileErr := botAPIRichMediaFile(input.Photo, "photo", media)
+		if fileErr != nil {
+			return nil, fileErr
+		}
+		caption, captionErr := botAPIRichPageCaption(input.Caption)
+		if captionErr != nil {
+			return nil, captionErr
+		}
+		return mtproto.MakeTLPageBlockPhoto(&mtproto.PageBlock{
+			PhotoId:             photoID,
+			Caption_PAGECAPTION: caption,
+			Spoiler:             input.IsSpoiler,
+		}).To_PageBlock(), nil
+	case "video":
+		videoID, fileErr := botAPIRichMediaFile(input.Video, "document", media)
+		if fileErr != nil {
+			return nil, fileErr
+		}
+		caption, captionErr := botAPIRichPageCaption(input.Caption)
+		if captionErr != nil {
+			return nil, captionErr
+		}
+		return mtproto.MakeTLPageBlockVideo(&mtproto.PageBlock{
+			VideoId:             videoID,
+			Caption_PAGECAPTION: caption,
+			Autoplay:            input.IsAutoplay,
+			Loop:                input.IsLoop,
+			Spoiler:             input.IsSpoiler,
+		}).To_PageBlock(), nil
+	case "audio":
+		audioID, fileErr := botAPIRichMediaFile(input.Audio, "document", media)
+		if fileErr != nil {
+			return nil, fileErr
+		}
+		caption, captionErr := botAPIRichPageCaption(input.Caption)
+		if captionErr != nil {
+			return nil, captionErr
+		}
+		return mtproto.MakeTLPageBlockAudio(&mtproto.PageBlock{
+			AudioId:             audioID,
+			Caption_PAGECAPTION: caption,
+		}).To_PageBlock(), nil
 	case "details":
-		children, childErr := botAPIRichNestedBlocks(input.Blocks)
+		children, childErr := botAPIRichNestedBlocksWithState(input.Blocks, media)
 		if childErr != nil {
 			return nil, childErr
 		}
@@ -223,18 +298,93 @@ func botAPIRichBlock(raw json.RawMessage) (*mtproto.PageBlock, error) {
 }
 
 func botAPIRichNestedBlocks(inputs []json.RawMessage) ([]*mtproto.PageBlock, error) {
+	return botAPIRichNestedBlocksWithState(inputs, &botAPIRichMediaState{})
+}
+
+func botAPIRichNestedBlocksWithState(inputs []json.RawMessage, media *botAPIRichMediaState) ([]*mtproto.PageBlock, error) {
 	if len(inputs) == 0 {
 		return nil, errBotAPIRichMessageInvalid
 	}
+	if media == nil {
+		media = &botAPIRichMediaState{}
+	}
 	blocks := make([]*mtproto.PageBlock, 0, len(inputs))
 	for _, input := range inputs {
-		block, err := botAPIRichBlock(input)
+		block, err := botAPIRichBlockWithState(input, media)
 		if err != nil {
 			return nil, err
 		}
 		blocks = append(blocks, block)
 	}
 	return blocks, nil
+}
+
+func botAPIRichMediaFile(raw json.RawMessage, expectedKind string, media *botAPIRichMediaState) (int64, error) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return 0, errBotAPIRichMessageInvalid
+	}
+	var fileID string
+	if err := json.Unmarshal(raw, &fileID); err != nil || strings.TrimSpace(fileID) == "" {
+		return 0, errBotAPIRichMessageInvalid
+	}
+	ref, err := parseBotAPIFileID(fileID)
+	if err != nil || ref.kind != expectedKind {
+		return 0, errBotAPIRichMessageInvalid
+	}
+	if media == nil {
+		return 0, errBotAPIRichMessageInvalid
+	}
+	switch ref.kind {
+	case "photo":
+		media.photos = append(media.photos, mtproto.MakeTLInputPhoto(&mtproto.InputPhoto{
+			Id:         ref.id,
+			AccessHash: ref.accessHash,
+		}).To_InputPhoto())
+	case "document":
+		media.documents = append(media.documents, mtproto.MakeTLInputDocument(&mtproto.InputDocument{
+			Id:         ref.id,
+			AccessHash: ref.accessHash,
+		}).To_InputDocument())
+	default:
+		return 0, errBotAPIRichMessageInvalid
+	}
+	return ref.id, nil
+}
+
+func botAPIRichPageCaption(raw json.RawMessage) (*mtproto.PageCaption, error) {
+	empty := func() *mtproto.RichText {
+		return mtproto.MakeTLTextPlain(&mtproto.RichText{Text_STRING: ""}).To_RichText()
+	}
+	if len(raw) == 0 || string(raw) == "null" {
+		return mtproto.MakeTLPageCaption(&mtproto.PageCaption{Text: empty(), Credit: empty()}).To_PageCaption(), nil
+	}
+	var plain string
+	if json.Unmarshal(raw, &plain) == nil {
+		return mtproto.MakeTLPageCaption(&mtproto.PageCaption{
+			Text:   mtproto.MakeTLTextPlain(&mtproto.RichText{Text_STRING: plain}).To_RichText(),
+			Credit: empty(),
+		}).To_PageCaption(), nil
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return nil, errBotAPIRichMessageInvalid
+	}
+	text, credit := empty(), empty()
+	if richFieldPresent(fields, "text") {
+		var err error
+		text, err = botAPIRichText(fields["text"])
+		if err != nil {
+			return nil, err
+		}
+	}
+	if richFieldPresent(fields, "credit") {
+		var err error
+		credit, err = botAPIRichText(fields["credit"])
+		if err != nil {
+			return nil, err
+		}
+	}
+	return mtproto.MakeTLPageCaption(&mtproto.PageCaption{Text: text, Credit: credit}).To_PageCaption(), nil
 }
 
 func botAPIRichText(raw json.RawMessage) (*mtproto.RichText, error) {
@@ -336,6 +486,13 @@ func botAPIRichText(raw json.RawMessage) (*mtproto.RichText, error) {
 }
 
 func sendRichMessage(ctx *svc.ServiceContext, r *http.Request, bot *mtproto.ImmutableUser, request *botAPIRequest) (any, int, int, string) {
+	if parameter := botAPIUnsupportedMessageParameter(request); parameter != "" {
+		return nil, http.StatusNotImplemented, 501, "Not Implemented: " + parameter + " is not supported by the Layer 229 adapter"
+	}
+	effect, effectErr := botAPIMessageEffect(request)
+	if effectErr != nil {
+		return nil, http.StatusBadRequest, 400, "Bad Request: " + effectErr.Error()
+	}
 	if ctx == nil || ctx.MessagesClient == nil {
 		return nil, http.StatusNotImplemented, 501, "Not Implemented: message service is not configured"
 	}
@@ -377,6 +534,7 @@ func sendRichMessage(ctx *svc.ServiceContext, r *http.Request, bot *mtproto.Immu
 		Silent:             requestBool(request, "disable_notification"),
 		Noforwards:         requestBool(request, "protect_content"),
 		AllowPaidFloodskip: requestBool(request, "allow_paid_broadcast"),
+		Effect:             effect,
 		Peer:               botAPIInputPeer(senderID, peerType, peerID),
 		ReplyTo:            replyTo,
 		TopMsgId:           topMsgID,
@@ -395,9 +553,6 @@ func sendRichMessage(ctx *svc.ServiceContext, r *http.Request, bot *mtproto.Immu
 }
 
 func sendRichMessageDraft(ctx *svc.ServiceContext, r *http.Request, bot *mtproto.ImmutableUser, request *botAPIRequest) (any, int, int, string) {
-	if ctx == nil || ctx.EphemeralClient == nil {
-		return nil, http.StatusNotImplemented, 501, "Not Implemented: ephemeral message service is not configured"
-	}
 	canStop, err := request.bool("can_stop")
 	if err != nil {
 		return nil, http.StatusBadRequest, 400, "Bad Request: can_stop is invalid"
@@ -408,6 +563,9 @@ func sendRichMessageDraft(ctx *svc.ServiceContext, r *http.Request, bot *mtproto
 	}
 	if canStop || keepOnStop {
 		return nil, http.StatusNotImplemented, 501, "Not Implemented: " + errBotAPIRichDraftControlsMissing.Error()
+	}
+	if ctx == nil || ctx.EphemeralClient == nil {
+		return nil, http.StatusNotImplemented, 501, "Not Implemented: ephemeral message service is not configured"
 	}
 	richMessage, err := botAPIInputRichMessage(request)
 	if err != nil {

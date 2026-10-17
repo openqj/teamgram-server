@@ -21,8 +21,28 @@ import (
 // DialogSaveDraftMessage
 // dialog.saveDraftMessage user_id:long peer_type:int peer_id:long message:DraftMessage = Bool;
 func (c *DialogCore) DialogSaveDraftMessage(in *dialog.TLDialogSaveDraftMessage) (*mtproto.Bool, error) {
-	draft, _ := jsonx.Marshal(in.Message)
-	if c == nil || c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.Postgres == nil || c.svcCtx.Dao.Postgres.Store == nil {
+	if in == nil || in.GetUserId() <= 0 || in.GetPeerId() <= 0 || in.GetMessage() == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	switch in.GetPeerType() {
+	case mtproto.PEER_SELF, mtproto.PEER_USER, mtproto.PEER_CHAT, mtproto.PEER_CHANNEL:
+	default:
+		return nil, mtproto.ErrPeerIdInvalid
+	}
+	switch in.GetMessage().GetPredicateName() {
+	case mtproto.Predicate_draftMessageEmpty, mtproto.Predicate_draftMessage:
+	default:
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if c == nil || c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.Postgres == nil ||
+		c.svcCtx.Dao.Postgres.Pool == nil || c.svcCtx.Dao.Postgres.Store == nil || c.svcCtx.Dao.Postgres.Store.Dialogs == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
+	draft, err := jsonx.Marshal(in.GetMessage())
+	if err != nil {
+		if c.Logger != nil {
+			c.Logger.Errorf("dialog.saveDraftMessage - marshal draft: %v", err)
+		}
 		return nil, mtproto.ErrInternalServerError
 	}
 	tx, err := c.svcCtx.Dao.Postgres.Pool.Begin(c.ctx)
@@ -44,7 +64,9 @@ func (c *DialogCore) DialogSaveDraftMessage(in *dialog.TLDialogSaveDraftMessage)
 		}
 	}
 	if err != nil {
-		c.Logger.Errorf("dialog.saveDraftMessage - error: %v", err)
+		if c.Logger != nil {
+			c.Logger.Errorf("dialog.saveDraftMessage - error: %v", err)
+		}
 		return nil, err
 	}
 

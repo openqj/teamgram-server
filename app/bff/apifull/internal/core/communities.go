@@ -61,6 +61,21 @@ func communityPeerType(caller int64, peer *mtproto.InputPeer) (domain.CommunityP
 		peerType = domain.CommunityPeerChat
 	case mtproto.PEER_CHANNEL:
 		peerType = domain.CommunityPeerChannel
+		if peer.GetPredicateName() == mtproto.Predicate_inputPeerChannel {
+			if peer.GetChannelId() <= 0 || peer.GetAccessHash() == 0 {
+				return 0, 0, 0, mtproto.ErrChannelInvalid
+			}
+			channel, ok, err := domain.LoadChannel(peer.GetChannelId())
+			if err != nil {
+				if !domain.Ready() {
+					return 0, 0, 0, mtproto.ErrMethodNotImpl
+				}
+				return 0, 0, 0, mtproto.ErrInternalServerError
+			}
+			if !ok || channel.AccessHash != peer.GetAccessHash() {
+				return 0, 0, 0, mtproto.ErrChannelInvalid
+			}
+		}
 	default:
 		return 0, 0, 0, mtproto.ErrPeerIdInvalid
 	}

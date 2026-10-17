@@ -35,7 +35,21 @@ func botAPISavedGiftRequest(request *botAPIRequest) (*mtproto.TLPaymentsGetSaved
 	if err != nil {
 		return nil, err
 	}
-	for _, name := range []string{"exclude_unlimited", "exclude_unique", "sort_by_value", "exclude_upgradable", "exclude_unupgradable", "exclude_from_blockchain"} {
+	// The generated Layer 229 request exposes legacy filter names, but the
+	// current Bot API uses the names below. None of these filters has an
+	// equivalent that the ledger can evaluate authoritatively, so reject an
+	// enabled value instead of silently returning an unfiltered page.
+	for _, name := range []string{
+		"exclude_unlimited",
+		"exclude_unique",
+		"sort_by_value",
+		"sort_by_price",
+		"exclude_upgradable",
+		"exclude_unupgradable",
+		"exclude_limited_upgradable",
+		"exclude_limited_non_upgradable",
+		"exclude_from_blockchain",
+	} {
 		value, err := readBool(name)
 		if err != nil {
 			return nil, err

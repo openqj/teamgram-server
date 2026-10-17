@@ -75,7 +75,8 @@ func TestStarsSubscriptionsUseVerifiedProvider(t *testing.T) {
 		}},
 		MD: &metadata.RpcMetadata{UserId: uid},
 	}
-	status, err := c.PaymentsGetStarsSubscriptions(&mtproto.TLPaymentsGetStarsSubscriptions{Offset: "0"})
+	selfPeer := mtproto.MakeTLInputPeerSelf(nil).To_InputPeer()
+	status, err := c.PaymentsGetStarsSubscriptions(&mtproto.TLPaymentsGetStarsSubscriptions{Peer: selfPeer, Offset: "0"})
 	if err != nil || status == nil || status.GetBalance_INT64() != balance || len(status.GetSubscriptions()) != 1 || status.GetSubscriptionsNextOffset().GetValue() != "next-1" {
 		t.Fatalf("subscriptions = (%#v, %v)", status, err)
 	}
@@ -83,12 +84,12 @@ func TestStarsSubscriptionsUseVerifiedProvider(t *testing.T) {
 		t.Fatalf("subscriptions did not encode: %v", err)
 	}
 	changed, err := c.PaymentsChangeStarsSubscription(&mtproto.TLPaymentsChangeStarsSubscription{
-		SubscriptionId: "sub-1", Canceled: mtproto.BoolTrue,
+		SubscriptionId: "sub-1", Peer: selfPeer, Canceled: mtproto.BoolTrue,
 	})
 	if err != nil || !mtproto.FromBool(changed) {
 		t.Fatalf("change subscription = (%#v, %v)", changed, err)
 	}
-	fulfilled, err := c.PaymentsFulfillStarsSubscription(&mtproto.TLPaymentsFulfillStarsSubscription{SubscriptionId: "sub-1"})
+	fulfilled, err := c.PaymentsFulfillStarsSubscription(&mtproto.TLPaymentsFulfillStarsSubscription{SubscriptionId: "sub-1", Peer: selfPeer})
 	if err != nil || !mtproto.FromBool(fulfilled) {
 		t.Fatalf("fulfill subscription = (%#v, %v)", fulfilled, err)
 	}
@@ -109,6 +110,7 @@ func TestStarsSubscriptionsUseVerifiedProvider(t *testing.T) {
 
 func TestStarsSubscriptionsRejectMalformedProviderResult(t *testing.T) {
 	const uid int64 = 903103
+	selfPeer := mtproto.MakeTLInputPeerSelf(nil).To_InputPeer()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		balance := int64(1)
 		writeSignedPaymentProviderResponse(t, w, starsSubscriptionsProviderResponse{
@@ -121,7 +123,7 @@ func TestStarsSubscriptionsRejectMalformedProviderResult(t *testing.T) {
 		svcCtx: &svc.ServiceContext{Config: config.Config{PaymentProviderEndpoint: server.URL, PaymentProviderSigningKey: paymentProviderTestSigningKey}},
 		MD:     &metadata.RpcMetadata{UserId: uid},
 	}
-	got, err := c.PaymentsGetStarsSubscriptions(&mtproto.TLPaymentsGetStarsSubscriptions{})
+	got, err := c.PaymentsGetStarsSubscriptions(&mtproto.TLPaymentsGetStarsSubscriptions{Peer: selfPeer})
 	if got != nil || !errors.Is(err, mtproto.ErrPaymentProviderInvalid) {
 		t.Fatalf("malformed subscriptions = (%#v, %v), want provider-invalid refusal", got, err)
 	}

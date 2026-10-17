@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"unicode/utf16"
+	"unicode/utf8"
 
 	xhtml "golang.org/x/net/html"
 	"golang.org/x/net/html/atom"
@@ -54,6 +55,13 @@ func botAPICaptionEntities(request *botAPIRequest, textField, entitiesField stri
 		parseModeField = "caption_parse_mode"
 	}
 	return botAPITextEntities(request, textField, entitiesField, parseModeField)
+}
+
+func validateBotAPITextLength(text string, limit int, field string) error {
+	if utf8.RuneCountInString(text) > limit {
+		return errors.New(field + " is too long")
+	}
+	return nil
 }
 
 func botAPIMediaGroupCaption(item botAPIMediaGroupItem) (string, []botapi.MessageEntity, error) {

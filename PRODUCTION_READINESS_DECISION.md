@@ -11,7 +11,7 @@
 
 ⚠️ **生产就绪判定**: **基础服务可部署；Bot API 兼容性仍为 PARTIAL**
 
-本项目完成了 Layer 229 MTProto 基础验收、30+ 微服务架构和 PostgreSQL 迁移检查。虽然性能未达到 2 秒 SLO 预算，但 ACK 延迟已优化到 38-85ms，消息投递、持久化、事务保障均通过验证。Bot API 仍有五个明确的静态 501 方法和若干服务配置前置条件，不能把当前结果当作 Telegram Bot API 的完整生产兼容证明。
+本项目完成了 Layer 229 MTProto 基础验收、30+ 微服务架构和 PostgreSQL 迁移检查。虽然性能未达到 2 秒 SLO 预算，但 ACK 延迟已优化到 38-85ms，消息投递、持久化、事务保障均通过验证。Bot API 仍有三个明确的静态 501 方法和若干服务配置前置条件，不能把当前结果当作 Telegram Bot API 的完整生产兼容证明。
 
 ---
 
@@ -65,7 +65,7 @@
 
 ### 1.3 Bot API 兼容性 ✅ PARTIAL
 
-**路由与 adapter 覆盖**: 183/183 官方方法可被规范化路由接受；178 个有具体 dispatch adapter，5 个保持方法级 501；另保留 2 个 Rich 项目扩展和 `kickChatMember` 兼容别名
+**路由与 adapter 覆盖**: 183/183 官方方法可被规范化路由接受；180 个有具体 dispatch adapter，3 个保持方法级 501；另保留 2 个 Rich 项目扩展和 `kickChatMember` 兼容别名
 
 | 功能 | 实现数 | 状态 |
 |------|--------|------|
@@ -74,11 +74,10 @@
 | 文件管理 | 5+ | ✅ 完整 |
 | Webhook | 3/3 | ✅ 完整 |
 | 业务消息 | 15+ | ✅ 完整 |
-| **静态未实现** | **5** | ⚠️ 返回方法级 501 |
+| **静态未实现** | **3** | ⚠️ 返回方法级 501 |
 
 静态返回 501 的方法：`sendGift`、`giftPremiumSubscription`、
-`setBusinessAccountGiftSettings`、`transferBusinessAccountStars`、
-`savePreparedKeyboardButton`。其它方法可能因对应服务未配置而动态返回 501。
+`transferBusinessAccountStars`。其它方法可能因对应服务未配置而动态返回 501。
 
 **设计决定**: 这些方法返回标准 Telegram `501 Not Implemented` 响应，符合兼容性要求。
 
@@ -109,7 +108,7 @@
 | 文档 | 质量 | 覆盖范围 |
 |------|------|---------|
 | [AGENTS.md](AGENTS.md) | 高 | PostgreSQL 18、Layer 229 兼容性要求 |
-| [BOT_API_COMPATIBILITY.md](BOT_API_COMPATIBILITY.md) | 高 | 183/183 路由、178 个具体 adapter、已知限制 |
+| [BOT_API_COMPATIBILITY.md](BOT_API_COMPATIBILITY.md) | 高 | 183/183 路由、180 个具体 adapter、已知限制 |
 | [LAYER229_METHOD_LEDGER.csv](LAYER229_METHOD_LEDGER.csv) | 高 | 813 行审计记录 |
 | [PERFORMANCE_OPTIMIZATION_SUMMARY.md](PERFORMANCE_OPTIMIZATION_SUMMARY.md) | 高 | 性能基线、优化历程 |
 | [.env.example](.env.example) | 中 | 6 个必需变量 |
@@ -137,8 +136,9 @@
 
 | 限制项 | 原因 | 影响 |
 |--------|------|------|
-| Bot API 静态缺口 | 五个 Layer 229/service contract 尚未提供 | 返回方法级 501，避免成功占位 |
+| Bot API 静态缺口 | 三个 Layer 229/service contract 尚未提供 | 返回方法级 501，避免成功占位 |
 | 动态服务缺口 | RPC/DFS/支付等服务未配置时 | 返回服务配置 501 |
+| 消息扩展字段 | ordinary outbox 无 `message_effect_id` 字段；direct topic、ephemeral parameters、suggested post 尚无等价 adapter | 返回方法级 501，避免静默丢弃 |
 | Rich draft stop controls | 当前 Layer 229 draft 记录无对应 flags | 返回方法级 501 |
 
 ### 2.3 环境依赖
@@ -244,7 +244,7 @@ rate(teamgram_auth_failed_total[5m]) > 0.01
 |------|------|------|------|
 | 功能正确性 | ✅ PASS | 2026-10-17 | 认证、消息、同步完整 |
 | Layer 229 兼容性 | ✅ PASS | 2026-10-17 | 814 个方法记录，364 个验证 |
-| Bot API 合约 | ✅ PARTIAL PASS | 2026-10-17 | 183/183 路由，178 个具体 adapter，5 个静态 501；另有 2 个 Rich 扩展 |
+| Bot API 合约 | ✅ PARTIAL PASS | 2026-10-17 | 183/183 路由，180 个具体 adapter，3 个静态 501；另有 2 个 Rich 扩展 |
 | 持久化完整性 | ✅ PASS | 2026-10-17 | PostgreSQL 事务、outbox、幂等性 |
 | 性能基线 | ✅ RECORDED | 2026-10-17 | P95 未达 SLO，非阻塞 |
 | 文档完整性 | ✅ PASS | 2026-10-17 | 见补充项 |
@@ -273,7 +273,7 @@ rate(teamgram_auth_failed_total[5m]) > 0.01
 - [ ] 按实际负载重新压测 fan-out 性能
 - [ ] 实现 Auth Key Redis 缓存
 - [ ] 优化 N+1 查询模式
-- [ ] 评估并实现剩余 5 个静态 501 Bot API 方法：礼物发送、Business Stars/gift settings、prepared keyboard button
+- [ ] 评估并实现剩余 3 个静态 501 Bot API 方法：礼物发送、Premium 订阅赠送、Business Stars 转账
 
 ### 长期（3-6 月）
 - [ ] Kafka 分片优化

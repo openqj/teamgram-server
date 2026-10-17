@@ -198,9 +198,6 @@ func botAPIInputChecklistValue(request *botAPIRequest) (*mtproto.TodoList, error
 }
 
 func sendMessageDraft(ctx *svc.ServiceContext, r *http.Request, bot *mtproto.ImmutableUser, request *botAPIRequest) (any, int, int, string) {
-	if ctx == nil || ctx.EphemeralClient == nil {
-		return nil, http.StatusNotImplemented, 501, "Not Implemented: ephemeral message service is not configured"
-	}
 	canStop, err := request.bool("can_stop")
 	if err != nil {
 		return nil, http.StatusBadRequest, 400, "Bad Request: can_stop is invalid"
@@ -211,6 +208,9 @@ func sendMessageDraft(ctx *svc.ServiceContext, r *http.Request, bot *mtproto.Imm
 	}
 	if canStop || keepOnStop {
 		return nil, http.StatusNotImplemented, 501, "Not Implemented: rich draft stop controls are not supported"
+	}
+	if ctx == nil || ctx.EphemeralClient == nil {
+		return nil, http.StatusNotImplemented, 501, "Not Implemented: ephemeral message service is not configured"
 	}
 	botID := bot.GetUser().GetId()
 	chatID, peerType, peerID, err := resolveBotAPIChatID(r.Context(), ctx, botID, request.string("chat_id"))

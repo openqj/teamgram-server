@@ -631,3 +631,78 @@ func (s *Service) DialogSetChatWallpaper(ctx context.Context, request *dialog.TL
 	c.Logger.Debugf("dialog.setChatWallpaper - reply: {%s}", r)
 	return r, err
 }
+
+// DialogGetRecommendedDialogs
+// dialog.getRecommendedDialogs user_id:long offset:int limit:int = RecommendedDialogs;
+func (s *Service) DialogGetRecommendedDialogs(ctx context.Context, request *dialog.TLDialogGetRecommendedDialogs) (*dialog.RecommendedDialogs, error) {
+	c := core.New(ctx, s.svcCtx)
+	c.Logger.Debugf("dialog.getRecommendedDialogs - metadata: {%s}, request: {%s}", c.MD, request)
+
+	r, err := c.DialogGetRecommendedDialogs(ctx, request)
+	if err != nil {
+		return nil, err
+	}
+
+	c.Logger.Debugf("dialog.getRecommendedDialogs - reply: {%s}", r)
+	return r, nil
+}
+
+// DialogRefreshRecommendations
+// dialog.refreshRecommendations user_id:long = Bool;
+func (s *Service) DialogRefreshRecommendations(ctx context.Context, request *dialog.TLDialogRefreshRecommendations) (*mtproto.Bool, error) {
+	c := core.New(ctx, s.svcCtx)
+	c.Logger.Debugf("dialog.refreshRecommendations - metadata: {%s}, request: {%s}", c.MD, request)
+
+	r, err := c.DialogRefreshRecommendations(ctx, request)
+	if err != nil {
+		return nil, err
+	}
+
+	c.Logger.Debugf("dialog.refreshRecommendations - reply: {%s}", r)
+	return r, nil
+}
+
+// DialogReportRecommendationFeedback
+// dialog.reportRecommendationFeedback user_id:long peer_type:int peer_id:long feedback_type:int = Bool;
+func (s *Service) DialogReportRecommendationFeedback(ctx context.Context, request *dialog.TLDialogReportRecommendationFeedback) (*mtproto.Bool, error) {
+	c := core.New(ctx, s.svcCtx)
+	c.Logger.Debugf("dialog.reportRecommendationFeedback - metadata: {%s}, request: {%s}", c.MD, request)
+
+	r, err := c.DialogReportRecommendationFeedback(ctx, request)
+	if err != nil {
+		return nil, err
+	}
+
+	c.Logger.Debugf("dialog.reportRecommendationFeedback - reply: {%s}", r)
+	return r, nil
+}
+
+// DialogAddPromotedDialog
+// dialog.addPromotedDialog peer_type:int peer_id:long priority:int expires_at:long target_user_ids:Vector<long> = Bool;
+func (s *Service) DialogAddPromotedDialog(ctx context.Context, request *dialog.TLDialogAddPromotedDialog) (*mtproto.Bool, error) {
+	c := core.New(ctx, s.svcCtx)
+	c.Logger.Debugf("dialog.addPromotedDialog - metadata: {%s}, request: {%s}", c.MD, request)
+
+	r, err := c.DialogAddPromotedDialog(ctx, request)
+	if err != nil {
+		return nil, err
+	}
+
+	c.Logger.Debugf("dialog.addPromotedDialog - reply: {%s}", r)
+	return r, nil
+}
+
+// DialogRemovePromotedDialog
+// dialog.removePromotedDialog peer_type:int peer_id:long target_user_ids:Vector<long> = Bool;
+func (s *Service) DialogRemovePromotedDialog(ctx context.Context, request *dialog.TLDialogRemovePromotedDialog) (*mtproto.Bool, error) {
+	c := core.New(ctx, s.svcCtx)
+	c.Logger.Debugf("dialog.removePromotedDialog - metadata: {%s}, request: {%s}", c.MD, request)
+
+	r, err := c.DialogRemovePromotedDialog(ctx, request)
+	if err != nil {
+		return nil, err
+	}
+
+	c.Logger.Debugf("dialog.removePromotedDialog - reply: {%s}", r)
+	return r, nil
+}

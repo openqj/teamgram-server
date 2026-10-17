@@ -157,6 +157,76 @@ func TestUsersGetFullUserPropagatesPeerSettingsError(t *testing.T) {
 	}
 }
 
+func TestUsersGetFullUserRejectsMissingRuntimeContext(t *testing.T) {
+	request := &mtproto.TLUsersGetFullUser{
+		Id: mtproto.MakeTLInputUserSelf(nil).To_InputUser(),
+	}
+
+	var nilCore *UsersCore
+	if result, err := nilCore.UsersGetFullUser(request); result != nil || !errors.Is(err, mtproto.ErrAuthKeyUnregistered) {
+		t.Fatalf("nil core = (%v, %v), want (nil, AUTH_KEY_UNREGISTERED)", result, err)
+	}
+
+	for _, tc := range []struct {
+		name string
+		core *UsersCore
+		want error
+	}{
+		{name: "missing metadata", core: &UsersCore{svcCtx: &svc.ServiceContext{}}, want: mtproto.ErrAuthKeyUnregistered},
+		{name: "missing service context", core: &UsersCore{MD: &metadata.RpcMetadata{UserId: 1}}, want: mtproto.ErrInternalServerError},
+		{name: "missing dao", core: &UsersCore{MD: &metadata.RpcMetadata{UserId: 1}, svcCtx: &svc.ServiceContext{}}, want: mtproto.ErrInternalServerError},
+		{name: "missing user provider", core: &UsersCore{MD: &metadata.RpcMetadata{UserId: 1}, svcCtx: &svc.ServiceContext{Dao: &dao.Dao{}}}, want: mtproto.ErrInternalServerError},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			result, err := tc.core.UsersGetFullUser(request)
+			if result != nil || !errors.Is(err, tc.want) {
+				t.Fatalf("missing runtime context = (%v, %v), want (nil, %v)", result, err, tc.want)
+			}
+		})
+	}
+}
+
+func TestUsersGetFullUserRejectsNonPositivePeerIDBeforeProviderLookup(t *testing.T) {
+	client := &fullUserProfilePrivacyClient{allowed: map[int32]bool{}}
+	core := newFullUserProfilePrivacyCore(client)
+
+	result, err := core.UsersGetFullUser(&mtproto.TLUsersGetFullUser{
+		Id: &mtproto.InputUser{PredicateName: mtproto.Predicate_inputUser, UserId: 0, AccessHash: 1},
+	})
+	if result != nil || !errors.Is(err, mtproto.ErrUserIdInvalid) {
+		t.Fatalf("invalid peer ID = (%v, %v), want (nil, USER_ID_INVALID)", result, err)
+	}
+	if client.usersRequest != nil {
+		t.Fatalf("provider request = %v, want no provider lookup", client.usersRequest)
+	}
+}
+
+func TestUsersGetFullUserRejectsMissingChatProvider(t *testing.T) {
+	client := &fullUserProfilePrivacyClient{allowed: map[int32]bool{}}
+	core := newFullUserProfilePrivacyCore(client)
+	core.svcCtx.Dao.ChatClient = nil
+
+	result, err := core.UsersGetFullUser(&mtproto.TLUsersGetFullUser{
+		Id: mtproto.MakeTLInputUser(&mtproto.InputUser{UserId: 2, AccessHash: 200}).To_InputUser(),
+	})
+	if result != nil || !errors.Is(err, mtproto.ErrInternalServerError) {
+		t.Fatalf("missing chat provider = (%v, %v), want (nil, INTERNAL_SERVER_ERROR)", result, err)
+	}
+}
+
+func TestUsersGetFullUserRejectsMissingDialogProvider(t *testing.T) {
+	client := &fullUserProfilePrivacyClient{allowed: map[int32]bool{}}
+	core := newFullUserProfilePrivacyCore(client)
+	core.svcCtx.Dao.DialogClient = nil
+
+	result, err := core.UsersGetFullUser(&mtproto.TLUsersGetFullUser{
+		Id: mtproto.MakeTLInputUser(&mtproto.InputUser{UserId: 2, AccessHash: 200}).To_InputUser(),
+	})
+	if result != nil || !errors.Is(err, mtproto.ErrInternalServerError) {
+		t.Fatalf("missing dialog provider = (%v, %v), want (nil, INTERNAL_SERVER_ERROR)", result, err)
+	}
+}
+
 type fullUserPrivacyClient struct {
 	*fullUserErrorUserClient
 	allowed *mtproto.Bool

@@ -155,6 +155,9 @@ func botAPIReactionParticipant(ctx *svc.ServiceContext, r *http.Request, botID i
 // The MTProto request preserves the order of message_ids and returns one
 // update per input message, which maps directly to the Bot API result shape.
 func forwardMessages(ctx *svc.ServiceContext, r *http.Request, bot *mtproto.ImmutableUser, request *botAPIRequest, copyMode bool) (any, int, int, string) {
+	if parameter := botAPIUnsupportedMessageParameter(request); parameter != "" {
+		return nil, http.StatusNotImplemented, 501, "Not Implemented: " + parameter + " is not supported by the Layer 229 adapter"
+	}
 	if ctx == nil || ctx.MessagesClient == nil {
 		return nil, http.StatusNotImplemented, 501, "Not Implemented: message service is not configured"
 	}
@@ -200,6 +203,10 @@ func forwardMessages(ctx *svc.ServiceContext, r *http.Request, bot *mtproto.Immu
 	if err != nil {
 		return nil, http.StatusBadRequest, 400, "Bad Request: remove_caption is invalid"
 	}
+	effect, err := botAPIMessageEffect(request)
+	if err != nil {
+		return nil, http.StatusBadRequest, 400, "Bad Request: " + err.Error()
+	}
 	replyTo, err := botAPIReplyTo(request)
 	if err != nil {
 		return nil, http.StatusBadRequest, 400, "Bad Request: reply_parameters is invalid"
@@ -210,16 +217,18 @@ func forwardMessages(ctx *svc.ServiceContext, r *http.Request, bot *mtproto.Immu
 	}
 
 	updates, err := ctx.MessagesClient.MessagesForwardMessages(botMediaRPCContext(r.Context(), botID), &mtproto.TLMessagesForwardMessages{
-		FromPeer:          botAPIInputPeer(botID, fromPeerType, fromPeerID),
-		Id:                messageIDs,
-		RandomId:          randomIDs,
-		ToPeer:            botAPIInputPeer(botID, toPeerType, toPeerID),
-		Silent:            disableNotification,
-		Noforwards:        protectContent,
-		DropAuthor:        copyMode,
-		DropMediaCaptions: removeCaption,
-		ReplyTo:           replyTo,
-		TopMsgId:          topMsgID,
+		FromPeer:           botAPIInputPeer(botID, fromPeerType, fromPeerID),
+		Id:                 messageIDs,
+		RandomId:           randomIDs,
+		ToPeer:             botAPIInputPeer(botID, toPeerType, toPeerID),
+		Silent:             disableNotification,
+		Noforwards:         protectContent,
+		DropAuthor:         copyMode,
+		DropMediaCaptions:  removeCaption,
+		AllowPaidFloodskip: requestBool(request, "allow_paid_broadcast"),
+		Effect:             effect,
+		ReplyTo:            replyTo,
+		TopMsgId:           topMsgID,
 	})
 	if err != nil {
 		return nil, http.StatusBadRequest, 400, rpcDescription(err)

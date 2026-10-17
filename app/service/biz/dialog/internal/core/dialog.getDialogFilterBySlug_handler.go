@@ -26,6 +26,12 @@ import (
 // DialogGetDialogFilterBySlug
 // dialog.getDialogFilterBySlug user_id:long slug:string = DialogFilterExt;
 func (c *DialogCore) DialogGetDialogFilterBySlug(in *dialog.TLDialogGetDialogFilterBySlug) (*dialog.DialogFilterExt, error) {
+	if in == nil || in.GetUserId() <= 0 {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if in.GetSlug() == "" {
+		return nil, mtproto.ErrInviteSlugEmpty
+	}
 	if c == nil || c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.Postgres == nil ||
 		c.svcCtx.Dao.Postgres.Store == nil || c.svcCtx.Dao.Postgres.Store.DialogFilters == nil {
 		return nil, mtproto.ErrMethodNotImpl
@@ -36,12 +42,16 @@ func (c *DialogCore) DialogGetDialogFilterBySlug(in *dialog.TLDialogGetDialogFil
 
 	v, err := c.svcCtx.Dao.Postgres.Store.DialogFilters.SelectBySlug(c.ctx, in.UserId, in.Slug)
 	if err != nil {
-		c.Logger.Errorf("dialog.getDialogFilterBySlug - error: %v", err)
+		if c.Logger != nil {
+			c.Logger.Errorf("dialog.getDialogFilterBySlug - error: %v", err)
+		}
 		return nil, err
 	}
 
 	if v == nil {
-		c.Logger.Errorf("dialog.getDialogFilterBySlug - error: %v", err)
+		if c.Logger != nil {
+			c.Logger.Errorf("dialog.getDialogFilterBySlug - filter not found")
+		}
 		return nil, mtproto.ErrInviteSlugEmpty
 	} else {
 		dialogFilter = &dialog.DialogFilterExt{
@@ -53,8 +63,10 @@ func (c *DialogCore) DialogGetDialogFilterBySlug(in *dialog.TLDialogGetDialogFil
 		}
 
 		if df, err := mtproto.UnmarshalDialogFilter(v.DialogFilter); err != nil {
-			c.Logger.Errorf("jsonx.UnmarshalFromString(%v) - error: %v", v, err)
-			return nil, err
+			if c.Logger != nil {
+				c.Logger.Errorf("jsonx.UnmarshalFromString(%v) - error: %v", v, err)
+			}
+			return nil, mtproto.ErrInternalServerError
 		} else {
 			dialogFilter.DialogFilter = df
 		}

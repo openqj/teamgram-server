@@ -33,8 +33,8 @@ func TestPostgresRequiresExplicitDSN(t *testing.T) {
 }
 
 func TestReadOnlyPostgresGateRequiresProviderControlPlane(t *testing.T) {
-	if len(requiredReadOnlyPostgresMigrations) != 19 {
-		t.Fatalf("required migration count = %d, want 19", len(requiredReadOnlyPostgresMigrations))
+	if len(requiredReadOnlyPostgresMigrations) != 20 {
+		t.Fatalf("required migration count = %d, want 20", len(requiredReadOnlyPostgresMigrations))
 	}
 	for _, required := range []string{
 		"078_apifull_payment_provider_control_plane",

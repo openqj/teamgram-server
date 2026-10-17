@@ -26,7 +26,20 @@ import (
 // DialogSetHistoryTTL
 // dialog.setHistoryTTL user_id:long peer_type:int peer_id:long ttl_period:int = Bool;
 func (c *DialogCore) DialogSetHistoryTTL(in *dialog.TLDialogSetHistoryTTL) (*mtproto.Bool, error) {
-	if c == nil || c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.Postgres == nil || c.svcCtx.Dao.Postgres.Store == nil {
+	if in == nil || in.GetUserId() <= 0 || in.GetPeerId() <= 0 {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	switch in.GetPeerType() {
+	case mtproto.PEER_SELF, mtproto.PEER_USER, mtproto.PEER_CHAT, mtproto.PEER_CHANNEL:
+	default:
+		return nil, mtproto.ErrPeerIdInvalid
+	}
+	if in.GetTtlPeriod() < 0 {
+		return nil, mtproto.ErrTtlPeriodInvalid
+	}
+	if c == nil || c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.Postgres == nil ||
+		c.svcCtx.Dao.Postgres.Pool == nil || c.svcCtx.Dao.Postgres.Store == nil ||
+		c.svcCtx.Dao.Postgres.Store.Dialogs == nil {
 		return nil, mtproto.ErrInternalServerError
 	}
 	tx, err := c.svcCtx.Dao.Postgres.Pool.Begin(c.ctx)
@@ -42,7 +55,9 @@ func (c *DialogCore) DialogSetHistoryTTL(in *dialog.TLDialogSetHistoryTTL) (*mtp
 		}
 	}
 	if err != nil {
-		c.Logger.Errorf("dialog.setHistoryTTL - error: %v", err)
+		if c.Logger != nil {
+			c.Logger.Errorf("dialog.setHistoryTTL - error: %v", err)
+		}
 		return nil, err
 	}
 

@@ -8,11 +8,7 @@
 package postgres_dao
 
 import (
-	"context"
 	"testing"
-	"time"
-
-	"github.com/teamgram/teamgram-server/app/service/biz/dialog/internal/dal/dataobject"
 )
 
 // TestDialogRecommendationsDAO_InsertOrUpdate 测试插入或更新推荐

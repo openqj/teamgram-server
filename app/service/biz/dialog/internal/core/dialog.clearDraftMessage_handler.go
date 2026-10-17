@@ -10,9 +10,10 @@
 package core
 
 import (
+	"time"
+
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/service/biz/dialog/dialog"
-	"time"
 
 	"github.com/zeromicro/go-zero/core/jsonx"
 )
@@ -28,17 +29,27 @@ func getEmptyDraftMessage() string {
 // DialogClearDraftMessage
 // dialog.clearDraftMessage user_id:long peer_type:int peer_id:long = Bool;
 func (c *DialogCore) DialogClearDraftMessage(in *dialog.TLDialogClearDraftMessage) (*mtproto.Bool, error) {
+	if in == nil || in.GetUserId() <= 0 || in.GetPeerId() <= 0 {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	switch in.GetPeerType() {
+	case mtproto.PEER_SELF, mtproto.PEER_USER, mtproto.PEER_CHAT, mtproto.PEER_CHANNEL:
+	default:
+		return nil, mtproto.ErrPeerIdInvalid
+	}
 	if c == nil || c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.Postgres == nil ||
 		c.svcCtx.Dao.Postgres.Store == nil || c.svcCtx.Dao.Postgres.Store.Dialogs == nil {
 		return nil, mtproto.ErrMethodNotImpl
 	}
 	dlgDO, err := c.svcCtx.Dao.Postgres.Store.Dialogs.SelectDialog(
 		c.ctx,
-		in.UserId,
-		in.PeerType,
-		in.PeerId)
+		in.GetUserId(),
+		in.GetPeerType(),
+		in.GetPeerId())
 	if err != nil {
-		c.Logger.Errorf("dialog.clearDraftMessage - error: %v", err)
+		if c.Logger != nil {
+			c.Logger.Errorf("dialog.clearDraftMessage - error: %v", err)
+		}
 		return nil, err
 	}
 
@@ -47,11 +58,13 @@ func (c *DialogCore) DialogClearDraftMessage(in *dialog.TLDialogClearDraftMessag
 			c.ctx,
 			1,
 			getEmptyDraftMessage(),
-			in.UserId,
-			in.PeerType,
-			in.PeerId)
+			in.GetUserId(),
+			in.GetPeerType(),
+			in.GetPeerId())
 		if err != nil {
-			c.Logger.Errorf("dialog.clearDraftMessage - error: %v", err)
+			if c.Logger != nil {
+				c.Logger.Errorf("dialog.clearDraftMessage - error: %v", err)
+			}
 			return nil, err
 		}
 		return mtproto.BoolTrue, nil

@@ -17,12 +17,17 @@ import (
 // DialogGetDialogUnreadMarkList
 // dialog.getDialogUnreadMarkList user_id:long = Vector<DialogPeer>;
 func (c *DialogCore) DialogGetDialogUnreadMarkList(in *dialog.TLDialogGetDialogUnreadMarkList) (*dialog.Vector_DialogPeer, error) {
+	if in == nil || in.GetUserId() <= 0 {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
 	if c == nil || c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.Postgres == nil || c.svcCtx.Dao.Postgres.Store == nil || c.svcCtx.Dao.Postgres.Store.Dialogs == nil {
 		return nil, mtproto.ErrMethodNotImpl
 	}
 	rows, err := c.svcCtx.Dao.Postgres.Store.Dialogs.SelectAllDialogs(c.ctx, in.UserId)
 	if err != nil {
-		c.Logger.Errorf("dialog.getDialogUnreadMarkList - error: %v", err)
+		if c.Logger != nil {
+			c.Logger.Errorf("dialog.getDialogUnreadMarkList - error: %v", err)
+		}
 		return nil, err
 	}
 	datas := make([]*mtproto.DialogPeer, 0)

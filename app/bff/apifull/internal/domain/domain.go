@@ -1533,6 +1533,31 @@ func FindGiftBySlug(slug string) (Gift, bool, error) {
 	return gift, true, nil
 }
 
+// FindGiftByID resolves one provider-issued gift catalogue row by its stable
+// Layer 229 id. The caller still decides whether the row is eligible for a
+// new purchase; this helper only reads the catalogue projection.
+func FindGiftByID(id int64) (Gift, bool, error) {
+	if db == nil {
+		return Gift{}, false, errors.New("domain PostgreSQL is not open")
+	}
+	if id <= 0 {
+		return Gift{}, false, ErrGiftNotFound
+	}
+	var gift Gift
+	var saved int
+	err := db.QueryRow(`SELECT id, from_user, to_user, slug, stars, saved
+		FROM apifull_gift WHERE id=$1`, id).
+		Scan(&gift.ID, &gift.From, &gift.To, &gift.Slug, &gift.Stars, &saved)
+	if err == sql.ErrNoRows {
+		return Gift{}, false, nil
+	}
+	if err != nil {
+		return Gift{}, false, err
+	}
+	gift.Saved = saved != 0
+	return gift, true, nil
+}
+
 // TransferGift moves one saved-gift row under a row lock. The ownership check
 // and update happen in one transaction so a concurrent transfer cannot spend
 // the same inventory twice.

@@ -92,6 +92,10 @@ func (c *ContactsCore) ContactsDeleteByPhones(in *mtproto.TLContactsDeleteByPhon
 			c.Logger.Errorf("contacts.deleteByPhones - delete contact %d error: %v", contact.GetContactUserId(), deleteErr)
 			return nil, deleteErr
 		}
+		if deleted == nil {
+			c.Logger.Errorf("contacts.deleteByPhones - delete contact %d returned no result", contact.GetContactUserId())
+			return nil, mtproto.ErrInternalServerError
+		}
 		if !mtproto.FromBool(deleted) {
 			return mtproto.BoolFalse, nil
 		}
@@ -105,6 +109,10 @@ func (c *ContactsCore) ContactsDeleteByPhones(in *mtproto.TLContactsDeleteByPhon
 		if deleteErr != nil {
 			c.Logger.Errorf("contacts.deleteByPhones - delete unregistered import for phone error: %v", deleteErr)
 			return nil, deleteErr
+		}
+		if deleted == nil {
+			c.Logger.Errorf("contacts.deleteByPhones - delete unregistered import for phone returned no result")
+			return nil, mtproto.ErrInternalServerError
 		}
 		if !mtproto.FromBool(deleted) {
 			return mtproto.BoolFalse, nil

@@ -29,7 +29,7 @@ func (c *ContactsCore) ContactsResetSaved(in *mtproto.TLContactsResetSaved) (*mt
 	if in == nil {
 		return nil, mtproto.ErrInputRequestInvalid
 	}
-	if c.MD == nil || c.MD.UserId <= 0 {
+	if c == nil || c.MD == nil || c.MD.UserId <= 0 {
 		return nil, mtproto.ErrAuthKeyUnregistered
 	}
 	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.UserClient == nil {

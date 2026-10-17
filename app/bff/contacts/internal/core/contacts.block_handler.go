@@ -36,6 +36,10 @@ func (c *ContactsCore) ContactsBlock(in *mtproto.TLContactsBlock) (*mtproto.Bool
 	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.UserClient == nil || c.svcCtx.Dao.SyncClient == nil {
 		return nil, mtproto.ErrInternalServerError
 	}
+	if in.GetId().GetPredicateName() == mtproto.Predicate_inputPeerUser &&
+		(in.GetId().GetUserId() <= 0 || in.GetId().GetAccessHash() == 0) {
+		return nil, mtproto.ErrPeerIdInvalid
+	}
 	var (
 		err    error
 		mUsers *userpb.Vector_ImmutableUser
@@ -94,6 +98,10 @@ func (c *ContactsCore) ContactsBlock(in *mtproto.TLContactsBlock) (*mtproto.Bool
 		return nil, mtproto.ErrInternalServerError
 	} else if blocked.GetUser().GetDeleted() {
 		err = mtproto.ErrInputUserDeactivated
+		c.Logger.Errorf("contacts.block - error: %v", err)
+		return nil, err
+	} else if blocked.GetUser().GetAccessHash() != blockId.AccessHash {
+		err = mtproto.ErrPeerIdInvalid
 		c.Logger.Errorf("contacts.block - error: %v", err)
 		return nil, err
 	}

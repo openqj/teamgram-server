@@ -103,3 +103,20 @@ func TestAccountInvalidateSignInCodesPropagatesUserProviderError(t *testing.T) {
 		t.Fatalf("provider error = (%v, %v), want nil and %v", result, err, wantErr)
 	}
 }
+
+func TestAccountInvalidateSignInCodesRejectsNilUserProviderResult(t *testing.T) {
+	ctx := context.Background()
+	c := &AuthorizationCore{
+		ctx: ctx,
+		MD:  &metadata.RpcMetadata{PermAuthKeyId: 42, UserId: 7},
+		svcCtx: &svc.ServiceContext{Dao: &dao.Dao{
+			UserClient: &invalidateSignInCodesUserStub{},
+		}},
+		Logger: logx.WithContext(ctx),
+	}
+
+	result, err := c.AccountInvalidateSignInCodes(&mtproto.TLAccountInvalidateSignInCodes{Codes: []string{"hash"}})
+	if result != nil || !errors.Is(err, mtproto.ErrInternalServerError) {
+		t.Fatalf("nil user provider result = (%v, %v), want (nil, INTERNAL_SERVER_ERROR)", result, err)
+	}
+}

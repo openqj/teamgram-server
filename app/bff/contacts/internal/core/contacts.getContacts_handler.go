@@ -53,7 +53,7 @@ import (
 // ContactsGetContacts
 // contacts.getContacts#5dd69e12 hash:long = contacts.Contacts;
 func (c *ContactsCore) ContactsGetContacts(in *mtproto.TLContactsGetContacts) (*mtproto.Contacts_Contacts, error) {
-	if c.MD == nil || c.MD.UserId == 0 {
+	if c == nil || c.MD == nil || c.MD.UserId == 0 {
 		return nil, mtproto.ErrAuthKeyUnregistered
 	}
 	if in == nil {

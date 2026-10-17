@@ -70,11 +70,14 @@ func (c *UsersCore) checkFullUserPrivacy(ownerID int64, key int32) (bool, error)
 // UsersGetFullUser
 // users.getFullUser#b60f5918 id:InputUser = users.UserFull;
 func (c *UsersCore) UsersGetFullUser(in *mtproto.TLUsersGetFullUser) (*mtproto.Users_UserFull, error) {
-	if c.MD == nil || c.MD.UserId <= 0 {
+	if c == nil || c.MD == nil || c.MD.UserId <= 0 {
 		return nil, mtproto.ErrAuthKeyUnregistered
 	}
 	if in == nil || in.Id == nil {
 		return nil, mtproto.ErrUserIdInvalid
+	}
+	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.UserClient == nil {
+		return nil, mtproto.ErrInternalServerError
 	}
 
 	var (
@@ -91,6 +94,9 @@ func (c *UsersCore) UsersGetFullUser(in *mtproto.TLUsersGetFullUser) (*mtproto.U
 		err := mtproto.ErrUserIdInvalid
 		c.Logger.Errorf("users.getFullUser - error: %v", err)
 		return nil, err
+	}
+	if peerId <= 0 {
+		return nil, mtproto.ErrUserIdInvalid
 	}
 
 	mutableUsers, err := c.svcCtx.Dao.UserClient.UserGetMutableUsersV2(c.ctx, &userpb.TLUserGetMutableUsersV2{
@@ -109,7 +115,7 @@ func (c *UsersCore) UsersGetFullUser(in *mtproto.TLUsersGetFullUser) (*mtproto.U
 		c.Logger.Errorf("users.getFullUser - error: %v", err)
 		return nil, err
 	}
-	if user.GetUser().GetDeleted() || peerId <= 0 ||
+	if user.GetUser().GetDeleted() ||
 		id.PeerType == mtproto.PEER_USER && (in.Id.GetAccessHash() == 0 || in.Id.GetAccessHash() != user.AccessHash()) {
 		return nil, mtproto.ErrUserIdInvalid
 	}
@@ -282,6 +288,9 @@ func (c *UsersCore) UsersGetFullUser(in *mtproto.TLUsersGetFullUser) (*mtproto.U
 		func() error {
 			// TODO: PinnedMsgId:         nil,
 			if c.MD.UserId != peerId {
+				if c.svcCtx.Dao.ChatClient == nil {
+					return mtproto.ErrInternalServerError
+				}
 				usersChatIdList, err := c.svcCtx.Dao.ChatClient.ChatGetUsersChatIdList(c.ctx, &chatpb.TLChatGetUsersChatIdList{
 					Id: []int64{c.MD.UserId, peerId},
 				})
@@ -307,6 +316,9 @@ func (c *UsersCore) UsersGetFullUser(in *mtproto.TLUsersGetFullUser) (*mtproto.U
 		},
 		func() error {
 			if peerId != c.MD.UserId {
+				if c.svcCtx.Dao.DialogClient == nil {
+					return mtproto.ErrInternalServerError
+				}
 				// theme_emoticon
 				dialogExt, err := c.svcCtx.Dao.DialogClient.DialogGetDialogById(c.ctx, &dialog.TLDialogGetDialogById{
 					UserId:   c.MD.UserId,

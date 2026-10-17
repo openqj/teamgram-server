@@ -11,6 +11,10 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"sort"
+	"time"
+
+	"github.com/teamgram/teamgram-server/app/service/biz/dialog/internal/dal/dataobject"
 )
 
 // RecommendationAlgorithm 推荐算法引擎
@@ -45,129 +49,242 @@ type RecommendedDialog struct {
 // CalculateScore 计算推荐分数
 func (r *RecommendationAlgorithm) CalculateScore(ctx context.Context,
 	userID int64, peerType int32, peerID int64) (float64, error) {
-
-	score := 0.0
-
-	// 1. 对话频率分数（最近30天的消息数）
-	frequencyScore, err := r.calculateFrequencyScore(ctx, userID, peerType, peerID, 30)
+	store, err := r.core.pgStore()
 	if err != nil {
 		return 0, err
 	}
-	score += frequencyScore * r.frequencyWeight
-
-	// 2. 最近活跃度分数
-	recencyScore, err := r.calculateRecencyScore(ctx, userID, peerType, peerID)
+	if store.Dialogs == nil {
+		return 0, fmt.Errorf("dialog recommendations: dialogs DAO is not configured")
+	}
+	row, err := store.Dialogs.SelectDialog(ctx, userID, peerType, peerID)
 	if err != nil {
 		return 0, err
 	}
-	score += recencyScore * r.recencyWeight
-
-	// 3. 互动程度分数
-	engagementScore, err := r.calculateEngagementScore(ctx, userID, peerType, peerID)
-	if err != nil {
-		return 0, err
+	if row == nil {
+		return 0, nil
 	}
-	score += engagementScore * r.engagementWeight
-
-	// 4. 社交关系分数
-	socialScore, err := r.calculateSocialScore(ctx, userID, peerType, peerID)
-	if err != nil {
-		return 0, err
-	}
-	score += socialScore * r.socialWeight
-
-	// 归一化到 0-1
-	return math.Min(1.0, math.Max(0.0, score)), nil
+	return r.scoreDialog(*row), nil
 }
 
 // calculateFrequencyScore 计算对话频率分数
 func (r *RecommendationAlgorithm) calculateFrequencyScore(ctx context.Context,
 	userID int64, peerType int32, peerID int64, days int) (float64, error) {
-
-	// TODO: 调用消息服务统计最近N天的消息数
-	// 当前返回模拟值，实际需要调用 message service
-	// messageCount := getMessageCountInDays(userID, peerType, peerID, days)
-
-	// 归一化：假设日均10条消息为满分
-	// return math.Min(1.0, float64(messageCount) / float64(days*10)), nil
-
-	// 临时返回中等分数
-	return 0.5, nil
+	store, err := r.core.pgStore()
+	if err != nil {
+		return 0, err
+	}
+	if store.Dialogs == nil {
+		return 0, fmt.Errorf("dialog recommendations: dialogs DAO is not configured")
+	}
+	row, err := store.Dialogs.SelectDialog(ctx, userID, peerType, peerID)
+	if err != nil {
+		return 0, err
+	}
+	if row == nil {
+		return 0, nil
+	}
+	return dialogActivityScore(*row, days), nil
 }
 
 // calculateRecencyScore 计算最近活跃度分数
 func (r *RecommendationAlgorithm) calculateRecencyScore(ctx context.Context,
 	userID int64, peerType int32, peerID int64) (float64, error) {
-
-	// TODO: 获取最后一条消息的时间
-	// 实际需要调用 dialog service 获取 top_message 时间
-	// lastMessageTime := getLastMessageTime(userID, peerType, peerID)
-	// hoursSinceLastMessage := time.Since(lastMessageTime).Hours()
-
-	// 时间衰减：24小时内=1.0, 7天=0.5, 30天=0.1
-	// score := 1.0 / (1.0 + hoursSinceLastMessage/24.0)
-
-	// 临时返回中等分数
-	return 0.5, nil
+	store, err := r.core.pgStore()
+	if err != nil {
+		return 0, err
+	}
+	if store.Dialogs == nil {
+		return 0, fmt.Errorf("dialog recommendations: dialogs DAO is not configured")
+	}
+	row, err := store.Dialogs.SelectDialog(ctx, userID, peerType, peerID)
+	if err != nil {
+		return 0, err
+	}
+	if row == nil {
+		return 0, nil
+	}
+	return dialogRecencyScore(row.Date2, time.Now()), nil
 }
 
 // calculateEngagementScore 计算互动程度分数
 func (r *RecommendationAlgorithm) calculateEngagementScore(ctx context.Context,
 	userID int64, peerType int32, peerID int64) (float64, error) {
-
-	// TODO: 考虑因素：
-	// - 双向消息比例
-	// - 平均回复速度
-	// - 消息长度
-	// - 是否有媒体内容
-	// 实际需要调用 message service 进行分析
-
-	// 临时返回中等分数
-	return 0.5, nil
+	store, err := r.core.pgStore()
+	if err != nil {
+		return 0, err
+	}
+	if store.Dialogs == nil {
+		return 0, fmt.Errorf("dialog recommendations: dialogs DAO is not configured")
+	}
+	row, err := store.Dialogs.SelectDialog(ctx, userID, peerType, peerID)
+	if err != nil {
+		return 0, err
+	}
+	if row == nil {
+		return 0, nil
+	}
+	return dialogEngagementScore(*row), nil
 }
 
 // calculateSocialScore 计算社交关系分数
 func (r *RecommendationAlgorithm) calculateSocialScore(ctx context.Context,
 	userID int64, peerType int32, peerID int64) (float64, error) {
-
-	// TODO: 考虑因素：
-	// - 共同好友数（私聊）
-	// - 群组活跃度（群聊）
-	// - 是否互相关注（频道）
-	// 实际需要调用 user/chat service 进行分析
-
-	// 临时返回中等分数
-	return 0.5, nil
+	if peerID <= 0 {
+		return 0, nil
+	}
+	// The dialog service does not own social graph data. Use the peer kind as a
+	// conservative prior until a user/chat relationship provider is available.
+	switch peerType {
+	case 1:
+		return 1, nil
+	case 2:
+		return 0.8, nil
+	case 3:
+		return 0.6, nil
+	default:
+		return 0, nil
+	}
 }
 
 // GenerateRecommendations 为用户生成推荐列表
 func (r *RecommendationAlgorithm) GenerateRecommendations(ctx context.Context,
 	userID int64, limit int) ([]RecommendedDialog, error) {
+	if userID <= 0 {
+		return nil, fmt.Errorf("invalid user id: %d", userID)
+	}
+	store, err := r.core.pgStore()
+	if err != nil {
+		return nil, err
+	}
+	if store.Dialogs == nil || store.DialogRecommendations == nil {
+		return nil, fmt.Errorf("dialog recommendations: required DAOs are not configured")
+	}
+	if limit <= 0 {
+		limit = r.getConfigInt(ctx, "max_recommendations", 20)
+	}
+	if limit <= 0 {
+		limit = 20
+	}
+	if limit > 100 {
+		limit = 100
+	}
 
-	// TODO: 完整实现
-	// 1. 获取用户的所有活跃对话
-	// dialogs := getUserActiveDialogs(userID)
+	dialogs, err := store.Dialogs.SelectAllDialogs(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	existing, err := store.DialogRecommendations.SelectAllList(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	now := time.Now()
+	blocked := make(map[string]struct{}, len(existing))
+	for _, row := range existing {
+		activePromotion := row.IsPromoted && (row.PromotedUntil == 0 || row.PromotedUntil > now.Unix())
+		if row.Dismissed || activePromotion {
+			blocked[makePeerKey(row.PeerType, row.PeerId)] = struct{}{}
+		}
+	}
 
-	// 2. 排除已在推荐列表中的
-	// existingRecommendations := getExistingRecommendations(userID)
+	type scoredDialog struct {
+		dialog dataobject.DialogsDO
+		score  float64
+	}
+	scored := make([]scoredDialog, 0, len(dialogs))
+	for _, row := range dialogs {
+		if row.PeerId <= 0 || row.PeerType < 1 || row.PeerType > 3 {
+			continue
+		}
+		if row.PeerType == 1 && row.PeerId == userID {
+			continue
+		}
+		if _, ok := blocked[makePeerKey(row.PeerType, row.PeerId)]; ok {
+			continue
+		}
+		scored = append(scored, scoredDialog{dialog: row, score: r.scoreDialogAt(row, now)})
+	}
+	sort.SliceStable(scored, func(i, j int) bool {
+		if scored[i].score != scored[j].score {
+			return scored[i].score > scored[j].score
+		}
+		if scored[i].dialog.Date2 != scored[j].dialog.Date2 {
+			return scored[i].dialog.Date2 > scored[j].dialog.Date2
+		}
+		if scored[i].dialog.PeerType != scored[j].dialog.PeerType {
+			return scored[i].dialog.PeerType < scored[j].dialog.PeerType
+		}
+		return scored[i].dialog.PeerId < scored[j].dialog.PeerId
+	})
 
-	// 3. 为每个对话计算分数
-	// scored := []struct{
-	//     dialog Dialog
-	//     score float64
-	// }{}
-	// for _, dialog := range dialogs {
-	//     score, _ := r.CalculateScore(ctx, userID, dialog.PeerType, dialog.PeerID)
-	//     scored = append(scored, struct{dialog Dialog; score float64}{dialog, score})
-	// }
+	if len(scored) > limit {
+		scored = scored[:limit]
+	}
+	result := make([]RecommendedDialog, 0, len(scored))
+	for _, item := range scored {
+		result = append(result, RecommendedDialog{
+			PeerType: item.dialog.PeerType,
+			PeerId:   item.dialog.PeerId,
+			Score:    item.score,
+		})
+	}
+	return result, nil
+}
 
-	// 4. 排序并取 top N
-	// sort.Slice(scored, func(i, j int) bool {
-	//     return scored[i].score > scored[j].score
-	// })
+func (r *RecommendationAlgorithm) scoreDialog(row dataobject.DialogsDO) float64 {
+	return r.scoreDialogAt(row, time.Now())
+}
 
-	// 5. 返回推荐
-	return []RecommendedDialog{}, nil
+func (r *RecommendationAlgorithm) scoreDialogAt(row dataobject.DialogsDO, now time.Time) float64 {
+	frequency := dialogActivityScore(row, 30)
+	recency := dialogRecencyScore(row.Date2, now)
+	engagement := dialogEngagementScore(row)
+	social, _ := r.calculateSocialScore(context.Background(), row.UserId, row.PeerType, row.PeerId)
+	score := frequency*r.frequencyWeight + recency*r.recencyWeight + engagement*r.engagementWeight + social*r.socialWeight
+	return math.Min(1, math.Max(0, score))
+}
+
+func dialogActivityScore(row dataobject.DialogsDO, days int) float64 {
+	if row.TopMessage <= 0 {
+		return 0
+	}
+	if days <= 0 {
+		days = 30
+	}
+	// Dialog rows do not contain a message count. Treat the presence of a top
+	// message as the baseline activity signal and add a bounded unread signal.
+	unread := row.UnreadCount + row.UnreadMentionsCount + row.UnreadReactionsCount
+	signal := 0.5
+	if unread > 0 {
+		signal += math.Min(0.5, math.Log1p(float64(unread))/math.Log1p(float64(days)))
+	}
+	return math.Min(1, signal)
+}
+
+func dialogRecencyScore(date2 int64, now time.Time) float64 {
+	if date2 <= 0 {
+		return 0
+	}
+	age := now.Unix() - date2
+	if age < 0 {
+		age = 0
+	}
+	return 1 / (1 + float64(age)/86400)
+}
+
+func dialogEngagementScore(row dataobject.DialogsDO) float64 {
+	unread := row.UnreadCount + row.UnreadMentionsCount + row.UnreadReactionsCount
+	score := math.Min(1, math.Log1p(float64(maxInt32(unread)))/math.Log1p(20))
+	if row.Pinned > 0 || row.FolderPinned > 0 {
+		score = math.Min(1, score+0.2)
+	}
+	return score
+}
+
+func maxInt32(value int32) int32 {
+	if value < 0 {
+		return 0
+	}
+	return value
 }
 
 // getConfigInt 获取整数配置

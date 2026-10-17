@@ -1671,6 +1671,15 @@ func (c *ApiFullCore) PaymentsGetPaymentForm(in *mtproto.TLPaymentsGetPaymentFor
 	if in == nil || in.GetInvoice() == nil {
 		return nil, mtproto.ErrInvoicePayloadInvalid
 	}
+	switch in.GetInvoice().GetPredicateName() {
+	case mtproto.Predicate_inputInvoiceStarGift,
+		mtproto.Predicate_inputInvoicePremiumGiftStars,
+		mtproto.Predicate_inputInvoiceBusinessBotTransferStars:
+		if !domain.Ready() {
+			return nil, mtproto.ErrPaymentUnsupported
+		}
+		return c.localStarsPaymentForm(in.GetInvoice())
+	}
 	if in.GetInvoice().GetPredicateName() == mtproto.Predicate_inputInvoiceMessage {
 		message, err := c.loadPaymentInvoiceMessage(uid, in.GetInvoice())
 		if err != nil {

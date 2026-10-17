@@ -82,6 +82,11 @@ func TestContactsResetSavedKeepsLocalListWhenBackendRejects(t *testing.T) {
 }
 
 func TestContactsResetSavedRejectsMissingRequestBeforeBackend(t *testing.T) {
+	var nilCore *ContactsCore
+	if got, err := nilCore.ContactsResetSaved(&mtproto.TLContactsResetSaved{}); got != nil || !errors.Is(err, mtproto.ErrAuthKeyUnregistered) {
+		t.Fatalf("nil core = (%v, %v), want AUTH_KEY_UNREGISTERED", got, err)
+	}
+
 	client := &resetSavedUserClientStub{response: mtproto.BoolTrue}
 	core := newImportContactsTestCore(82014, client)
 

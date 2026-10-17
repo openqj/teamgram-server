@@ -58,6 +58,10 @@ func (c *ContactsCore) ContactsAcceptContact(in *mtproto.TLContactsAcceptContact
 		c.Logger.Errorf("contacts.acceptContact - error: %v", err)
 		return nil, err
 	}
+	if users == nil {
+		c.Logger.Errorf("contacts.acceptContact - user service returned no users")
+		return nil, mtproto.ErrInternalServerError
+	}
 	if !users.CheckExistUser(c.MD.UserId, id.PeerId) {
 		err = mtproto.ErrContactIdInvalid
 		c.Logger.Errorf("contacts.acceptContact - error: %v", err)

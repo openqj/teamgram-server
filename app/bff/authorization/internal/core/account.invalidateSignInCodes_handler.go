@@ -65,7 +65,10 @@ func (c *AuthorizationCore) AccountInvalidateSignInCodes(in *mtproto.TLAccountIn
 		if err != nil {
 			return nil, err
 		}
-		if user != nil && user.User != nil && user.Phone() != "" {
+		if user == nil || user.GetUser() == nil {
+			return nil, mtproto.ErrInternalServerError
+		}
+		if user.Phone() != "" {
 			if err = deleteMatchingSignInCode(c.ctx, c.svcCtx.Dao, authKeyId, user.Phone(), want); err != nil {
 				return nil, err
 			}

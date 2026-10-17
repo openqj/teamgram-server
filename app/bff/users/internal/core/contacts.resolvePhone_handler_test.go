@@ -18,6 +18,7 @@ type resolvePhoneUserClientStub struct {
 	userclient.UserClient
 	phone                             string
 	allowed                           *mtproto.Bool
+	mutableUsers                      *mtproto.MutableUsers
 	privacyRequest                    *userpb.TLUserCheckPrivacy
 	privacyErr, lookupErr, mutableErr error
 }
@@ -28,6 +29,9 @@ func (s *resolvePhoneUserClientStub) UserGetUserIdByPhone(_ context.Context, in 
 }
 
 func (s *resolvePhoneUserClientStub) UserGetMutableUsersV2(context.Context, *userpb.TLUserGetMutableUsersV2) (*mtproto.MutableUsers, error) {
+	if s.mutableUsers != nil {
+		return s.mutableUsers, s.mutableErr
+	}
 	return &mtproto.MutableUsers{Users: []*mtproto.ImmutableUser{
 		{User: &mtproto.UserData{Id: 1, FirstName: "Alice"}},
 		{User: &mtproto.UserData{Id: 2, FirstName: "Carol"}},
@@ -92,5 +96,32 @@ func TestContactsResolvePhoneRejectsMissingProvider(t *testing.T) {
 	c := &UsersCore{MD: &metadata.RpcMetadata{UserId: 1}}
 	if got, err := c.ContactsResolvePhone(&mtproto.TLContactsResolvePhone{Phone: "+12025550103"}); got != nil || err != mtproto.ErrInternalServerError {
 		t.Fatalf("resolve = (%v, %v), want nil result and INTERNAL_SERVER_ERROR", got, err)
+	}
+}
+
+func TestContactsResolvePhoneRejectsMalformedUserVector(t *testing.T) {
+	for name, users := range map[string]*mtproto.MutableUsers{
+		"nil record":   {Users: []*mtproto.ImmutableUser{nil}},
+		"missing peer": {Users: []*mtproto.ImmutableUser{{User: &mtproto.UserData{Id: 1}}}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			client := &resolvePhoneUserClientStub{mutableUsers: users}
+			core := &UsersCore{
+				ctx:    context.Background(),
+				svcCtx: &svc.ServiceContext{Dao: &dao.Dao{UserClient: client}},
+				Logger: logx.WithContext(context.Background()),
+				MD:     &metadata.RpcMetadata{UserId: 1},
+			}
+			if got, err := core.ContactsResolvePhone(&mtproto.TLContactsResolvePhone{Phone: "+12025550103"}); got != nil || !errors.Is(err, mtproto.ErrInternalServerError) {
+				t.Fatalf("malformed user vector = (%v, %v), want nil result and INTERNAL_SERVER_ERROR", got, err)
+			}
+		})
+	}
+}
+
+func TestContactsResolvePhoneRejectsNilCore(t *testing.T) {
+	var nilCore *UsersCore
+	if got, err := nilCore.ContactsResolvePhone(&mtproto.TLContactsResolvePhone{Phone: "+12025550103"}); got != nil || !errors.Is(err, mtproto.ErrAuthKeyUnregistered) {
+		t.Fatalf("nil core = (%v, %v), want nil result and AUTH_KEY_UNREGISTERED", got, err)
 	}
 }

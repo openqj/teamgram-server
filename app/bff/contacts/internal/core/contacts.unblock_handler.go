@@ -36,6 +36,10 @@ func (c *ContactsCore) ContactsUnblock(in *mtproto.TLContactsUnblock) (*mtproto.
 	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.UserClient == nil || c.svcCtx.Dao.SyncClient == nil {
 		return nil, mtproto.ErrInternalServerError
 	}
+	if in.GetId().GetPredicateName() == mtproto.Predicate_inputPeerUser &&
+		(in.GetId().GetUserId() <= 0 || in.GetId().GetAccessHash() == 0) {
+		return nil, mtproto.ErrPeerIdInvalid
+	}
 	var (
 		mUsers    *userpb.Vector_ImmutableUser
 		err       error
@@ -93,6 +97,10 @@ func (c *ContactsCore) ContactsUnblock(in *mtproto.TLContactsUnblock) (*mtproto.
 		return nil, mtproto.ErrInternalServerError
 	} else if blocked.GetUser().GetDeleted() {
 		err = mtproto.ErrInputUserDeactivated
+		c.Logger.Errorf("contacts.unblock - error: %v", err)
+		return nil, err
+	} else if blocked.GetUser().GetAccessHash() != unblockId.AccessHash {
+		err = mtproto.ErrPeerIdInvalid
 		c.Logger.Errorf("contacts.unblock - error: %v", err)
 		return nil, err
 	}

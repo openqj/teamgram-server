@@ -562,12 +562,18 @@ func dispatchBotAPIMethod(ctx *svc.ServiceContext, r *http.Request, bot *mtproto
 	case "leaveChat":
 		return leaveChat(ctx, r, botID, request)
 	case "getMyCommands":
+		if status, code, description, failed := botAPIProfileOptionsResult(request); failed {
+			return nil, status, code, description
+		}
 		info, err := ctx.UserClient.UserGetBotInfo(botRPCContext(r.Context(), botID), &userpb.TLUserGetBotInfo{BotId: botID})
 		if err != nil || info == nil {
 			return nil, http.StatusBadRequest, 400, rpcDescription(err)
 		}
 		return botapi.BotCommandsFromMTProto(info.GetCommands()), http.StatusOK, 0, ""
 	case "setMyCommands", "deleteMyCommands":
+		if status, code, description, failed := botAPIProfileOptionsResult(request); failed {
+			return nil, status, code, description
+		}
 		commands := []botapi.BotCommand{}
 		if method == "setMyCommands" {
 			if err := request.json("commands", &commands); err != nil {
@@ -590,14 +596,23 @@ func dispatchBotAPIMethod(ctx *svc.ServiceContext, r *http.Request, bot *mtproto
 	case "setMyName":
 		return setMyName(ctx, r.Context(), botID, request)
 	case "getMyName":
+		if status, code, description, failed := botAPIProfileOptionsResult(request); failed {
+			return nil, status, code, description
+		}
 		return &botapi.BotName{Name: bot.GetUser().GetFirstName()}, http.StatusOK, 0, ""
 	case "setMyDescription":
 		return setMyDescription(ctx, r.Context(), botID, request)
 	case "getMyDescription":
+		if status, code, description, failed := botAPIProfileOptionsResult(request); failed {
+			return nil, status, code, description
+		}
 		return getMyDescription(ctx, r.Context(), botID)
 	case "setMyShortDescription":
 		return setMyShortDescription(ctx, r.Context(), botID, request)
 	case "getMyShortDescription":
+		if status, code, description, failed := botAPIProfileOptionsResult(request); failed {
+			return nil, status, code, description
+		}
 		return getMyShortDescription(ctx, r.Context(), botID)
 	case "getMyDefaultAdministratorRights":
 		return getMyDefaultAdministratorRights(ctx, r.Context(), botID, request)
@@ -733,11 +748,14 @@ func dispatchBotAPIMethod(ctx *svc.ServiceContext, r *http.Request, bot *mtproto
 		return suggestedPost(ctx, r, botID, request, false)
 	case "declineSuggestedPost":
 		return suggestedPost(ctx, r, botID, request, true)
+	case "sendGift":
+		return sendGift(ctx, r, botID, request)
+	case "giftPremiumSubscription":
+		return giftPremiumSubscription(ctx, r, botID, request)
+	case "transferBusinessAccountStars":
+		return transferBusinessAccountStars(ctx, r, botID, request)
 	case "savePreparedKeyboardButton":
 		return savePreparedKeyboardButton(ctx, r, botID, request)
-	case "sendGift", "giftPremiumSubscription",
-		"transferBusinessAccountStars":
-		return botAPIUnsupportedMethod(method)
 	case "setBusinessAccountGiftSettings":
 		return setBusinessAccountGiftSettings(ctx, r, botID, request)
 	default:
@@ -862,9 +880,22 @@ func getUpdates(ctx *svc.ServiceContext, r *http.Request, botID int64, request *
 }
 
 func setWebhook(ctx *svc.ServiceContext, requestCtx context.Context, botID int64, request *botAPIRequest) (any, int, int, string) {
+	if parameter := botAPIUnsupportedWebhookParameter(request); parameter != "" {
+		return nil, http.StatusNotImplemented, 501, "Not Implemented: " + parameter + " is not supported by the webhook store"
+	}
+	dropPending, err := request.bool("drop_pending_updates")
+	if err != nil {
+		return nil, http.StatusBadRequest, 400, "Bad Request: invalid drop_pending_updates"
+	}
 	webhookURL := request.string("url")
 	if webhookURL == "" {
-		return nil, http.StatusBadRequest, 400, "Bad Request: url is required"
+		if ctx == nil || ctx.BotAPIStore == nil {
+			return nil, http.StatusNotImplemented, 501, "Not Implemented: webhook store is not configured"
+		}
+		if err := ctx.BotAPIStore.DeleteWebhook(requestCtx, botID, dropPending); err != nil {
+			return nil, http.StatusInternalServerError, 500, err.Error()
+		}
+		return true, http.StatusOK, 0, ""
 	}
 	parsedURL, parseErr := url.ParseRequestURI(webhookURL)
 	if parseErr != nil || parsedURL.Host == "" || parsedURL.Scheme != "https" {
@@ -895,9 +926,8 @@ func setWebhook(ctx *svc.ServiceContext, requestCtx context.Context, botID int64
 		// optional field is omitted while updating a webhook.
 		allowed = append([]string(nil), previousWebhook.AllowedUpdates...)
 	}
-	dropPending, err := request.bool("drop_pending_updates")
-	if err != nil {
-		return nil, http.StatusBadRequest, 400, "Bad Request: invalid drop_pending_updates"
+	if ctx == nil || ctx.BotAPIStore == nil {
+		return nil, http.StatusNotImplemented, 501, "Not Implemented: webhook store is not configured"
 	}
 	if err := ctx.BotAPIStore.SetWebhook(requestCtx, botID, store.Webhook{
 		URL:            webhookURL,
@@ -908,6 +938,22 @@ func setWebhook(ctx *svc.ServiceContext, requestCtx context.Context, botID int64
 		return nil, http.StatusBadRequest, 400, rpcDescription(err)
 	}
 	return true, http.StatusOK, 0, ""
+}
+
+func botAPIUnsupportedWebhookParameter(request *botAPIRequest) string {
+	if request == nil {
+		return ""
+	}
+	for _, name := range []string{"certificate", "ip_address"} {
+		if !request.has(name) {
+			continue
+		}
+		raw := strings.TrimSpace(string(request.raw(name)))
+		if raw != "" && raw != "null" && raw != `""` {
+			return name
+		}
+	}
+	return ""
 }
 
 func deleteWebhook(ctx *svc.ServiceContext, requestCtx context.Context, botID int64, request *botAPIRequest) (any, int, int, string) {
@@ -949,6 +995,17 @@ func parseBotAPIAllowedUpdates(request *botAPIRequest) ([]string, bool, error) {
 }
 
 func sendMessage(ctx *svc.ServiceContext, r *http.Request, bot *mtproto.ImmutableUser, request *botAPIRequest) (any, int, int, string) {
+	if parameter := botAPIUnsupportedMessageParameter(request); parameter != "" {
+		return nil, http.StatusNotImplemented, 501, "Not Implemented: " + parameter + " is not supported by the Layer 229 adapter"
+	}
+	effect, effectErr := botAPIMessageEffect(request)
+	if effectErr != nil {
+		return nil, http.StatusBadRequest, 400, "Bad Request: " + effectErr.Error()
+	}
+	suggestedPost, suggestedPostErr := botAPISuggestedPost(request)
+	if suggestedPostErr != nil {
+		return nil, http.StatusBadRequest, 400, "Bad Request: " + suggestedPostErr.Error()
+	}
 	botID := bot.GetUser().GetId()
 	scope, business, scopeErr := resolveBotAPISendScope(ctx, r.Context(), botID, request)
 	if scopeErr != nil {
@@ -971,6 +1028,9 @@ func sendMessage(ctx *svc.ServiceContext, r *http.Request, bot *mtproto.Immutabl
 	if text == "" {
 		return nil, http.StatusBadRequest, 400, "Bad Request: text is empty"
 	}
+	if err := validateBotAPITextLength(text, 4096, "text"); err != nil {
+		return nil, http.StatusBadRequest, 400, "Bad Request: " + err.Error()
+	}
 	randomID := randomMessageID()
 	if value, parseErr := request.int64("random_id"); parseErr == nil && value != 0 {
 		randomID = value
@@ -983,6 +1043,9 @@ func sendMessage(ctx *svc.ServiceContext, r *http.Request, bot *mtproto.Immutabl
 		Message: text,
 	}).To_Message()
 	message.Entities = botapi.MessageEntitiesToMTProto(entities)
+	message.Effect = effect
+	message.Silent = requestBool(request, "disable_notification")
+	message.Noforwards = requestBool(request, "protect_content")
 	markup, err := botAPIReplyMarkup(request)
 	if err != nil {
 		return nil, http.StatusBadRequest, 400, "Bad Request: reply_markup is invalid"
@@ -1018,17 +1081,20 @@ func sendMessage(ctx *svc.ServiceContext, r *http.Request, bot *mtproto.Immutabl
 			return nil, http.StatusBadRequest, 400, "Bad Request: reply_parameters is invalid"
 		}
 		updates, sendErr := ctx.MessagesClient.MessagesSendMessage(callCtx, &mtproto.TLMessagesSendMessage{
-			NoWebpage:   noWebpage,
-			Silent:      requestBool(request, "disable_notification"),
-			Noforwards:  requestBool(request, "protect_content"),
-			InvertMedia: invertMedia,
-			Peer:        botAPIInputPeer(senderID, peerType, peerID),
-			ReplyTo:     replyTo,
-			TopMsgId:    topMsgID,
-			Message:     text,
-			RandomId:    randomID,
-			ReplyMarkup: markup,
-			Entities:    message.Entities,
+			NoWebpage:          noWebpage,
+			Silent:             requestBool(request, "disable_notification"),
+			Noforwards:         requestBool(request, "protect_content"),
+			InvertMedia:        invertMedia,
+			AllowPaidFloodskip: requestBool(request, "allow_paid_broadcast"),
+			Effect:             effect,
+			Peer:               botAPIInputPeer(senderID, peerType, peerID),
+			ReplyTo:            replyTo,
+			TopMsgId:           topMsgID,
+			Message:            text,
+			RandomId:           randomID,
+			ReplyMarkup:        markup,
+			Entities:           message.Entities,
+			SuggestedPost:      suggestedPost,
 		})
 		if sendErr != nil {
 			return nil, http.StatusBadRequest, 400, rpcDescription(sendErr)
@@ -1038,6 +1104,9 @@ func sendMessage(ctx *svc.ServiceContext, r *http.Request, bot *mtproto.Immutabl
 			return nil, http.StatusInternalServerError, 500, "Internal Server Error: message was not returned"
 		}
 		return result, http.StatusOK, 0, ""
+	}
+	if suggestedPost != nil {
+		return nil, http.StatusNotImplemented, 501, "Not Implemented: suggested_post_parameters requires the Layer 229 message service"
 	}
 	updates, err := ctx.MsgClient.MsgSendMessageV2(callCtx, &msgpb.TLMsgSendMessageV2{
 		UserId:   botID,
@@ -1061,6 +1130,9 @@ func sendMessage(ctx *svc.ServiceContext, r *http.Request, bot *mtproto.Immutabl
 }
 
 func forwardMessage(ctx *svc.ServiceContext, r *http.Request, bot *mtproto.ImmutableUser, request *botAPIRequest, copyMode bool) (any, int, int, string) {
+	if parameter := botAPIUnsupportedMessageParameter(request); parameter != "" {
+		return nil, http.StatusNotImplemented, 501, "Not Implemented: " + parameter + " is not supported by the Layer 229 adapter"
+	}
 	if ctx == nil || ctx.MessagesClient == nil {
 		return nil, http.StatusNotImplemented, 501, "Not Implemented: message service is not configured"
 	}
@@ -1100,6 +1172,12 @@ func forwardMessage(ctx *svc.ServiceContext, r *http.Request, bot *mtproto.Immut
 	if videoTimestamp > 0 {
 		forward.VideoTimestamp = wrapperspb.Int32(int32(videoTimestamp))
 	}
+	effect, effectErr := botAPIMessageEffect(request)
+	if effectErr != nil {
+		return nil, http.StatusBadRequest, 400, "Bad Request: " + effectErr.Error()
+	}
+	forward.Effect = effect
+	forward.AllowPaidFloodskip = requestBool(request, "allow_paid_broadcast")
 	updates, err := ctx.MessagesClient.MessagesForwardMessages(botMediaRPCContext(r.Context(), botID), forward)
 	if err != nil {
 		return nil, http.StatusBadRequest, 400, rpcDescription(err)
@@ -1144,6 +1222,17 @@ func botAPIReplyTo(request *botAPIRequest) (*mtproto.InputReplyTo, error) {
 // existing messages.sendMedia pipeline, which owns media validation and
 // persistence.
 func sendBotAPIMedia(ctx *svc.ServiceContext, r *http.Request, bot *mtproto.ImmutableUser, request *botAPIRequest, field, kind string) (any, int, int, string) {
+	if parameter := botAPIUnsupportedMessageParameter(request); parameter != "" {
+		return nil, http.StatusNotImplemented, 501, "Not Implemented: " + parameter + " is not supported by the Layer 229 adapter"
+	}
+	effect, effectErr := botAPIMessageEffect(request)
+	if effectErr != nil {
+		return nil, http.StatusBadRequest, 400, "Bad Request: " + effectErr.Error()
+	}
+	suggestedPost, suggestedPostErr := botAPISuggestedPost(request)
+	if suggestedPostErr != nil {
+		return nil, http.StatusBadRequest, 400, "Bad Request: " + suggestedPostErr.Error()
+	}
 	botID := bot.GetUser().GetId()
 	scope, business, scopeErr := resolveBotAPISendScope(ctx, r.Context(), botID, request)
 	if scopeErr != nil {
@@ -1240,6 +1329,9 @@ func sendBotAPIMedia(ctx *svc.ServiceContext, r *http.Request, bot *mtproto.Immu
 	if formatErr != nil {
 		return nil, http.StatusBadRequest, 400, "Bad Request: " + formatErr.Error()
 	}
+	if err := validateBotAPITextLength(caption, 1024, "caption"); err != nil {
+		return nil, http.StatusBadRequest, 400, "Bad Request: " + err.Error()
+	}
 	markup, err := botAPIReplyMarkup(request)
 	if err != nil {
 		return nil, http.StatusBadRequest, 400, "Bad Request: reply_markup is invalid"
@@ -1252,21 +1344,28 @@ func sendBotAPIMedia(ctx *svc.ServiceContext, r *http.Request, bot *mtproto.Immu
 	if err != nil {
 		return nil, http.StatusBadRequest, 400, "Bad Request: message_thread_id is invalid"
 	}
-	_, invertMedia, err := botAPILinkPreviewOptions(request)
+	invertMedia, err := botAPIMessageInvertMedia(request)
 	if err != nil {
+		if errors.Is(err, errBotAPIShowCaptionAboveMediaInvalid) {
+			return nil, http.StatusBadRequest, 400, "Bad Request: " + err.Error()
+		}
 		return nil, http.StatusBadRequest, 400, "Bad Request: link_preview_options is invalid"
 	}
 	updates, err := ctx.MessagesClient.MessagesSendMedia(callCtx, &mtproto.TLMessagesSendMedia{
-		Peer:        botAPIInputPeer(senderID, peerType, peerID),
-		Media:       media,
-		Message:     caption,
-		RandomId:    randomMessageID(),
-		ReplyMarkup: markup,
-		Entities:    botapi.MessageEntitiesToMTProto(entities),
-		ReplyTo:     replyTo,
-		TopMsgId:    topMsgID,
-		InvertMedia: invertMedia,
-		Noforwards:  requestBool(request, "protect_content"),
+		Peer:               botAPIInputPeer(senderID, peerType, peerID),
+		Media:              media,
+		Message:            caption,
+		RandomId:           randomMessageID(),
+		ReplyMarkup:        markup,
+		Entities:           botapi.MessageEntitiesToMTProto(entities),
+		ReplyTo:            replyTo,
+		TopMsgId:           topMsgID,
+		InvertMedia:        invertMedia,
+		Silent:             requestBool(request, "disable_notification"),
+		Noforwards:         requestBool(request, "protect_content"),
+		AllowPaidFloodskip: requestBool(request, "allow_paid_broadcast"),
+		Effect:             effect,
+		SuggestedPost:      suggestedPost,
 	})
 	if err != nil {
 		return nil, http.StatusBadRequest, 400, rpcDescription(err)
@@ -1314,15 +1413,12 @@ func botAPIMaskCoords(request *botAPIRequest) (*mtproto.MaskCoords, error) {
 }
 
 func sendLocation(ctx *svc.ServiceContext, r *http.Request, bot *mtproto.ImmutableUser, request *botAPIRequest) (any, int, int, string) {
-	longitude, err := request.float64("longitude")
-	if err != nil || longitude < -180 || longitude > 180 {
-		return nil, http.StatusBadRequest, 400, "Bad Request: longitude is invalid"
+	longitude, latitude, err := botAPILocationCoordinates(request)
+	if err != nil {
+		return nil, http.StatusBadRequest, 400, err.Error()
 	}
-	latitude, err := request.float64("latitude")
-	if err != nil || latitude < -90 || latitude > 90 {
-		return nil, http.StatusBadRequest, 400, "Bad Request: latitude is invalid"
-	}
-	horizontalAccuracy, err := request.float64("horizontal_accuracy")
+	var horizontalAccuracy float64
+	horizontalAccuracy, err = request.float64("horizontal_accuracy")
 	if err != nil || horizontalAccuracy < 0 || horizontalAccuracy > 1500 {
 		return nil, http.StatusBadRequest, 400, "Bad Request: horizontal_accuracy is invalid"
 	}
@@ -1412,20 +1508,28 @@ func sendContact(ctx *svc.ServiceContext, r *http.Request, bot *mtproto.Immutabl
 }
 
 func sendPoll(ctx *svc.ServiceContext, r *http.Request, bot *mtproto.ImmutableUser, request *botAPIRequest) (any, int, int, string) {
-	question := request.string("question")
-	if question == "" {
+	if parameter := botAPIPollUnsupportedParameter(request); parameter != "" {
+		return nil, http.StatusNotImplemented, 501, "Not Implemented: " + parameter + " is not supported by the Layer 229 poll adapter"
+	}
+	question, questionEntities, err := botAPITextEntities(request, "question", "question_entities", "question_parse_mode")
+	if err != nil {
+		return nil, http.StatusBadRequest, 400, "Bad Request: " + err.Error()
+	}
+	if strings.TrimSpace(question) == "" {
 		return nil, http.StatusBadRequest, 400, "Bad Request: question is required"
 	}
-	if len([]rune(question)) > 300 {
+	if utf8.RuneCountInString(question) > 300 {
 		return nil, http.StatusBadRequest, 400, "Bad Request: question is too long"
 	}
-	var options []string
-	if err := request.json("options", &options); err != nil || len(options) < 2 || len(options) > 10 {
-		return nil, http.StatusBadRequest, 400, "Bad Request: options must contain between 2 and 10 strings"
+	answers, err := botAPIPollOptions(request)
+	if err != nil {
+		if errors.Is(err, errBotAPIPollOptionMediaUnsupported) {
+			return nil, http.StatusNotImplemented, 501, "Not Implemented: " + err.Error()
+		}
+		return nil, http.StatusBadRequest, 400, "Bad Request: " + err.Error()
 	}
 	isAnonymous := true
-	if len(request.raw("is_anonymous")) > 0 {
-		var err error
+	if request.has("is_anonymous") {
 		isAnonymous, err = request.bool("is_anonymous")
 		if err != nil {
 			return nil, http.StatusBadRequest, 400, "Bad Request: is_anonymous is invalid"
@@ -1442,48 +1546,121 @@ func sendPoll(ctx *svc.ServiceContext, r *http.Request, bot *mtproto.ImmutableUs
 	if err != nil {
 		return nil, http.StatusBadRequest, 400, "Bad Request: allows_multiple_answers is invalid"
 	}
-	correctOption := -1
-	if raw := request.raw("correct_option_id"); len(raw) > 0 {
-		correctOption, err = request.int("correct_option_id")
-		if err != nil || correctOption < 0 || correctOption >= len(options) {
-			return nil, http.StatusBadRequest, 400, "Bad Request: correct_option_id is invalid"
+	allowsRevoting := pollType == "regular"
+	if request.has("allows_revoting") {
+		allowsRevoting, err = request.bool("allows_revoting")
+		if err != nil {
+			return nil, http.StatusBadRequest, 400, "Bad Request: allows_revoting is invalid"
 		}
 	}
-	if pollType == "quiz" && correctOption < 0 {
-		return nil, http.StatusBadRequest, 400, "Bad Request: correct_option_id is required for quiz polls"
+	shuffleOptions, err := request.bool("shuffle_options")
+	if err != nil {
+		return nil, http.StatusBadRequest, 400, "Bad Request: shuffle_options is invalid"
 	}
-	if pollType == "regular" && correctOption >= 0 {
-		return nil, http.StatusBadRequest, 400, "Bad Request: correct_option_id is only valid for quiz polls"
+	allowAddingOptions, err := request.bool("allow_adding_options")
+	if err != nil {
+		return nil, http.StatusBadRequest, 400, "Bad Request: allow_adding_options is invalid"
 	}
-	openPeriod, err := request.int("open_period")
-	if err != nil || openPeriod < 0 || (openPeriod > 0 && (openPeriod < 5 || openPeriod > 600)) {
-		return nil, http.StatusBadRequest, 400, "Bad Request: open_period is invalid"
+	if allowAddingOptions && (isAnonymous || pollType == "quiz") {
+		return nil, http.StatusBadRequest, 400, "Bad Request: allow_adding_options is not supported for anonymous or quiz polls"
 	}
-	closeDate, err := request.int64("close_date")
-	if err != nil || closeDate < 0 {
-		return nil, http.StatusBadRequest, 400, "Bad Request: close_date is invalid"
+	hideResultsUntilCloses, err := request.bool("hide_results_until_closes")
+	if err != nil {
+		return nil, http.StatusBadRequest, 400, "Bad Request: hide_results_until_closes is invalid"
+	}
+	membersOnly, err := request.bool("members_only")
+	if err != nil {
+		return nil, http.StatusBadRequest, 400, "Bad Request: members_only is invalid"
+	}
+	countryCodes, err := botAPIPollCountryCodes(request)
+	if err != nil {
+		return nil, http.StatusBadRequest, 400, "Bad Request: " + err.Error()
+	}
+	correctOptionIDs := make([]int32, 0)
+	hasPluralCorrectOptions := request.has("correct_option_ids") && strings.TrimSpace(string(request.raw("correct_option_ids"))) != "null"
+	hasSingularCorrectOption := request.has("correct_option_id") && strings.TrimSpace(string(request.raw("correct_option_id"))) != "null"
+	if hasPluralCorrectOptions && hasSingularCorrectOption {
+		return nil, http.StatusBadRequest, 400, "Bad Request: only one of correct_option_ids and correct_option_id may be specified"
+	}
+	if hasPluralCorrectOptions {
+		var ids []int
+		if err := request.json("correct_option_ids", &ids); err != nil {
+			return nil, http.StatusBadRequest, 400, "Bad Request: correct_option_ids is invalid"
+		}
+		previous := -1
+		for _, id := range ids {
+			if id < 0 || id >= len(answers) || id <= previous {
+				return nil, http.StatusBadRequest, 400, "Bad Request: correct_option_ids is invalid"
+			}
+			previous = id
+			correctOptionIDs = append(correctOptionIDs, int32(id))
+		}
+	} else if hasSingularCorrectOption {
+		id, parseErr := request.int("correct_option_id")
+		if parseErr != nil || id < 0 || id >= len(answers) {
+			return nil, http.StatusBadRequest, 400, "Bad Request: correct_option_id is invalid"
+		}
+		correctOptionIDs = append(correctOptionIDs, int32(id))
+	}
+	if pollType == "quiz" && len(correctOptionIDs) == 0 {
+		return nil, http.StatusBadRequest, 400, "Bad Request: correct_option_ids is required for quiz polls"
+	}
+	if pollType == "regular" && len(correctOptionIDs) > 0 {
+		return nil, http.StatusBadRequest, 400, "Bad Request: correct_option_ids is only valid for quiz polls"
+	}
+	openPeriod := 0
+	if request.has("open_period") && strings.TrimSpace(string(request.raw("open_period"))) != "null" {
+		openPeriod, err = request.int("open_period")
+		if err != nil || openPeriod < 5 || openPeriod > 2628000 {
+			return nil, http.StatusBadRequest, 400, "Bad Request: open_period is invalid"
+		}
+	}
+	closeDate := int64(0)
+	if request.has("close_date") && strings.TrimSpace(string(request.raw("close_date"))) != "null" {
+		closeDate, err = request.int64("close_date")
+		if err != nil || closeDate < time.Now().Unix()+5 || closeDate > time.Now().Unix()+2628000 {
+			return nil, http.StatusBadRequest, 400, "Bad Request: close_date is invalid"
+		}
 	}
 	if openPeriod > 0 && closeDate > 0 {
 		return nil, http.StatusBadRequest, 400, "Bad Request: open_period and close_date are mutually exclusive"
 	}
-	answers := make([]*mtproto.PollAnswer, 0, len(options))
-	for index, option := range options {
-		if strings.TrimSpace(option) == "" || len([]rune(option)) > 100 {
-			return nil, http.StatusBadRequest, 400, "Bad Request: poll option is invalid"
-		}
-		answers = append(answers, mtproto.MakePollAnswerWithText(option, []byte{byte(index)}))
+	isClosed, err := request.bool("is_closed")
+	if err != nil {
+		return nil, http.StatusBadRequest, 400, "Bad Request: is_closed is invalid"
+	}
+	if request.has("explanation_entities") && !request.has("explanation") && strings.TrimSpace(string(request.raw("explanation_entities"))) != "null" && strings.TrimSpace(string(request.raw("explanation_entities"))) != "[]" {
+		return nil, http.StatusBadRequest, 400, "Bad Request: explanation is required when explanation_entities is provided"
+	}
+	explanation, explanationEntities, formatErr := botAPITextEntities(request, "explanation", "explanation_entities", "explanation_parse_mode")
+	if formatErr != nil {
+		return nil, http.StatusBadRequest, 400, "Bad Request: " + formatErr.Error()
+	}
+	if request.has("explanation") && utf8.RuneCountInString(explanation) > 200 {
+		return nil, http.StatusBadRequest, 400, "Bad Request: explanation is too long"
+	}
+	if strings.Count(explanation, "\n") > 2 {
+		return nil, http.StatusBadRequest, 400, "Bad Request: explanation has too many line feeds"
 	}
 	poll := &mtproto.Poll{
-		Id:              randomMessageID(),
-		PublicVoters:    !isAnonymous,
-		MultipleChoice:  allowsMultiple,
-		Quiz:            pollType == "quiz",
-		Question:        question,
-		Question_STRING: question,
-		Answers:         answers,
+		Id:                    randomMessageID(),
+		Closed:                isClosed,
+		PublicVoters:          !isAnonymous,
+		MultipleChoice:        allowsMultiple,
+		Quiz:                  pollType == "quiz",
+		OpenAnswers:           allowAddingOptions,
+		RevotingDisabled:      !allowsRevoting,
+		ShuffleAnswers:        shuffleOptions,
+		HideResultsUntilClose: hideResultsUntilCloses,
+		SubscribersOnly:       membersOnly,
+		CountriesIso2:         countryCodes,
+		Question:              question,
+		Question_STRING:       question,
+		Answers:               answers,
 	}
 	poll.Question_TEXTWITHENTITIES = mtproto.MakeTLTextWithEntities(&mtproto.TextWithEntities{
-		Text: question,
+		Text:     question,
+		Entities: botapi.MessageEntitiesToMTProto(questionEntities),
 	}).To_TextWithEntities()
 	if openPeriod > 0 {
 		poll.ClosePeriod = wrapperspb.Int32(int32(openPeriod))
@@ -1494,16 +1671,12 @@ func sendPoll(ctx *svc.ServiceContext, r *http.Request, bot *mtproto.ImmutableUs
 	media := mtproto.MakeTLInputMediaPoll(&mtproto.InputMedia{
 		Poll: poll,
 	}).To_InputMedia()
-	if correctOption >= 0 {
-		media.CorrectAnswers_FLAGVECTORINT32 = []int32{int32(correctOption)}
+	if len(correctOptionIDs) > 0 {
+		media.CorrectAnswers_FLAGVECTORINT32 = correctOptionIDs
 	}
-	if explanation := request.string("explanation"); explanation != "" {
+	if request.has("explanation") && strings.TrimSpace(string(request.raw("explanation"))) != "null" {
 		media.Solution = wrapperspb.String(explanation)
-		var entities []botapi.MessageEntity
-		if err := request.json("explanation_entities", &entities); err != nil {
-			return nil, http.StatusBadRequest, 400, "Bad Request: explanation_entities is invalid"
-		}
-		media.SolutionEntities = botapi.MessageEntitiesToMTProto(entities)
+		media.SolutionEntities = botapi.MessageEntitiesToMTProto(explanationEntities)
 	}
 	return sendBotAPIStructuredMedia(ctx, r, bot, request, media, "")
 }
@@ -1523,6 +1696,17 @@ func sendDice(ctx *svc.ServiceContext, r *http.Request, bot *mtproto.ImmutableUs
 }
 
 func sendBotAPIStructuredMedia(ctx *svc.ServiceContext, r *http.Request, bot *mtproto.ImmutableUser, request *botAPIRequest, media *mtproto.InputMedia, caption string) (any, int, int, string) {
+	if parameter := botAPIUnsupportedMessageParameter(request); parameter != "" {
+		return nil, http.StatusNotImplemented, 501, "Not Implemented: " + parameter + " is not supported by the Layer 229 adapter"
+	}
+	effect, effectErr := botAPIMessageEffect(request)
+	if effectErr != nil {
+		return nil, http.StatusBadRequest, 400, "Bad Request: " + effectErr.Error()
+	}
+	suggestedPost, suggestedPostErr := botAPISuggestedPost(request)
+	if suggestedPostErr != nil {
+		return nil, http.StatusBadRequest, 400, "Bad Request: " + suggestedPostErr.Error()
+	}
 	if ctx == nil || ctx.MessagesClient == nil {
 		return nil, http.StatusNotImplemented, 501, "Not Implemented: media service is not configured"
 	}
@@ -1545,6 +1729,9 @@ func sendBotAPIStructuredMedia(ctx *svc.ServiceContext, r *http.Request, bot *mt
 	if formatErr != nil {
 		return nil, http.StatusBadRequest, 400, "Bad Request: " + formatErr.Error()
 	}
+	if err := validateBotAPITextLength(caption, 1024, "caption"); err != nil {
+		return nil, http.StatusBadRequest, 400, "Bad Request: " + err.Error()
+	}
 	var markup botapi.ReplyMarkupInput
 	if err := request.json("reply_markup", &markup); err != nil {
 		return nil, http.StatusBadRequest, 400, "Bad Request: reply_markup is invalid"
@@ -1553,8 +1740,11 @@ func sendBotAPIStructuredMedia(ctx *svc.ServiceContext, r *http.Request, bot *mt
 	if err != nil {
 		return nil, http.StatusBadRequest, 400, "Bad Request: reply_parameters is invalid"
 	}
-	_, invertMedia, err := botAPILinkPreviewOptions(request)
+	invertMedia, err := botAPIMessageInvertMedia(request)
 	if err != nil {
+		if errors.Is(err, errBotAPIShowCaptionAboveMediaInvalid) {
+			return nil, http.StatusBadRequest, 400, "Bad Request: " + err.Error()
+		}
 		return nil, http.StatusBadRequest, 400, "Bad Request: link_preview_options is invalid"
 	}
 	topMsgID, err := botAPIOptionalInt32(request, "message_thread_id", 1, int64(^uint32(0)>>1))
@@ -1562,17 +1752,20 @@ func sendBotAPIStructuredMedia(ctx *svc.ServiceContext, r *http.Request, bot *mt
 		return nil, http.StatusBadRequest, 400, "Bad Request: message_thread_id is invalid"
 	}
 	updates, err := ctx.MessagesClient.MessagesSendMedia(callCtx, &mtproto.TLMessagesSendMedia{
-		Peer:        botAPIInputPeer(senderID, peerType, peerID),
-		Media:       media,
-		Message:     caption,
-		RandomId:    randomMessageID(),
-		ReplyTo:     replyTo,
-		TopMsgId:    topMsgID,
-		InvertMedia: invertMedia,
-		ReplyMarkup: botapi.ReplyMarkupToMTProto(markup),
-		Entities:    botapi.MessageEntitiesToMTProto(entities),
-		Silent:      requestBool(request, "disable_notification"),
-		Noforwards:  requestBool(request, "protect_content"),
+		Peer:               botAPIInputPeer(senderID, peerType, peerID),
+		Media:              media,
+		Message:            caption,
+		RandomId:           randomMessageID(),
+		ReplyTo:            replyTo,
+		TopMsgId:           topMsgID,
+		InvertMedia:        invertMedia,
+		ReplyMarkup:        botapi.ReplyMarkupToMTProto(markup),
+		Entities:           botapi.MessageEntitiesToMTProto(entities),
+		Silent:             requestBool(request, "disable_notification"),
+		Noforwards:         requestBool(request, "protect_content"),
+		AllowPaidFloodskip: requestBool(request, "allow_paid_broadcast"),
+		Effect:             effect,
+		SuggestedPost:      suggestedPost,
 	})
 	if err != nil {
 		return nil, http.StatusBadRequest, 400, rpcDescription(err)
@@ -1585,20 +1778,29 @@ func sendBotAPIStructuredMedia(ctx *svc.ServiceContext, r *http.Request, bot *mt
 }
 
 type botAPIMediaGroupItem struct {
-	Type              string                 `json:"type"`
-	Media             string                 `json:"media"`
-	Caption           string                 `json:"caption,omitempty"`
-	CaptionEntities   []botapi.MessageEntity `json:"caption_entities,omitempty"`
-	ParseMode         string                 `json:"parse_mode,omitempty"`
-	CaptionParseMode  string                 `json:"caption_parse_mode,omitempty"`
-	HasSpoiler        bool                   `json:"has_spoiler,omitempty"`
-	SupportsStreaming bool                   `json:"supports_streaming,omitempty"`
-	Duration          int                    `json:"duration,omitempty"`
-	Width             int                    `json:"width,omitempty"`
-	Height            int                    `json:"height,omitempty"`
+	Type                  string                 `json:"type"`
+	Media                 string                 `json:"media"`
+	Photo                 string                 `json:"photo,omitempty"`
+	Caption               string                 `json:"caption,omitempty"`
+	CaptionEntities       []botapi.MessageEntity `json:"caption_entities,omitempty"`
+	ParseMode             string                 `json:"parse_mode,omitempty"`
+	CaptionParseMode      string                 `json:"caption_parse_mode,omitempty"`
+	ShowCaptionAboveMedia bool                   `json:"show_caption_above_media,omitempty"`
+	HasSpoiler            bool                   `json:"has_spoiler,omitempty"`
+	SupportsStreaming     bool                   `json:"supports_streaming,omitempty"`
+	Duration              int                    `json:"duration,omitempty"`
+	Width                 int                    `json:"width,omitempty"`
+	Height                int                    `json:"height,omitempty"`
 }
 
 func sendMediaGroup(ctx *svc.ServiceContext, r *http.Request, bot *mtproto.ImmutableUser, request *botAPIRequest) (any, int, int, string) {
+	if parameter := botAPIUnsupportedMessageParameter(request); parameter != "" {
+		return nil, http.StatusNotImplemented, 501, "Not Implemented: " + parameter + " is not supported by the Layer 229 adapter"
+	}
+	effect, effectErr := botAPIMessageEffect(request)
+	if effectErr != nil {
+		return nil, http.StatusBadRequest, 400, "Bad Request: " + effectErr.Error()
+	}
 	if ctx == nil || ctx.MessagesClient == nil {
 		return nil, http.StatusNotImplemented, 501, "Not Implemented: media service is not configured"
 	}
@@ -1622,6 +1824,7 @@ func sendMediaGroup(ctx *svc.ServiceContext, r *http.Request, bot *mtproto.Immut
 		return nil, http.StatusBadRequest, 400, "Bad Request: media must contain between 2 and 10 items"
 	}
 	multiMedia := make([]*mtproto.InputSingleMedia, 0, len(items))
+	invertMedia := false
 	for _, item := range items {
 		media, err := botAPIMediaGroupInput(r, ctx, botID, item)
 		if err != nil {
@@ -1631,6 +1834,10 @@ func sendMediaGroup(ctx *svc.ServiceContext, r *http.Request, bot *mtproto.Immut
 		if formatErr != nil {
 			return nil, http.StatusBadRequest, 400, "Bad Request: " + formatErr.Error()
 		}
+		if err := validateBotAPITextLength(caption, 1024, "caption"); err != nil {
+			return nil, http.StatusBadRequest, 400, "Bad Request: " + err.Error()
+		}
+		invertMedia = invertMedia || item.ShowCaptionAboveMedia
 		multiMedia = append(multiMedia, mtproto.MakeTLInputSingleMedia(&mtproto.InputSingleMedia{
 			Media:    media,
 			RandomId: randomMessageID(),
@@ -1647,12 +1854,15 @@ func sendMediaGroup(ctx *svc.ServiceContext, r *http.Request, bot *mtproto.Immut
 		return nil, http.StatusBadRequest, 400, "Bad Request: message_thread_id is invalid"
 	}
 	updates, err := ctx.MessagesClient.MessagesSendMultiMedia(callCtx, &mtproto.TLMessagesSendMultiMedia{
-		Peer:       botAPIInputPeer(senderID, peerType, peerID),
-		ReplyTo:    replyTo,
-		TopMsgId:   topMsgID,
-		MultiMedia: multiMedia,
-		Silent:     requestBool(request, "disable_notification"),
-		Noforwards: requestBool(request, "protect_content"),
+		Peer:               botAPIInputPeer(senderID, peerType, peerID),
+		ReplyTo:            replyTo,
+		TopMsgId:           topMsgID,
+		MultiMedia:         multiMedia,
+		Silent:             requestBool(request, "disable_notification"),
+		Noforwards:         requestBool(request, "protect_content"),
+		AllowPaidFloodskip: requestBool(request, "allow_paid_broadcast"),
+		InvertMedia:        invertMedia,
+		Effect:             effect,
 	})
 	if err != nil {
 		return nil, http.StatusBadRequest, 400, rpcDescription(err)
@@ -1684,12 +1894,32 @@ func botAPILocationCoordinates(request *botAPIRequest) (float64, float64, error)
 
 func botAPIMediaGroupInput(r *http.Request, ctx *svc.ServiceContext, botID int64, item botAPIMediaGroupItem) (*mtproto.InputMedia, error) {
 	item.Type = strings.ToLower(strings.TrimSpace(item.Type))
-	if item.Type != "photo" && item.Type != "video" && item.Type != "document" && item.Type != "audio" && item.Type != "animation" {
+	if item.Type != "photo" && item.Type != "video" && item.Type != "document" && item.Type != "audio" && item.Type != "live_photo" {
 		return nil, errors.New("unsupported media type")
 	}
 	item.Media = strings.TrimSpace(item.Media)
 	if item.Media == "" {
 		return nil, errors.New("media is required")
+	}
+	if item.Type == "live_photo" {
+		item.Photo = strings.TrimSpace(item.Photo)
+		if item.Photo == "" {
+			return nil, errors.New("photo is required")
+		}
+		options := &botAPIRequest{values: map[string]json.RawMessage{
+			"has_spoiler": json.RawMessage(strconv.FormatBool(item.HasSpoiler)),
+		}}
+		photo, err := botAPILayer229MediaInput(r, ctx, botID, item.Photo, "photo", options, false, "")
+		if err != nil {
+			return nil, err
+		}
+		video, err := botAPILayer229VideoDocument(r, ctx, botID, item.Media, options, "", item.Duration, item.Width, item.Height, item.SupportsStreaming)
+		if err != nil {
+			return nil, err
+		}
+		photo.LivePhoto = true
+		photo.Video = video
+		return photo, nil
 	}
 	if strings.HasPrefix(item.Media, "attach://") {
 		field := strings.TrimPrefix(item.Media, "attach://")
@@ -1742,6 +1972,99 @@ func botAPIMediaGroupInput(r *http.Request, ctx *svc.ServiceContext, botID int64
 func requestBool(request *botAPIRequest, name string) bool {
 	value, err := request.bool(name)
 	return err == nil && value
+}
+
+var errBotAPIShowCaptionAboveMediaInvalid = errors.New("show_caption_above_media is invalid")
+
+func botAPIUnsupportedMessageParameter(request *botAPIRequest) string {
+	for _, name := range []string{
+		"direct_messages_topic_id",
+		"ephemeral_message_parameters",
+	} {
+		if request == nil || !request.has(name) {
+			continue
+		}
+		raw := strings.TrimSpace(string(request.raw(name)))
+		if raw != "" && raw != "null" && raw != `""` {
+			return name
+		}
+	}
+	return ""
+}
+
+type botAPISuggestedPostPrice struct {
+	Currency string `json:"currency"`
+	Amount   int64  `json:"amount"`
+}
+
+type botAPISuggestedPostParameters struct {
+	Price    *botAPISuggestedPostPrice `json:"price,omitempty"`
+	SendDate *int64                    `json:"send_date,omitempty"`
+}
+
+func botAPISuggestedPost(request *botAPIRequest) (*mtproto.SuggestedPost, error) {
+	if request == nil || !request.has("suggested_post_parameters") {
+		return nil, nil
+	}
+	raw := strings.TrimSpace(string(request.raw("suggested_post_parameters")))
+	if raw == "" || raw == "null" {
+		return nil, nil
+	}
+	var input botAPISuggestedPostParameters
+	if err := request.json("suggested_post_parameters", &input); err != nil {
+		return nil, errors.New("suggested_post_parameters is invalid")
+	}
+	var price *mtproto.StarsAmount
+	if input.Price != nil {
+		currency := strings.ToUpper(strings.TrimSpace(input.Price.Currency))
+		switch currency {
+		case "XTR":
+			if input.Price.Amount < 5 || input.Price.Amount > 100000 {
+				return nil, errors.New("suggested_post_parameters.price.amount is invalid")
+			}
+			price = mtproto.MakeTLStarsAmount(&mtproto.StarsAmount{Amount: input.Price.Amount}).To_StarsAmount()
+		case "TON":
+			if input.Price.Amount < 10000000 || input.Price.Amount > 10000000000000 {
+				return nil, errors.New("suggested_post_parameters.price.amount is invalid")
+			}
+			price = mtproto.MakeTLStarsTonAmount(&mtproto.StarsAmount{Amount: input.Price.Amount}).To_StarsAmount()
+		default:
+			return nil, errors.New("suggested_post_parameters.price.currency is invalid")
+		}
+	}
+	var scheduleDate *wrapperspb.Int32Value
+	if input.SendDate != nil {
+		now := time.Now().Unix()
+		if *input.SendDate < now+300 || *input.SendDate > now+30*24*60*60 || *input.SendDate > int64(math.MaxInt32) {
+			return nil, errors.New("suggested_post_parameters.send_date is invalid")
+		}
+		scheduleDate = wrapperspb.Int32(int32(*input.SendDate))
+	}
+	return mtproto.MakeTLSuggestedPost(&mtproto.SuggestedPost{Price: price, ScheduleDate: scheduleDate}).To_SuggestedPost(), nil
+}
+
+func botAPIMessageEffect(request *botAPIRequest) (*wrapperspb.Int64Value, error) {
+	if request == nil || !request.has("message_effect_id") || len(request.raw("message_effect_id")) == 0 || string(request.raw("message_effect_id")) == "null" {
+		return nil, nil
+	}
+	value := request.string("message_effect_id")
+	effectID, err := strconv.ParseInt(value, 10, 64)
+	if err != nil || effectID <= 0 {
+		return nil, errors.New("message_effect_id is invalid")
+	}
+	return wrapperspb.Int64(effectID), nil
+}
+
+func botAPIMessageInvertMedia(request *botAPIRequest) (bool, error) {
+	_, invertMedia, err := botAPILinkPreviewOptions(request)
+	if err != nil {
+		return false, err
+	}
+	showCaptionAboveMedia, err := request.bool("show_caption_above_media")
+	if err != nil {
+		return false, errBotAPIShowCaptionAboveMediaInvalid
+	}
+	return invertMedia || showCaptionAboveMedia, nil
 }
 
 func botAPINoWebpage(request *botAPIRequest) (bool, error) {
@@ -2086,6 +2409,9 @@ func optionalBotAPIChatID(requestCtx context.Context, service *svc.ServiceContex
 }
 
 func setMyName(ctx *svc.ServiceContext, requestCtx context.Context, botID int64, request *botAPIRequest) (any, int, int, string) {
+	if status, code, description, failed := botAPIProfileOptionsResult(request); failed {
+		return nil, status, code, description
+	}
 	name := request.string("name")
 	if name == "" {
 		return nil, http.StatusBadRequest, 400, "Bad Request: name is required"
@@ -2100,6 +2426,9 @@ func setMyName(ctx *svc.ServiceContext, requestCtx context.Context, botID int64,
 }
 
 func setMyDescription(ctx *svc.ServiceContext, requestCtx context.Context, botID int64, request *botAPIRequest) (any, int, int, string) {
+	if status, code, description, failed := botAPIProfileOptionsResult(request); failed {
+		return nil, status, code, description
+	}
 	if ctx.BotRegistryClient == nil {
 		return nil, http.StatusNotImplemented, 501, "Bad Request: bot profile service is not configured"
 	}
@@ -2119,6 +2448,9 @@ func getMyDescription(ctx *svc.ServiceContext, requestCtx context.Context, botID
 }
 
 func setMyShortDescription(ctx *svc.ServiceContext, requestCtx context.Context, botID int64, request *botAPIRequest) (any, int, int, string) {
+	if status, code, description, failed := botAPIProfileOptionsResult(request); failed {
+		return nil, status, code, description
+	}
 	if ctx.BotRegistryClient == nil {
 		return nil, http.StatusNotImplemented, 501, "Bad Request: bot profile service is not configured"
 	}
@@ -2145,6 +2477,9 @@ func editMessageText(ctx *svc.ServiceContext, r *http.Request, bot *mtproto.Immu
 	if text == "" {
 		return nil, http.StatusBadRequest, 400, "Bad Request: text is empty"
 	}
+	if err := validateBotAPITextLength(text, 4096, "text"); err != nil {
+		return nil, http.StatusBadRequest, 400, "Bad Request: " + err.Error()
+	}
 	markup, err := botAPIReplyMarkup(request)
 	if err != nil {
 		return nil, http.StatusBadRequest, 400, "Bad Request: reply_markup is invalid"
@@ -2159,6 +2494,9 @@ func editMessageCaption(ctx *svc.ServiceContext, r *http.Request, bot *mtproto.I
 	}
 	if len(request.raw("caption")) == 0 {
 		return nil, http.StatusBadRequest, 400, "Bad Request: caption is empty"
+	}
+	if err := validateBotAPITextLength(caption, 1024, "caption"); err != nil {
+		return nil, http.StatusBadRequest, 400, "Bad Request: " + err.Error()
 	}
 	markup, err := botAPIReplyMarkup(request)
 	if err != nil {
@@ -2183,10 +2521,16 @@ func editMessageMedia(ctx *svc.ServiceContext, r *http.Request, bot *mtproto.Imm
 	if err := request.json("media", &mediaObject); err != nil {
 		return nil, http.StatusBadRequest, 400, "Bad Request: media is invalid"
 	}
+	if showCaptionAboveMedia, ok := mediaObject["show_caption_above_media"]; ok {
+		request.values["show_caption_above_media"] = showCaptionAboveMedia
+	}
 	_, hasCaption := mediaObject["caption"]
 	caption, captionEntities, formatErr := botAPIMediaGroupCaption(item)
 	if formatErr != nil {
 		return nil, http.StatusBadRequest, 400, "Bad Request: " + formatErr.Error()
+	}
+	if err := validateBotAPITextLength(caption, 1024, "caption"); err != nil {
+		return nil, http.StatusBadRequest, 400, "Bad Request: " + err.Error()
 	}
 	markup, err := botAPIReplyMarkup(request)
 	if err != nil {
@@ -2226,6 +2570,11 @@ func editBotAPIMessageWithMedia(ctx *svc.ServiceContext, r *http.Request, bot *m
 		if err != nil {
 			return nil, http.StatusBadRequest, 400, "Bad Request: link_preview_options is invalid"
 		}
+		showCaptionAboveMedia, showErr := request.bool("show_caption_above_media")
+		if showErr != nil {
+			return nil, http.StatusBadRequest, 400, "Bad Request: show_caption_above_media is invalid"
+		}
+		invertMedia = invertMedia || showCaptionAboveMedia
 		edit := &mtproto.TLMessagesEditInlineBotMessage{
 			NoWebpage:   noWebpage,
 			InvertMedia: invertMedia,
@@ -2276,6 +2625,11 @@ func editBotAPIMessageWithMedia(ctx *svc.ServiceContext, r *http.Request, bot *m
 	if err != nil {
 		return nil, http.StatusBadRequest, 400, "Bad Request: link_preview_options is invalid"
 	}
+	showCaptionAboveMedia, showErr := request.bool("show_caption_above_media")
+	if showErr != nil {
+		return nil, http.StatusBadRequest, 400, "Bad Request: show_caption_above_media is invalid"
+	}
+	invertMedia = invertMedia || showCaptionAboveMedia
 	edit := &mtproto.TLMessagesEditMessage{
 		NoWebpage:   noWebpage,
 		InvertMedia: invertMedia,
@@ -2468,9 +2822,6 @@ func answerShippingQuery(ctx *svc.ServiceContext, requestCtx context.Context, bo
 	if err != nil || queryID <= 0 {
 		return nil, http.StatusBadRequest, 400, "Bad Request: shipping_query_id is invalid"
 	}
-	if ctx == nil || ctx.PaymentsClient == nil {
-		return nil, http.StatusNotImplemented, 501, "Not Implemented: payment service is not configured"
-	}
 	if len(request.raw("ok")) == 0 {
 		return nil, http.StatusBadRequest, 400, "Bad Request: ok is required"
 	}
@@ -2480,8 +2831,11 @@ func answerShippingQuery(ctx *svc.ServiceContext, requestCtx context.Context, bo
 	}
 	result := &mtproto.TLMessagesSetBotShippingResults{QueryId: queryID}
 	if ok {
+		if !request.has("shipping_options") || len(request.raw("shipping_options")) == 0 || string(request.raw("shipping_options")) == "null" {
+			return nil, http.StatusBadRequest, 400, "Bad Request: shipping_options is required when ok is true"
+		}
 		var options []botapi.ShippingOption
-		if err := request.json("shipping_options", &options); err != nil {
+		if err := request.json("shipping_options", &options); err != nil || len(options) == 0 {
 			return nil, http.StatusBadRequest, 400, "Bad Request: shipping_options is invalid"
 		}
 		result.ShippingOptions = make([]*mtproto.ShippingOption, 0, len(options))
@@ -2511,6 +2865,9 @@ func answerShippingQuery(ctx *svc.ServiceContext, requestCtx context.Context, bo
 			return nil, http.StatusBadRequest, 400, "Bad Request: error_message is required when ok is false"
 		}
 		result.Error = wrapperspb.String(errorMessage)
+	}
+	if ctx == nil || ctx.PaymentsClient == nil {
+		return nil, http.StatusNotImplemented, 501, "Not Implemented: payment service is not configured"
 	}
 	answered, err := ctx.PaymentsClient.MessagesSetBotShippingResults(botRPCContext(requestCtx, botID), result)
 	if err != nil {
@@ -3442,6 +3799,10 @@ func getChat(ctx *svc.ServiceContext, r *http.Request, botID int64, request *bot
 }
 
 func getChatAdministrators(ctx *svc.ServiceContext, r *http.Request, botID int64, request *botAPIRequest) (any, int, int, string) {
+	returnBots, err := request.bool("return_bots")
+	if err != nil {
+		return nil, http.StatusBadRequest, 400, "Bad Request: return_bots is invalid"
+	}
 	_, peerType, peerID, err := resolveBotAPIChatID(r.Context(), ctx, botID, request.string("chat_id"))
 	if err != nil || peerID == 0 || peerType == mtproto.PEER_USER {
 		return nil, http.StatusBadRequest, 400, "Bad Request: chat_id is invalid"
@@ -3462,6 +3823,9 @@ func getChatAdministrators(ctx *svc.ServiceContext, r *http.Request, botID int64
 		}
 		for _, participant := range participants.GetParticipants() {
 			if member := botapi.ChatMemberFromChannelParticipant(participant, participants.GetUsers()); member != nil {
+				if !botAPIShouldReturnAdministrator(member, botID, returnBots) {
+					continue
+				}
 				result = append(result, member)
 			}
 		}
@@ -3473,11 +3837,18 @@ func getChatAdministrators(ctx *svc.ServiceContext, r *http.Request, botID int64
 	}
 	for _, participant := range full.GetFullChat().GetParticipants().GetParticipants() {
 		member := botapi.ChatMemberFromChatParticipant(participant, full.GetUsers())
-		if member != nil && (member.Status == "administrator" || member.Status == "creator") {
+		if member != nil && (member.Status == "administrator" || member.Status == "creator") && botAPIShouldReturnAdministrator(member, botID, returnBots) {
 			result = append(result, member)
 		}
 	}
 	return result, http.StatusOK, 0, ""
+}
+
+func botAPIShouldReturnAdministrator(member *botapi.ChatMember, botID int64, returnBots bool) bool {
+	if member == nil || member.User == nil {
+		return member != nil
+	}
+	return !member.User.IsBot || returnBots || member.User.ID == botID
 }
 
 func getChatMemberCount(ctx *svc.ServiceContext, r *http.Request, botID int64, request *botAPIRequest) (any, int, int, string) {
@@ -3680,6 +4051,13 @@ func promoteChatMember(ctx *svc.ServiceContext, r *http.Request, botID int64, re
 	if err != nil || userID <= 0 {
 		return nil, http.StatusBadRequest, 400, "Bad Request: user_id is invalid"
 	}
+	parameter, rightErr := botAPIUnsupportedAdminRight(request)
+	if rightErr != nil {
+		return nil, http.StatusBadRequest, 400, "Bad Request: " + rightErr.Error()
+	}
+	if parameter != "" {
+		return nil, http.StatusNotImplemented, 501, "Not Implemented: " + parameter + " is not supported by the Layer 229 admin-rights adapter"
+	}
 	rights, err := botAPIChatAdminRights(request)
 	if err != nil {
 		return nil, http.StatusBadRequest, 400, err.Error()
@@ -3699,6 +4077,14 @@ func promoteChatMember(ctx *svc.ServiceContext, r *http.Request, botID int64, re
 		}
 		return true, http.StatusOK, 0, ""
 	}
+	if !request.has("can_restrict_members") {
+		// Telegram preserves the historical channel-promotion default.
+		rights.BanUsers = true
+	}
+	if chatAdminRightsSet(rights) {
+		// can_manage_chat is implied by every other administrator privilege.
+		rights.Other = true
+	}
 	if ctx == nil || ctx.ChannelsClient == nil {
 		return nil, http.StatusNotImplemented, 501, "Not Implemented: channel service is not configured"
 	}
@@ -3713,6 +4099,22 @@ func promoteChatMember(ctx *svc.ServiceContext, r *http.Request, botID int64, re
 		return nil, http.StatusBadRequest, 400, rpcDescription(err)
 	}
 	return true, http.StatusOK, 0, ""
+}
+
+func botAPIUnsupportedAdminRight(request *botAPIRequest) (string, error) {
+	if request == nil {
+		return "", nil
+	}
+	for _, name := range []string{"can_manage_tags", "can_send_welcome_messages"} {
+		value, err := request.bool(name)
+		if err != nil {
+			return "", fmt.Errorf("%s is invalid", name)
+		}
+		if value {
+			return name, nil
+		}
+	}
+	return "", nil
 }
 
 func setChatAdministratorCustomTitle(ctx *svc.ServiceContext, r *http.Request, botID int64, request *botAPIRequest) (any, int, int, string) {

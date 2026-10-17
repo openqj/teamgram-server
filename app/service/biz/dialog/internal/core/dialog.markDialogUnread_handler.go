@@ -17,6 +17,14 @@ import (
 // DialogMarkDialogUnread
 // dialog.markDialogUnread user_id:long peer_type:int peer_id:long unread_mark:Bool = Bool;
 func (c *DialogCore) DialogMarkDialogUnread(in *dialog.TLDialogMarkDialogUnread) (*mtproto.Bool, error) {
+	if in == nil || in.GetUserId() <= 0 || in.GetPeerId() <= 0 || in.GetUnreadMark() == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	switch in.GetPeerType() {
+	case mtproto.PEER_SELF, mtproto.PEER_USER, mtproto.PEER_CHAT, mtproto.PEER_CHANNEL:
+	default:
+		return nil, mtproto.ErrPeerIdInvalid
+	}
 	mark := 0
 	if mtproto.FromBool(in.UnreadMark) {
 		mark = 1
@@ -28,18 +36,24 @@ func (c *DialogCore) DialogMarkDialogUnread(in *dialog.TLDialogMarkDialogUnread)
 	affected, err := store.Dialogs.UpdateCustomMap(c.ctx,
 		map[string]interface{}{"unread_mark": mark}, in.UserId, in.PeerType, in.PeerId)
 	if err != nil {
-		c.Logger.Errorf("dialog.markDialogUnread - error: %v", err)
+		if c.Logger != nil {
+			c.Logger.Errorf("dialog.markDialogUnread - error: %v", err)
+		}
 		return nil, err
 	}
 	if affected == 0 {
 		row, selErr := store.Dialogs.SelectDialog(c.ctx, in.UserId, in.PeerType, in.PeerId)
 		if selErr != nil {
-			c.Logger.Errorf("dialog.markDialogUnread - error: %v", selErr)
+			if c.Logger != nil {
+				c.Logger.Errorf("dialog.markDialogUnread - error: %v", selErr)
+			}
 			return nil, selErr
 		}
 		if row == nil {
 			err = mtproto.ErrPeerIdInvalid
-			c.Logger.Errorf("dialog.markDialogUnread - error: %v", err)
+			if c.Logger != nil {
+				c.Logger.Errorf("dialog.markDialogUnread - error: %v", err)
+			}
 			return nil, err
 		}
 	}

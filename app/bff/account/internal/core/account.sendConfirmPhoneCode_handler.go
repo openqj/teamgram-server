@@ -48,7 +48,10 @@ func (c *AccountCore) AccountSendConfirmPhoneCode(in *mtproto.TLAccountSendConfi
 	if err != nil {
 		return nil, err
 	}
-	if user == nil || strings.TrimSpace(user.GetUser().GetPhone()) == "" {
+	if user == nil || user.GetUser() == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
+	if strings.TrimSpace(user.GetUser().GetPhone()) == "" {
 		return nil, mtproto.ErrPhoneNumberInvalid
 	}
 	phoneNumber := strings.TrimSpace(user.GetUser().GetPhone())

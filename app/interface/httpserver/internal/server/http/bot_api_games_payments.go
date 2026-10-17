@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/botapi"
@@ -132,17 +133,25 @@ func botAPIInvoiceMedia(request *botAPIRequest) (*mtproto.InputMedia, error) {
 	if request == nil {
 		return nil, errors.New("invoice request is invalid")
 	}
-	title := strings.TrimSpace(request.string("title"))
-	description := strings.TrimSpace(request.string("description"))
-	payload := request.string("payload")
+	title := request.text("title")
+	description := request.text("description")
+	payload := request.text("payload")
 	currency := strings.ToUpper(strings.TrimSpace(request.string("currency")))
 	provider := strings.TrimSpace(request.string("provider_token"))
-	if title == "" || description == "" || payload == "" || len(payload) > 4096 || len(currency) != 3 ||
+	validCurrency := len(currency) == 3
+	for _, r := range currency {
+		if r < 'A' || r > 'Z' {
+			validCurrency = false
+		}
+	}
+	if utf8.RuneCountInString(title) < 1 || utf8.RuneCountInString(title) > 32 ||
+		utf8.RuneCountInString(description) < 1 || utf8.RuneCountInString(description) > 255 ||
+		payload == "" || len([]byte(payload)) > 128 || !validCurrency ||
 		(currency == "XTR" && provider != "") || (currency != "XTR" && provider == "") {
 		return nil, errors.New("invoice fields are invalid")
 	}
 	subscriptionPeriod, subscriptionErr := request.int("subscription_period")
-	hasSubscriptionPeriod := len(request.raw("subscription_period")) > 0
+	hasSubscriptionPeriod := request.has("subscription_period") && strings.TrimSpace(string(request.raw("subscription_period"))) != "null"
 	if subscriptionErr != nil || (hasSubscriptionPeriod && subscriptionPeriod <= 0) {
 		return nil, errors.New("subscription_period is invalid")
 	}
@@ -152,7 +161,7 @@ func botAPIInvoiceMedia(request *botAPIRequest) (*mtproto.InputMedia, error) {
 		}
 	}
 	var prices []botapi.LabeledPrice
-	if err := request.json("prices", &prices); err != nil || len(prices) == 0 {
+	if err := request.json("prices", &prices); err != nil || len(prices) == 0 || (currency == "XTR" && len(prices) != 1) {
 		return nil, errors.New("prices is invalid")
 	}
 	mtPrices := make([]*mtproto.LabeledPrice, 0, len(prices))
@@ -174,8 +183,12 @@ func botAPIInvoiceMedia(request *botAPIRequest) (*mtproto.InputMedia, error) {
 		}
 	}
 	maxTipAmount, err := request.int64("max_tip_amount")
-	if err != nil || (len(request.raw("max_tip_amount")) > 0 && maxTipAmount <= 0) {
+	hasMaxTipAmount := request.has("max_tip_amount") && strings.TrimSpace(string(request.raw("max_tip_amount"))) != "null"
+	if err != nil || (hasMaxTipAmount && maxTipAmount <= 0) {
 		return nil, errors.New("max_tip_amount is invalid")
+	}
+	if currency == "XTR" && (hasMaxTipAmount || len(suggestedTips) > 0) {
+		return nil, errors.New("tips are not supported for Telegram Stars invoices")
 	}
 	if len(suggestedTips) > 0 {
 		if maxTipAmount <= 0 {
@@ -227,11 +240,11 @@ func botAPIInvoiceMedia(request *botAPIRequest) (*mtproto.InputMedia, error) {
 		invoice.TermsUrl = wrapperspb.String(termsURL)
 	}
 	media := &mtproto.InputMedia{
-		Title:           title,
-		Description:     description,
-		Invoice:         invoice,
-		Payload_BYTES:   []byte(payload),
-		ProviderData:    mtproto.MakeTLDataJSON(&mtproto.DataJSON{Data: providerData}).To_DataJSON(),
+		Title:         title,
+		Description:   description,
+		Invoice:       invoice,
+		Payload_BYTES: []byte(payload),
+		ProviderData:  mtproto.MakeTLDataJSON(&mtproto.DataJSON{Data: providerData}).To_DataJSON(),
 	}
 	if provider != "" {
 		// Layer 229 uses the optional provider flag. Telegram Stars invoices

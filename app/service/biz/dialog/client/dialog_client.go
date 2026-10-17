@@ -64,6 +64,11 @@ type DialogClient interface {
 	DialogToggleDialogFilterTags(ctx context.Context, in *dialog.TLDialogToggleDialogFilterTags) (*mtproto.Bool, error)
 	DialogGetDialogFilterTags(ctx context.Context, in *dialog.TLDialogGetDialogFilterTags) (*mtproto.Bool, error)
 	DialogSetChatWallpaper(ctx context.Context, in *dialog.TLDialogSetChatWallpaper) (*mtproto.Bool, error)
+	DialogGetRecommendedDialogs(ctx context.Context, in *dialog.TLDialogGetRecommendedDialogs) (*dialog.RecommendedDialogs, error)
+	DialogRefreshRecommendations(ctx context.Context, in *dialog.TLDialogRefreshRecommendations) (*mtproto.Bool, error)
+	DialogReportRecommendationFeedback(ctx context.Context, in *dialog.TLDialogReportRecommendationFeedback) (*mtproto.Bool, error)
+	DialogAddPromotedDialog(ctx context.Context, in *dialog.TLDialogAddPromotedDialog) (*mtproto.Bool, error)
+	DialogRemovePromotedDialog(ctx context.Context, in *dialog.TLDialogRemovePromotedDialog) (*mtproto.Bool, error)
 }
 
 type defaultDialogClient struct {
@@ -524,4 +529,59 @@ func (m *defaultDialogClient) DialogSetChatWallpaper(ctx context.Context, in *di
 	}
 	client := dialog.NewRPCDialogClient(m.cli.Conn())
 	return client.DialogSetChatWallpaper(ctx, in)
+}
+
+// DialogGetRecommendedDialogs
+// dialog.getRecommendedDialogs user_id:long offset:int limit:int = RecommendedDialogs;
+func (m *defaultDialogClient) DialogGetRecommendedDialogs(ctx context.Context, in *dialog.TLDialogGetRecommendedDialogs) (*dialog.RecommendedDialogs, error) {
+	md := metadata.RpcMetadataFromIncoming(ctx)
+	if md != nil {
+		ctx, _ = metadata.RpcMetadataToOutgoing(ctx, md)
+	}
+	client := dialog.NewRPCDialogClient(m.cli.Conn())
+	return client.DialogGetRecommendedDialogs(ctx, in)
+}
+
+// DialogRefreshRecommendations
+// dialog.refreshRecommendations user_id:long = Bool;
+func (m *defaultDialogClient) DialogRefreshRecommendations(ctx context.Context, in *dialog.TLDialogRefreshRecommendations) (*mtproto.Bool, error) {
+	md := metadata.RpcMetadataFromIncoming(ctx)
+	if md != nil {
+		ctx, _ = metadata.RpcMetadataToOutgoing(ctx, md)
+	}
+	client := dialog.NewRPCDialogClient(m.cli.Conn())
+	return client.DialogRefreshRecommendations(ctx, in)
+}
+
+// DialogReportRecommendationFeedback
+// dialog.reportRecommendationFeedback user_id:long peer_type:int peer_id:long feedback_type:int = Bool;
+func (m *defaultDialogClient) DialogReportRecommendationFeedback(ctx context.Context, in *dialog.TLDialogReportRecommendationFeedback) (*mtproto.Bool, error) {
+	md := metadata.RpcMetadataFromIncoming(ctx)
+	if md != nil {
+		ctx, _ = metadata.RpcMetadataToOutgoing(ctx, md)
+	}
+	client := dialog.NewRPCDialogClient(m.cli.Conn())
+	return client.DialogReportRecommendationFeedback(ctx, in)
+}
+
+// DialogAddPromotedDialog
+// dialog.addPromotedDialog peer_type:int peer_id:long priority:int expires_at:long target_user_ids:Vector<long> = Bool;
+func (m *defaultDialogClient) DialogAddPromotedDialog(ctx context.Context, in *dialog.TLDialogAddPromotedDialog) (*mtproto.Bool, error) {
+	md := metadata.RpcMetadataFromIncoming(ctx)
+	if md != nil {
+		ctx, _ = metadata.RpcMetadataToOutgoing(ctx, md)
+	}
+	client := dialog.NewRPCDialogClient(m.cli.Conn())
+	return client.DialogAddPromotedDialog(ctx, in)
+}
+
+// DialogRemovePromotedDialog
+// dialog.removePromotedDialog peer_type:int peer_id:long target_user_ids:Vector<long> = Bool;
+func (m *defaultDialogClient) DialogRemovePromotedDialog(ctx context.Context, in *dialog.TLDialogRemovePromotedDialog) (*mtproto.Bool, error) {
+	md := metadata.RpcMetadataFromIncoming(ctx)
+	if md != nil {
+		ctx, _ = metadata.RpcMetadataToOutgoing(ctx, md)
+	}
+	client := dialog.NewRPCDialogClient(m.cli.Conn())
+	return client.DialogRemovePromotedDialog(ctx, in)
 }
