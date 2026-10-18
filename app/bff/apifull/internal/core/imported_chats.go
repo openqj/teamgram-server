@@ -295,7 +295,7 @@ func (c *ApiFullCore) MessagesUploadImportedMedia(in *mtproto.TLMessagesUploadIm
 		if uploadErr != nil {
 			return nil, uploadErr
 		}
-		if photo == nil || photo.GetId() == 0 {
+		if photo == nil || photo.GetId() <= 0 {
 			return nil, mtproto.ErrMediaInvalid
 		}
 		return mtproto.MakeTLMessageMediaPhoto(&mtproto.MessageMedia{
@@ -310,7 +310,7 @@ func (c *ApiFullCore) MessagesUploadImportedMedia(in *mtproto.TLMessagesUploadIm
 		if uploadErr != nil {
 			return nil, uploadErr
 		}
-		if document == nil || document.GetId() == 0 {
+		if document == nil || document.GetId() <= 0 {
 			return nil, mtproto.ErrMediaInvalid
 		}
 		return mtproto.MakeTLMessageMediaDocument(&mtproto.MessageMedia{

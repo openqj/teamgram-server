@@ -22,6 +22,9 @@ func replaceStickerInSet(ctx *svc.ServiceContext, r *http.Request, botID int64, 
 	if _, err := botAPIStickerOwner(request, botID); err != nil {
 		return nil, http.StatusBadRequest, 400, "Bad Request: user_id is invalid"
 	}
+	if _, err := botAPIInputStickerSet(request.string("name")); err != nil {
+		return nil, http.StatusBadRequest, 400, "Bad Request: name is invalid"
+	}
 	oldSticker, err := botAPIInputDocument(request.string("old_sticker"))
 	if err != nil {
 		return nil, http.StatusBadRequest, 400, "Bad Request: old_sticker is invalid"

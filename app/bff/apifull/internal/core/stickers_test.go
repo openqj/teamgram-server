@@ -151,3 +151,22 @@ func TestMessagesGetStickerSetSupportsBuiltinShortNames(t *testing.T) {
 		})
 	}
 }
+
+func TestMessagesGetStickerSetSupportsBuiltinIDs(t *testing.T) {
+	c := &ApiFullCore{MD: &metadata.RpcMetadata{UserId: 229906}}
+	for _, tc := range []struct {
+		name string
+		id   int64
+	}{
+		{name: "FestiveFontEmoji", id: builtinFestiveFontEmojiSetID},
+		{name: "RestrictedEmoji", id: builtinRestrictedEmojiSetID},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			input := mtproto.MakeTLInputStickerSetID(&mtproto.InputStickerSet{Id: tc.id}).To_InputStickerSet()
+			got, err := c.MessagesGetStickerSet(&mtproto.TLMessagesGetStickerSet{Stickerset: input})
+			if err != nil || got == nil || got.GetSet() == nil || got.GetSet().GetId() != tc.id || got.GetSet().GetShortName() != tc.name {
+				t.Fatalf("get builtin ID set=%v err=%v", got, err)
+			}
+		})
+	}
+}

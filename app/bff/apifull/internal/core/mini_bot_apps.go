@@ -31,6 +31,7 @@ import (
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/domain"
 	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/persist"
+	syncpb "github.com/teamgram/teamgram-server/app/messenger/sync/sync"
 	userpb "github.com/teamgram/teamgram-server/app/service/biz/user/user"
 	"google.golang.org/protobuf/types/known/wrapperspb"
 )
@@ -533,8 +534,11 @@ func (c *ApiFullCore) MessagesRequestWebView(in *mtproto.TLMessagesRequestWebVie
 	if err != nil {
 		return nil, err
 	}
-	if in == nil || in.GetUrl() == nil {
+	if in == nil || in.GetUrl() == nil || in.GetPeer() == nil {
 		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if err := c.validateMiniAppPeer(uid, in.GetPeer()); err != nil {
+		return nil, err
 	}
 	if !persist.PostgresEnabled() {
 		return nil, mtproto.ErrMethodNotImpl
@@ -614,7 +618,8 @@ func (c *ApiFullCore) MessagesSendWebViewResultMessage(in *mtproto.TLMessagesSen
 }
 
 func (c *ApiFullCore) MessagesSendWebViewData(in *mtproto.TLMessagesSendWebViewData) (*mtproto.Updates, error) {
-	if _, err := c.requireUserId(); err != nil {
+	callerID, err := c.requireUserId()
+	if err != nil {
 		return nil, err
 	}
 	if in == nil || in.GetBot() == nil || in.GetRandomId() == 0 || in.GetButtonText() == "" || len(in.GetData()) > 4096 {
@@ -634,6 +639,9 @@ func (c *ApiFullCore) MessagesSendWebViewData(in *mtproto.TLMessagesSendWebViewD
 		if err := validateUpdatesResult(result); err != nil {
 			return nil, err
 		}
+		if err := c.pushWebViewDataUpdate(callerID, in.GetBot().GetUserId(), in.GetRandomId(), in.GetButtonText(), in.GetData()); err != nil {
+			return nil, err
+		}
 		return result, nil
 	}
 	if err := c.callBusinessProvider("messages.sendWebViewData", map[string]any{
@@ -644,7 +652,52 @@ func (c *ApiFullCore) MessagesSendWebViewData(in *mtproto.TLMessagesSendWebViewD
 	if err := validateUpdatesResult(result); err != nil {
 		return nil, err
 	}
+	if err := c.pushWebViewDataUpdate(callerID, in.GetBot().GetUserId(), in.GetRandomId(), in.GetButtonText(), in.GetData()); err != nil {
+		return nil, err
+	}
 	return result, nil
+}
+
+// pushWebViewDataUpdate delivers the Bot API-shaped service message to the
+// bot's durable update queue after the external provider accepted the data.
+func (c *ApiFullCore) pushWebViewDataUpdate(callerID, botID, randomID int64, buttonText, data string) error {
+	d := c.apifullDao()
+	if d == nil || d.SyncClient == nil {
+		// Provider contract tests intentionally omit the sync client. Production
+		// APIFull always wires it through the service constructor.
+		return nil
+	}
+	if d.UserClient == nil {
+		return mtproto.ErrMethodNotImpl
+	}
+	profile, err := d.UserGetImmutableUser(c.requestContext(), &userpb.TLUserGetImmutableUser{Id: callerID})
+	if err != nil {
+		return err
+	}
+	if profile == nil || profile.GetUser() == nil || profile.Deleted() {
+		return mtproto.ErrUserIdInvalid
+	}
+	messageID, err := newInlineQueryID()
+	if err != nil {
+		return mtproto.ErrInternalServerError
+	}
+	messageID = messageID & 0x7fffffff
+	if messageID == 0 {
+		messageID = 1
+	}
+	message := mtproto.MakeTLMessage(&mtproto.Message{
+		Id:     int32(messageID),
+		PeerId: mtproto.MakePeerUser(callerID),
+		FromId: mtproto.MakePeerUser(callerID),
+		Date:   int32(time.Now().Unix()),
+		Action: mtproto.MakeMessageActionWebViewDataSentMe(buttonText, data),
+	}).To_Message()
+	update := mtproto.MakeTLUpdateNewMessage(&mtproto.Update{Message_MESSAGE: message}).To_Update()
+	_, err = d.SyncClient.SyncPushBotUpdates(c.requestContext(), &syncpb.TLSyncPushBotUpdates{
+		UserId:  botID,
+		Updates: mtproto.MakeUpdatesByUpdatesUsers([]*mtproto.User{profile.ToUser(botID)}, update),
+	})
+	return err
 }
 
 func (c *ApiFullCore) MessagesGetBotApp(in *mtproto.TLMessagesGetBotApp) (*mtproto.Messages_BotApp, error) {

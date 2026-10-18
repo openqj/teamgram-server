@@ -46,6 +46,16 @@ func TestMiniAppRequestWebView(t *testing.T) {
 	if got, err := c.MessagesRequestWebView(&mtproto.TLMessagesRequestWebView{}); got != nil || !errors.Is(err, mtproto.ErrInputRequestInvalid) {
 		t.Fatalf("request webview: got=%v err=%v, want INPUT_REQUEST_INVALID", got, err)
 	}
+	if got, err := c.MessagesRequestWebView(&mtproto.TLMessagesRequestWebView{
+		Bot: mtproto.MakeTLInputUserSelf(nil).To_InputUser(), Url: wrapperspb.String("https://bot.example.test/app"),
+	}); got != nil || !errors.Is(err, mtproto.ErrInputRequestInvalid) {
+		t.Fatalf("request webview without peer: got=%v err=%v, want INPUT_REQUEST_INVALID", got, err)
+	}
+	if got, err := c.MessagesRequestMainWebView(&mtproto.TLMessagesRequestMainWebView{
+		Bot: mtproto.MakeTLInputUserSelf(nil).To_InputUser(),
+	}); got != nil || !errors.Is(err, mtproto.ErrInputRequestInvalid) {
+		t.Fatalf("request main webview without peer: got=%v err=%v, want INPUT_REQUEST_INVALID", got, err)
+	}
 	if got, err := c.MessagesGetBotApp(&mtproto.TLMessagesGetBotApp{}); got != nil || !errors.Is(err, mtproto.ErrInputRequestInvalid) {
 		t.Fatalf("get bot app: got=%v err=%v, want INPUT_REQUEST_INVALID", got, err)
 	}

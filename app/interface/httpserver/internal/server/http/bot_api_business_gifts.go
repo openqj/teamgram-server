@@ -107,9 +107,6 @@ func getUserGifts(ctx *svc.ServiceContext, r *http.Request, botID int64, request
 	if err != nil || userID <= 0 {
 		return nil, http.StatusBadRequest, 400, "Bad Request: user_id is invalid"
 	}
-	if userID != botID {
-		return nil, http.StatusNotImplemented, 501, "Not Implemented: user gifts are currently limited to the bot owner"
-	}
 	input, err := botAPISavedGiftRequest(request)
 	if err != nil {
 		if errors.Is(err, errBotAPIGiftFilterUnsupported) {
@@ -117,15 +114,25 @@ func getUserGifts(ctx *svc.ServiceContext, r *http.Request, botID int64, request
 		}
 		return nil, http.StatusBadRequest, 400, "Bad Request: " + err.Error()
 	}
-	input.Peer = mtproto.MakeTLInputPeerSelf(nil).To_InputPeer()
-	result, err := ctx.GiftsClient.PaymentsGetSavedStarGifts(botRPCContext(requestContext(r), botID), input)
+	if input.GetExcludeUnsaved() || input.GetExcludeSaved() {
+		return nil, http.StatusNotImplemented, 501, "Not Implemented: exclude_unsaved and exclude_saved are not supported by the Layer 229 user gift adapter"
+	}
+	inputUser, err := botAPIProfilePhotoInputUser(ctx, requestContext(r), botID, userID)
+	if err != nil {
+		return nil, http.StatusBadRequest, 400, rpcDescription(err)
+	}
+	result, err := ctx.GiftsClient.PaymentsGetUserStarGifts(botRPCContext(requestContext(r), botID), &mtproto.TLPaymentsGetUserStarGifts{
+		UserId: inputUser,
+		Offset: input.GetOffset(),
+		Limit:  input.GetLimit(),
+	})
 	if err != nil {
 		return nil, http.StatusBadRequest, 400, rpcDescription(err)
 	}
 	if result == nil {
 		return nil, http.StatusInternalServerError, 500, "Internal Server Error: gifts were not returned"
 	}
-	return botapi.OwnedGiftsFromSavedStarGifts(result), http.StatusOK, 0, ""
+	return botapi.OwnedGiftsFromUserStarGifts(result), http.StatusOK, 0, ""
 }
 
 func getChatGifts(ctx *svc.ServiceContext, r *http.Request, botID int64, request *botAPIRequest) (any, int, int, string) {

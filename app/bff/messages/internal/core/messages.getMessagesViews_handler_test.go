@@ -360,3 +360,23 @@ func TestMessagesGetMessagesViewsRejectsEmptyIDs(t *testing.T) {
 		t.Fatalf("MessagesGetMessagesViews(empty IDs) = (%+v, %v), want (nil, INPUT_REQUEST_INVALID)", got, err)
 	}
 }
+
+func TestMessagesGetMessagesViewsRejectsNilCoreAndInvalidPeer(t *testing.T) {
+	var nilCore *MessagesCore
+	request := &mtproto.TLMessagesGetMessagesViews{
+		Peer: mtproto.MakeTLInputPeerSelf(nil).To_InputPeer(),
+		Id:   []int32{1},
+	}
+	if got, err := nilCore.MessagesGetMessagesViews(request); got != nil || err != mtproto.ErrAuthKeyUnregistered {
+		t.Fatalf("nil core = (%v, %v), want AUTH_KEY_UNREGISTERED", got, err)
+	}
+
+	core := newMessagesViewsTestCore(nil, nil, nil)
+	got, err := core.MessagesGetMessagesViews(&mtproto.TLMessagesGetMessagesViews{
+		Peer: mtproto.MakeTLInputPeerEmpty(nil).To_InputPeer(),
+		Id:   []int32{1},
+	})
+	if got != nil || err != mtproto.ErrPeerIdInvalid {
+		t.Fatalf("empty peer = (%v, %v), want PEER_ID_INVALID", got, err)
+	}
+}

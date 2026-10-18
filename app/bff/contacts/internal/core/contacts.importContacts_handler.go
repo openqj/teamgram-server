@@ -289,7 +289,7 @@ func stableImportedContacts(in []*mtproto.InputContact, r *userpb.UserImportedCo
 // ContactsImportContacts
 // contacts.importContacts#2c800be5 contacts:Vector<InputContact> = contacts.ImportedContacts;
 func (c *ContactsCore) ContactsImportContacts(in *mtproto.TLContactsImportContacts) (*mtproto.Contacts_ImportedContacts, error) {
-	if c.MD == nil || c.MD.UserId == 0 {
+	if c == nil || c.MD == nil || c.MD.UserId <= 0 {
 		return nil, mtproto.ErrAuthKeyUnregistered
 	}
 	contacts, err := normalizeImportContacts(in)
@@ -308,6 +308,9 @@ func (c *ContactsCore) ContactsImportContacts(in *mtproto.TLContactsImportContac
 			RetryContacts:  []int64{},
 			Users:          []*mtproto.User{},
 		}).To_Contacts_ImportedContacts(), nil
+	}
+	if persist.Default == nil {
+		return nil, mtproto.ErrInternalServerError
 	}
 
 	imported, err := c.svcCtx.Dao.UserClient.UserImportContacts(c.ctx, &userpb.TLUserImportContacts{

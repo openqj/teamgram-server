@@ -54,7 +54,7 @@ func verifySponsoredProviderSignature(key, signature string, body []byte) bool {
 	return hmac.Equal(provided, h.Sum(nil))
 }
 
-func secureSponsoredProviderURL(parsed *url.URL) bool {
+func secureSponsoredProviderURL(parsed *url.URL, allowInsecureHTTP bool) bool {
 	if parsed == nil {
 		return false
 	}
@@ -63,6 +63,9 @@ func secureSponsoredProviderURL(parsed *url.URL) bool {
 	}
 	if !strings.EqualFold(parsed.Scheme, "http") {
 		return false
+	}
+	if allowInsecureHTTP {
+		return true
 	}
 	host := strings.TrimSuffix(strings.ToLower(parsed.Hostname()), ".")
 	if host == "localhost" {
@@ -87,7 +90,7 @@ func (c *SponsoredMessagesCore) callSponsoredProvider(operation string, payload 
 		return mtproto.ErrMethodNotImpl
 	}
 	parsed, err := url.Parse(endpoint)
-	if err != nil || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || !secureSponsoredProviderURL(parsed) {
+	if err != nil || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || !secureSponsoredProviderURL(parsed, c.svcCtx.Config.AllowInsecureProviderHTTP) {
 		return mtproto.ErrInternalServerError
 	}
 	if c.svcCtx.Config.SponsoredProviderTimeoutSeconds < 0 || c.svcCtx.Config.SponsoredProviderTimeoutSeconds > 300 {

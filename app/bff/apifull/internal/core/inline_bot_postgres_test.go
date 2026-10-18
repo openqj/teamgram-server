@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"testing"
 
@@ -11,6 +12,8 @@ import (
 	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/persist"
 	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/svc"
 	msgpb "github.com/teamgram/teamgram-server/app/messenger/msg/msg/msg"
+	sync_client "github.com/teamgram/teamgram-server/app/messenger/sync/client"
+	messagepb "github.com/teamgram/teamgram-server/app/service/biz/message/message"
 	user_client "github.com/teamgram/teamgram-server/app/service/biz/user/client"
 	userpb "github.com/teamgram/teamgram-server/app/service/biz/user/user"
 )
@@ -78,6 +81,70 @@ func TestInlineBotResultsPostgresRoundTrip(t *testing.T) {
 	if err != nil || sent == nil || sender.request == nil || len(sender.request.GetMessage()) != 1 || sender.request.GetMessage()[0].GetMessage().GetMessage() != "inline text" {
 		t.Fatalf("send inline result = (%#v, %v), request=%#v", sent, err, sender.request)
 	}
+}
+
+func TestSetBotCallbackAnswerUsesCallerScopedControlPlaneBeforeNativePath(t *testing.T) {
+	dsn := os.Getenv("APIFULL_POSTGRES_DSN")
+	if dsn == "" {
+		t.Skip("APIFULL_POSTGRES_DSN is not configured")
+	}
+	previous := persist.Default
+	if err := persist.OpenPostgresReadOnly(dsn); err != nil {
+		t.Skipf("PostgreSQL control-plane schema unavailable: %v", err)
+	}
+	db, err := persist.OpenPostgresDB(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const userID int64 = 992005
+	const queryID int64 = 880004
+	const operation = "messages.setBotCallbackAnswer"
+	scopeKey := businessControlQueryKey(queryID)
+	t.Cleanup(func() {
+		_, _ = db.Exec(`DELETE FROM apifull_business_control_plane WHERE operation=$1 AND scope_key=$2 AND caller_user_id=$3`, operation, scopeKey, userID)
+		_ = db.Close()
+		_ = persist.ClosePostgres()
+		persist.Default = previous
+	})
+	if _, err = db.Exec(`DELETE FROM apifull_business_control_plane WHERE operation=$1 AND scope_key=$2 AND caller_user_id=$3`, operation, scopeKey, userID); err != nil {
+		t.Fatal(err)
+	}
+	result, err := json.Marshal(map[string]any{"value": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = persist.PutBusinessControlRecord(persist.BusinessControlRecord{
+		Operation: operation, ScopeKey: scopeKey, CallerUserID: userID, Result: result,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	userClient := &inlineBotUserClient{users: map[int64]*mtproto.ImmutableUser{
+		userID: inlineBotProfile(userID, 992006, true),
+	}}
+	core := &ApiFullCore{
+		ctx: context.Background(),
+		svcCtx: &svc.ServiceContext{Dao: &apifullDao.Dao{
+			UserClient:        userClient,
+			PollMessageReader: &callbackAnswerPollReader{},
+			SyncClient:        &callbackAnswerSyncClient{},
+		}},
+		MD: &metadata.RpcMetadata{UserId: userID},
+	}
+	got, err := core.MessagesSetBotCallbackAnswer(&mtproto.TLMessagesSetBotCallbackAnswer{QueryId: queryID})
+	if err != nil || got != mtproto.BoolTrue {
+		t.Fatalf("callback answer = (%v, %v), want true from caller-scoped fixture", got, err)
+	}
+}
+
+type callbackAnswerPollReader struct{}
+
+func (*callbackAnswerPollReader) MessageGetUserMessage(context.Context, *messagepb.TLMessageGetUserMessage) (*mtproto.MessageBox, error) {
+	panic("native callback path should not be reached when a control-plane result is published")
+}
+
+type callbackAnswerSyncClient struct {
+	sync_client.SyncClient
 }
 
 type inlineBotSender struct {

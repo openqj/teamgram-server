@@ -93,7 +93,7 @@ func haversineMeters(lat1, lon1, lat2, lon2 float64) int32 {
 // ContactsGetLocated
 // contacts.getLocated#d348bc44 flags:# background:flags.1?true geo_point:InputGeoPoint self_expires:flags.0?int = Updates;
 func (c *ContactsCore) ContactsGetLocated(in *mtproto.TLContactsGetLocated) (*mtproto.Updates, error) {
-	if c == nil || c.MD == nil || c.MD.UserId == 0 {
+	if c == nil || c.MD == nil || c.MD.UserId <= 0 {
 		return nil, mtproto.ErrAuthKeyUnregistered
 	}
 	if in == nil {

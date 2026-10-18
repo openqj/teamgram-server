@@ -18,7 +18,12 @@
 
 package core
 
-import "github.com/teamgram/proto/mtproto"
+import (
+	"errors"
+
+	"github.com/teamgram/proto/mtproto"
+	"github.com/teamgram/teamgram-server/app/bff/messages/internal/dao"
+)
 
 // MessagesReceivedMessages
 // messages.receivedMessages#5a954c0 max_id:int = Vector<ReceivedNotifyMessage>;
@@ -32,8 +37,30 @@ func (c *MessagesCore) MessagesReceivedMessages(in *mtproto.TLMessagesReceivedMe
 	if in.GetMaxId() < 0 {
 		return nil, mtproto.ErrMessageIdInvalid
 	}
-	// A cursor-only acknowledgement cannot cancel PUSH delivery or produce the
-	// canonical ReceivedNotifyMessage rows required by Layer 229. Keep this
-	// method fail-closed until one provider owns both operations atomically.
-	return nil, mtproto.ErrMethodNotImpl
+	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.ReceivedMessages == nil {
+		return nil, mtproto.ErrMethodNotImpl
+	}
+	provider, ok := c.svcCtx.Dao.ReceivedMessages.(dao.ReceivedMessagesProvider)
+	if !ok {
+		// A monotonic cursor is not enough to acknowledge a PUSH notification.
+		return nil, mtproto.ErrMethodNotImpl
+	}
+	rows, err := provider.Acknowledge(c.ctx, c.MD.UserId, in.GetMaxId())
+	if err != nil {
+		if errors.Is(err, mtproto.ErrMessageIdInvalid) || errors.Is(err, mtproto.ErrAuthKeyUnregistered) {
+			return nil, err
+		}
+		return nil, mtproto.ErrInternalServerError
+	}
+	result := &mtproto.Vector_ReceivedNotifyMessage{Datas: make([]*mtproto.ReceivedNotifyMessage, 0, len(rows))}
+	for _, row := range rows {
+		if row.ID <= 0 {
+			return nil, mtproto.ErrInternalServerError
+		}
+		result.Datas = append(result.Datas, mtproto.MakeTLReceivedNotifyMessage(&mtproto.ReceivedNotifyMessage{
+			Id:    row.ID,
+			Flags: row.Flags,
+		}).To_ReceivedNotifyMessage())
+	}
+	return result, nil
 }

@@ -29,7 +29,7 @@ import (
 // MessagesGetMessagesViews
 // messages.getMessagesViews#5784d3e1 peer:InputPeer id:Vector<int> increment:Bool = messages.MessageViews;
 func (c *MessagesCore) MessagesGetMessagesViews(in *mtproto.TLMessagesGetMessagesViews) (*mtproto.Messages_MessageViews, error) {
-	if c.MD == nil || c.MD.UserId <= 0 {
+	if c == nil || c.MD == nil || c.MD.UserId <= 0 {
 		return nil, mtproto.ErrAuthKeyUnregistered
 	}
 	if in == nil || len(in.GetId()) == 0 {
@@ -46,6 +46,9 @@ func (c *MessagesCore) MessagesGetMessagesViews(in *mtproto.TLMessagesGetMessage
 
 	increment := mtproto.FromBool(in.GetIncrement())
 	peer := mtproto.FromInputPeer2(c.MD.UserId, in.GetPeer())
+	if peer == nil || peer.PeerId <= 0 {
+		return nil, mtproto.ErrPeerIdInvalid
+	}
 	var views []*mtproto.MessageViews
 	var err error
 

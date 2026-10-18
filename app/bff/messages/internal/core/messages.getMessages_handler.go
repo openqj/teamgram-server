@@ -50,30 +50,26 @@ func (c *MessagesCore) MessagesGetMessages(in *mtproto.TLMessagesGetMessages) (*
 	)
 
 	for _, id := range in.GetId_VECTORINPUTMESSAGE() {
-		if id == nil || id.GetId() <= 0 {
-			return nil, mtproto.ErrMessageIdInvalid
+		if id == nil {
+			return nil, mtproto.ErrInputConstructorInvalid
 		}
 		switch id.PredicateName {
-		case mtproto.Predicate_inputMessageID:
-			idList = append(idList, id.Id)
-		case mtproto.Predicate_inputMessageReplyTo:
-			idList = append(idList, id.Id)
+		case mtproto.Predicate_inputMessageID, mtproto.Predicate_inputMessageReplyTo:
+			if id.GetId() <= 0 {
+				return nil, mtproto.ErrMessageIdInvalid
+			}
+			idList = append(idList, id.GetId())
 		case mtproto.Predicate_inputMessagePinned:
-			err := mtproto.ErrInputConstructorInvalid
-			c.Logger.Errorf("messages.getMessages - error: %v", err)
-			return nil, err
+			// inputMessagePinned has no peer or message id. This BFF has no
+			// authoritative pinned-message resolver for the constructor.
+			return nil, mtproto.ErrInputConstructorInvalid
 		case mtproto.Predicate_inputMessageCallbackQuery:
-			if id.GetId() == 0 {
-				err := mtproto.ErrMessageIdInvalid
-				c.Logger.Errorf("messages.getMessages - error: %v", err)
-				return nil, err
+			if id.GetId() <= 0 {
+				return nil, mtproto.ErrMessageIdInvalid
 			}
 			idList = append(idList, id.GetId())
 		default:
-			// client not use: inputMessageReplyTo, inputMessagePinned
-			err := mtproto.ErrInputConstructorInvalid
-			c.Logger.Errorf("messages.getMessages - error: %v", err)
-			return nil, err
+			return nil, mtproto.ErrInputConstructorInvalid
 		}
 	}
 	if len(in.GetId_VECTORINT32()) > 0 {
@@ -96,6 +92,10 @@ func (c *MessagesCore) MessagesGetMessages(in *mtproto.TLMessagesGetMessages) (*
 		}
 	}
 
+	requestedIDs := make(map[int32]struct{}, len(idList))
+	for _, id := range idList {
+		requestedIDs[id] = struct{}{}
+	}
 	boxList, err := c.svcCtx.Dao.MessageClient.MessageGetUserMessageList(
 		c.ctx,
 		&message.TLMessageGetUserMessageList{
@@ -109,8 +109,21 @@ func (c *MessagesCore) MessagesGetMessages(in *mtproto.TLMessagesGetMessages) (*
 	if boxList == nil {
 		return nil, mtproto.ErrInternalServerError
 	}
+	seenBoxIDs := make(map[int32]struct{}, len(boxList.GetDatas()))
 	for _, box := range boxList.GetDatas() {
-		if box == nil || box.GetMessage() == nil {
+		if box == nil || box.GetMessage() == nil || box.GetMessageId() <= 0 || box.GetMessage().GetId() != box.GetMessageId() {
+			return nil, mtproto.ErrInternalServerError
+		}
+		if _, ok := requestedIDs[box.GetMessageId()]; !ok {
+			return nil, mtproto.ErrInternalServerError
+		}
+		if _, duplicate := seenBoxIDs[box.GetMessageId()]; duplicate {
+			return nil, mtproto.ErrInternalServerError
+		}
+		seenBoxIDs[box.GetMessageId()] = struct{}{}
+		switch box.GetPeerType() {
+		case mtproto.PEER_SELF, mtproto.PEER_USER, mtproto.PEER_CHAT, mtproto.PEER_CHANNEL:
+		default:
 			return nil, mtproto.ErrInternalServerError
 		}
 	}

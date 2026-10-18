@@ -49,13 +49,14 @@ func TestContactsGetTopPeersValidatesRequestBoundsBeforeRankingProvider(t *testi
 		"nil request":     nil,
 		"negative offset": {Offset: -1},
 		"negative limit":  {Limit: -1},
+		"limit too large": {Limit: 101},
 	} {
 		t.Run(name, func(t *testing.T) {
 			got, err := core.ContactsGetTopPeers(request)
 			wantErr := mtproto.ErrInputRequestInvalid
 			if name == "negative offset" {
 				wantErr = mtproto.ErrOffsetInvalid
-			} else if name == "negative limit" {
+			} else if name == "negative limit" || name == "limit too large" {
 				wantErr = mtproto.ErrLimitInvalid
 			}
 			if got != nil || !errors.Is(err, wantErr) {

@@ -20,6 +20,8 @@ services:
         condition: service_healthy
       code-provider-fixture:
         condition: service_healthy
+      sponsored-provider-fixture:
+        condition: service_healthy
       provider-fixtures-seed:
         condition: service_completed_successfully
     environment:
@@ -60,6 +62,10 @@ services:
       TEAMGRAM_CODE_SECRET: "${TEAMGRAM_CODE_PROVIDER_SECRET:?TEAMGRAM_CODE_PROVIDER_SECRET is required}"
       TEAMGRAM_CODE_CHALLENGE_SECRET: "${TEAMGRAM_CODE_CHALLENGE_SECRET:?TEAMGRAM_CODE_CHALLENGE_SECRET is required}"
       TEAMGRAM_CODE_PROVIDER_TIMEOUT_SECONDS: "${TEAMGRAM_CODE_PROVIDER_TIMEOUT_SECONDS:-5}"
+      TEAMGRAM_SPONSORED_PROVIDER_ENDPOINT: "${TEAMGRAM_SPONSORED_PROVIDER_ENDPOINT:-http://sponsored-provider-fixture:23195}"
+      TEAMGRAM_SPONSORED_PROVIDER_KEY: "${TEAMGRAM_SPONSORED_PROVIDER_KEY:-acceptance-sponsored-provider-key}"
+      TEAMGRAM_SPONSORED_PROVIDER_SIGNING_KEY: "${TEAMGRAM_SPONSORED_PROVIDER_SIGNING_KEY:-acceptance-sponsored-provider-signing-key-at-least-32-bytes}"
+      TEAMGRAM_SPONSORED_PROVIDER_TIMEOUT_SECONDS: "${TEAMGRAM_SPONSORED_PROVIDER_TIMEOUT_SECONDS:-5}"
 
   identity-provider-fixture:
     profiles: [provider-fixtures]
@@ -96,6 +102,27 @@ services:
     expose: ["23193"]
     healthcheck:
       test: ["CMD", "/code-provider", "--healthcheck"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
+    networks: [teamgram_net]
+
+  sponsored-provider-fixture:
+    profiles: [provider-fixtures]
+    build:
+      context: .
+      dockerfile: docker/production/sponsored-provider-fixture/Dockerfile
+    environment:
+      SPONSORED_PROVIDER_KEY: "${TEAMGRAM_SPONSORED_PROVIDER_KEY:-acceptance-sponsored-provider-key}"
+      SPONSORED_PROVIDER_SIGNING_KEY: "${TEAMGRAM_SPONSORED_PROVIDER_SIGNING_KEY:-acceptance-sponsored-provider-signing-key-at-least-32-bytes}"
+      SPONSORED_PROVIDER_PORT: "23195"
+      SPONSORED_PROVIDER_QUERY: "${SPONSORED_PROVIDER_QUERY:-fixture}"
+      SPONSORED_PROVIDER_PEER_USER_ID: "${SPONSORED_PROVIDER_PEER_USER_ID:-900000000001}"
+      SPONSORED_PROVIDER_TIMEOUT_SECONDS: "${TEAMGRAM_SPONSORED_PROVIDER_TIMEOUT_SECONDS:-5}"
+    expose: ["23195"]
+    healthcheck:
+      test: ["CMD", "/sponsored-provider", "--healthcheck"]
       interval: 5s
       timeout: 5s
       retries: 12
@@ -195,6 +222,11 @@ services:
       LIVE_RANDOM_ID: "${LIVE_RANDOM_ID:-}"
       LIVE_REQUEST_PAYLOAD: "${LIVE_REQUEST_PAYLOAD:-}"
       LIVE_UPDATES_JSON: "${LIVE_UPDATES_JSON:-}"
+      BUSINESS_CONNECTIONS_JSON: "${BUSINESS_CONNECTIONS_JSON:-}"
+      GIFT_OWNERSHIPS_JSON: "${GIFT_OWNERSHIPS_JSON:-}"
+      STARS_CREDITS_JSON: "${STARS_CREDITS_JSON:-}"
+      BUSINESS_BOT_OPERATIONS_JSON: "${BUSINESS_BOT_OPERATIONS_JSON:-}"
+      BUSINESS_PAYMENT_OPERATIONS_JSON: "${BUSINESS_PAYMENT_OPERATIONS_JSON:-}"
     volumes:
       - ./docker/production/seed-provider-fixtures.sh:/workspace/seed-provider-fixtures.sh:ro
     entrypoint: ["/bin/bash", "-euc"]

@@ -123,7 +123,8 @@ func TestMiniBotWebViewAndPermissionHandlersPostgres(t *testing.T) {
 	}
 	bot := miniBotInput(botID, accessHash)
 	result, err := c.MessagesRequestWebView(&mtproto.TLMessagesRequestWebView{
-		Bot: bot, Url: wrapperspb.String("https://bot.example.test/app"), Platform: "ios", Fullscreen: true,
+		Peer: mtproto.MakeTLInputPeerSelf(nil).To_InputPeer(),
+		Bot:  bot, Url: wrapperspb.String("https://bot.example.test/app"), Platform: "ios", Fullscreen: true,
 	})
 	if err != nil {
 		t.Fatalf("request webview: %v", err)
@@ -188,7 +189,9 @@ func TestMiniBotWebViewAndPermissionHandlersPostgres(t *testing.T) {
 		t.Fatalf("requested peer button = %#v", gotPeerButton)
 	}
 
-	mainResult, err := c.MessagesRequestMainWebView(&mtproto.TLMessagesRequestMainWebView{Bot: bot, Platform: "android"})
+	mainResult, err := c.MessagesRequestMainWebView(&mtproto.TLMessagesRequestMainWebView{
+		Peer: mtproto.MakeTLInputPeerSelf(nil).To_InputPeer(), Bot: bot, Platform: "android",
+	})
 	if err != nil {
 		t.Fatalf("request main webview: %v", err)
 	}

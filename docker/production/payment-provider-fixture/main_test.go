@@ -428,6 +428,111 @@ func TestFixtureExportInvoiceReturnsSignedHTTPSURL(t *testing.T) {
 	}
 }
 
+func TestFixtureStarGiftFormAndSettlementAreSignedAndIdempotent(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		product    string
+		targetID   int64
+		requestKey string
+	}{
+		{name: "upgrade", product: "star_gift_upgrade", requestKey: "gift:upgrade:request"},
+		{name: "transfer", product: "star_gift_transfer", targetID: 808, requestKey: "gift:transfer:request"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := testFixture()
+			invoice := map[string]any{
+				"predicate_name": "inputInvoiceStarGiftUpgrade",
+				"stargift":       map[string]any{"predicate_name": "inputSavedStarGiftSlug", "slug": "gift-77"},
+			}
+			fields := testFields(t, map[string]any{
+				"operation":           "get_gift_form",
+				"user_id":             int64(123),
+				"beneficiary_user_id": int64(456),
+				"required_product":    tc.product,
+				"gift_id":             int64(77),
+				"gift_slug":           "gift-77",
+				"target_id":           tc.targetID,
+				"stars":               int64(250),
+				"invoice":             invoice,
+			})
+			body, header, err := f.response(fields)
+			if err != nil {
+				t.Fatalf("gift form response: %v", err)
+			}
+			if header != "X-Teamgram-Payment-Signature" {
+				t.Fatalf("gift form signature header = %q", header)
+			}
+			assertFixtureSignature(t, f.key, body, f.sign(body))
+			var formResult struct {
+				Verified          bool                          `json:"verified"`
+				UserID            int64                         `json:"user_id"`
+				BeneficiaryUserID int64                         `json:"beneficiary_user_id"`
+				ProductType       string                        `json:"product_type"`
+				Stars             int64                         `json:"stars"`
+				Currency          string                        `json:"currency"`
+				Amount            int64                         `json:"amount"`
+				Form              *mtproto.Payments_PaymentForm `json:"form"`
+			}
+			if err = json.Unmarshal(body, &formResult); err != nil {
+				t.Fatalf("decode gift form response: %v", err)
+			}
+			if !formResult.Verified || formResult.UserID != 123 || formResult.BeneficiaryUserID != 456 || formResult.ProductType != tc.product || formResult.Stars != 250 || formResult.Currency != "XTR" || formResult.Amount != 250 || formResult.Form == nil || formResult.Form.GetPredicateName() != mtproto.Predicate_payments_paymentFormStars || formResult.Form.GetFormId() <= 0 || formResult.Form.GetInvoice() == nil || len(formResult.Form.GetInvoice().GetPrices()) != 1 || formResult.Form.GetInvoice().GetPrices()[0].GetAmount() != 250 {
+				t.Fatalf("gift form = %+v", formResult)
+			}
+			if err = formResult.Form.Encode(mtproto.NewEncodeBuf(4096), 229); err != nil {
+				t.Fatalf("gift form does not encode at Layer 229: %v", err)
+			}
+
+			settleFields := testFields(t, map[string]any{
+				"operation":           "settle_gift",
+				"user_id":             int64(123),
+				"beneficiary_user_id": int64(456),
+				"required_product":    tc.product,
+				"request_key":         tc.requestKey,
+				"fingerprint":         "gift-fingerprint",
+				"form_id":             formResult.Form.GetFormId(),
+				"gift_id":             int64(77),
+				"gift_slug":           "gift-77",
+				"target_id":           tc.targetID,
+				"stars":               int64(250),
+				"invoice":             invoice,
+			})
+			settled, settledHeader, err := f.response(settleFields)
+			if err != nil {
+				t.Fatalf("gift settlement: %v", err)
+			}
+			replay, replayHeader, err := f.response(settleFields)
+			if err != nil {
+				t.Fatalf("replayed gift settlement: %v", err)
+			}
+			if !bytes.Equal(settled, replay) || settledHeader != replayHeader {
+				t.Fatalf("gift settlement replay changed response or signature header")
+			}
+			assertFixtureSignature(t, f.key, settled, f.sign(settled))
+			var settlementResult struct {
+				Verified          bool            `json:"verified"`
+				UserID            int64           `json:"user_id"`
+				BeneficiaryUserID int64           `json:"beneficiary_user_id"`
+				RequestKey        string          `json:"request_key"`
+				Fingerprint       string          `json:"fingerprint"`
+				FormID            int64           `json:"form_id"`
+				ProductType       string          `json:"product_type"`
+				Stars             int64           `json:"stars"`
+				Currency          string          `json:"currency"`
+				Amount            int64           `json:"amount"`
+				TransactionID     string          `json:"transaction_id"`
+				Receipt           json.RawMessage `json:"receipt"`
+			}
+			if err = json.Unmarshal(settled, &settlementResult); err != nil {
+				t.Fatalf("decode gift settlement response: %v", err)
+			}
+			if !settlementResult.Verified || settlementResult.UserID != 123 || settlementResult.BeneficiaryUserID != 456 || settlementResult.RequestKey != tc.requestKey || settlementResult.Fingerprint != "gift-fingerprint" || settlementResult.FormID != formResult.Form.GetFormId() || settlementResult.ProductType != tc.product || settlementResult.Stars != 250 || settlementResult.Currency != "XTR" || settlementResult.Amount != 250 || settlementResult.TransactionID == "" || len(settlementResult.Receipt) == 0 || bytes.Equal(bytes.TrimSpace(settlementResult.Receipt), []byte("null")) {
+				t.Fatalf("gift settlement = %+v", settlementResult)
+			}
+		})
+	}
+}
+
 func TestFixtureBotInvoiceSettlementIsIdempotent(t *testing.T) {
 	f := testFixture()
 	fields := testFields(t, map[string]any{

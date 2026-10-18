@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/teamgram/proto/mtproto"
+	"github.com/teamgram/teamgram-server/app/bff/apifull/persist"
 	userclient "github.com/teamgram/teamgram-server/app/service/biz/user/client"
 	userpb "github.com/teamgram/teamgram-server/app/service/biz/user/user"
 	"google.golang.org/protobuf/types/known/wrapperspb"
@@ -114,5 +115,24 @@ func TestContactsDeleteByPhonesRejectsInvalidPhoneBeforeBackend(t *testing.T) {
 	}
 	if client.contactListCalls != 0 || len(client.importerRequests) != 0 || len(client.deleteRequests) != 0 || len(client.deleteImportRequests) != 0 {
 		t.Fatalf("invalid phone caused backend side effects: contacts=%d importer lookups=%d deletes=%d unregistered deletes=%d", client.contactListCalls, len(client.importerRequests), len(client.deleteRequests), len(client.deleteImportRequests))
+	}
+}
+
+func TestContactsDeleteByPhonesRejectsNilCoreAndMissingStore(t *testing.T) {
+	request := &mtproto.TLContactsDeleteByPhones{Phones: []string{"+12025550107"}}
+	var nilCore *ContactsCore
+	if got, err := nilCore.ContactsDeleteByPhones(request); got != nil || !errors.Is(err, mtproto.ErrAuthKeyUnregistered) {
+		t.Fatalf("nil core = (%v, %v), want AUTH_KEY_UNREGISTERED", got, err)
+	}
+
+	previous := persist.Default
+	persist.Default = nil
+	t.Cleanup(func() { persist.Default = previous })
+	client := &deleteByPhonesUserClientStub{}
+	if got, err := newImportContactsTestCore(82033, client).ContactsDeleteByPhones(request); got != nil || !errors.Is(err, mtproto.ErrInternalServerError) {
+		t.Fatalf("missing store = (%v, %v), want INTERNAL_SERVER_ERROR", got, err)
+	}
+	if client.contactListCalls != 0 || len(client.deleteRequests) != 0 || len(client.deleteImportRequests) != 0 {
+		t.Fatalf("missing store reached backend: contacts=%d deletes=%d imports=%d", client.contactListCalls, len(client.deleteRequests), len(client.deleteImportRequests))
 	}
 }

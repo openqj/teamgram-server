@@ -120,5 +120,9 @@ func openPostgres(dsn string) (*pgxpool.Pool, error) {
 		pool.Close()
 		return nil, fmt.Errorf("messages: required PostgreSQL schema is unavailable: %w", err)
 	}
+	if _, err = pool.Exec(ctx, `SELECT user_id, message_id, flags, created_at FROM bff_messages_received_notification LIMIT 0`); err != nil {
+		pool.Close()
+		return nil, fmt.Errorf("messages: received notification schema is unavailable: %w", err)
+	}
 	return pool, nil
 }

@@ -14,11 +14,15 @@ const dcPort = Number(process.env.TG_DC_PORT || '11443');
 const apiId = Number(process.env.TG_API_ID || '1');
 const apiHash = process.env.TG_API_HASH || '0123456789abcdef0123456789abcdef';
 const userId = Number(process.env.USER_ID);
-const stars = 101;
+// Purpose-based Layer 229 invoices omit store_product. Use a probe-unique
+// quote so an older active fixture offer cannot make catalog resolution
+// ambiguous for this run.
+const stars = 10000 + (Date.now() % 900000);
 const currency = 'USD';
-const amount = 199;
+const amount = stars * 2;
 const storeProduct = `probe-stars-${Date.now()}`;
 const startedAt = Math.floor(Date.now() / 1000);
+const keepRows = process.env.KEEP_ROWS === '1';
 
 const globalAny = globalThis as typeof globalThis & { self?: any; addEventListener?: () => void };
 globalAny.self ??= globalThis;
@@ -82,6 +86,7 @@ function seed(): void {
 }
 
 function cleanup(): void {
+  if (keepRows) return;
   const boundary = `to_timestamp(${startedAt})`;
   // Capture the exact request rows before deleting their dependent records.
   const rows = sql(`SELECT id, transaction_id FROM apifull_payment_request
@@ -145,6 +150,9 @@ async function run() {
     const settled = sql(`SELECT count(*) FROM apifull_payment_request
       WHERE user_id=${userId} AND state='settled' AND created_at >= ${startedAt}
         AND request_key LIKE ${quote(`stars:${userId}:%`)}`);
+    const chargeID = sql(`SELECT transaction_id FROM apifull_payment_request
+      WHERE user_id=${userId} AND state='settled' AND created_at >= ${startedAt}
+        AND request_key LIKE ${quote(`stars:${userId}:%`)} ORDER BY id DESC LIMIT 1`);
     const providerRows = sql(`SELECT count(*) FROM apifull_payment_provider_operation
       WHERE user_id=${userId} AND operation='settle_stars' AND created_at >= to_timestamp(${startedAt})`);
     const balance = Number(sql(`SELECT COALESCE(balance,0) FROM apifull_stars WHERE user_id=${userId}`) || '0');
@@ -161,6 +169,7 @@ async function run() {
       replayResult: typeName(replay),
       settledRequests: Number(settled),
       providerSettlements: Number(providerRows),
+      chargeID,
       balanceBefore: beforeBalance,
       balanceAfter: balance,
     }));
@@ -168,7 +177,7 @@ async function run() {
     client.destroy();
     cleanup();
     const afterBalance = Number(sql(`SELECT COALESCE(balance,0) FROM apifull_stars WHERE user_id=${userId}`) || '0');
-    if (afterBalance !== beforeBalance) {
+    if (!keepRows && afterBalance !== beforeBalance) {
       sql(`UPDATE apifull_stars SET balance=${beforeBalance} WHERE user_id=${userId}`);
     }
   }

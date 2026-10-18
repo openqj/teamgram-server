@@ -38,6 +38,11 @@ const (
 	volunteerSupportTopicBots     = "Learn more about bots"
 )
 
+const (
+	volunteerSupportStartNew = "/new"
+	volunteerSupportCancel   = "/cancel"
+)
+
 // HandleVolunteerSupportUpdates consumes messages addressed to the built-in
 // support peer and keeps the conversation state in PostgreSQL.
 func (c *SyncCore) HandleVolunteerSupportUpdates(in *sync.TLSyncPushUpdates) (*mtproto.Void, error) {
@@ -195,11 +200,17 @@ func volunteerSupportReplyMarkup(state string) *mtproto.ReplyMarkup {
 			volunteerSupportTopicChannels,
 			volunteerSupportTopicStickers,
 			volunteerSupportTopicBots,
+			volunteerSupportStartNew,
+			volunteerSupportCancel,
 		)
 	case volunteerSupportAwaitCategory:
-		return volunteerSupportKeyboard("Login", "Messages and chats", "Calls", "Payments", "Other")
+		return volunteerSupportKeyboard("Login", "Messages and chats", "Calls", "Payments", "Other", volunteerSupportStartNew, volunteerSupportCancel)
+	case volunteerSupportAwaitEnvironment:
+		return volunteerSupportKeyboard(volunteerSupportStartNew, volunteerSupportCancel)
+	case volunteerSupportSubmitted:
+		return volunteerSupportKeyboard(volunteerSupportStartNew, volunteerSupportCancel)
 	default:
-		return mtproto.MakeTLReplyKeyboardHide(&mtproto.ReplyMarkup{}).To_ReplyMarkup()
+		return volunteerSupportKeyboard(volunteerSupportStartNew, volunteerSupportCancel)
 	}
 }
 

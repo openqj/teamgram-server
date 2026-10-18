@@ -18,7 +18,34 @@ func TestReplyKeyboardWebAppConversion(t *testing.T) {
 		t.Fatalf("rows = %#v, want one button", rows)
 	}
 	button := rows[0].GetButtons()[0]
-	if button.GetPredicateName() != "keyboardButtonWebView" || button.GetUrl() != "https://example.test/app" {
-		t.Fatalf("button = %#v, want keyboardButtonWebView with Mini App URL", button)
+	if button.GetPredicateName() != "keyboardButtonSimpleWebView" || button.GetUrl() != "https://example.test/app" {
+		t.Fatalf("button = %#v, want keyboardButtonSimpleWebView with Mini App URL", button)
+	}
+}
+
+func TestReplyKeyboardConversionPreservesPlaceholderAndFlags(t *testing.T) {
+	markup := ReplyMarkupToMTProto(ReplyMarkupInput{
+		Keyboard:              [][]map[string]any{{{"text": "Keyboard ping"}}},
+		ResizeKeyboard:        true,
+		OneTimeKeyboard:       true,
+		Selective:             true,
+		IsPersistent:          true,
+		InputFieldPlaceholder: "Choose an action",
+	})
+	if markup == nil || markup.GetPredicateName() != "replyKeyboardMarkup" {
+		t.Fatalf("markup = %#v, want replyKeyboardMarkup", markup)
+	}
+	if got := markup.GetPlaceholder(); got == nil || got.GetValue() != "Choose an action" {
+		t.Fatalf("placeholder = %#v, want Choose an action", got)
+	}
+	if !markup.GetResize() || !markup.GetSingleUse() || !markup.GetSelective() || !markup.GetPersistent() {
+		t.Fatalf("keyboard flags = resize:%v single_use:%v selective:%v persistent:%v, want all true", markup.GetResize(), markup.GetSingleUse(), markup.GetSelective(), markup.GetPersistent())
+	}
+
+	withoutPlaceholder := ReplyMarkupToMTProto(ReplyMarkupInput{
+		Keyboard: [][]map[string]any{{{"text": "Keyboard ping"}}},
+	})
+	if withoutPlaceholder == nil || withoutPlaceholder.GetPlaceholder() != nil {
+		t.Fatalf("empty placeholder = %#v, want omitted", withoutPlaceholder.GetPlaceholder())
 	}
 }

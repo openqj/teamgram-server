@@ -118,6 +118,45 @@ func TestBusinessProviderDispatchesPaymentOperationsByFingerprint(t *testing.T) 
 	if !envelope.Verified || envelope.Operation != "payments.getStarGiftUpgradePreview" || len(envelope.Result) == 0 {
 		t.Fatalf("payment response = %+v", envelope)
 	}
+
+	transferPayload := json.RawMessage(`{"stargift":{"predicate_name":"inputSavedStarGiftChat","saved_id":77},"to_id":{"predicate_name":"inputPeerUser","user_id":8,"access_hash":8008}}`)
+	transferFingerprint := sha256.Sum256(transferPayload)
+	store.paymentOps["42:payments.transferStarGift:"+hex.EncodeToString(transferFingerprint[:])] = []byte(`{"predicate_name":"updates","updates":[],"users":[],"chats":[],"date":1760000000,"seq":0}`)
+	transferResponse := signedFixtureRequest(t, fixture, requestEnvelope{
+		RequestID: "transfer-request", Operation: "payments.transferStarGift", UserID: 42, Payload: transferPayload,
+	})
+	if transferResponse.Code != http.StatusOK {
+		t.Fatalf("transfer response status = %d, body=%s", transferResponse.Code, transferResponse.Body.String())
+	}
+	var transferEnvelope responseEnvelope
+	if err := json.Unmarshal(transferResponse.Body.Bytes(), &transferEnvelope); err != nil {
+		t.Fatal(err)
+	}
+	if !transferEnvelope.Verified || transferEnvelope.Operation != "payments.transferStarGift" || len(transferEnvelope.Result) == 0 {
+		t.Fatalf("transfer response = %+v", transferEnvelope)
+	}
+}
+
+func TestBusinessProviderWebViewDataEchoMode(t *testing.T) {
+	fixture := &server{key: []byte(businessFixtureTestKey), store: newMemoryStore(), maxAge: 5, webViewDataMode: "echo"}
+	response := signedFixtureRequest(t, fixture, requestEnvelope{
+		RequestID: "webview-data-request", Operation: "messages.sendWebViewData", UserID: 42,
+		Payload: json.RawMessage(`{"random_id":99,"button_text":"Open","data":"confirm"}`),
+	})
+	if response.Code != http.StatusOK {
+		t.Fatalf("echo response status = %d, body=%s", response.Code, response.Body.String())
+	}
+	var envelope responseEnvelope
+	if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if !envelope.Verified || string(envelope.Result) == "" {
+		t.Fatalf("echo response = %+v", envelope)
+	}
+	var result map[string]any
+	if err := json.Unmarshal(envelope.Result, &result); err != nil || result["predicate_name"] != "updates" {
+		t.Fatalf("echo result = %s, err=%v", envelope.Result, err)
+	}
 }
 
 func TestBusinessProviderRequiresBearerAuthorization(t *testing.T) {

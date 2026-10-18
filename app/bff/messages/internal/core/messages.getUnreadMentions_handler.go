@@ -31,7 +31,7 @@ var errChannelUnreadMentionsUnsupported = status.Error(mtproto.ErrBadRequest, "C
 // MessagesGetUnreadMentions
 // messages.getUnreadMentions#46578472 peer:InputPeer offset_id:int add_offset:int limit:int max_id:int min_id:int = messages.Messages;
 func (c *MessagesCore) MessagesGetUnreadMentions(in *mtproto.TLMessagesGetUnreadMentions) (*mtproto.Messages_Messages, error) {
-	if c.MD == nil || c.MD.UserId == 0 {
+	if c == nil || c.MD == nil || c.MD.UserId <= 0 {
 		return nil, mtproto.ErrAuthKeyUnregistered
 	}
 	if in == nil {
@@ -40,7 +40,6 @@ func (c *MessagesCore) MessagesGetUnreadMentions(in *mtproto.TLMessagesGetUnread
 	if in.GetPeer() == nil {
 		return nil, mtproto.ErrPeerIdInvalid
 	}
-
 	var (
 		err   error
 		peer  = mtproto.FromInputPeer2(c.MD.UserId, in.GetPeer())
@@ -72,6 +71,9 @@ func (c *MessagesCore) MessagesGetUnreadMentions(in *mtproto.TLMessagesGetUnread
 		return nil, errChannelUnreadMentionsUnsupported
 	default:
 		return nil, mtproto.ErrPeerIdInvalid
+	}
+	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.ChatClient == nil || c.svcCtx.Dao.ChatClient.Client() == nil || c.svcCtx.Dao.MessageClient == nil || c.svcCtx.Dao.UserClient == nil {
+		return nil, mtproto.ErrInternalServerError
 	}
 
 	chat, err := c.svcCtx.Dao.ChatClient.Client().ChatGetMutableChat(

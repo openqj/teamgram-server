@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"testing"
 	"time"
 
@@ -15,6 +16,7 @@ import (
 	"github.com/teamgram/proto/mtproto/rpc/metadata"
 	"github.com/teamgram/teamgram-server/app/bff/sponsoredmessages/internal/config"
 	"github.com/teamgram/teamgram-server/app/bff/sponsoredmessages/internal/svc"
+	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
 const sponsoredProviderTestKey = "sponsored-provider-test-signing-key-0123456789"
@@ -62,5 +64,38 @@ func TestMessagesGetSponsoredMessagesUsesVerifiedProvider(t *testing.T) {
 	}
 	if len(requestIDs) != 2 || requestIDs[0] == "" || requestIDs[0] != requestIDs[1] {
 		t.Fatalf("request IDs = %#v, want stable retry key", requestIDs)
+	}
+}
+
+func TestMessagesGetSponsoredMessagesRejectsMessageSelectorForInventory(t *testing.T) {
+	c := New(context.Background(), &svc.ServiceContext{})
+	c.MD = &metadata.RpcMetadata{UserId: time.Now().UnixNano()}
+	peer := mtproto.MakeTLInputPeerSelf(nil).To_InputPeer()
+	got, err := c.MessagesGetSponsoredMessages(&mtproto.TLMessagesGetSponsoredMessages{
+		Peer:  peer,
+		MsgId: wrapperspb.Int32(1),
+	})
+	if got != nil || err != mtproto.ErrMethodNotImpl {
+		t.Fatalf("MessagesGetSponsoredMessages() = (%v, %v), want nil and METHOD_NOT_IMPL", got, err)
+	}
+}
+
+func TestSecureSponsoredProviderURLRequiresFixtureOptInForHTTP(t *testing.T) {
+	fixtureURL, err := url.Parse("http://sponsored-provider-fixture:23195")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if secureSponsoredProviderURL(fixtureURL, false) {
+		t.Fatal("fixture hostname should not allow HTTP in production mode")
+	}
+	if !secureSponsoredProviderURL(fixtureURL, true) {
+		t.Fatal("fixture hostname should allow HTTP in provider-fixture mode")
+	}
+	loopbackURL, err := url.Parse("http://127.0.0.1:23195")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !secureSponsoredProviderURL(loopbackURL, false) {
+		t.Fatal("loopback HTTP should remain available for local tests")
 	}
 }

@@ -259,3 +259,14 @@ func TestContactsSearchFailsClosedForUnscopedChatSearchResults(t *testing.T) {
 		t.Fatalf("unsafe chat.search called %d times", chatClient.searchCalls)
 	}
 }
+
+func TestContactsSearchRejectsNegativeLimitBeforeBackend(t *testing.T) {
+	client := &contactsSearchUserClientStub{}
+	got, err := newContactsSearchTestCore(client, &contactsSearchChatClientStub{}, nil).ContactsSearch(&mtproto.TLContactsSearch{Q: "alice", Limit: -1})
+	if got != nil || !errors.Is(err, mtproto.ErrLimitInvalid) {
+		t.Fatalf("ContactsSearch() = (%v, %v), want LIMIT_INVALID", got, err)
+	}
+	if client.usernameRequest != nil || client.userSearchRequest != nil {
+		t.Fatalf("negative limit reached backend: username=%+v user=%+v", client.usernameRequest, client.userSearchRequest)
+	}
+}

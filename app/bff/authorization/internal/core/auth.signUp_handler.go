@@ -141,6 +141,27 @@ func (c *AuthorizationCore) AuthSignUp(in *mtproto.TLAuthSignUp) (*mtproto.Auth_
 	)
 
 	key := crypto.CreateAuthKey()
+	// Create the user before publishing the auth key. The user row keeps the
+	// key ID, but does not require the authsession row to exist yet. This order
+	// prevents a failed user insert from leaving an unowned auth key behind.
+	if user, err = c.svcCtx.UserClient.UserCreateNewUser(c.ctx, &userpb.TLUserCreateNewUser{
+		SecretKeyId: key.AuthKeyId(),
+		Phone:       phoneNumber,
+		CountryCode: reginCode,
+		FirstName:   firstName,
+		LastName:    lastName,
+	}); err != nil {
+		c.Logger.Errorf("createNewUser error: %v", err)
+		if user != nil && user.GetUser() != nil && user.GetUser().GetId() > 0 {
+			c.cleanupSignupUser(user.GetUser().GetId(), phoneNumber)
+		}
+		return nil, err
+	}
+	if user == nil || user.GetUser() == nil || user.Id() <= 0 {
+		c.Logger.Errorf("createNewUser returned an empty user")
+		return nil, mtproto.ErrInternalServerError
+	}
+
 	_, err = c.svcCtx.Dao.AuthsessionClient.AuthsessionSetAuthKey(c.ctx, &authsession.TLAuthsessionSetAuthKey{
 		AuthKey: &mtproto.AuthKeyInfo{
 			AuthKeyId:          key.AuthKeyId(),
@@ -152,26 +173,10 @@ func (c *AuthorizationCore) AuthSignUp(in *mtproto.TLAuthSignUp) (*mtproto.Auth_
 		},
 		FutureSalt: nil,
 	})
-
 	if err != nil {
-		c.Logger.Errorf("create user secret key error")
+		c.Logger.Errorf("create user secret key error: %v", err)
+		c.cleanupSignupUser(user.User.Id, phoneNumber, key.AuthKeyId())
 		return nil, err
-	}
-
-	// Create new user
-	if user, err = c.svcCtx.UserClient.UserCreateNewUser(c.ctx, &userpb.TLUserCreateNewUser{
-		SecretKeyId: key.AuthKeyId(),
-		Phone:       phoneNumber,
-		CountryCode: reginCode,
-		FirstName:   firstName,
-		LastName:    lastName,
-	}); err != nil {
-		c.Logger.Errorf("createNewUser error: %v", err)
-		return nil, err
-	}
-	if user == nil || user.GetUser() == nil || user.Id() <= 0 {
-		c.Logger.Errorf("createNewUser returned an empty user")
-		return nil, mtproto.ErrInternalServerError
 	}
 
 	// TODO(@benqi): remove to createNewUser
@@ -184,12 +189,12 @@ func (c *AuthorizationCore) AuthSignUp(in *mtproto.TLAuthSignUp) (*mtproto.Auth_
 	})
 	if bindErr != nil {
 		c.Logger.Errorf("bindAuthKeyUser error: %v", bindErr)
-		c.cleanupSignupUser(user.User.Id, phoneNumber)
+		c.cleanupSignupUser(user.User.Id, phoneNumber, key.AuthKeyId())
 		return nil, mtproto.ErrInternalServerError
 	}
 	if bindHash == nil || bindHash.GetV() == 0 {
 		c.Logger.Errorf("bindAuthKeyUser did not persist")
-		c.cleanupSignupUser(user.User.Id, phoneNumber)
+		c.cleanupSignupUser(user.User.Id, phoneNumber, key.AuthKeyId())
 		return nil, mtproto.ErrInternalServerError
 	}
 
@@ -214,16 +219,32 @@ func (c *AuthorizationCore) AuthSignUp(in *mtproto.TLAuthSignUp) (*mtproto.Auth_
 // cleanupSignupUser compensates the user-service mutation when the separate
 // authsession binding cannot be committed. Without this cleanup a retryable
 // RPC failure would leave an unreachable account occupying the phone number.
-func (c *AuthorizationCore) cleanupSignupUser(userID int64, phone string) {
+func (c *AuthorizationCore) cleanupSignupUser(userID int64, phone string, extraAuthKeyIDs ...int64) {
 	if c == nil || c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.UserClient == nil || userID <= 0 {
 		return
 	}
-	if c.svcCtx.Dao.AuthsessionClient != nil && c.MD != nil && c.MD.PermAuthKeyId != 0 {
-		if _, err := c.svcCtx.Dao.AuthsessionClient.AuthsessionUnbindAuthKeyUser(c.ctx, &authsession.TLAuthsessionUnbindAuthKeyUser{
-			AuthKeyId: c.MD.PermAuthKeyId,
-			UserId:    userID,
-		}); err != nil {
-			c.Logger.Errorf("cleanup signup auth key %d for user %d: %v", c.MD.PermAuthKeyId, userID, err)
+	if c.svcCtx.Dao.AuthsessionClient != nil {
+		// AuthKeyId=0 is an internal cleanup form that tombstones every
+		// active auth_users row for this user. Keep the known keys too: they
+		// preserve the normal key-specific path when the wildcard is not
+		// available in a compatible authsession implementation.
+		keyIDs := []int64{0}
+		if c.MD != nil && c.MD.PermAuthKeyId != 0 {
+			keyIDs = append(keyIDs, c.MD.PermAuthKeyId)
+		}
+		keyIDs = append(keyIDs, extraAuthKeyIDs...)
+		seen := make(map[int64]struct{}, len(keyIDs))
+		for _, authKeyID := range keyIDs {
+			if _, ok := seen[authKeyID]; ok {
+				continue
+			}
+			seen[authKeyID] = struct{}{}
+			if _, err := c.svcCtx.Dao.AuthsessionClient.AuthsessionUnbindAuthKeyUser(c.ctx, &authsession.TLAuthsessionUnbindAuthKeyUser{
+				AuthKeyId: authKeyID,
+				UserId:    userID,
+			}); err != nil {
+				c.Logger.Errorf("cleanup signup auth key %d for user %d: %v", authKeyID, userID, err)
+			}
 		}
 	}
 	if _, err := c.svcCtx.Dao.UserClient.UserDeleteUser(c.ctx, &userpb.TLUserDeleteUser{

@@ -249,3 +249,24 @@ func TestContactsImportContactsRejectsIncompleteBackendResponse(t *testing.T) {
 		t.Fatalf("incomplete backend response wrote saved contacts %q", store.data[savedContactsKey(userID)])
 	}
 }
+
+func TestContactsImportContactsRejectsNilCoreAndMissingStore(t *testing.T) {
+	request := &mtproto.TLContactsImportContacts{Contacts: []*mtproto.InputContact{
+		importPhoneContact(1, "+12025550106", "A"),
+	}}
+	var nilCore *ContactsCore
+	if got, err := nilCore.ContactsImportContacts(request); got != nil || !errors.Is(err, mtproto.ErrAuthKeyUnregistered) {
+		t.Fatalf("nil core = (%+v, %v), want AUTH_KEY_UNREGISTERED", got, err)
+	}
+
+	previous := persist.Default
+	persist.Default = nil
+	t.Cleanup(func() { persist.Default = previous })
+	client := &importContactsUserClientStub{}
+	if got, err := newImportContactsTestCore(82006, client).ContactsImportContacts(request); got != nil || !errors.Is(err, mtproto.ErrInternalServerError) {
+		t.Fatalf("missing store = (%+v, %v), want INTERNAL_SERVER_ERROR", got, err)
+	}
+	if client.calls != 0 {
+		t.Fatalf("missing store reached backend %d times, want 0", client.calls)
+	}
+}

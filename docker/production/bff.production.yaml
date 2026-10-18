@@ -31,6 +31,11 @@ KV:
   - Host: redis:6379
 PostgresDSN: postgres://teamgram:teamgram@postgres:5432/teamgram?sslmode=disable
 
+Help:
+  SupportUserID: 900000000016
+  SupportUserAccessHash: 910000000016
+  SupportUserFirstName: "Volunteer Support"
+
 PaymentProviderEndpoint: ${TEAMGRAM_PAYMENT_PROVIDER_ENDPOINT:-}
 PaymentProviderName: ${TEAMGRAM_PAYMENT_PROVIDER_NAME:-external}
 PaymentProviderKey: ${TEAMGRAM_PAYMENT_PROVIDER_KEY:-}

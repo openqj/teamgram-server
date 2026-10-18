@@ -109,6 +109,9 @@ func (c *ApiFullCore) PaymentsGetPremiumGiftCodeOptions(in *mtproto.TLPaymentsGe
 		if option == nil || option.GetUsers() <= 0 || option.GetMonths() <= 0 || option.GetMonths() > 36 || option.GetAmount() < 0 || strings.TrimSpace(option.GetCurrency()) == "" {
 			return nil, mtproto.ErrPaymentProviderInvalid
 		}
+		if product := option.GetStoreProduct(); product != nil && strings.TrimSpace(product.GetValue()) == "" {
+			return nil, mtproto.ErrPaymentProviderInvalid
+		}
 		if option.GetStoreQuantity() != nil && option.GetStoreQuantity().GetValue() <= 0 {
 			return nil, mtproto.ErrPaymentProviderInvalid
 		}
@@ -225,6 +228,11 @@ func (c *ApiFullCore) PaymentsGetStarsGiveawayOptions(in *mtproto.TLPaymentsGetS
 	}
 	for _, option := range response.Options {
 		if option == nil || option.GetStars() <= 0 || option.GetYearlyBoosts() < 0 || option.GetAmount() < 0 || strings.TrimSpace(option.GetCurrency()) == "" {
+			return nil, mtproto.ErrPaymentProviderInvalid
+		}
+		// The TL constructor requires a winner-tier vector. An empty vector
+		// cannot describe a giveaway and must not cross the wire as success.
+		if len(option.GetWinners()) == 0 {
 			return nil, mtproto.ErrPaymentProviderInvalid
 		}
 		if option.GetStoreProduct() != nil && strings.TrimSpace(option.GetStoreProduct().GetValue()) == "" {

@@ -657,7 +657,7 @@ func (c *ApiFullCore) uploadStoryMedia(uid int64, input *mtproto.InputMedia) (*m
 		if err != nil {
 			return nil, err
 		}
-		if photo == nil || photo.GetId() == 0 {
+		if photo == nil || photo.GetId() <= 0 {
 			return nil, mtproto.ErrMediaInvalid
 		}
 		return mtproto.MakeTLMessageMediaPhoto(&mtproto.MessageMedia{Photo_FLAGPHOTO: photo, TtlSeconds: input.GetTtlSeconds()}).To_MessageMedia(), nil
@@ -666,7 +666,7 @@ func (c *ApiFullCore) uploadStoryMedia(uid int64, input *mtproto.InputMedia) (*m
 		if err != nil {
 			return nil, err
 		}
-		if document == nil || document.GetId() == 0 {
+		if document == nil || document.GetId() <= 0 {
 			return nil, mtproto.ErrMediaInvalid
 		}
 		return mtproto.MakeTLMessageMediaDocument(&mtproto.MessageMedia{Document: document, TtlSeconds: input.GetTtlSeconds()}).To_MessageMedia(), nil

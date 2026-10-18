@@ -109,7 +109,7 @@ func (c *ContactsCore) ContactsGetTopPeers(in *mtproto.TLContactsGetTopPeers) (*
 	if in.GetOffset() < 0 {
 		return nil, mtproto.ErrOffsetInvalid
 	}
-	if in.GetLimit() < 0 {
+	if in.GetLimit() < 0 || in.GetLimit() > 100 {
 		return nil, mtproto.ErrLimitInvalid
 	}
 	if persist.Default == nil {

@@ -359,6 +359,26 @@ func (c *ApiFullCore) PaymentsTransferStarGift(in *mtproto.TLPaymentsTransferSta
 	if in == nil || in.GetStargift() == nil {
 		return nil, mtproto.ErrInputConstructorInvalid
 	}
+	if scope, ok := businessctx.ScopeFromContext(callContext(c)); ok && scope.OwnerID > 0 {
+		var target any
+		if peer := in.GetToId_INPUTPEER(); peer != nil {
+			target = peer
+		} else {
+			target = in.GetToId_INPUTUSER()
+		}
+		result := new(mtproto.Updates)
+		if err := c.callBusinessProviderAs(uid, "payments.transferStarGift", map[string]any{
+			"stargift": in.GetStargift(),
+			"to_id":    target,
+			"msg_id":   in.GetMsgId(),
+		}, result); err != nil {
+			return nil, err
+		}
+		if !validUpdatesProviderResult(result) {
+			return nil, mtproto.ErrInternalServerError
+		}
+		return result, nil
+	}
 	stargift := in.GetStargift()
 	if predicate := stargift.GetPredicateName(); predicate != "" &&
 		predicate != mtproto.Predicate_inputSavedStarGiftSlug &&
@@ -918,7 +938,8 @@ func (c *ApiFullCore) PaymentsGetUserStarGifts(in *mtproto.TLPaymentsGetUserStar
 	if in == nil || in.GetUserId() == nil {
 		return nil, mtproto.ErrInputConstructorInvalid
 	}
-	if _, err = localGiftUserID(uid, in.GetUserId()); err != nil {
+	targetID, err := resolveGiftUserID(uid, in.GetUserId(), c.MD.GetIsBot())
+	if err != nil {
 		return nil, err
 	}
 	if _, err = parseStarsOffset(in.GetOffset()); err != nil {
@@ -927,7 +948,7 @@ func (c *ApiFullCore) PaymentsGetUserStarGifts(in *mtproto.TLPaymentsGetUserStar
 	if in.GetLimit() < 0 {
 		return nil, mtproto.ErrLimitInvalid
 	}
-	records, err := domain.ListGifts(uid, false)
+	records, err := domain.ListGifts(targetID, false)
 	if err != nil {
 		return nil, giftDomainError(err)
 	}
@@ -974,6 +995,18 @@ func localGiftUserID(selfID int64, user *mtproto.InputUser) (int64, error) {
 	default:
 		return 0, mtproto.ErrUserIdInvalid
 	}
+}
+
+func resolveGiftUserID(selfID int64, user *mtproto.InputUser, isBot bool) (int64, error) {
+	targetID, err := localGiftUserID(selfID, user)
+	if err == nil || !isBot {
+		return targetID, err
+	}
+	if user == nil || user.GetPredicateName() != mtproto.Predicate_inputUser ||
+		user.GetUserId() <= 0 || user.GetAccessHash() == 0 {
+		return 0, err
+	}
+	return user.GetUserId(), nil
 }
 
 func giftTransferTarget(selfID int64, in *mtproto.TLPaymentsTransferStarGift) (int64, error) {

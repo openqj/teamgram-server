@@ -103,6 +103,18 @@ func TestMessageFromMTProtoManagedBotCreated(t *testing.T) {
 	}
 }
 
+func TestMessageFromMTProtoWebAppData(t *testing.T) {
+	message := MessageFromMTProto(&mtproto.Message{
+		Action: mtproto.MakeMessageActionWebViewDataSentMe("Open app", `{"choice":"confirm"}`),
+	}, nil, nil)
+	if message == nil || message.WebAppData == nil {
+		t.Fatal("web view data action should map to Message.web_app_data")
+	}
+	if message.WebAppData.Data != `{"choice":"confirm"}` || message.WebAppData.ButtonText != "Open app" {
+		t.Fatalf("unexpected web app data: %#v", message.WebAppData)
+	}
+}
+
 func TestUpdateFromMTProtoEphemeralMessage(t *testing.T) {
 	ephemeral := &mtproto.EphemeralMessage{
 		Id:          42,
@@ -199,6 +211,27 @@ func TestMessageFromMTProtoGiftAndChecklist(t *testing.T) {
 	}
 	if len(doneMessage.ChecklistTasksDone.MarkedAsDoneTaskIDs) != 1 || doneMessage.ChecklistTasksDone.MarkedAsDoneTaskIDs[0] != 3 || len(doneMessage.ChecklistTasksDone.MarkedAsNotDoneTaskIDs) != 1 || doneMessage.ChecklistTasksDone.MarkedAsNotDoneTaskIDs[0] != 4 {
 		t.Fatalf("unexpected checklist completion conversion: %+v", doneMessage.ChecklistTasksDone)
+	}
+}
+
+func TestOwnedGiftInfoIncludesBotAPIUnionType(t *testing.T) {
+	owned := ownedGiftInfoFromSaved(&mtproto.SavedStarGift{
+		Gift:    &mtproto.StarGift{Id: 66, Stars: 25},
+		SavedId: wrapperspb.Int64(66),
+	}, nil, nil)
+	if owned == nil || owned.Type != "regular" {
+		t.Fatalf("owned gift type = %#v, want regular", owned)
+	}
+	encoded, err := json.Marshal(owned)
+	if err != nil {
+		t.Fatalf("marshal owned gift: %v", err)
+	}
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(encoded, &payload); err != nil {
+		t.Fatalf("decode owned gift: %v", err)
+	}
+	if string(payload["type"]) != `"regular"` {
+		t.Fatalf("owned gift JSON type = %s, want regular", payload["type"])
 	}
 }
 

@@ -57,6 +57,42 @@ func TestPostgresSeqTransactionRollsBackOnJournalFailure(t *testing.T) {
 	}
 }
 
+func TestRecordReceivedNotificationsIsIdempotent(t *testing.T) {
+	d := syncPostgresDAO(t)
+	ctx := context.Background()
+	const userID int64 = 921000007
+	const messageID int32 = 412
+	_, _ = d.Pool.Exec(ctx, `DELETE FROM bff_messages_received_notification WHERE user_id=$1`, userID)
+	t.Cleanup(func() {
+		_, _ = d.Pool.Exec(ctx, `DELETE FROM bff_messages_received_notification WHERE user_id=$1`, userID)
+	})
+	message := mtproto.MakeTLMessage(&mtproto.Message{Id: messageID, Out: false}).To_Message()
+	updates := mtproto.MakeUpdatesByUpdates(mtproto.MakeTLUpdateNewMessage(&mtproto.Update{Message_MESSAGE: message}).To_Update())
+	if err := d.RecordReceivedNotifications(ctx, userID, updates); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.RecordReceivedNotifications(ctx, userID, updates); err != nil {
+		t.Fatal(err)
+	}
+	var count int
+	if err := d.Pool.QueryRow(ctx, `SELECT count(*) FROM bff_messages_received_notification WHERE user_id=$1 AND message_id=$2`, userID, messageID).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("notification rows=%d, want one idempotent row", count)
+	}
+	outgoing := mtproto.MakeUpdatesByUpdates(mtproto.MakeTLUpdateNewMessage(&mtproto.Update{Message_MESSAGE: mtproto.MakeTLMessage(&mtproto.Message{Id: messageID + 1, Out: true}).To_Message()}).To_Update())
+	if err := d.RecordReceivedNotifications(ctx, userID, outgoing); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Pool.QueryRow(ctx, `SELECT count(*) FROM bff_messages_received_notification WHERE user_id=$1`, userID).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("outgoing notification rows=%d, want one incoming row", count)
+	}
+}
+
 func TestPostgresConcurrentSeqCommitOrdering(t *testing.T) {
 	d := syncPostgresDAO(t)
 	const writers = 24

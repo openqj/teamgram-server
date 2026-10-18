@@ -42,6 +42,9 @@ func (s *Server) Initialize() error {
 	if err := applyPaymentProviderEnvironment(&c); err != nil {
 		return errors.Wrap(err, "load payment provider environment")
 	}
+	if err := applyIdentityEnvironment(&c); err != nil {
+		return errors.Wrap(err, "load Identity environment")
+	}
 
 	logx.Infof("httpserver config loaded")
 	ctx, err := svc.NewServiceContext(c)
@@ -52,6 +55,23 @@ func (s *Server) Initialize() error {
 	s.httpSrv = http.New(ctx, c.Http)
 	s.ctx = ctx
 
+	return nil
+}
+
+func applyIdentityEnvironment(c *config.Config) error {
+	if value, ok := os.LookupEnv("TEAMGRAM_IDENTITY_BASE_URL"); ok {
+		c.IdentityBaseURL = strings.TrimSpace(value)
+	}
+	if value, ok := os.LookupEnv("TEAMGRAM_IDENTITY_INTERNAL_SERVICE_TOKEN"); ok {
+		c.IdentityInternalServiceToken = strings.TrimSpace(value)
+	}
+	if value, ok := os.LookupEnv("TEAMGRAM_IDENTITY_REQUEST_TIMEOUT_SECONDS"); ok {
+		parsed, err := strconv.Atoi(strings.TrimSpace(value))
+		if err != nil || parsed <= 0 {
+			return errors.Errorf("TEAMGRAM_IDENTITY_REQUEST_TIMEOUT_SECONDS must be a positive integer")
+		}
+		c.IdentityRequestTimeoutSeconds = parsed
+	}
 	return nil
 }
 

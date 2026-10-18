@@ -18,6 +18,7 @@ import (
 type Config struct {
 	Http                               rest.RestConf
 	Session                            zrpc.RpcClientConf
+	AuthsessionClient                  zrpc.RpcClientConf `json:",optional"`
 	UserClient                         zrpc.RpcClientConf
 	ChatClient                         zrpc.RpcClientConf
 	MsgClient                          zrpc.RpcClientConf
@@ -27,6 +28,9 @@ type Config struct {
 	PaymentProviderName                string `json:",optional"`
 	PaymentProviderWebhookSigningKey   string `json:",optional"`
 	PaymentProviderWebhookMaxBodyBytes int64  `json:",optional"`
+	IdentityBaseURL                    string `json:",optional"`
+	IdentityInternalServiceToken       string `json:",optional"`
+	IdentityRequestTimeoutSeconds      int    `json:",optional"`
 	KeyFile                            string
 	KeyFingerprint                     string
 }

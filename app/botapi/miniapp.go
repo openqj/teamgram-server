@@ -68,6 +68,63 @@ func ValidateWebAppInitData(initData, botToken string, now time.Time, maxAge tim
 	return values, nil
 }
 
+// SignWebAppInitData creates Telegram's URL-encoded Web App initData value.
+// The caller must provide the fields that Telegram would expose to the Web
+// App (for example auth_date, query_id and user); the bot token is used only
+// for this operation and is never returned or persisted by this package.
+func SignWebAppInitData(fields url.Values, botToken string) (string, error) {
+	if len(fields) == 0 || strings.TrimSpace(botToken) == "" {
+		return "", errors.New("botapi: init data fields and bot token are required")
+	}
+
+	values := make(url.Values, len(fields)+1)
+	keys := make([]string, 0, len(fields))
+	for key, entries := range fields {
+		if key == "hash" || strings.TrimSpace(key) == "" || len(entries) != 1 {
+			return "", errors.New("botapi: init data field is invalid")
+		}
+		values[key] = []string{entries[0]}
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	checkParts := make([]string, 0, len(keys))
+	for _, key := range keys {
+		checkParts = append(checkParts, key+"="+values[key][0])
+	}
+
+	secretMAC := hmac.New(sha256.New, []byte("WebAppData"))
+	_, _ = secretMAC.Write([]byte(botToken))
+	secret := secretMAC.Sum(nil)
+	checkMAC := hmac.New(sha256.New, secret)
+	_, _ = checkMAC.Write([]byte(strings.Join(checkParts, "\n")))
+	values.Set("hash", hex.EncodeToString(checkMAC.Sum(nil)))
+	return values.Encode(), nil
+}
+
+// AddWebAppInitData appends a signed tgWebAppData parameter to a Web App URL.
+// The URL is kept otherwise unchanged, including existing query parameters
+// and fragments. The initData itself is encoded once as a single query value,
+// matching Telegram clients' location.search contract.
+func AddWebAppInitData(rawURL, initData string) (string, error) {
+	if strings.TrimSpace(rawURL) == "" || strings.TrimSpace(initData) == "" {
+		return "", errors.New("botapi: Web App URL and init data are required")
+	}
+	parsed, err := url.Parse(rawURL)
+	if err != nil || parsed.Scheme != "https" || parsed.Host == "" {
+		return "", errors.New("botapi: Web App URL must be HTTPS")
+	}
+	query, err := url.ParseQuery(parsed.RawQuery)
+	if err != nil {
+		return "", errors.New("botapi: Web App URL query is invalid")
+	}
+	if _, exists := query["tgWebAppData"]; exists {
+		return "", errors.New("botapi: Web App URL already contains tgWebAppData")
+	}
+	query.Set("tgWebAppData", initData)
+	parsed.RawQuery = query.Encode()
+	return parsed.String(), nil
+}
+
 func mustDecodeHex(value string) []byte {
 	decoded, _ := hex.DecodeString(value)
 	return decoded

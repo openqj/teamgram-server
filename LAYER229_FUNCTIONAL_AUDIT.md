@@ -1,5 +1,21 @@
 # Layer 229 API 功能验收
 
+## 2026-10-18：`payments.getPremiumGiftCodeOptions` provider option 语义收口
+
+- `payments.getPremiumGiftCodeOptions#2757ba54` 继续按 Layer 229 处理可选 `boost_peer`，通过签名 payment provider 绑定 caller，并在返回 `Vector<PremiumGiftCodeOption>` 前校验 `users`、`months`、`currency`、`amount` 及可选 `store_product`/`store_quantity` 字段；带空商品标识或非正商品数量的 provider 响应 fail-closed，不把 malformed option 编码到 wire。
+- 新增 `TestPremiumGiftCodeOptionsRejectEmptyStoreProduct` 和 `TestPremiumGiftCodeOptionsRejectNonPositiveStoreQuantity`，与既有 signed-provider、malformed-option 和 Layer 229 encode 测试共同构成组件证据。台账 audit status 提升为 `PARTIAL_COMPONENT_VERIFIED`；目录权威、结算、完整 session、重启和生产流量仍未验收，`production_acceptance_status` 保持 `PARTIAL_COMPONENT_ONLY`。
+
+## 2026-10-18：收到消息通知确认链路收口
+
+- `messages.receivedMessages` 现在由 PostgreSQL `bff_messages_received_notification` 表承载实际通知行：Sync 在入站 `updateNewMessage` fan-out 前幂等写入非 out 消息，BFF 按 `max_id` 在事务内删除并返回 typed `ReceivedNotifyMessage`，重复确认返回空向量；没有通知 provider 时仍 fail-closed。
+- 当前已有 MessagesCore、PostgreSQL DAO、Sync producer 的聚焦测试；真实双账号 Layer 229 session、backend 重启恢复和生产流量仍未验收，因此台账生产状态继续为 `PARTIAL_COMPONENT_ONLY`。
+- `messages.getSuggestedDialogFilters` 的当前实现返回 caller-aware 的 Contacts、Groups、Channels 三种内置模板，并排除已保存的等价筛选器；其既有 DC2 session 证据保留，外部个性化目录仍未接入。
+
+## 2026-10-18：`messages.sendScreenshotNotification` 服务消息持久化
+
+- `messages.sendScreenshotNotification` 现在要求非零 `random_id` 和已存在的目标回复消息，校验 user access hash/普通群成员后构造 Layer 229 `messageService` + `messageActionScreenshotTaken`，通过 `msg.sendMessageV2` 的 PostgreSQL 事务、PTS、幂等和收件人投递路径完成写入。`MsgClient` 已接入 dialogs 独立服务与组合 BFF；频道和跨 peer 引用继续明确失败关闭。
+- 新增 `TestMessagesSendScreenshotNotificationPersistsServiceMessage`、非法回复和消息服务错误测试；`go test ./app/bff/dialogs/...` 与 `go test ./app/bff/bff/internal/server` 通过。当前仍只有组件证据，没有完整双账号 Layer 229 session、重启或生产流量验收。
+
 ## 2026-10-18：WebA 礼物初始化空投影边界
 
 - 真实 WebA 重启日志显示 `payments.getSavedStarGifts` 带 `exclude_unlimited`、`exclude_upgradable` 和 `exclude_unupgradable`；本地 PostgreSQL 礼物账本没有这些分类字段。现在先读取 caller-owned projection：空账本返回可编码的 `payments.savedStarGifts`（count/gifts/chats/users 均为空），非空但无法分类的账本继续返回 `METHOD_NOT_IMPL`，不伪造筛选结果。
@@ -2931,3 +2947,9 @@
 - 原生频道 `messages.getHistory` 接入 APIFull PostgreSQL channel projection，返回 Layer 229 `messages.channelMessages`，携带 persisted `pts/count`，支持 offset date、min/max ID 和正/负 `add_offset`；非零 hash 因缺少 canonical hash 计算仍明确返回 `METHOD_NOT_IMPL`。频道访问 hash、public/private visibility 与分页 focused tests 通过。
 - Gifts/reactions 侧补齐 saved-gift 分页边界、numeric saved-gift ownership、paid-reaction provider typed `Updates`、available-reaction catalog constructor、reaction notification settings constructor/存储回读校验；未知 constructor 和越界输入 fail-closed。四个后端包 uncached `go test` 通过。
 - 这些是契约和输入边界收口，没有把本地 projection、provider fixture 或 focused test 提升为生产验收；严格台账仍为 813/813 source match，生产状态计数保持原级别。
+
+## 2026-10-18：Chatlists Layer 229 session roundtrip
+
+- `/tmp/teamgram-chatlists-layer229-20261018.json` 为 `ok=true`：user1/user2 的现有 fixture auth 经 `DC2 TCPObfuscated -> session -> APIFull -> Dialog/PostgreSQL`，显式使用 Layer 229，完成 `chatlists.exportChatlistInvite`、`chatlists.getExportedInvites`、`chatlists.editExportedInvite`、`chatlists.checkChatlistInvite`、`chatlists.joinChatlistInvite` 和 `chatlists.deleteExportedInvite`。返回 constructors 依次包含 `chatlists.ExportedChatlistInvite`、`chatlists.ExportedInvites`、`ExportedChatlistInvite`、`chatlists.ChatlistInvite`、`Updates` 和 `BoolTrue`；邀请 slug 为 `1-0`，owner/joiner filter id 均为 `2`。
+- 同一报告还实际调用了 `chatlists.getChatlistUpdates`、`chatlists.joinChatlistUpdates`、`chatlists.hideChatlistUpdates`、`chatlists.getLeaveChatlistSuggestions` 和 `chatlists.leaveChatlist`，返回 `chatlists.ChatlistUpdates`、`Updates`、`BoolTrue`、`VectorPeer` 和 `Updates`。本段仅将前述 6 个 export/edit/check/join/delete/get 方法提升为 `PARTIAL_SESSION_VERIFIED` / `PARTIAL_ISOLATED_SESSION_E2E`；updates/suggestions 方法保留原台账级别。
+- 报告中的 cleanup 为 `ok=true`：执行前 user1/user2 的 `apifull_chatlist_state` 和 invite rows 均为 0，执行后两方 state/invite 均为 0，owner/joiner `dialog_filters` 临时 rows 均为 0，`errors=[]`。本次未发送新消息，也未改 backend 镜像或 Compose 配置；外部 provider、backend restart、跨设备 fan-out 和真实 production traffic 仍未验收，`127.0.0.1:31443` isolated gateway 未运行。

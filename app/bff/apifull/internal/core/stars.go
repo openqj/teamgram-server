@@ -332,6 +332,9 @@ func (c *ApiFullCore) PaymentsSendStarsForm(in *mtproto.TLPaymentsSendStarsForm)
 		return nil, mtproto.ErrPaymentProviderInvalid
 	}
 	switch in.GetInvoice().GetPredicateName() {
+	case mtproto.Predicate_inputInvoiceStarGiftUpgrade,
+		mtproto.Predicate_inputInvoiceStarGiftTransfer:
+		return c.settleStarGiftWithPaymentProvider(in)
 	case mtproto.Predicate_inputInvoiceStarGift,
 		mtproto.Predicate_inputInvoicePremiumGiftStars,
 		mtproto.Predicate_inputInvoiceBusinessBotTransferStars:
@@ -753,6 +756,9 @@ func makeStarsTransaction(item domain.StarsTransaction) *mtproto.StarsTransactio
 		Id:          item.Idem,
 		Amount:      mtproto.MakeTLStarsAmount(&mtproto.StarsAmount{Amount: item.Amount}).To_StarsAmount(),
 		Stars_INT64: item.Amount,
+		// The peer is mandatory on the wire; local ledger entries carry no
+		// counterparty, so identify them as API-originated transactions.
+		Peer: mtproto.MakeTLStarsTransactionPeerAPI(&mtproto.StarsTransactionPeer{}).To_StarsTransactionPeer(),
 	}).To_StarsTransaction()
 }
 

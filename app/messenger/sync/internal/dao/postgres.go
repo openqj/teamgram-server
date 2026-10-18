@@ -43,7 +43,8 @@ func newPostgresDao(c config.Config) (*Postgres, error) {
 		`SELECT bot_id,next_update_id FROM bot_api_update_counters LIMIT 0`,
 		`SELECT bot_id,update_id,update_data,created_at FROM bot_api_updates LIMIT 0`,
 		`SELECT bot_id,dedupe_key,first_update_id,created_at FROM bot_api_update_dedup LIMIT 0`,
-		`SELECT bot_id,url,max_connections,allowed_updates,secret_token,last_error_date,last_error_message,last_synchronization_error_date FROM bot_api_webhooks LIMIT 0`); err != nil {
+		`SELECT bot_id,url,max_connections,allowed_updates,secret_token,last_error_date,last_error_message,last_synchronization_error_date FROM bot_api_webhooks LIMIT 0`,
+		`SELECT user_id,message_id,flags,created_at FROM bff_messages_received_notification LIMIT 0`); err != nil {
 		// The Bot API menu button is shared by BotFather and HTTP Bot API.
 		// Verify its scope table at startup so a partial migration fails closed.
 		pool.Close()

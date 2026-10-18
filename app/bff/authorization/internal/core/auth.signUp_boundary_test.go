@@ -9,6 +9,8 @@ import (
 	"github.com/teamgram/proto/mtproto/rpc/metadata"
 	"github.com/teamgram/teamgram-server/app/bff/authorization/internal/dao"
 	"github.com/teamgram/teamgram-server/app/bff/authorization/internal/svc"
+	"github.com/teamgram/teamgram-server/app/service/authsession/authsession"
+	authsessionclient "github.com/teamgram/teamgram-server/app/service/authsession/client"
 	userclient "github.com/teamgram/teamgram-server/app/service/biz/user/client"
 	userpb "github.com/teamgram/teamgram-server/app/service/biz/user/user"
 	"github.com/zeromicro/go-zero/core/logx"
@@ -16,11 +18,18 @@ import (
 
 type signupCleanupUserClient struct {
 	userclient.UserClient
+	authsessionclient.AuthsessionClient
 	deleted *userpb.TLUserDeleteUser
+	unbound []*authsession.TLAuthsessionUnbindAuthKeyUser
 }
 
 func (s *signupCleanupUserClient) UserDeleteUser(_ context.Context, in *userpb.TLUserDeleteUser) (*mtproto.Bool, error) {
 	s.deleted = in
+	return mtproto.BoolTrue, nil
+}
+
+func (s *signupCleanupUserClient) AuthsessionUnbindAuthKeyUser(_ context.Context, in *authsession.TLAuthsessionUnbindAuthKeyUser) (*mtproto.Bool, error) {
+	s.unbound = append(s.unbound, in)
 	return mtproto.BoolTrue, nil
 }
 
@@ -61,10 +70,27 @@ func TestAuthSignUpRejectsMissingRuntimeDependencies(t *testing.T) {
 func TestAuthSignUpCleanupCompensatesUnboundUser(t *testing.T) {
 	users := &signupCleanupUserClient{}
 	c := newBoundaryAuthorizationCore()
-	c.svcCtx = &svc.ServiceContext{Dao: &dao.Dao{UserClient: users}}
-	c.cleanupSignupUser(801, "+15550000001")
+	c.svcCtx = &svc.ServiceContext{Dao: &dao.Dao{AuthsessionClient: users, UserClient: users}}
+	c.cleanupSignupUser(801, "+15550000001", 202)
 	if users.deleted == nil || users.deleted.GetUserId() != 801 || users.deleted.GetPhone() != "+15550000001" {
 		t.Fatalf("cleanup request = %v, want user 801 and phone", users.deleted)
+	}
+	wantKeys := map[int64]bool{0: false, 91: false, 202: false}
+	if len(users.unbound) != len(wantKeys) {
+		t.Fatalf("unbind requests = %d, want %d", len(users.unbound), len(wantKeys))
+	}
+	for _, request := range users.unbound {
+		if request == nil || request.GetUserId() != 801 {
+			t.Fatalf("unbind request = %v, want user 801", request)
+		}
+		keyID := request.GetAuthKeyId()
+		if _, ok := wantKeys[keyID]; !ok {
+			t.Fatalf("unbind request key = %d, want one of 0, 91, 202", keyID)
+		}
+		if wantKeys[keyID] {
+			t.Fatalf("duplicate unbind request for key %d", keyID)
+		}
+		wantKeys[keyID] = true
 	}
 }
 

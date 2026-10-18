@@ -17,6 +17,7 @@ import (
 	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/domain"
 	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/persist"
 	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/svc"
+	"github.com/teamgram/teamgram-server/pkg/rpc/businessctx"
 )
 
 func TestCheckGiftCodeUsesVerifiedProvider(t *testing.T) {
@@ -103,6 +104,33 @@ func TestGiftProviderRejectsWrongConstructors(t *testing.T) {
 				t.Fatalf("wrong gift constructor = (%v, %v), want INTERNAL_SERVER_ERROR", result, err)
 			}
 		})
+	}
+}
+
+func TestBusinessTransferStarGiftUsesProviderScope(t *testing.T) {
+	core := newBusinessProviderGapCore(t, "payments.transferStarGift", map[string]any{
+		"predicate_name": "updates",
+		"updates":        []any{},
+		"users":          []any{},
+		"chats":          []any{},
+		"date":           1760000000,
+		"seq":            0,
+	})
+	core.ctx = businessctx.WithScope(context.Background(), businessctx.Scope{
+		ConnectionID:     "ptb-business-connection",
+		OwnerID:          42,
+		CanTransferGifts: true,
+	})
+	core.MD = &metadata.RpcMetadata{UserId: 900000000001}
+	updates, err := core.PaymentsTransferStarGift(&mtproto.TLPaymentsTransferStarGift{
+		Stargift: mtproto.MakeTLInputSavedStarGiftChat(&mtproto.InputSavedStarGift{
+			Peer:    mtproto.MakeTLInputPeerSelf(nil).To_InputPeer(),
+			SavedId: 77,
+		}).To_InputSavedStarGift(),
+		ToId_INPUTPEER: mtproto.MakeTLInputPeerUser(&mtproto.InputPeer{UserId: 8, AccessHash: 8008}).To_InputPeer(),
+	})
+	if err != nil || updates == nil || updates.GetPredicateName() != mtproto.Predicate_updates {
+		t.Fatalf("business transfer provider result = (%#v, %v)", updates, err)
 	}
 }
 
@@ -243,6 +271,16 @@ func TestLocalGiftUserIDIsSelfScoped(t *testing.T) {
 	other := mtproto.MakeTLInputUser(&mtproto.InputUser{UserId: 72}).To_InputUser()
 	if got, err := localGiftUserID(71, other); got != 0 || !errors.Is(err, mtproto.ErrUserIdInvalid) {
 		t.Fatalf("other gift user = (%d, %v), want (0, USER_ID_INVALID)", got, err)
+	}
+}
+
+func TestResolveGiftUserIDAllowsBotTargetButKeepsNativeSelfScope(t *testing.T) {
+	target := mtproto.MakeTLInputUser(&mtproto.InputUser{UserId: 72, AccessHash: 7200}).To_InputUser()
+	if got, err := resolveGiftUserID(71, target, true); err != nil || got != 72 {
+		t.Fatalf("bot gift user = (%d, %v), want (72, nil)", got, err)
+	}
+	if got, err := resolveGiftUserID(71, target, false); got != 0 || !errors.Is(err, mtproto.ErrUserIdInvalid) {
+		t.Fatalf("native gift user = (%d, %v), want (0, USER_ID_INVALID)", got, err)
 	}
 }
 

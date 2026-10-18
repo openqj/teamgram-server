@@ -112,6 +112,20 @@
     "destructive": true
   },
   {
+    "id": "settings.account-update-status-cross-session",
+    "category": "settings",
+    "gate": "cross_account_update_fanout",
+    "kind": "tsx",
+    "methods": ["account.updateStatus", "updates.getState"],
+    "script": "docker/production/probe-account-update-status.ts",
+    "required_env": ["TEAMGRAM_GRAMJS_DIR"],
+    "env_defaults": {"TG_DC_ID": "2", "TG_DC_HOST": "127.0.0.1", "TG_DC_PORT": "11443", "STATUS_USERNAME": "isolated_test_11", "STATUS_USER_ID": "11"},
+    "requires_docker": true,
+    "evidence": "2026-10-18 /tmp/teamgram-agent-account-update-status-layer229-final-1792310164.json: a real DC2 Layer 229 run uses two independent permanent auth-key sessions for user 11, verifies online/offline UpdateUserStatus delivery to the second session with no self-update, matches PostgreSQL presence and restores the original row.",
+    "known_gap": "Fixture-only user presence and local recipient fan-out are covered; contact privacy resolution, backend restart, multi-device production traffic and external presence authority remain open.",
+    "destructive": true
+  },
+  {
     "id": "settings.session-and-password-reconnect",
     "category": "settings",
     "gate": "session_restart",
@@ -481,7 +495,7 @@
     "required_env": ["TEAMGRAM_GRAMJS_DIR"],
     "env_defaults": {"TG_DC_ID": "2", "TG_DC_HOST": "127.0.0.1", "TG_DC_PORT": "11443"},
     "requires_docker": true,
-    "evidence": "2026-10-18 /tmp/teamgram-agent-account-auth-provider-layer229-final-1792272418.json: a real DC2 TCPObfuscated Layer 229 session completed auth.sendCode, auth.signIn and auth.cancelCode against the signed code-provider fixture; typed SentCode/Authorization results, provider challenge binding and exit 0 were recorded.",
+    "evidence": "2026-10-18 /tmp/teamgram-agent-account-auth-code-cancel-layer229-1792309753.json: a real DC2 TCPObfuscated Layer 229 session completed auth.sendCode/auth.signIn against the signed code-provider fixture, canceled a second independent challenge with auth.cancelCode, and verified canceled auth.signIn was rejected with PHONE_CODE_EXPIRED.",
     "known_gap": "The code provider is a local signed fixture; real SMS delivery, multi-device login, MFA and production traffic remain open.",
     "destructive": true
   },
@@ -495,8 +509,22 @@
     "required_env": ["TEAMGRAM_GRAMJS_DIR"],
     "env_defaults": {"TG_DC_ID": "2", "TG_DC_HOST": "127.0.0.1", "TG_DC_PORT": "11443"},
     "requires_docker": true,
-    "evidence": "2026-10-18 /tmp/teamgram-agent-account-passkey-layer229-final-1792272446.json: a real HTTPS virtual authenticator completed Layer 229 passkey registration, listing, login, auth.logOut and deletion over DC2 TCPObfuscated; active credentials and pending sessions were zero after cleanup.",
+    "evidence": "2026-10-18 /tmp/teamgram-agent-account-passkey-layer229-rerun-1792309764.json: a real HTTPS virtual authenticator completed Layer 229 passkey registration, listing, login, auth.logOut and deletion over DC2 TCPObfuscated; active credentials and pending sessions were zero after cleanup.",
     "known_gap": "The RP and authenticator are isolated fixtures; production RP registry, hardware credentials, restart recovery and production traffic remain open.",
+    "destructive": true
+  },
+  {
+    "id": "auth.signup-delete-account-session",
+    "category": "auth",
+    "gate": "provider_session_cleanup",
+    "kind": "tsx",
+    "methods": ["account.deleteAccount", "auth.cancelCode", "auth.sendCode", "auth.signIn", "auth.signUp"],
+    "script": "docker/production/probe-auth-signup.ts",
+    "required_env": ["TEAMGRAM_GRAMJS_DIR"],
+    "env_defaults": {"TG_DC_ID": "2", "TG_DC_HOST": "127.0.0.1", "TG_DC_PORT": "11443"},
+    "requires_docker": true,
+    "evidence": "2026-10-18 /tmp/teamgram-agent-account-auth-signup-layer229-1792309759.json: a real DC2 TCPObfuscated Layer 229 session consumes a signed fixture code, creates an ephemeral user with auth.signUp, deletes it through account.deleteAccount, and verifies active users/auth_users rows are zero after cleanup.",
+    "known_gap": "The code provider is a local signed fixture; real SMS delivery, MFA, authsession restart, account-owned data cleanup beyond the user-service contract and production traffic remain open.",
     "destructive": true
   },
   {
@@ -1030,6 +1058,20 @@
     "evidence": "A real DC2 session returned account.ContentSettings with sensitiveEnabled=false and sensitiveCanChange=true without writes; /tmp/teamgram-agent-account-content-settings.json.",
     "known_gap": "Only the read path is covered; account.setContentSettings policy variants, cross-account visibility and restart persistence remain open.",
     "destructive": false
+  },
+  {
+    "id": "settings.content-settings-roundtrip",
+    "category": "settings",
+    "gate": "caller_scoped_settings_persistence",
+    "kind": "tsx",
+    "methods": ["account.getContentSettings", "account.setContentSettings"],
+    "script": "docker/production/probe-account-content-settings-roundtrip.ts",
+    "required_env": ["TEAMGRAM_GRAMJS_DIR"],
+    "env_defaults": {"TG_DC_ID": "2", "TG_DC_HOST": "127.0.0.1", "TG_DC_PORT": "11443", "CONTENT_SETTINGS_USER_ID": "561"},
+    "requires_docker": true,
+    "evidence": "2026-10-18 /tmp/teamgram-agent-account-content-settings-layer229-final-1792310157.json: a real DC2 Layer 229 session toggled account content settings from the fixture's existing true value to false, read the typed result and PostgreSQL row back, then restored the exact original row.",
+    "known_gap": "This covers one caller-scoped PostgreSQL fixture; cross-account visibility, independent-device updates, backend restart, policy variants and production traffic remain open.",
+    "destructive": true
   },
   {
     "id": "channel.broadcast-stats-readonly",

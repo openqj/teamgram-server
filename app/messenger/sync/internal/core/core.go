@@ -229,6 +229,14 @@ func (c *SyncCore) pushUpdatesToSession(syncType SyncType, userId, permAuthKeyId
 	if prepared.Completed {
 		return nil
 	}
+	if notification {
+		// Persist the notification before network fan-out. A later
+		// messages.receivedMessages call can then acknowledge it atomically,
+		// while retries remain idempotent through the notification key.
+		if err := c.svcCtx.Dao.RecordReceivedNotifications(c.ctx, userId, pushData); err != nil {
+			return err
+		}
+	}
 	if syncType == syncTypeUserMe && hasServerId != nil {
 		pushData = prepared.AuthUpdates[permAuthKeyId]
 		c.Logger.Debugf("pushUpdatesToSession - pushData: {server_id: %v, auth_key_id: %v}", hasServerId, authKeyId)

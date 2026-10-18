@@ -222,6 +222,44 @@ func premiumEnvelope(fields map[string]json.RawMessage, result any) ([]byte, str
 	return body, "X-Teamgram-Payment-Provider-Signature", err
 }
 
+func starGiftPaymentFields(fields map[string]json.RawMessage) (string, int64, int64, int64, string, int64, int64, error) {
+	product := strings.TrimSpace(rawString(fields, "required_product"))
+	if product != "star_gift_upgrade" && product != "star_gift_transfer" {
+		return "", 0, 0, 0, "", 0, 0, fmt.Errorf("unsupported Star Gift product")
+	}
+	callerID := rawInt64(fields, "user_id")
+	beneficiaryID := rawInt64(fields, "beneficiary_user_id")
+	giftID := rawInt64(fields, "gift_id")
+	targetID := rawInt64(fields, "target_id")
+	giftSlug := strings.TrimSpace(rawString(fields, "gift_slug"))
+	stars := rawInt64(fields, "stars")
+	invoice := fields["invoice"]
+	if callerID <= 0 || beneficiaryID <= 0 || giftID <= 0 || giftSlug == "" || stars <= 0 || len(invoice) == 0 || string(invoice) == "null" || rawObject(fields, "invoice") == nil {
+		return "", 0, 0, 0, "", 0, 0, fmt.Errorf("invalid Star Gift payment request")
+	}
+	if product == "star_gift_transfer" && targetID <= 0 {
+		return "", 0, 0, 0, "", 0, 0, fmt.Errorf("transfer target is required")
+	}
+	return product, callerID, beneficiaryID, giftID, giftSlug, targetID, stars, nil
+}
+
+func starGiftFormID(product string, giftID int64) int64 {
+	// The provider quote is stable for the same gift and product while staying
+	// outside the fixture's Premium and Stars top-up form ranges.
+	base := int64(991000)
+	if product == "star_gift_transfer" {
+		base += 100000
+	}
+	return base + giftID%100000
+}
+
+func starGiftTitle(product string) (string, string) {
+	if product == "star_gift_transfer" {
+		return "Star Gift transfer", "Transfer a Star Gift"
+	}
+	return "Star Gift upgrade", "Upgrade a Star Gift"
+}
+
 func (f *fixture) response(fields map[string]json.RawMessage) ([]byte, string, error) {
 	return f.responseWithContext(context.Background(), fields)
 }
@@ -465,6 +503,95 @@ func (f *fixture) responseWithContext(ctx context.Context, fields map[string]jso
 			"amount":              amount,
 			"title":               "Bot invoice",
 			"receipt":             map[string]any{"provider": "local-fixture", "transaction_id": transactionID},
+		}
+		body, err := json.Marshal(result)
+		if err == nil {
+			f.settled[cacheKey] = settledCacheEntry{payloadHash: payloadHash, response: append([]byte(nil), body...)}
+		}
+		f.mu.Unlock()
+		return body, "X-Teamgram-Payment-Signature", err
+	}
+	if operation == "get_gift_form" {
+		product, callerID, beneficiaryID, giftID, giftSlug, targetID, stars, err := starGiftPaymentFields(fields)
+		if err != nil {
+			return nil, "", err
+		}
+		title, description := starGiftTitle(product)
+		formID := starGiftFormID(product, giftID)
+		body, err := json.Marshal(map[string]any{
+			"verified":            true,
+			"user_id":             callerID,
+			"beneficiary_user_id": beneficiaryID,
+			"product_type":        product,
+			"stars":               stars,
+			"currency":            "XTR",
+			"amount":              stars,
+			"gift_id":             giftID,
+			"gift_slug":           giftSlug,
+			"target_id":           targetID,
+			"form": map[string]any{
+				"predicate_name": "payments_paymentFormStars",
+				"form_id":        formID,
+				"bot_id":         beneficiaryID,
+				"title":          title,
+				"description":    description,
+				"invoice": map[string]any{
+					"predicate_name": "invoice",
+					"test":           true,
+					"currency":       "XTR",
+					"prices": []any{
+						map[string]any{"predicate_name": "labeledPrice", "label": title, "amount": stars},
+					},
+				},
+				"users": []any{},
+			},
+		})
+		return body, "X-Teamgram-Payment-Signature", err
+	}
+	if operation == "settle_gift" {
+		product, callerID, beneficiaryID, giftID, giftSlug, targetID, stars, err := starGiftPaymentFields(fields)
+		if err != nil {
+			return nil, "", err
+		}
+		requestKey := rawString(fields, "request_key")
+		fingerprint := rawString(fields, "fingerprint")
+		formID := rawInt64(fields, "form_id")
+		if requestKey == "" || fingerprint == "" || formID <= 0 {
+			return nil, "", fmt.Errorf("invalid Star Gift settlement request")
+		}
+		cacheKey := settlementCacheKey(operation, callerID, requestKey)
+		payloadHash, err := settlementPayloadHash(fields)
+		if err != nil {
+			return nil, "", err
+		}
+		f.mu.Lock()
+		if cached, ok := f.settled[cacheKey]; ok {
+			if cached.payloadHash != payloadHash {
+				f.mu.Unlock()
+				return nil, "", errors.New("payment provider idempotency conflict")
+			}
+			f.mu.Unlock()
+			return append([]byte(nil), cached.response...), "X-Teamgram-Payment-Signature", nil
+		}
+		digest := sha256.Sum256([]byte(fmt.Sprintf("%d:%s:%s", callerID, product, requestKey)))
+		transactionID := "fixture-gift-" + hex.EncodeToString(digest[:8])
+		result := map[string]any{
+			"verified":            true,
+			"user_id":             callerID,
+			"beneficiary_user_id": beneficiaryID,
+			"request_key":         requestKey,
+			"fingerprint":         fingerprint,
+			"form_id":             formID,
+			"product_type":        product,
+			"gift_id":             giftID,
+			"gift_slug":           giftSlug,
+			"target_id":           targetID,
+			"stars":               stars,
+			"transaction_id":      transactionID,
+			"currency":            "XTR",
+			"amount":              stars,
+			"title":               "Star Gift settlement",
+			"receipt":             map[string]any{"provider": "local-fixture", "transaction_id": transactionID, "product": product},
 		}
 		body, err := json.Marshal(result)
 		if err == nil {

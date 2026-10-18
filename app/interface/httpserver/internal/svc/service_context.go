@@ -22,6 +22,7 @@ import (
 	"github.com/teamgram/teamgram-server/app/interface/httpserver/internal/config"
 	"github.com/teamgram/teamgram-server/app/interface/httpserver/internal/dao"
 	msg_client "github.com/teamgram/teamgram-server/app/messenger/msg/msg/client"
+	authsession_client "github.com/teamgram/teamgram-server/app/service/authsession/client"
 	chat_client "github.com/teamgram/teamgram-server/app/service/biz/chat/client"
 	user_client "github.com/teamgram/teamgram-server/app/service/biz/user/client"
 	dfs_client "github.com/teamgram/teamgram-server/app/service/dfs/client"
@@ -32,6 +33,8 @@ type ServiceContext struct {
 	Config config.Config
 	*dao.Dao
 	BotAPIStore                *store.Store
+	AuthsessionClient          authsession_client.AuthsessionClient
+	AIMemoryTokenExchanger     AIMemoryTokenExchanger
 	UserClient                 user_client.UserClient
 	BotRegistryClient          user_client.BotRegistryClient
 	ChatClient                 chat_client.ChatClient
@@ -91,6 +94,23 @@ func NewServiceContext(c config.Config) (*ServiceContext, error) {
 		BotRegistryClient: user_client.NewBotRegistryClient(rpcx.GetCachedRpcClient(c.UserClient)),
 		ChatClient:        chat_client.NewChatClient(rpcx.GetCachedRpcClient(c.ChatClient)),
 		MsgClient:         msg_client.NewMsgClient(rpcx.GetCachedRpcClient(c.MsgClient)),
+	}
+	if strings.TrimSpace(c.IdentityBaseURL) != "" || strings.TrimSpace(c.IdentityInternalServiceToken) != "" {
+		if strings.TrimSpace(c.IdentityBaseURL) == "" || strings.TrimSpace(c.IdentityInternalServiceToken) == "" {
+			service.Close()
+			return nil, errors.New("httpserver: IdentityBaseURL and IdentityInternalServiceToken must be configured together")
+		}
+		if c.AuthsessionClient.Etcd.Key == "" && len(c.AuthsessionClient.Endpoints) == 0 {
+			service.Close()
+			return nil, errors.New("httpserver: AuthsessionClient is required when Identity integration is enabled")
+		}
+		service.AuthsessionClient = authsession_client.NewAuthsessionClient(rpcx.GetCachedRpcClient(c.AuthsessionClient))
+		exchanger, err := NewIdentityTokenExchanger(c.IdentityBaseURL, c.IdentityInternalServiceToken, c.IdentityRequestTimeoutSeconds)
+		if err != nil {
+			service.Close()
+			return nil, err
+		}
+		service.AIMemoryTokenExchanger = exchanger
 	}
 	if c.BffClient.Etcd.Key != "" || len(c.BffClient.Endpoints) > 0 {
 		bffConn := rpcx.GetCachedRpcClient(c.BffClient).Conn()

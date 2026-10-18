@@ -90,9 +90,11 @@ function makeClient(authKeyHex: string): any {
 async function main() {
   const before = settingRow();
   const baselineRow = before.split('\t');
-  if (!baselineRow[0] || baselineRow[1] !== 'false' || baselineRow[2] !== '0') {
-    throw new Error('the selected account must have an active false sensitive_enabled row; refusing to mutate it');
+  if (!baselineRow[0] || !['true', 'false'].includes(baselineRow[1]) || baselineRow[2] !== '0') {
+    throw new Error('the selected account must have an active sensitive_enabled row; refusing to mutate it');
   }
+  const baselineEnabled = baselineRow[1] === 'true';
+  const temporaryEnabled = !baselineEnabled;
 
   const client = makeClient(loadAuthKey());
   let connected = false;
@@ -110,35 +112,35 @@ async function main() {
 
     const baseline = await client.invoke(new Api.account.GetContentSettings());
     if (!rpcName(baseline).toLowerCase().includes('contentsettings')
-      || baseline.sensitiveEnabled === true || baseline.sensitiveCanChange !== true) {
+      || Boolean(baseline.sensitiveEnabled) !== baselineEnabled || baseline.sensitiveCanChange !== true) {
       throw new Error(`unexpected baseline ${rpcName(baseline)}: sensitiveEnabled=${String(baseline?.sensitiveEnabled)}, sensitiveCanChange=${String(baseline?.sensitiveCanChange)}`);
     }
 
     changed = true;
-    const enabled = await client.invoke(new Api.account.SetContentSettings({ sensitiveEnabled: true }));
-    setType = rpcName(enabled);
-    if (!boolTrue(enabled)) throw new Error(`account.setContentSettings(true) returned ${setType}`);
+    const temporary = await client.invoke(new Api.account.SetContentSettings({ sensitiveEnabled: temporaryEnabled }));
+    setType = rpcName(temporary);
+    if (!boolTrue(temporary)) throw new Error(`account.setContentSettings(${temporaryEnabled}) returned ${setType}`);
 
-    const enabledReadback = await client.invoke(new Api.account.GetContentSettings());
-    enabledType = rpcName(enabledReadback);
-    if (!enabledReadback?.sensitiveEnabled || !enabledReadback?.sensitiveCanChange) {
-      throw new Error(`account.getContentSettings did not read back true: ${enabledType}`);
+    const temporaryReadback = await client.invoke(new Api.account.GetContentSettings());
+    enabledType = rpcName(temporaryReadback);
+    if (Boolean(temporaryReadback?.sensitiveEnabled) !== temporaryEnabled || !temporaryReadback?.sensitiveCanChange) {
+      throw new Error(`account.getContentSettings did not read back ${temporaryEnabled}: ${enabledType}`);
     }
     const written = settingRow().split('\t');
-    if (written[0] !== baselineRow[0] || written[1] !== 'true' || written[2] !== '0') {
-      throw new Error('the User service did not persist the enabled setting');
+    if (written[0] !== baselineRow[0] || written[1] !== String(temporaryEnabled) || written[2] !== '0') {
+      throw new Error('the User service did not persist the temporary setting');
     }
 
-    const disabled = await client.invoke(new Api.account.SetContentSettings({ sensitiveEnabled: false }));
-    disabledType = rpcName(disabled);
-    if (!boolTrue(disabled)) throw new Error(`account.setContentSettings(false) returned ${disabledType}`);
-    const disabledReadback = await client.invoke(new Api.account.GetContentSettings());
-    if (disabledReadback?.sensitiveEnabled === true) {
-      throw new Error('account.getContentSettings did not read back false after restoration');
+    const restored = await client.invoke(new Api.account.SetContentSettings({ sensitiveEnabled: baselineEnabled }));
+    disabledType = rpcName(restored);
+    if (!boolTrue(restored)) throw new Error(`account.setContentSettings(${baselineEnabled}) returned ${disabledType}`);
+    const restoredReadback = await client.invoke(new Api.account.GetContentSettings());
+    if (Boolean(restoredReadback?.sensitiveEnabled) !== baselineEnabled) {
+      throw new Error(`account.getContentSettings did not read back ${baselineEnabled} after restoration`);
     }
-    const restored = settingRow().split('\t');
-    if (restored[0] !== baselineRow[0] || restored[1] !== 'false' || restored[2] !== '0') {
-      throw new Error('the User service did not persist the restored false value');
+    const restoredRow = settingRow().split('\t');
+    if (restoredRow[0] !== baselineRow[0] || restoredRow[1] !== baselineRow[1] || restoredRow[2] !== '0') {
+      throw new Error('the User service did not persist the restored setting');
     }
   } catch (error) {
     primaryError = error;
@@ -146,16 +148,16 @@ async function main() {
     if (connected && changed) {
       try {
         const current = await client.invoke(new Api.account.GetContentSettings());
-        if (current?.sensitiveEnabled === true) {
-          const restored = await client.invoke(new Api.account.SetContentSettings({ sensitiveEnabled: false }));
-          if (!boolTrue(restored)) throw new Error('failed to restore sensitive_enabled=false via RPC');
+        if (Boolean(current?.sensitiveEnabled) !== baselineEnabled) {
+          const restored = await client.invoke(new Api.account.SetContentSettings({ sensitiveEnabled: baselineEnabled }));
+          if (!boolTrue(restored)) throw new Error(`failed to restore sensitive_enabled=${baselineEnabled} via RPC`);
         }
         const row = settingRow().split('\t');
-        if (row[0] !== baselineRow[0] || row[1] !== 'false' || row[2] !== '0') {
+        if (row[0] !== baselineRow[0] || row[1] !== baselineRow[1] || row[2] !== '0') {
           throw new Error('content setting storage did not return to its original row and value');
         }
         const finalState = await client.invoke(new Api.account.GetContentSettings());
-        if (finalState?.sensitiveEnabled === true || settingRow() !== before) {
+        if (Boolean(finalState?.sensitiveEnabled) !== baselineEnabled || settingRow() !== before) {
           throw new Error('content setting did not return to its pre-probe state');
         }
       } catch (error) {
@@ -171,13 +173,15 @@ async function main() {
   console.log(JSON.stringify({
     transport: `DC${dcId} WebSocket -> gateway -> session -> NSFW BFF -> User service/PostgreSQL`,
     getType: enabledType,
-    setEnabledType: setType,
-    setDisabledType: disabledType,
-    enabledReadback: true,
-    disabledReadback: true,
+    setTemporaryType: setType,
+    restoreType: disabledType,
+    baselineEnabled,
+    temporaryEnabled,
+    temporaryReadback: true,
+    restoredReadback: true,
     storageRestored: true,
     rpcWrites: 2,
-    cleanup: 'restored the original false override through the RPC',
+    cleanup: 'restored the original sensitive_enabled value through the RPC',
   }));
 }
 

@@ -2,25 +2,31 @@
   "run": {
     "date": "2026-10-18",
     "surface": "Telegram WebA real browser acceptance",
-    "base_url": "http://127.0.0.1:1234/",
+    "base_url": "http://127.0.0.1:1237/",
     "test_command": "npm run test:playwright:real -- --reporter=line",
     "result": "PASS",
-    "tests_passed": 7,
-    "tests_total": 7,
+    "tests_passed": 14,
+    "tests_total": 14,
     "rerun": {
       "result": "PASS",
-      "tests_passed": 7,
-      "tests_total": 7,
-      "observed_at_local": "2026-10-18T06:20:27+08:00"
+      "tests_passed": 14,
+      "tests_total": 14,
+      "observed_at_local": "2026-10-18T13:17:02+08:00",
+      "base_url": "http://127.0.0.1:1237/",
+      "dc": "127.0.0.1:11443",
+      "backend_log_window_utc": {
+        "from": "2026-10-18T05:13:00Z",
+        "to": "2026-10-18T05:17:06Z"
+      }
     },
-    "cleanup": "Playwright finally blocks removed temporary groups, channels, contacts, notification settings, and direct messages"
+    "cleanup": "Playwright finally blocks removed temporary groups, channels, contacts, notification settings, direct messages, drafts, reactions, profile changes, block relations, and the unread/read acceptance message; database check found 0 active web-chat-unread-* messages"
   },
   "ui_flows": [
     {
       "name": "bot_and_mini_app",
       "result": "PASS",
       "business_methods": [
-        "messages.startBot",
+        "messages.sendMessage",
         "messages.requestMainWebView"
       ]
     },
@@ -47,7 +53,7 @@
       "name": "contact_add_remove",
       "result": "PASS",
       "business_methods": [
-        "contacts.addContact",
+        "contacts.importContacts",
         "contacts.deleteContacts"
       ]
     },
@@ -76,6 +82,71 @@
         "messages.deleteMessages",
         "messages.getPeerDialogs"
       ]
+    },
+    {
+      "name": "direct_chat_pin_unpin_reload",
+      "result": "PASS",
+      "business_methods": [
+        "messages.sendMessage",
+        "messages.toggleDialogPin",
+        "messages.getDialogs",
+        "messages.deleteMessages"
+      ]
+    },
+    {
+      "name": "direct_chat_draft_roundtrip_and_clear",
+      "result": "PASS",
+      "business_methods": [
+        "messages.saveDraft",
+        "messages.getDialogs",
+        "messages.getPeerDialogs"
+      ]
+    },
+    {
+      "name": "direct_chat_mark_unread_read_and_restore",
+      "result": "PASS",
+      "business_methods": [
+        "messages.sendMessage",
+        "messages.markDialogUnread (unread=true)",
+        "messages.markDialogUnread (unread=false)",
+        "messages.getPeerDialogs",
+        "messages.deleteMessages"
+      ]
+    },
+    {
+      "name": "direct_message_reaction_and_search",
+      "result": "PASS",
+      "business_methods": [
+        "messages.sendMessage",
+        "messages.sendReaction",
+        "messages.search",
+        "messages.deleteMessages"
+      ]
+    },
+    {
+      "name": "account_profile_update_restore",
+      "result": "PASS",
+      "business_methods": [
+        "account.updateProfile",
+        "users.getFullUser"
+      ]
+    },
+    {
+      "name": "contact_block_unblock_restore",
+      "result": "PASS",
+      "business_methods": [
+        "contacts.block",
+        "contacts.unblock",
+        "contacts.getBlocked"
+      ]
+    },
+    {
+      "name": "phone_privacy_update_restore",
+      "result": "PASS",
+      "business_methods": [
+        "account.getPrivacy",
+        "account.setPrivacy"
+      ]
     }
   ],
   "layer229_transport_observation": {
@@ -86,6 +157,7 @@
       "messages.getHistory",
       "messages.deleteMessages",
       "messages.getPeerDialogs",
+      "messages.markDialogUnread",
       "messages.getFullChat",
       "messages.createChat",
       "channels.createChannel",
@@ -93,14 +165,28 @@
       "channels.deleteChannel",
       "account.updateNotifySettings",
       "account.getNotifySettings",
-      "contacts.addContact",
+      "contacts.importContacts",
       "contacts.deleteContacts",
-      "messages.startBot",
-      "messages.requestMainWebView"
+      "messages.requestMainWebView",
+      "messages.toggleDialogPin",
+      "messages.getDialogs",
+      "messages.saveDraft",
+      "messages.sendReaction",
+      "messages.search",
+      "account.updateProfile",
+      "users.getFullUser",
+      "contacts.block",
+      "contacts.unblock",
+      "contacts.getBlocked",
+      "account.getPrivacy",
+      "account.setPrivacy"
     ],
     "backend_log_assertions": [
       "invokeWithLayer layer:229",
-      "authsession.setLayer layer:229"
+      "authsession.setLayer layer:229",
+      "messages.markDialogUnread unread:true and unread:false returned BoolTrue",
+      "business RPC metadata in the current window carried layer:229",
+      "current business RPC replies were successful; optional startup probes separately returned documented METHOD_NOT_IMPL, PAYMENT_UNSUPPORTED, or AUTH_KEY_UNREGISTERED"
     ]
   },
   "manual_browser_roundtrip": {
@@ -117,6 +203,7 @@
       "messages.deleteMessages",
       "messages.getHistory"
     ],
+    "database_after_confirmation": "manual-web-layer229-* active rows=0; deleted rows=4",
     "result": "PASS"
   },
   "verification": {
@@ -129,10 +216,24 @@
     "duplicate_constructor_ids": 0,
     "constructor_id_mismatches": 0,
     "git_diff_check": "PASS",
-    "frontend_build": "PASS"
+    "frontend_build": "PASS",
+    "frontend_targeted_eslint": "PASS",
+    "frontend_typecheck": "FAIL: existing errors in src/components/App.tsx, src/global/actions/api/chats.ts, and GramJS crypto/IGE/Utils declarations",
+    "backend_focused_bff_tests": "PASS: contacts, privacysettings, userchannelprofiles, dialogs, and messages packages",
+    "real_web_tests": "PASS: 14/14 (2026-10-18T13:13-13:17 +08:00, default port 1237)",
+    "contact_block_locator_fix": "PASS: BlockUser/Block User label and menu backdrop handling; independent port-1238 run 1/1",
+    "dev_server_probe": "PASS: GET / returned HTTP 200 from the real-backend Vite server on 127.0.0.1:1237",
+    "frontend_backend_contract_scan": {
+      "frontend_callApi_unique_methods": 478,
+      "frontend_callApi_unresolved_methods": 0,
+      "gramjs_rpc_constructors_used": 434,
+      "gramjs_rpc_constructors_missing_from_layer229": 0,
+      "backend_routes_missing_after_delegation_normalization": 0
+    }
   },
   "residual_scope": [
     "Most Layer 229 methods remain PARTIAL_ISOLATED_SESSION_E2E, PARTIAL_ISOLATED_DB_ONLY, or PARTIAL_COMPONENT_ONLY because production provider, restart, cross-device update, and production-traffic gates are separate acceptance requirements.",
-    "Browser console warnings for unavailable language detector, push permission, service worker, and missing fixture media did not fail the seven business flows."
+    "Browser console warnings for unavailable language detector, push permission, service worker, and missing fixture media did not fail the fourteen business flows.",
+    "Optional UI probes returned expected non-blocking METHOD_NOT_IMPL for contacts.getTopPeers, contacts.getSponsoredPeers, messages.getSponsoredMessages, and bots.getBotRecommendations, plus PAYMENT_UNSUPPORTED for payments.getStarsStatus; these responses are not counted as successful business methods."
   ]
 }

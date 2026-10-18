@@ -30,3 +30,18 @@ func TestMessagesGetUnreadMentionsReportsUnsupportedChannelStorage(t *testing.T)
 		t.Fatalf("MessagesGetUnreadMentions(channel) error = %v, want CHANNEL_UNREAD_MENTIONS_UNSUPPORTED", err)
 	}
 }
+
+func TestMessagesGetUnreadMentionsRejectsNilCoreAndMissingDependencies(t *testing.T) {
+	request := &mtproto.TLMessagesGetUnreadMentions{
+		Peer: mtproto.MakeTLInputPeerChat(&mtproto.InputPeer{ChatId: 77}).To_InputPeer(),
+	}
+	var nilCore *MessagesCore
+	if got, err := nilCore.MessagesGetUnreadMentions(request); got != nil || err != mtproto.ErrAuthKeyUnregistered {
+		t.Fatalf("nil core = (%v, %v), want AUTH_KEY_UNREGISTERED", got, err)
+	}
+
+	core := &MessagesCore{MD: &metadata.RpcMetadata{UserId: 42}}
+	if got, err := core.MessagesGetUnreadMentions(request); got != nil || err != mtproto.ErrInternalServerError {
+		t.Fatalf("missing dependencies = (%v, %v), want INTERNAL_SERVER_ERROR", got, err)
+	}
+}

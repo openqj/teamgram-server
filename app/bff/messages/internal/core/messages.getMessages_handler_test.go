@@ -239,3 +239,45 @@ func TestMessagesGetMessagesRejectsMalformedMessageProviderBox(t *testing.T) {
 		t.Fatalf("MessagesGetMessages() = (%v, %v), want nil result and INTERNAL_SERVER_ERROR", got, err)
 	}
 }
+
+func TestMessagesGetMessagesRejectsProviderIDMismatch(t *testing.T) {
+	box := messagesGetMessagesBox(13, mtproto.MakePeerUser(84), 42)
+	box.Message.Id = 14
+	client := &messagesGetMessagesClientStub{response: &messagepb.Vector_MessageBox{Datas: []*mtproto.MessageBox{box}}}
+	core := newMessagesGetMessagesTestCore(client, nil, nil)
+
+	got, err := core.MessagesGetMessages(&mtproto.TLMessagesGetMessages{
+		Id_VECTORINPUTMESSAGE: []*mtproto.InputMessage{messagesGetMessagesInputID(13)},
+	})
+	if got != nil || !errors.Is(err, mtproto.ErrInternalServerError) {
+		t.Fatalf("MessagesGetMessages() = (%v, %v), want nil result and INTERNAL_SERVER_ERROR", got, err)
+	}
+}
+
+func TestMessagesGetMessagesRejectsUnknownProviderPeerType(t *testing.T) {
+	box := messagesGetMessagesBox(13, mtproto.MakePeerUser(84), 42)
+	box.PeerType = mtproto.PEER_UNKNOWN
+	client := &messagesGetMessagesClientStub{response: &messagepb.Vector_MessageBox{Datas: []*mtproto.MessageBox{box}}}
+	core := newMessagesGetMessagesTestCore(client, nil, nil)
+
+	got, err := core.MessagesGetMessages(&mtproto.TLMessagesGetMessages{
+		Id_VECTORINPUTMESSAGE: []*mtproto.InputMessage{messagesGetMessagesInputID(13)},
+	})
+	if got != nil || !errors.Is(err, mtproto.ErrInternalServerError) {
+		t.Fatalf("MessagesGetMessages() = (%v, %v), want nil result and INTERNAL_SERVER_ERROR", got, err)
+	}
+}
+
+func TestMessagesGetMessagesRejectsPinnedInputWithoutResolver(t *testing.T) {
+	client := &messagesGetMessagesClientStub{response: &messagepb.Vector_MessageBox{}}
+	core := newMessagesGetMessagesTestCore(client, nil, nil)
+
+	got, err := core.MessagesGetMessages(&mtproto.TLMessagesGetMessages{
+		Id_VECTORINPUTMESSAGE: []*mtproto.InputMessage{
+			mtproto.MakeTLInputMessagePinned(nil).To_InputMessage(),
+		},
+	})
+	if got != nil || !errors.Is(err, mtproto.ErrInputConstructorInvalid) {
+		t.Fatalf("MessagesGetMessages() = (%v, %v), want nil result and INPUT_CONSTRUCTOR_INVALID", got, err)
+	}
+}

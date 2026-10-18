@@ -38,10 +38,16 @@ func (c *ApiFullCore) MessagesRequestMainWebView(in *mtproto.TLMessagesRequestMa
 	if err != nil {
 		return nil, err
 	}
+	if in == nil || in.GetPeer() == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if err := c.validateMiniAppPeer(uid, in.GetPeer()); err != nil {
+		return nil, err
+	}
 	if !persist.PostgresEnabled() {
 		return nil, mtproto.ErrMethodNotImpl
 	}
-	if in == nil || in.GetBot() == nil || c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.UserClient == nil {
+	if in.GetBot() == nil || c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.UserClient == nil {
 		return nil, mtproto.ErrMethodNotImpl
 	}
 	botID, err := miniBotID(in.GetBot())

@@ -19,9 +19,14 @@
 package core
 
 import (
+	"time"
+
 	"github.com/teamgram/proto/mtproto"
+	msgpb "github.com/teamgram/teamgram-server/app/messenger/msg/msg/msg"
 	chatpb "github.com/teamgram/teamgram-server/app/service/biz/chat/chat"
+	messagepb "github.com/teamgram/teamgram-server/app/service/biz/message/message"
 	userpb "github.com/teamgram/teamgram-server/app/service/biz/user/user"
+	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
 // MessagesSendScreenshotNotification
@@ -30,12 +35,12 @@ func (c *DialogsCore) MessagesSendScreenshotNotification(in *mtproto.TLMessagesS
 	if c == nil || c.MD == nil || c.MD.UserId <= 0 {
 		return nil, mtproto.ErrAuthKeyUnregistered
 	}
-	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.SyncClient == nil {
-		return nil, mtproto.ErrInternalServerError
-	}
 	if in == nil || in.GetPeer() == nil {
 		c.Logger.Errorf("messages.sendScreenshotNotification - error: %v", mtproto.ErrPeerIdInvalid)
 		return nil, mtproto.ErrPeerIdInvalid
+	}
+	if in.GetRandomId() == 0 {
+		return nil, mtproto.ErrRandomIdEmpty
 	}
 	peer := mtproto.FromInputPeer2(c.MD.UserId, in.Peer)
 	if peer == nil || peer.PeerId == 0 {
@@ -51,12 +56,106 @@ func (c *DialogsCore) MessagesSendScreenshotNotification(in *mtproto.TLMessagesS
 	if err := c.validateScreenshotPeer(peer, in.GetPeer()); err != nil {
 		return nil, err
 	}
-	// A screenshot service message is a common PTS event. This BFF has no
-	// authoritative service-message persistence or PTS allocator, so emitting
-	// updateNewMessage with pts=0 would make the PostgreSQL sync journal reject
-	// the request. Keep the authorized boundary explicit until such a producer
-	// owns persistence and update state.
-	return nil, mtproto.ErrMethodNotImpl
+	if c.svcCtx == nil || c.svcCtx.Dao == nil ||
+		c.svcCtx.Dao.MessageClient == nil || c.svcCtx.Dao.MsgClient == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
+
+	replyID, topID, err := screenshotReplyTarget(in)
+	if err != nil {
+		return nil, err
+	}
+	if err = c.validateScreenshotReply(peer, replyID); err != nil {
+		return nil, err
+	}
+
+	peerType := peer.PeerType
+	if peerType == mtproto.PEER_SELF {
+		peerType = mtproto.PEER_USER
+		peer = mtproto.MakePeerUtil(peerType, c.MD.UserId)
+	}
+	message := mtproto.MakeTLMessageService(&mtproto.Message{
+		Out:    true,
+		FromId: mtproto.MakePeerUser(c.MD.UserId),
+		PeerId: peer.ToPeer(),
+		Date:   int32(time.Now().Unix()),
+		ReplyTo: &mtproto.MessageReplyHeader{
+			ReplyToMsgId_INT32: replyID,
+			ReplyToMsgId:       replyID,
+			ReplyToTopId:       topID,
+		},
+		Action: mtproto.MakeMessageActionScreenshotTaken(),
+	}).To_Message()
+	updates, err := c.svcCtx.Dao.MsgClient.MsgSendMessageV2(c.ctx, &msgpb.TLMsgSendMessageV2{
+		UserId:    c.MD.UserId,
+		AuthKeyId: c.MD.PermAuthKeyId,
+		PeerType:  peerType,
+		PeerId:    peer.PeerId,
+		Message: []*msgpb.OutboxMessage{msgpb.MakeTLOutboxMessage(&msgpb.OutboxMessage{
+			RandomId: in.GetRandomId(),
+			Message:  message,
+		}).To_OutboxMessage()},
+	})
+	if err != nil {
+		return nil, err
+	}
+	if updates == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
+	return updates, nil
+}
+
+func screenshotReplyTarget(in *mtproto.TLMessagesSendScreenshotNotification) (int32, *wrapperspb.Int32Value, error) {
+	if in == nil {
+		return 0, nil, mtproto.ErrInputRequestInvalid
+	}
+	replyTo := in.GetReplyTo()
+	if replyTo == nil {
+		if in.GetReplyToMsgId() <= 0 {
+			return 0, nil, mtproto.ErrInputRequestInvalid
+		}
+		return in.GetReplyToMsgId(), nil, nil
+	}
+	if replyTo.GetReplyToMsgId() <= 0 {
+		return 0, nil, mtproto.ErrMessageIdInvalid
+	}
+	if replyTo.GetReplyToPeerId() != nil || replyTo.GetQuoteText() != nil || len(replyTo.GetQuoteEntities()) > 0 || replyTo.GetQuoteOffset() != nil {
+		return 0, nil, mtproto.ErrMethodNotImpl
+	}
+	return replyTo.GetReplyToMsgId(), replyTo.GetTopMsgId(), nil
+}
+
+func (c *DialogsCore) validateScreenshotReply(peer *mtproto.PeerUtil, replyID int32) error {
+	if peer == nil || replyID <= 0 || c == nil || c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.MessageClient == nil {
+		return mtproto.ErrInternalServerError
+	}
+	boxes, err := c.svcCtx.Dao.MessageClient.MessageGetUserMessageList(c.ctx, &messagepb.TLMessageGetUserMessageList{
+		UserId: c.MD.UserId,
+		IdList: []int32{replyID},
+	})
+	if err != nil {
+		return err
+	}
+	if boxes == nil {
+		return mtproto.ErrInternalServerError
+	}
+	expectedType := peer.PeerType
+	if expectedType == mtproto.PEER_SELF {
+		expectedType = mtproto.PEER_USER
+	}
+	for _, box := range boxes.GetDatas() {
+		if box == nil || box.GetMessage() == nil || box.GetMessageId() != replyID || box.GetMessage().GetId() != replyID {
+			continue
+		}
+		boxType := box.GetPeerType()
+		if boxType == mtproto.PEER_SELF {
+			boxType = mtproto.PEER_USER
+		}
+		if boxType == expectedType && box.GetPeerId() == peer.PeerId {
+			return nil
+		}
+	}
+	return mtproto.ErrMessageIdInvalid
 }
 
 func (c *DialogsCore) validateScreenshotPeer(peer *mtproto.PeerUtil, input *mtproto.InputPeer) error {

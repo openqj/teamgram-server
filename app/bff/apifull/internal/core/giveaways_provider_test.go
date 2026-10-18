@@ -85,3 +85,69 @@ func TestGiveawayOptionsRejectMalformedProviderData(t *testing.T) {
 		t.Fatalf("malformed premium options = (%#v, %v), want provider-invalid refusal", got, err)
 	}
 }
+
+func TestPremiumGiftCodeOptionsRejectEmptyStoreProduct(t *testing.T) {
+	const uid int64 = 902012
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		writeSignedPaymentProviderResponse(t, w, struct {
+			Verified bool                             `json:"verified"`
+			UserID   int64                            `json:"user_id"`
+			Options  []*mtproto.PremiumGiftCodeOption `json:"options"`
+		}{true, uid, []*mtproto.PremiumGiftCodeOption{{Users: 1, Months: 3, StoreProduct: wrapperspb.String("  "), Currency: "USD", Amount: 999}}})
+	}))
+	defer server.Close()
+
+	c := &ApiFullCore{
+		ctx:    context.Background(),
+		svcCtx: &svc.ServiceContext{Config: config.Config{PaymentProviderEndpoint: server.URL, PaymentProviderSigningKey: paymentProviderTestSigningKey}},
+		MD:     &metadata.RpcMetadata{UserId: uid},
+	}
+	got, err := c.PaymentsGetPremiumGiftCodeOptions(&mtproto.TLPaymentsGetPremiumGiftCodeOptions{})
+	if got != nil || !errors.Is(err, mtproto.ErrPaymentProviderInvalid) {
+		t.Fatalf("empty store product = (%#v, %v), want provider-invalid refusal", got, err)
+	}
+}
+
+func TestPremiumGiftCodeOptionsRejectNonPositiveStoreQuantity(t *testing.T) {
+	const uid int64 = 902014
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		writeSignedPaymentProviderResponse(t, w, struct {
+			Verified bool                             `json:"verified"`
+			UserID   int64                            `json:"user_id"`
+			Options  []*mtproto.PremiumGiftCodeOption `json:"options"`
+		}{true, uid, []*mtproto.PremiumGiftCodeOption{{Users: 1, Months: 3, StoreQuantity: wrapperspb.Int32(0), Currency: "USD", Amount: 999}}})
+	}))
+	defer server.Close()
+
+	c := &ApiFullCore{
+		ctx:    context.Background(),
+		svcCtx: &svc.ServiceContext{Config: config.Config{PaymentProviderEndpoint: server.URL, PaymentProviderSigningKey: paymentProviderTestSigningKey}},
+		MD:     &metadata.RpcMetadata{UserId: uid},
+	}
+	got, err := c.PaymentsGetPremiumGiftCodeOptions(&mtproto.TLPaymentsGetPremiumGiftCodeOptions{})
+	if got != nil || !errors.Is(err, mtproto.ErrPaymentProviderInvalid) {
+		t.Fatalf("non-positive store quantity = (%#v, %v), want provider-invalid refusal", got, err)
+	}
+}
+
+func TestStarsGiveawayOptionsRejectEmptyWinners(t *testing.T) {
+	const uid int64 = 902013
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		writeSignedPaymentProviderResponse(t, w, struct {
+			Verified bool                           `json:"verified"`
+			UserID   int64                          `json:"user_id"`
+			Options  []*mtproto.StarsGiveawayOption `json:"options"`
+		}{true, uid, []*mtproto.StarsGiveawayOption{{Stars: 100, Currency: "USD", Amount: 299}}})
+	}))
+	defer server.Close()
+
+	c := &ApiFullCore{
+		ctx:    context.Background(),
+		svcCtx: &svc.ServiceContext{Config: config.Config{PaymentProviderEndpoint: server.URL, PaymentProviderSigningKey: paymentProviderTestSigningKey}},
+		MD:     &metadata.RpcMetadata{UserId: uid},
+	}
+	got, err := c.PaymentsGetStarsGiveawayOptions(&mtproto.TLPaymentsGetStarsGiveawayOptions{})
+	if got != nil || !errors.Is(err, mtproto.ErrPaymentProviderInvalid) {
+		t.Fatalf("empty winners = (%#v, %v), want provider-invalid refusal", got, err)
+	}
+}

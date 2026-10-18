@@ -32,3 +32,30 @@ func TestApplyPaymentProviderEnvironmentRejectsInvalidBodyLimit(t *testing.T) {
 		t.Fatal("applyPaymentProviderEnvironment() error = nil, want invalid body limit error")
 	}
 }
+
+func TestApplyIdentityEnvironment(t *testing.T) {
+	t.Setenv("TEAMGRAM_IDENTITY_BASE_URL", " https://identity.internal ")
+	t.Setenv("TEAMGRAM_IDENTITY_INTERNAL_SERVICE_TOKEN", " internal-secret ")
+	t.Setenv("TEAMGRAM_IDENTITY_REQUEST_TIMEOUT_SECONDS", "7")
+
+	c := config.Config{}
+	if err := applyIdentityEnvironment(&c); err != nil {
+		t.Fatalf("applyIdentityEnvironment() error = %v", err)
+	}
+	if c.IdentityBaseURL != "https://identity.internal" {
+		t.Fatalf("IdentityBaseURL = %q", c.IdentityBaseURL)
+	}
+	if c.IdentityInternalServiceToken != "internal-secret" {
+		t.Fatalf("IdentityInternalServiceToken = %q", c.IdentityInternalServiceToken)
+	}
+	if c.IdentityRequestTimeoutSeconds != 7 {
+		t.Fatalf("IdentityRequestTimeoutSeconds = %d", c.IdentityRequestTimeoutSeconds)
+	}
+}
+
+func TestApplyIdentityEnvironmentRejectsInvalidTimeout(t *testing.T) {
+	t.Setenv("TEAMGRAM_IDENTITY_REQUEST_TIMEOUT_SECONDS", "not-a-number")
+	if err := applyIdentityEnvironment(&config.Config{}); err == nil {
+		t.Fatal("applyIdentityEnvironment() error = nil, want invalid timeout error")
+	}
+}

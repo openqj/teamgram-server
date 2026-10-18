@@ -36,6 +36,9 @@ func (c *SponsoredMessagesCore) MessagesGetSponsoredMessages(in *mtproto.TLMessa
 	if in == nil || in.GetPeer() == nil {
 		return nil, mtproto.ErrPeerIdInvalid
 	}
+	if msgID := in.GetMsgId(); msgID != nil && msgID.GetValue() <= 0 {
+		return nil, mtproto.ErrMessageIdInvalid
+	}
 	enabled, _, err := persist.GetSponsoredMessagesEnabled(c.ctx, uid)
 	if err != nil {
 		return nil, mtproto.ErrInternalServerError
@@ -44,6 +47,12 @@ func (c *SponsoredMessagesCore) MessagesGetSponsoredMessages(in *mtproto.TLMessa
 		return mtproto.MakeTLMessagesSponsoredMessagesEmpty(nil).To_Messages_SponsoredMessages(), nil
 	}
 	if c.svcCtx != nil && strings.TrimSpace(c.svcCtx.Config.SponsoredProviderEndpoint) == "" {
+		if in.GetMsgId() != nil {
+			// The deployment-owned inventory is keyed only by peer. Do not
+			// return an arbitrary ad when the Layer 229 message selector is
+			// present but cannot be honored.
+			return nil, mtproto.ErrMethodNotImpl
+		}
 		result, found, err := persist.LoadSponsoredMessages(c.ctx, sponsoredPeer(in.GetPeer()))
 		if err != nil {
 			if errors.Is(err, persist.ErrSponsoredInventoryUnavailable) {
@@ -57,7 +66,11 @@ func (c *SponsoredMessagesCore) MessagesGetSponsoredMessages(in *mtproto.TLMessa
 		return result, nil
 	}
 	var result mtproto.Messages_SponsoredMessages
-	if err := c.callSponsoredProvider("messages.getSponsoredMessages", map[string]any{"peer": in.GetPeer()}, &result); err != nil {
+	payload := map[string]any{"peer": in.GetPeer()}
+	if msgID := in.GetMsgId(); msgID != nil {
+		payload["msg_id"] = msgID.GetValue()
+	}
+	if err := c.callSponsoredProvider("messages.getSponsoredMessages", payload, &result); err != nil {
 		return nil, err
 	}
 	if result.GetPredicateName() == "" {

@@ -8,6 +8,8 @@ package http
 
 import (
 	"encoding/binary"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -25,6 +27,11 @@ import (
 func RegisterHandlers(engine *rest.Server, serverCtx *svc.ServiceContext) {
 	engine.AddRoutes(
 		[]rest.Route{
+			{
+				Method:  http.MethodPost,
+				Path:    "/v1/internal/aimemory/token",
+				Handler: aimemoryTokenHandler(serverCtx),
+			},
 			{
 				Method:  http.MethodPost,
 				Path:    "/payment/provider/webhook",
@@ -86,6 +93,69 @@ func RegisterHandlers(engine *rest.Server, serverCtx *svc.ServiceContext) {
 			},
 		},
 	)
+}
+
+func aimemoryTokenHandler(serverCtx *svc.ServiceContext) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if serverCtx == nil || serverCtx.Dao == nil {
+			http.Error(w, "AIMemory token exchange is unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		if serverCtx.AuthsessionClient == nil || serverCtx.AIMemoryTokenExchanger == nil {
+			http.Error(w, "AIMemory token exchange is not configured", http.StatusNotFound)
+			return
+		}
+		if r.Body == nil {
+			http.Error(w, "invalid MTProto proof", http.StatusUnauthorized)
+			return
+		}
+		r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, "invalid MTProto proof", http.StatusRequestEntityTooLarge)
+			return
+		}
+		if len(body) < 8 {
+			http.Error(w, "invalid MTProto proof", http.StatusUnauthorized)
+			return
+		}
+		authKeyID := int64(binary.LittleEndian.Uint64(body[:8]))
+		message := mtproto.NewMTPRawMessage(authKeyID, 0, core.TRANSPORT_HTTP)
+		if err := message.Decode(body); err != nil {
+			http.Error(w, "invalid MTProto proof", http.StatusUnauthorized)
+			return
+		}
+
+		c := core.New2(r.Context(), serverCtx, &metadata.RpcMetadata{
+			ServerId:    serverCtx.Dao.GetGatewayId(),
+			ClientAddr:  httpx.GetRemoteAddr(r),
+			AuthId:      authKeyID,
+			ReceiveTime: time.Now().Unix(),
+		})
+		accessToken, expiresAt, err := c.IssueAIMemoryToken(message)
+		if err != nil {
+			status := http.StatusServiceUnavailable
+			message := "AIMemory token exchange is unavailable"
+			switch {
+			case errors.Is(err, core.ErrAIMemoryTokenProof):
+				status = http.StatusUnauthorized
+				message = "invalid MTProto proof"
+			case errors.Is(err, core.ErrAIMemoryTokenIdentity):
+				status = http.StatusNotFound
+				message = "Teamgram account is not bound to a product account"
+			}
+			http.Error(w, message, status)
+			return
+		}
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"access_token": accessToken,
+			"token_type":   "Bearer",
+			"expires_at":   expiresAt,
+		})
+	}
 }
 
 func apiw1(ctx *svc.ServiceContext) http.HandlerFunc {

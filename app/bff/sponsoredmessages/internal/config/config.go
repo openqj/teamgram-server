@@ -29,4 +29,6 @@ type Config struct {
 	SponsoredProviderKey            string `json:",optional"`
 	SponsoredProviderSigningKey     string `json:",optional"`
 	SponsoredProviderTimeoutSeconds int    `json:",optional"`
+	// Only the explicit provider-fixture mode may use HTTP; production must use HTTPS.
+	AllowInsecureProviderHTTP bool `json:",optional"`
 }

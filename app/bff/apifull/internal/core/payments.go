@@ -1672,6 +1672,9 @@ func (c *ApiFullCore) PaymentsGetPaymentForm(in *mtproto.TLPaymentsGetPaymentFor
 		return nil, mtproto.ErrInvoicePayloadInvalid
 	}
 	switch in.GetInvoice().GetPredicateName() {
+	case mtproto.Predicate_inputInvoiceStarGiftUpgrade,
+		mtproto.Predicate_inputInvoiceStarGiftTransfer:
+		return c.starGiftPaymentForm(in.GetInvoice())
 	case mtproto.Predicate_inputInvoiceStarGift,
 		mtproto.Predicate_inputInvoicePremiumGiftStars,
 		mtproto.Predicate_inputInvoiceBusinessBotTransferStars:

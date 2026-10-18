@@ -426,6 +426,56 @@ function readUserPremiumRow(): Record<string, unknown> {
   return result;
 }
 
+function readUserPremiumSnapshot(): { premium: boolean; premiumExpireDate: number } {
+  const result = sqlJson(`
+    SELECT json_build_object('premium', premium, 'premiumExpireDate', premium_expire_date)
+    FROM users WHERE id = ${aUserId.toString()} LIMIT 1
+  `);
+  requireCondition(result != null, `PostgreSQL users row was not found for ${aUserId.toString()}`);
+  return {
+    premium: result.premium === true,
+    premiumExpireDate: Number(result.premiumExpireDate || 0),
+  };
+}
+
+function cleanupProbeRows(transactionId: string, requestKey: string, eventID: string, snapshot: { premium: boolean; premiumExpireDate: number }): void {
+  if (!transactionId && !requestKey && !eventID) return;
+  const transaction = quote(transactionId);
+  const request = quote(requestKey);
+  const event = quote(eventID);
+  const premium = snapshot.premium ? 'TRUE' : 'FALSE';
+  const expireDate = Number.isSafeInteger(snapshot.premiumExpireDate) ? snapshot.premiumExpireDate : 0;
+  sql(`BEGIN;
+    DELETE FROM apifull_payment_entitlement_outbox
+      WHERE request_id IN (SELECT id FROM apifull_payment_request
+        WHERE user_id=${aUserId.toString()} AND (transaction_id=${transaction} OR request_key=${request}));
+    DELETE FROM apifull_payment_receipt
+      WHERE request_id IN (SELECT id FROM apifull_payment_request
+        WHERE user_id=${aUserId.toString()} AND (transaction_id=${transaction} OR request_key=${request}));
+    DELETE FROM apifull_payment_ledger
+      WHERE request_id IN (SELECT id FROM apifull_payment_request
+        WHERE user_id=${aUserId.toString()} AND (transaction_id=${transaction} OR request_key=${request}));
+    DELETE FROM user_premium_payment_grant
+      WHERE user_id=${aUserId.toString()} AND transaction_id=${transaction};
+    DELETE FROM apifull_payment_request
+      WHERE user_id=${aUserId.toString()} AND (transaction_id=${transaction} OR request_key=${request});
+    DELETE FROM apifull_payment_provider_webhook WHERE event_id=${event};
+    DELETE FROM apifull_payment_provider_reversal
+      WHERE user_id=${aUserId.toString()} AND transaction_id=${transaction};
+    DELETE FROM apifull_payment_provider_reconciliation
+      WHERE user_id=${aUserId.toString()} AND transaction_id=${transaction};
+    DELETE FROM apifull_payment_provider_entitlement
+      WHERE user_id=${aUserId.toString()} AND transaction_id=${transaction};
+    DELETE FROM apifull_payment_provider_receipt
+      WHERE user_id=${aUserId.toString()} AND (transaction_id=${transaction} OR request_key=${request});
+    DELETE FROM apifull_payment_provider_operation
+      WHERE user_id=${aUserId.toString()} AND (transaction_id=${transaction} OR request_key=${request});
+    UPDATE users
+      SET premium=${premium}, premium_expire_date=${expireDate}
+      WHERE id=${aUserId.toString()};
+    COMMIT;`);
+}
+
 function readReversalEvidence(transactionId: string, eventID: string): Record<string, unknown> {
   const result = sqlJson(`
     SELECT json_build_object(
@@ -565,6 +615,7 @@ async function main(): Promise<void> {
   requireCondition(providerSigningKey, 'TEAMGRAM_PAYMENT_PROVIDER_SIGNING_KEY is required for reconciliation');
   requireCondition(providerName.length > 0 && providerName.length <= 32, 'TEAMGRAM_PAYMENT_PROVIDER_NAME must be 1-32 characters');
   const invoiceSlug = `${invoiceSlugBase}-${Date.now()}-${process.pid}`;
+  const premiumSnapshot = readUserPremiumSnapshot();
   let pair = await connectPairWithRetry();
   const evidence: Record<string, unknown> = {
     transport: `DC${dcId} TCPObfuscated -> gateway -> session -> Premium BFF -> payment fixture`,
@@ -574,6 +625,8 @@ async function main(): Promise<void> {
     restartRequested: runRestart,
   };
   let transactionId = '';
+  let requestKey = '';
+  let webhookEventID = '';
   try {
     evidence.purchase = await purchasePremium(pair.a, invoiceSlug);
     transactionId = findTransactionId();
@@ -593,9 +646,9 @@ async function main(): Promise<void> {
     } else {
       evidence.restart = 'skipped (RUN_BACKEND_RESTART=0)';
     }
-    const requestKey = String((evidence.ledgerBeforeRestart as Record<string, unknown>).requestKey || '');
+    requestKey = String((evidence.ledgerBeforeRestart as Record<string, unknown>).requestKey || '');
     requireCondition(requestKey, 'settled Premium request key is missing');
-    const webhookEventID = `probe-refund-${Date.now()}-${process.pid}`;
+    webhookEventID = `probe-refund-${Date.now()}-${process.pid}`;
     evidence.reconciliationSeed = await waitForPaymentReconciliationRow(transactionId);
     evidence.providerEntitlementRevoked = markProviderEntitlementRevoked(transactionId);
     evidence.reconciliationArmed = armPaymentReconciliation(transactionId);
@@ -605,6 +658,7 @@ async function main(): Promise<void> {
     console.log(JSON.stringify(evidence));
   } finally {
     await Promise.all([disconnect(pair.a), disconnect(pair.b)]);
+    cleanupProbeRows(transactionId, requestKey, webhookEventID, premiumSnapshot);
   }
 }
 

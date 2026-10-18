@@ -338,6 +338,31 @@ func builtinStickerRef(set *mtproto.InputStickerSet) (storedStickerRef, bool) {
 	}
 	var ref storedStickerRef
 	switch set.GetPredicateName() {
+	case mtproto.Predicate_inputStickerSetID:
+		switch set.GetId() {
+		case builtinAnimatedEmojiSetID:
+			ref = storedStickerRef{id: builtinAnimatedEmojiSetID, title: "Animated Emoji"}
+		case builtinAnimatedEmojiEffectsSetID:
+			ref = storedStickerRef{id: builtinAnimatedEmojiEffectsSetID, title: "Animated Emoji Effects"}
+		case builtinPremiumGiftsSetID:
+			ref = storedStickerRef{id: builtinPremiumGiftsSetID, title: "Premium Gifts"}
+		case builtinGenericEmojiEffectsSetID:
+			ref = storedStickerRef{id: builtinGenericEmojiEffectsSetID, title: "Generic Emoji Effects"}
+		case builtinDefaultStatusEmojiSetID:
+			ref = storedStickerRef{id: builtinDefaultStatusEmojiSetID, title: "Default Status Emojis"}
+		case builtinDefaultTopicIconsSetID:
+			ref = storedStickerRef{id: builtinDefaultTopicIconsSetID, title: "Default Topic Icons"}
+		case builtinChannelDefaultStatusSetID:
+			ref = storedStickerRef{id: builtinChannelDefaultStatusSetID, title: "Channel Status Emojis"}
+		case builtinTonGiftsSetID:
+			ref = storedStickerRef{id: builtinTonGiftsSetID, title: "TON Gifts"}
+		case builtinFestiveFontEmojiSetID:
+			ref = storedStickerRef{id: builtinFestiveFontEmojiSetID, short: "FestiveFontEmoji", title: "FestiveFontEmoji"}
+		case builtinRestrictedEmojiSetID:
+			ref = storedStickerRef{id: builtinRestrictedEmojiSetID, short: "RestrictedEmoji", title: "RestrictedEmoji"}
+		default:
+			return storedStickerRef{}, false
+		}
 	case mtproto.Predicate_inputStickerSetAnimatedEmoji:
 		ref = storedStickerRef{id: builtinAnimatedEmojiSetID, title: "Animated Emoji"}
 	case mtproto.Predicate_inputStickerSetAnimatedEmojiAnimations:

@@ -83,6 +83,7 @@ func ownedGiftInfoFromSaved(in *mtproto.SavedStarGift, users []*mtproto.User, ch
 		return nil
 	}
 	result := &GiftInfo{
+		Type:                    "regular",
 		Gift:                    giftFromMTProto(in.GetGift(), users, chats),
 		OwnedGiftID:             strconv.FormatInt(wrapperInt64(in.GetSavedId()), 10),
 		ConvertStarCount:        wrapperInt64(in.GetConvertStars()),
@@ -104,6 +105,7 @@ func ownedGiftInfoFromUser(in *mtproto.UserStarGift, users []*mtproto.User) *Gif
 		return nil
 	}
 	result := &GiftInfo{
+		Type:                    "regular",
 		Gift:                    giftFromMTProto(in.GetGift(), users, nil),
 		ConvertStarCount:        wrapperInt64(in.GetConvertStars()),
 		PrepaidUpgradeStarCount: wrapperInt64(in.GetUpgradeStars()),

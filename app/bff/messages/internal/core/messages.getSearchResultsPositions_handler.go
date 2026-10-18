@@ -38,6 +38,9 @@ const (
 // MessagesGetSearchResultsPositions
 // messages.getSearchResultsPositions#9c7f2f10 flags:# peer:InputPeer saved_peer_id:flags.2?InputPeer filter:MessagesFilter offset_id:int limit:int = messages.SearchResultsPositions;
 func (c *MessagesCore) MessagesGetSearchResultsPositions(in *mtproto.TLMessagesGetSearchResultsPositions) (*mtproto.Messages_SearchResultsPositions, error) {
+	if c == nil || c.MD == nil {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
 	if in == nil {
 		return nil, mtproto.ErrInputRequestInvalid
 	}
@@ -47,7 +50,7 @@ func (c *MessagesCore) MessagesGetSearchResultsPositions(in *mtproto.TLMessagesG
 	if in.GetFilter() == nil {
 		return nil, mtproto.ErrInputFilterInvalid
 	}
-	if c == nil || c.MD == nil || c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.MessageClient == nil {
+	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.MessageClient == nil {
 		return nil, mtproto.ErrInternalServerError
 	}
 	if c.MD.UserId <= 0 {

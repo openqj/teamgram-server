@@ -371,11 +371,12 @@ func (s *memoryStore) PaymentOperation(_ context.Context, uid int64, operation s
 }
 
 type server struct {
-	key     []byte
-	authKey string
-	store   businessStore
-	maxAge  time.Duration
-	clock   func() time.Time
+	key             []byte
+	authKey         string
+	store           businessStore
+	maxAge          time.Duration
+	clock           func() time.Time
+	webViewDataMode string
 }
 
 func (s *server) sign(body []byte) string {
@@ -511,8 +512,13 @@ func (s *server) dispatch(ctx context.Context, request requestEnvelope) (json.Ra
 		"messages.requestChatJoinWebView", "messages.togglePaidReactionPrivacy",
 		"messages.setBotShippingResults", "messages.setBotPrecheckoutResults":
 		return s.store.BotOperation(ctx, request.UserID, request.Operation, request.Payload)
+	case "messages.sendWebViewData":
+		if strings.EqualFold(strings.TrimSpace(s.webViewDataMode), "echo") {
+			return json.RawMessage(canonicalUpdates(time.Now().Unix())), nil
+		}
+		return s.store.BotOperation(ctx, request.UserID, request.Operation, request.Payload)
 	case "payments.launchPrepaidGiveaway", "payments.getStarGiftUpgradePreview",
-		"payments.upgradeStarGift", "payments.getStarGiftWithdrawalUrl",
+		"payments.upgradeStarGift", "payments.transferStarGift", "payments.getStarGiftWithdrawalUrl",
 		"payments.getResaleStarGifts", "payments.updateStarGiftPrice",
 		"payments.checkCanSendGift", "payments.getStarGiftAuctionState",
 		"payments.getStarGiftAuctionAcquiredGifts", "payments.getStarGiftActiveAuctions",
@@ -691,7 +697,14 @@ func main() {
 		}
 		timeout = time.Duration(seconds) * time.Second
 	}
-	s := &server{key: []byte(key), authKey: authKey, store: &postgresStore{db: pool}, maxAge: timeout, clock: time.Now}
+	s := &server{
+		key:             []byte(key),
+		authKey:         authKey,
+		store:           &postgresStore{db: pool},
+		maxAge:          timeout,
+		clock:           time.Now,
+		webViewDataMode: os.Getenv("WEBVIEW_DATA_MODE"),
+	}
 	port := strings.TrimSpace(os.Getenv("PORT"))
 	if port == "" {
 		port = defaultPort

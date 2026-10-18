@@ -130,6 +130,14 @@ function makeClient(authKeyBase64: string): any {
     autoReconnect: false,
     baseLogger: quietLogger,
   });
+  const initWith = client._initWith.bind(client);
+  client._initWith = (query: any) => {
+    const original = initWith(query);
+    if (className(original) !== 'InvokeWithLayer' || className(original.query) !== 'InitConnection') {
+      throw new Error('INVALID_INIT_CONNECTION_WRAPPER');
+    }
+    return new Api.InvokeWithLayer({ layer: 229, query: original.query });
+  };
   (client as any)._borrowExportedSender = async () => undefined;
   (client as any)._updateLoop = async () => undefined;
   return client;
@@ -211,6 +219,40 @@ async function run() {
       throw new Error(`unexpected StarsStatus ${className(status)} balance=${statusBalance}`);
     }
 
+    const history = await client.invoke(new Api.payments.GetStarsTransactions({
+      peer: new Api.InputPeerSelf(),
+      offset: '',
+      limit: 10,
+      ascending: true,
+    }));
+    const matchingHistory = Array.isArray(history?.history)
+      ? history.history.filter((value: any) => String(value?.id) === starsIdem)
+      : [];
+    const historyAmount = matchingHistory.length === 1
+      ? Number(matchingHistory[0]?.amount?.amount ?? matchingHistory[0]?.amount?.amount_INT64 ?? NaN)
+      : NaN;
+    const historyBalance = Number(history?.balance?.amount ?? history?.balance?.amount_INT64 ?? NaN);
+    if (!isType(history, 'StarsStatus') || matchingHistory.length !== 1 || historyAmount !== starsDelta
+      || historyBalance !== beforeBalance + starsDelta) {
+      throw new Error(`unexpected StarsTransactions ${className(history)} balance=${historyBalance} matches=${matchingHistory.length} amount=${historyAmount}`);
+    }
+
+    const byId = await client.invoke(new Api.payments.GetStarsTransactionsByID({
+      peer: new Api.InputPeerSelf(),
+      id: [new Api.InputStarsTransaction({ id: starsIdem })],
+    }));
+    const byIdHistory = Array.isArray(byId?.history)
+      ? byId.history.filter((value: any) => String(value?.id) === starsIdem)
+      : [];
+    const byIdAmount = byIdHistory.length === 1
+      ? Number(byIdHistory[0]?.amount?.amount ?? byIdHistory[0]?.amount?.amount_INT64 ?? NaN)
+      : NaN;
+    const byIdBalance = Number(byId?.balance?.amount ?? byId?.balance?.amount_INT64 ?? NaN);
+    if (!isType(byId, 'StarsStatus') || byIdHistory.length !== 1 || byIdAmount !== starsDelta
+      || byIdBalance !== beforeBalance + starsDelta) {
+      throw new Error(`unexpected StarsTransactionsByID ${className(byId)} balance=${byIdBalance} matches=${byIdHistory.length} amount=${byIdAmount}`);
+    }
+
     const saved = await client.invoke(new Api.payments.GetSavedStarGifts({
       peer: new Api.InputPeerSelf(),
       offset: '',
@@ -229,6 +271,8 @@ async function run() {
     observed = {
       'payments.getStarsTopupOptions': { constructor: className(topup), matchedProduct: option.storeProduct?.value ?? option.storeProduct, stars: Number(option.stars), amount: Number(option.amount) },
       'payments.getStarsStatus': { constructor: className(status), balance: statusBalance, historyCount: status.history?.length ?? 0 },
+      'payments.getStarsTransactions': { constructor: className(history), balance: historyBalance, matchingHistoryCount: matchingHistory.length, id: String(matchingHistory[0].id), amount: historyAmount },
+      'payments.getStarsTransactionsByID': { constructor: className(byId), balance: byIdBalance, matchingHistoryCount: byIdHistory.length, id: String(byIdHistory[0].id), amount: byIdAmount },
       'payments.getSavedStarGifts': { constructor: className(saved), count: Number(saved.count), giftCount: saved.gifts?.length ?? 0, savedId: String(savedGift.savedId?.value ?? savedGift.savedId ?? ''), expectedGiftId: seededGiftId },
       'payments.getStarGiftActiveAuctions': { constructor: className(auctions), auctionCount: auctions.auctions.length, giftSlug: auctions.auctions[0]?.gift?.slug },
     };

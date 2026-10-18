@@ -264,7 +264,7 @@ func (c *ApiFullCore) AccountUploadWallPaper(in *mtproto.TLAccountUploadWallPape
 	if err != nil {
 		return nil, err
 	}
-	if document == nil || document.GetId() == 0 || document.GetAccessHash() == 0 {
+	if document == nil || document.GetId() <= 0 || document.GetAccessHash() == 0 {
 		return nil, mtproto.ErrInternalServerError
 	}
 	wallpaper := mtproto.MakeTLWallPaper(&mtproto.WallPaper{

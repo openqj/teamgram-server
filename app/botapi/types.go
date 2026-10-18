@@ -76,10 +76,10 @@ type Chat struct {
 	HasHiddenMembers          bool       `json:"has_hidden_members,omitempty"`
 	HasAggressiveAntiSpam     bool       `json:"has_aggressive_anti_spam_enabled,omitempty"`
 	EmojiStatusCustomID       string     `json:"emoji_status_custom_emoji_id,omitempty"`
-	AccentColorID             int        `json:"accent_color_id,omitempty"`
+	AccentColorID             int        `json:"accent_color_id"`
 	BackgroundCustomEmoji     string     `json:"background_custom_emoji_id,omitempty"`
-	MaxReactionCount          int        `json:"max_reaction_count,omitempty"`
-	AcceptedGiftTypes         any        `json:"accepted_gift_types,omitempty"`
+	MaxReactionCount          int        `json:"max_reaction_count"`
+	AcceptedGiftTypes         any        `json:"accepted_gift_types"`
 	CanSendPaidMedia          bool       `json:"can_send_paid_media,omitempty"`
 	UnrestrictBoostCount      int        `json:"unrestrict_boost_count,omitempty"`
 	HasProtectedContent       bool       `json:"has_protected_content,omitempty"`
@@ -622,6 +622,9 @@ type UniqueGift struct {
 }
 
 type GiftInfo struct {
+	// Type is populated for owned-gift responses so PTB and other Bot API
+	// clients can select the OwnedGift union member (currently regular).
+	Type                    string          `json:"type,omitempty"`
 	Gift                    *Gift           `json:"gift"`
 	OwnedGiftID             string          `json:"owned_gift_id,omitempty"`
 	ConvertStarCount        int64           `json:"convert_star_count,omitempty"`
@@ -863,6 +866,7 @@ type Message struct {
 	SuggestedPostRefunded       *SuggestedPostRefunded       `json:"suggested_post_refunded,omitempty"`
 	ManagedBotCreated           *ManagedBotCreated           `json:"managed_bot_created,omitempty"`
 	PaidMedia                   *PaidMediaInfo               `json:"paid_media,omitempty"`
+	WebAppData                  *WebAppData                  `json:"web_app_data,omitempty"`
 	Checklist                   *Checklist                   `json:"checklist,omitempty"`
 	Gift                        *GiftInfo                    `json:"gift,omitempty"`
 	UniqueGift                  *UniqueGiftInfo              `json:"unique_gift,omitempty"`
@@ -993,6 +997,13 @@ type ChatBoostRemoved struct {
 type PaidMediaPurchased struct {
 	From             *User  `json:"from"`
 	PaidMediaPayload string `json:"paid_media_payload"`
+}
+
+// WebAppData is the service message emitted when a reply-keyboard Mini App
+// sends data back to its bot.
+type WebAppData struct {
+	Data       string `json:"data"`
+	ButtonText string `json:"button_text"`
 }
 
 // WebAppQuery is emitted when a Mini App sends data back to its bot. The
@@ -1257,7 +1268,7 @@ func ReplyMarkupToMTProto(in ReplyMarkupInput) *mtproto.ReplyMarkup {
 			switch {
 			case webAppURLFromMap(raw["web_app"]) != "":
 				button.Url = webAppURLFromMap(raw["web_app"])
-				buttons = append(buttons, mtproto.MakeTLKeyboardButtonWebView(button).To_KeyboardButton())
+				buttons = append(buttons, mtproto.MakeTLKeyboardButtonSimpleWebView(button).To_KeyboardButton())
 			case boolFromMap(raw, "request_contact"):
 				buttons = append(buttons, mtproto.MakeTLKeyboardButtonRequestPhone(button).To_KeyboardButton())
 			case boolFromMap(raw, "request_location"):
@@ -1268,7 +1279,18 @@ func ReplyMarkupToMTProto(in ReplyMarkupInput) *mtproto.ReplyMarkup {
 		}
 		rows = append(rows, mtproto.MakeTLKeyboardButtonRow(&mtproto.KeyboardButtonRow{Buttons: buttons}).To_KeyboardButtonRow())
 	}
-	return mtproto.MakeTLReplyKeyboardMarkup(&mtproto.ReplyMarkup{Rows: rows, Resize: in.ResizeKeyboard, SingleUse: in.OneTimeKeyboard, Selective: in.Selective, Persistent: in.IsPersistent}).To_ReplyMarkup()
+	var placeholder *wrapperspb.StringValue
+	if in.InputFieldPlaceholder != "" {
+		placeholder = wrapperspb.String(in.InputFieldPlaceholder)
+	}
+	return mtproto.MakeTLReplyKeyboardMarkup(&mtproto.ReplyMarkup{
+		Rows:        rows,
+		Resize:      in.ResizeKeyboard,
+		SingleUse:   in.OneTimeKeyboard,
+		Selective:   in.Selective,
+		Persistent:  in.IsPersistent,
+		Placeholder: placeholder,
+	}).To_ReplyMarkup()
 }
 
 func stringFromMap(values map[string]any, key string) string {
@@ -1865,6 +1887,8 @@ func applyMessageAction(message *Message, action *mtproto.MessageAction, users [
 		if action.GetBotId() > 0 {
 			message.ManagedBotCreated = &ManagedBotCreated{Bot: userByID(action.GetBotId(), users)}
 		}
+	case mtproto.Predicate_messageActionWebViewDataSentMe:
+		message.WebAppData = &WebAppData{Data: action.GetData(), ButtonText: action.GetText()}
 	}
 }
 

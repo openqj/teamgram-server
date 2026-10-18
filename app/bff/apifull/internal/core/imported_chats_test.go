@@ -204,6 +204,47 @@ func TestMessagesUploadImportedMediaUploadsPhoto(t *testing.T) {
 	}
 }
 
+func TestMessagesUploadImportedMediaRejectsNonPositiveProviderIDs(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		media  *mtproto.InputMedia
+		client *importedMediaDfsClient
+	}{
+		{
+			name: "photo",
+			media: mtproto.MakeTLInputMediaUploadedPhoto(&mtproto.InputMedia{
+				File: &mtproto.InputFile{Id_INT64: 44, Parts: 1, Name: "source.jpg"},
+			}).To_InputMedia(),
+			client: &importedMediaDfsClient{
+				photo: mtproto.MakeTLPhoto(&mtproto.Photo{Id: -7001, AccessHash: 9001}).To_Photo(),
+			},
+		},
+		{
+			name: "document",
+			media: mtproto.MakeTLInputMediaUploadedDocument(&mtproto.InputMedia{
+				File:     &mtproto.InputFile{Id_INT64: 45, Parts: 1, Name: "source.bin"},
+				MimeType: "application/pdf",
+			}).To_InputMedia(),
+			client: &importedMediaDfsClient{
+				document: mtproto.MakeTLDocument(&mtproto.Document{Id: -7002, AccessHash: 9002}).To_Document(),
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			const uid int64 = 81022
+			importID := int64(504)
+			peer := &mtproto.InputPeer{UserId: uid + 1}
+			seedHistoryImportMeta(t, uid, importID, peer)
+			got, err := importedMediaCore(uid, tc.client).MessagesUploadImportedMedia(&mtproto.TLMessagesUploadImportedMedia{
+				Peer: peer, ImportId: importID, Media: tc.media,
+			})
+			if got != nil || !errors.Is(err, mtproto.ErrMediaInvalid) {
+				t.Fatalf("result=(%#v, %v), want MEDIA_INVALID", got, err)
+			}
+		})
+	}
+}
+
 func TestMessagesUploadImportedMediaUploadsDocument(t *testing.T) {
 	const uid, importID, peerID int64 = 81018, 502, 81019
 	peer := &mtproto.InputPeer{UserId: peerID}

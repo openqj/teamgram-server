@@ -32,5 +32,6 @@ type Config struct {
 	UpdatesClient zrpc.RpcClientConf
 	SyncClient    *kafka.KafkaProducerConf
 	MessageClient zrpc.RpcClientConf
+	MsgClient     zrpc.RpcClientConf
 	// ChannelClient zrpc.RpcClientConf
 }

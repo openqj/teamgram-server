@@ -14,6 +14,8 @@ const apiHash = process.env.TG_API_HASH || '0123456789abcdef0123456789abcdef';
 const targetUserId = process.env.TEAMGRAM_AUTH_PROBE_USER_ID || '2';
 const phoneNumber = process.env.TEAMGRAM_AUTH_PROBE_PHONE
   || `+1202555${String(Date.now() % 10000).padStart(4, '0')}`;
+const cancelPhoneNumber = process.env.TEAMGRAM_AUTH_CANCEL_PHONE
+  || `+1202555${String((Date.now() + 1) % 10000).padStart(4, '0')}`;
 const providerURL = process.env.TEAMGRAM_CODE_PROVIDER_URL || 'http://127.0.0.1:23193';
 const providerKey = process.env.TEAMGRAM_CODE_PROVIDER_KEY || 'web-e2e-code-key';
 const providerSecret = process.env.TEAMGRAM_CODE_PROVIDER_SECRET || 'web-e2e-code-secret';
@@ -35,6 +37,10 @@ const quietLogger = { debug() {}, info() {}, warn() {}, error() {} };
 
 function className(value: any): string {
   return value?.className || value?.constructor?.name || typeof value;
+}
+
+function isBoolTrue(value: any): boolean {
+  return value === true || value?.value === true || className(value).toLowerCase().includes('true');
 }
 
 function forceLayer229(client: any): void {
@@ -119,7 +125,7 @@ async function disconnectWithBoundedWait(client: any): Promise<void> {
 function sanitizeError(value: unknown): { className: string; message: string } {
   const error = value as any;
   let message = String(error?.message || value || 'unknown error');
-  message = message.replaceAll(phoneNumber, '<phone>');
+  message = message.replaceAll(phoneNumber, '<phone>').replaceAll(cancelPhoneNumber, '<cancel-phone>');
   return { className: className(error), message };
 }
 
@@ -127,7 +133,9 @@ async function main() {
   const { authKeyBase64, userId } = loadAuthKey();
   const client = makeClient(authKeyBase64);
   let challengeId = '';
+  let cancelChallengeId = '';
   let signInCompleted = false;
+  let cancelVerified = false;
   try {
     await client.connect();
     const me = await client.getMe();
@@ -160,6 +168,43 @@ async function main() {
       throw new Error(`auth.signIn returned ${authorizationType}, expected AuthorizationSignUpRequired`);
     }
 
+    const cancelSent = await client.invoke(new Api.auth.SendCode({
+      phoneNumber: cancelPhoneNumber,
+      apiId,
+      apiHash,
+      settings: new Api.CodeSettings({}),
+    }));
+    cancelChallengeId = String(cancelSent?.phoneCodeHash || '');
+    if (!cancelChallengeId) throw new Error('second auth.sendCode returned no phone_code_hash');
+    const cancelType = className(cancelSent?.type);
+    if (!cancelType.endsWith('SentCodeTypeSms')) {
+      throw new Error(`second auth.sendCode returned ${cancelType}, expected SentCodeTypeSms`);
+    }
+    const cancelDelivery = await latestDelivery(cancelChallengeId);
+    if (String(cancelDelivery?.challenge_id) !== cancelChallengeId) {
+      throw new Error('second provider challenge_id mismatch');
+    }
+    const canceled = await client.invoke(new Api.auth.CancelCode({
+      phoneNumber: cancelPhoneNumber,
+      phoneCodeHash: cancelChallengeId,
+    }));
+    if (!isBoolTrue(canceled)) throw new Error(`auth.cancelCode returned ${className(canceled)}`);
+
+    let canceledSignInError = '';
+    try {
+      await client.invoke(new Api.auth.SignIn({
+        phoneNumber: cancelPhoneNumber,
+        phoneCodeHash: cancelChallengeId,
+        phoneCode: String(cancelDelivery?.code || ''),
+      }));
+      throw new Error('auth.signIn accepted a canceled challenge');
+    } catch (error) {
+      const rpcError = String((error as any)?.errorMessage || (error as any)?.message || error);
+      if (!/(PHONE_CODE_EMPTY|PHONE_CODE_INVALID|PHONE_CODE_EXPIRED)/.test(rpcError)) throw error;
+      canceledSignInError = rpcError.match(/PHONE_CODE_[A-Z]+/)?.[0] || 'PHONE_CODE_REJECTED';
+    }
+    cancelVerified = true;
+
     console.log(JSON.stringify({
       ok: true,
       layer: 229,
@@ -170,9 +215,15 @@ async function main() {
       providerCodeLength: String(delivery.code).length,
       signInType: authorizationType,
       challengeIdLength: challengeId.length,
+      cancel: {
+        sendCodeType: cancelType,
+        result: className(canceled),
+        canceledSignInError,
+        challengeIdLength: cancelChallengeId.length,
+      },
     }));
   } catch (error) {
-    console.log(JSON.stringify({ ok: false, ...sanitizeError(error), signInCompleted }));
+    console.log(JSON.stringify({ ok: false, ...sanitizeError(error), signInCompleted, cancelVerified }));
     process.exitCode = 1;
   } finally {
     if (challengeId && !signInCompleted) {
@@ -180,6 +231,13 @@ async function main() {
         await client.invoke(new Api.auth.CancelCode({ phoneNumber, phoneCodeHash: challengeId }));
       } catch {
         // The challenge may already have been consumed by a failed RPC.
+      }
+    }
+    if (cancelChallengeId && !cancelVerified) {
+      try {
+        await client.invoke(new Api.auth.CancelCode({ phoneNumber: cancelPhoneNumber, phoneCodeHash: cancelChallengeId }));
+      } catch {
+        // Preserve the original failure while best-effort revoking the second challenge.
       }
     }
     await disconnectWithBoundedWait(client);

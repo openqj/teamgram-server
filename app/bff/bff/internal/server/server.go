@@ -643,6 +643,7 @@ func (s *Server) Initialize() error {
 				DialogClient:  c.BizServiceClient,
 				SyncClient:    c.SyncClient,
 				MessageClient: c.BizServiceClient,
+				MsgClient:     c.MsgClient,
 			}, contactsChannelPlugin{}))
 
 		// drafts_helper
@@ -728,6 +729,7 @@ func (s *Server) Initialize() error {
 				SponsoredProviderKey:            c.SponsoredProviderKey,
 				SponsoredProviderSigningKey:     c.SponsoredProviderSigningKey,
 				SponsoredProviderTimeoutSeconds: c.SponsoredProviderTimeoutSeconds,
+				AllowInsecureProviderHTTP:       c.ProviderFixtureMode,
 			}))
 
 		// account_helper

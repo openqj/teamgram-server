@@ -600,6 +600,11 @@ func (c *ApiFullCore) MessagesGetBotCallbackAnswer(in *mtproto.TLMessagesGetBotC
 	if in == nil || in.GetPeer() == nil || in.GetMsgId() <= 0 || len(in.GetData()) == 0 {
 		return nil, mtproto.ErrInputRequestInvalid
 	}
+	if result, found, loadErr := c.loadLocalBotCallbackAnswer(in); loadErr != nil {
+		return nil, loadErr
+	} else if found {
+		return result, nil
+	}
 	if !c.hasNativeBotCallbackPath() {
 		return c.getBotCallbackAnswerFromProvider(in)
 	}
@@ -691,6 +696,23 @@ func (c *ApiFullCore) MessagesSetBotCallbackAnswer(in *mtproto.TLMessagesSetBotC
 	if in == nil || in.GetQueryId() <= 0 || in.GetCacheTime() < 0 {
 		return nil, mtproto.ErrInputRequestInvalid
 	}
+	var result struct {
+		Value *bool `json:"value"`
+	}
+	if local, loadErr := c.loadLocalBusinessResultForCaller("messages.setBotCallbackAnswer", businessControlQueryKey(in.GetQueryId()), &result); loadErr != nil {
+		return nil, loadErr
+	} else if local {
+		if err := c.requireBotCaller(uid); err != nil {
+			return nil, err
+		}
+		if result.Value == nil {
+			return nil, mtproto.ErrInternalServerError
+		}
+		if *result.Value {
+			return mtproto.BoolTrue, nil
+		}
+		return mtproto.BoolFalse, nil
+	}
 	if c.hasNativeBotCallbackPath() {
 		if err := c.requireBotCaller(uid); err != nil {
 			return nil, err
@@ -716,23 +738,6 @@ func (c *ApiFullCore) MessagesSetBotCallbackAnswer(in *mtproto.TLMessagesSetBotC
 		}
 		return mtproto.BoolTrue, nil
 	}
-	var result struct {
-		Value *bool `json:"value"`
-	}
-	if local, loadErr := c.loadLocalBusinessResultForCaller("messages.setBotCallbackAnswer", businessControlQueryKey(in.GetQueryId()), &result); loadErr != nil {
-		return nil, loadErr
-	} else if local {
-		if err := c.requireBotCaller(c.MD.GetUserId()); err != nil {
-			return nil, err
-		}
-		if result.Value == nil {
-			return nil, mtproto.ErrInternalServerError
-		}
-		if *result.Value {
-			return mtproto.BoolTrue, nil
-		}
-		return mtproto.BoolFalse, nil
-	}
 	if err := c.callBusinessProvider("messages.setBotCallbackAnswer", map[string]any{
 		"alert": in.GetAlert(), "query_id": in.GetQueryId(), "message": in.GetMessage(), "url": in.GetUrl(), "cache_time": in.GetCacheTime(),
 	}, &result); err != nil {
@@ -755,16 +760,9 @@ func (c *ApiFullCore) hasNativeBotCallbackPath() bool {
 
 func (c *ApiFullCore) getBotCallbackAnswerFromProvider(in *mtproto.TLMessagesGetBotCallbackAnswer) (*mtproto.Messages_BotCallbackAnswer, error) {
 	result := new(mtproto.Messages_BotCallbackAnswer)
-	scopeKey := fmt.Sprintf("%s:msg:%d:%s", businessControlPeerKey(c.MD.GetUserId(), in.GetPeer()), in.GetMsgId(), businessControlHash("data", in.GetData()))
-	if local, loadErr := c.loadLocalBusinessResultForCaller("messages.getBotCallbackAnswer", scopeKey, result); loadErr != nil {
+	if local, loadErr := c.loadLocalBotCallbackAnswerInto(in, result); loadErr != nil {
 		return nil, loadErr
 	} else if local {
-		if err := c.validateInlineQueryPeer(c.MD.GetUserId(), in.GetPeer()); err != nil {
-			return nil, err
-		}
-		if result.GetPredicateName() != mtproto.Predicate_messages_botCallbackAnswer || result.GetCacheTime() < 0 {
-			return nil, mtproto.ErrInternalServerError
-		}
 		return result, nil
 	}
 	if err := c.callBusinessProvider("messages.getBotCallbackAnswer", map[string]any{
@@ -776,6 +774,30 @@ func (c *ApiFullCore) getBotCallbackAnswerFromProvider(in *mtproto.TLMessagesGet
 		return nil, mtproto.ErrInternalServerError
 	}
 	return result, nil
+}
+
+func (c *ApiFullCore) loadLocalBotCallbackAnswer(in *mtproto.TLMessagesGetBotCallbackAnswer) (*mtproto.Messages_BotCallbackAnswer, bool, error) {
+	result := new(mtproto.Messages_BotCallbackAnswer)
+	found, err := c.loadLocalBotCallbackAnswerInto(in, result)
+	return result, found, err
+}
+
+func (c *ApiFullCore) loadLocalBotCallbackAnswerInto(in *mtproto.TLMessagesGetBotCallbackAnswer, result *mtproto.Messages_BotCallbackAnswer) (bool, error) {
+	if in == nil || result == nil {
+		return false, mtproto.ErrInputRequestInvalid
+	}
+	scopeKey := fmt.Sprintf("%s:msg:%d:%s", businessControlPeerKey(c.MD.GetUserId(), in.GetPeer()), in.GetMsgId(), businessControlHash("data", in.GetData()))
+	local, loadErr := c.loadLocalBusinessResultForCaller("messages.getBotCallbackAnswer", scopeKey, result)
+	if loadErr != nil || !local {
+		return local, loadErr
+	}
+	if err := c.validateInlineQueryPeer(c.MD.GetUserId(), in.GetPeer()); err != nil {
+		return false, err
+	}
+	if result.GetPredicateName() != mtproto.Predicate_messages_botCallbackAnswer || result.GetCacheTime() < 0 {
+		return false, mtproto.ErrInternalServerError
+	}
+	return true, nil
 }
 
 func emptyBotCallbackAnswer() *mtproto.Messages_BotCallbackAnswer {

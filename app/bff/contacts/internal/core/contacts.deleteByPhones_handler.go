@@ -20,6 +20,7 @@ package core
 
 import (
 	"github.com/teamgram/proto/mtproto"
+	"github.com/teamgram/teamgram-server/app/bff/apifull/persist"
 	userpb "github.com/teamgram/teamgram-server/app/service/biz/user/user"
 	"github.com/teamgram/teamgram-server/pkg/phonenumber"
 )
@@ -27,7 +28,7 @@ import (
 // ContactsDeleteByPhones
 // contacts.deleteByPhones#1013fd9e phones:Vector<string> = Bool;
 func (c *ContactsCore) ContactsDeleteByPhones(in *mtproto.TLContactsDeleteByPhones) (*mtproto.Bool, error) {
-	if c.MD == nil || c.MD.UserId <= 0 {
+	if c == nil || c.MD == nil || c.MD.UserId <= 0 {
 		return nil, mtproto.ErrAuthKeyUnregistered
 	}
 	if in == nil {
@@ -35,6 +36,9 @@ func (c *ContactsCore) ContactsDeleteByPhones(in *mtproto.TLContactsDeleteByPhon
 	}
 	if len(in.GetPhones()) == 0 {
 		return mtproto.BoolTrue, nil
+	}
+	if persist.Default == nil {
+		return nil, mtproto.ErrInternalServerError
 	}
 	phoneSet := make(map[string]struct{}, len(in.GetPhones()))
 	phones := make([]string, 0, len(in.GetPhones()))

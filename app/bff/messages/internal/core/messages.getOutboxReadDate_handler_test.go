@@ -31,6 +31,14 @@ func TestMessagesGetOutboxReadDateFailsClosedWithoutProviders(t *testing.T) {
 	}
 }
 
+func TestMessagesGetOutboxReadDateRejectsNilCore(t *testing.T) {
+	var nilCore *MessagesCore
+	got, err := nilCore.MessagesGetOutboxReadDate(&mtproto.TLMessagesGetOutboxReadDate{})
+	if got != nil || !errors.Is(err, mtproto.ErrAuthKeyUnregistered) {
+		t.Fatalf("nil core = (%v, %v), want AUTH_KEY_UNREGISTERED", got, err)
+	}
+}
+
 type readDateUserClient struct {
 	userclient.UserClient
 	selfPremium          bool

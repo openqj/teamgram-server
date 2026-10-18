@@ -38,6 +38,9 @@ func (c *ContactsCore) ContactsSearch(in *mtproto.TLContactsSearch) (*mtproto.Co
 		return nil, mtproto.ErrInternalServerError
 	}
 	limit := in.GetLimit()
+	if limit < 0 {
+		return nil, mtproto.ErrLimitInvalid
+	}
 	if limit > 50 || limit == 0 {
 		limit = 50
 	}
