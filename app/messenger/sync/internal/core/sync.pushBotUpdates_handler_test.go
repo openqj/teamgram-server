@@ -46,3 +46,18 @@ func TestBotPaymentDeliveryReceiptIsStableAndScoped(t *testing.T) {
 		t.Fatal("mixed batch unexpectedly received a payment delivery receipt")
 	}
 }
+
+func TestStripWebViewDataDedupeMarkersBeforeSessionFanout(t *testing.T) {
+	message := mtproto.MakeTLMessageService(&mtproto.Message{
+		Id:          17,
+		PeerId:      mtproto.MakePeerUser(42),
+		FromId:      mtproto.MakePeerUser(42),
+		Action:      mtproto.MakeMessageActionWebViewDataSentMe("Open", "payload"),
+		SavedPeerId: mtproto.MakePeerUser(1001),
+	}).To_Message()
+	updates := mtproto.MakeUpdatesByUpdates(mtproto.MakeTLUpdateNewMessage(&mtproto.Update{Message_MESSAGE: message}).To_Update())
+	stripWebViewDataDedupeMarkers(updates)
+	if marker := updates.GetUpdates()[0].GetMessage_MESSAGE().GetSavedPeerId(); marker != nil {
+		t.Fatalf("web app data random_id marker leaked to session update: %#v", marker)
+	}
+}

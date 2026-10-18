@@ -1245,6 +1245,8 @@ func ReplyMarkupToMTProto(in ReplyMarkupInput) *mtproto.ReplyMarkup {
 				case button.WebApp != nil:
 					base.Url = button.WebApp.URL
 					buttons = append(buttons, mtproto.MakeTLKeyboardButtonWebView(base).To_KeyboardButton())
+				case button.URL != "":
+					buttons = append(buttons, mtproto.MakeTLKeyboardButtonUrl(base).To_KeyboardButton())
 				case button.CallbackData != "":
 					buttons = append(buttons, mtproto.MakeTLKeyboardButtonCallback(base).To_KeyboardButton())
 				case button.SwitchInlineQuery != "" || button.SwitchInlineQueryCurrentChat != "":

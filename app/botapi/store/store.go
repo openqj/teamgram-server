@@ -103,10 +103,10 @@ func (s *Store) Append(ctx context.Context, botID int64, updates *mtproto.Update
 }
 
 // AppendOnce persists bot updates in one transaction and reports whether at
-// least one update was newly appended. Payment query updates carry a durable
-// query key, so retries after an outbox claim or process crash are ignored
-// even when the original queue row was already consumed by getUpdates or a
-// webhook.
+// least one update was newly appended. Payment query and Mini App data updates
+// carry a durable key, so retries after an outbox claim or process crash are
+// ignored even when the original queue row was already consumed by getUpdates
+// or a webhook.
 func (s *Store) AppendOnce(ctx context.Context, botID int64, updates *mtproto.Updates) (bool, error) {
 	if s == nil || s.Pool == nil {
 		return false, errors.New("botapi: update store is not configured")
@@ -300,6 +300,18 @@ func botUpdateDedupeKey(update *mtproto.Update) string {
 		return ""
 	}
 	switch update.GetPredicateName() {
+	case mtproto.Predicate_updateNewMessage, mtproto.Predicate_updateNewChannelMessage:
+		message := update.GetMessage_MESSAGE()
+		if message != nil && message.GetAction() != nil &&
+			message.GetAction().GetPredicateName() == mtproto.Predicate_messageActionWebViewDataSentMe {
+			// APIFull carries messages.sendWebViewData.random_id in the
+			// internal SavedPeerId field. It is deliberately ignored by the
+			// Bot API conversion, but remains available here for durable
+			// duplicate suppression across provider/sync retries.
+			if marker := message.GetSavedPeerId(); marker != nil && marker.GetUserId() != 0 {
+				return fmt.Sprintf("web_app_data:%d:%d", message.GetPeerId().GetUserId(), marker.GetUserId())
+			}
+		}
 	case mtproto.Predicate_updateBotShippingQuery:
 		if queryID := update.GetQueryId_INT64(); queryID > 0 {
 			return fmt.Sprintf("shipping_query:%d", queryID)

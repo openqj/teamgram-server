@@ -28,6 +28,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/teamgram/teamgram-server/pkg/providercontract"
 )
 
 const (
@@ -426,8 +427,15 @@ func (s *server) handle(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid request", http.StatusBadRequest)
 		return
 	}
+	expectedIdempotencyKey := providercontract.IdempotencyKey(request.UserID, request.Operation, request.Payload)
+	providedIdempotencyKey := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+	if len(providedIdempotencyKey) != len(expectedIdempotencyKey) ||
+		subtle.ConstantTimeCompare([]byte(providedIdempotencyKey), []byte(expectedIdempotencyKey)) != 1 {
+		http.Error(w, "invalid idempotency key", http.StatusBadRequest)
+		return
+	}
 	payloadFingerprint := sha256.Sum256(request.Payload)
-	log.Printf("business provider operation=%s user_id=%d payload_sha256=%s payload=%s", request.Operation, request.UserID, hex.EncodeToString(payloadFingerprint[:]), request.Payload)
+	log.Printf("business provider operation=%s user_id=%d request_id=%s payload_sha256=%s", request.Operation, request.UserID, request.RequestID, hex.EncodeToString(payloadFingerprint[:]))
 	ctx, cancel := context.WithTimeout(r.Context(), s.maxAge)
 	defer cancel()
 	result, providerErr := s.dispatch(ctx, request)
@@ -508,7 +516,9 @@ func (s *server) dispatch(ctx context.Context, request requestEnvelope) (json.Ra
 		"bots.invokeWebViewCustomMethod", "bots.sendCustomRequest",
 		"bots.setCustomVerification", "bots.setJoinChatResults",
 		"bots.updateStarRefProgram", "messages.editInlineBotMessage",
-		"messages.getPaidReactionPrivacy", "messages.setBotGuestChatResult",
+		"messages.getBotApp", "messages.requestAppWebView",
+		"messages.getPaidReactionPrivacy",
+		"messages.sendWebViewResultMessage", "messages.setBotGuestChatResult",
 		"messages.requestChatJoinWebView", "messages.togglePaidReactionPrivacy",
 		"messages.setBotShippingResults", "messages.setBotPrecheckoutResults":
 		return s.store.BotOperation(ctx, request.UserID, request.Operation, request.Payload)
@@ -619,7 +629,7 @@ func openPostgres(ctx context.Context, dsn string) (*pgxpool.Pool, error) {
 }
 
 func validateProviderSchema(ctx context.Context, pool *pgxpool.Pool) error {
-	if err := requireMigrationCatalog(ctx, pool, "070_apifull_gift_chat_themes", "078_apifull_payment_provider_control_plane", "079_provider_control_plane", "082_business_bot_provider_operations", "086_business_message_provider_operations", "088_business_payment_provider_operations"); err != nil {
+	if err := requireMigrationCatalog(ctx, pool, "070_apifull_gift_chat_themes", "078_apifull_payment_provider_control_plane", "079_provider_control_plane", "082_business_bot_provider_operations", "086_business_message_provider_operations", "088_business_payment_provider_operations", "110_business_mini_app_provider_operations"); err != nil {
 		return fmt.Errorf("provider migration catalog is unavailable: %w", err)
 	}
 	for _, query := range []string{

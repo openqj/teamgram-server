@@ -104,9 +104,9 @@ func TestMessageFromMTProtoManagedBotCreated(t *testing.T) {
 }
 
 func TestMessageFromMTProtoWebAppData(t *testing.T) {
-	message := MessageFromMTProto(&mtproto.Message{
+	message := MessageFromMTProto(mtproto.MakeTLMessageService(&mtproto.Message{
 		Action: mtproto.MakeMessageActionWebViewDataSentMe("Open app", `{"choice":"confirm"}`),
-	}, nil, nil)
+	}).To_Message(), nil, nil)
 	if message == nil || message.WebAppData == nil {
 		t.Fatal("web view data action should map to Message.web_app_data")
 	}

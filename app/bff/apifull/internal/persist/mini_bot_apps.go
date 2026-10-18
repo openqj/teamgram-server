@@ -235,14 +235,14 @@ func ProlongWebViewRequest(userID int64, requestID string, ttl time.Duration) (b
 }
 
 // ProlongWebViewQuery extends the request identified by its Telegram query
-// id. The API layer stores query_id in the JSON payload because the wire
-// method exposes that value rather than the internal request id.
-func ProlongWebViewQuery(userID, queryID int64, ttl time.Duration) (bool, error) {
+// id and bot owner. The API layer stores query_id in the JSON payload because
+// the wire method exposes that value rather than the internal request id.
+func ProlongWebViewQuery(userID, botID, queryID int64, ttl time.Duration) (bool, error) {
 	store, err := miniBotStore()
 	if err != nil {
 		return false, err
 	}
-	if queryID <= 0 || ttl <= 0 {
+	if userID <= 0 || botID <= 0 || queryID <= 0 || ttl <= 0 {
 		return false, errors.New("apifull: invalid WebView query or TTL")
 	}
 	tx, err := store.db.Begin()
@@ -253,8 +253,8 @@ func ProlongWebViewQuery(userID, queryID int64, ttl time.Duration) (bool, error)
 	var requestID string
 	var expires time.Time
 	err = tx.QueryRow(`SELECT request_id, expires_at FROM apifull_webview_request
-		WHERE user_id = $1 AND payload->>'query_id' = $2 AND expires_at > CURRENT_TIMESTAMP
-		ORDER BY updated_at DESC LIMIT 1 FOR UPDATE`, userID, fmt.Sprintf("%d", queryID)).Scan(&requestID, &expires)
+		WHERE user_id = $1 AND bot_id = $2 AND payload->>'query_id' = $3 AND expires_at > CURRENT_TIMESTAMP
+		ORDER BY updated_at DESC LIMIT 1 FOR UPDATE`, userID, botID, fmt.Sprintf("%d", queryID)).Scan(&requestID, &expires)
 	if err == sql.ErrNoRows {
 		return false, nil
 	}

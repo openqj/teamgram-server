@@ -23,9 +23,10 @@ type AIMemoryTokenExchanger interface {
 }
 
 type identityTokenExchanger struct {
-	endpoint string
-	token    string
-	client   *http.Client
+	endpoint   string
+	token      string
+	instanceID string
+	client     *http.Client
 }
 
 type identityTokenResponse struct {
@@ -34,9 +35,10 @@ type identityTokenResponse struct {
 	ExpiresIn   int64  `json:"expires_in"`
 }
 
-func NewIdentityTokenExchanger(baseURL, serviceToken string, timeoutSeconds int) (AIMemoryTokenExchanger, error) {
+func NewIdentityTokenExchanger(baseURL, serviceToken, instanceID string, timeoutSeconds int) (AIMemoryTokenExchanger, error) {
 	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
 	serviceToken = strings.TrimSpace(serviceToken)
+	instanceID = strings.TrimSpace(instanceID)
 	parsed, err := url.Parse(baseURL)
 	if err != nil || parsed.Scheme != "http" && parsed.Scheme != "https" || parsed.Host == "" {
 		return nil, fmt.Errorf("Identity base URL is invalid")
@@ -44,13 +46,29 @@ func NewIdentityTokenExchanger(baseURL, serviceToken string, timeoutSeconds int)
 	if serviceToken == "" {
 		return nil, fmt.Errorf("Identity service token is required")
 	}
+	if instanceID == "" {
+		return nil, fmt.Errorf("Identity Teamgram instance id is required")
+	}
 	if timeoutSeconds <= 0 {
 		timeoutSeconds = 5
 	}
 	return &identityTokenExchanger{
-		endpoint: baseURL + "/v1/internal/teamgram/token",
-		token:    serviceToken,
-		client:   &http.Client{Timeout: time.Duration(timeoutSeconds) * time.Second},
+		endpoint:   baseURL + "/v1/internal/teamgram/token",
+		token:      serviceToken,
+		instanceID: instanceID,
+		client: &http.Client{
+			Timeout: time.Duration(timeoutSeconds) * time.Second,
+			Transport: &http.Transport{
+				MaxIdleConns:          128,
+				MaxIdleConnsPerHost:   64,
+				MaxConnsPerHost:       128,
+				IdleConnTimeout:       90 * time.Second,
+				TLSHandshakeTimeout:   2 * time.Second,
+				ResponseHeaderTimeout: time.Duration(timeoutSeconds) * time.Second,
+				ExpectContinueTimeout: 1 * time.Second,
+				ForceAttemptHTTP2:     true,
+			},
+		},
 	}, nil
 }
 
@@ -58,7 +76,7 @@ func (e *identityTokenExchanger) Exchange(ctx context.Context, userID int64) (st
 	if userID <= 0 {
 		return "", 0, ErrIdentityTokenNotFound
 	}
-	body, err := json.Marshal(map[string]int64{"teamgram_user_id": userID})
+	body, err := json.Marshal(map[string]any{"teamgram_user_id": userID, "instance_id": e.instanceID})
 	if err != nil {
 		return "", 0, fmt.Errorf("marshal Identity token request: %w", err)
 	}
@@ -68,7 +86,7 @@ func (e *identityTokenExchanger) Exchange(ctx context.Context, userID int64) (st
 	}
 	request.Header.Set("Accept", "application/json")
 	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("X-Identity-Internal-Token", e.token)
+	request.Header.Set("X-Identity-Teamgram-Token", e.token)
 	response, err := e.client.Do(request)
 	if err != nil {
 		return "", 0, fmt.Errorf("%w: %v", ErrIdentityTokenService, err)

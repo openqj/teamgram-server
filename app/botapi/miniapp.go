@@ -101,10 +101,10 @@ func SignWebAppInitData(fields url.Values, botToken string) (string, error) {
 	return values.Encode(), nil
 }
 
-// AddWebAppInitData appends a signed tgWebAppData parameter to a Web App URL.
-// The URL is kept otherwise unchanged, including existing query parameters
-// and fragments. The initData itself is encoded once as a single query value,
-// matching Telegram clients' location.search contract.
+// AddWebAppInitData adds signed Telegram Web App init data to a Web App URL.
+// Telegram's official WebApp SDK reads init data from the URL hash, so the
+// value is emitted as a hash query parameter and never as a normal query
+// parameter. Existing non-Telegram query and hash parameters are preserved.
 func AddWebAppInitData(rawURL, initData string) (string, error) {
 	if strings.TrimSpace(rawURL) == "" || strings.TrimSpace(initData) == "" {
 		return "", errors.New("botapi: Web App URL and init data are required")
@@ -117,12 +117,87 @@ func AddWebAppInitData(rawURL, initData string) (string, error) {
 	if err != nil {
 		return "", errors.New("botapi: Web App URL query is invalid")
 	}
-	if _, exists := query["tgWebAppData"]; exists {
-		return "", errors.New("botapi: Web App URL already contains tgWebAppData")
-	}
-	query.Set("tgWebAppData", initData)
+	query.Del("tgWebAppData")
+	query.Del("tgWebAppStartParam")
 	parsed.RawQuery = query.Encode()
+	if err := setWebAppHashParam(parsed, "tgWebAppData", initData, "tgWebAppStartParam"); err != nil {
+		return "", err
+	}
 	return parsed.String(), nil
+}
+
+// AddWebAppStartParam adds the launch parameter consumed by Telegram's
+// WebApp SDK. It shares the same hash query as tgWebAppData and removes stale
+// values from both the normal query and hash before writing the new value.
+func AddWebAppStartParam(rawURL, startParam string) (string, error) {
+	if strings.TrimSpace(rawURL) == "" {
+		return "", errors.New("botapi: Web App URL is required")
+	}
+	parsed, err := url.Parse(rawURL)
+	if err != nil || parsed.Scheme != "https" || parsed.Host == "" {
+		return "", errors.New("botapi: Web App URL must be HTTPS")
+	}
+	query, err := url.ParseQuery(parsed.RawQuery)
+	if err != nil {
+		return "", errors.New("botapi: Web App URL query is invalid")
+	}
+	query.Del("tgWebAppStartParam")
+	parsed.RawQuery = query.Encode()
+	if err := setWebAppHashParam(parsed, "tgWebAppStartParam", startParam); err != nil {
+		return "", err
+	}
+	return parsed.String(), nil
+}
+
+// setWebAppHashParam updates one Telegram hash query field while preserving
+// the optional hash path accepted by telegram-web-app.js (for example
+// #path?tgWebAppData=...). URL.Fragment is kept decoded while RawFragment
+// carries the single encoded representation used on the wire.
+func setWebAppHashParam(parsed *url.URL, key, value string, clearKeys ...string) error {
+	escapedFragment := parsed.EscapedFragment()
+	pathPart, queryPart, _ := splitWebAppHash(escapedFragment)
+	values, err := url.ParseQuery(queryPart)
+	if err != nil {
+		return errors.New("botapi: Web App hash query is invalid")
+	}
+	for _, clearKey := range clearKeys {
+		values.Del(clearKey)
+	}
+	if value == "" {
+		values.Del(key)
+	} else {
+		values.Del(key)
+		values.Set(key, value)
+	}
+	escapedQuery := values.Encode()
+	escaped := pathPart
+	if escapedQuery != "" {
+		if pathPart != "" {
+			escaped = pathPart + "?" + escapedQuery
+		} else {
+			// A query-only fragment is Telegram's normal Web App form:
+			// #tgWebAppData=... . Do not introduce a leading '?' when
+			// adding another Telegram hash field.
+			escaped = escapedQuery
+		}
+	}
+	decoded, err := url.PathUnescape(escaped)
+	if err != nil {
+		return errors.New("botapi: Web App hash is invalid")
+	}
+	parsed.Fragment = decoded
+	parsed.RawFragment = escaped
+	return nil
+}
+
+func splitWebAppHash(fragment string) (pathPart, queryPart string, hasQuery bool) {
+	if question := strings.IndexByte(fragment, '?'); question >= 0 {
+		return fragment[:question], fragment[question+1:], true
+	}
+	if strings.Contains(fragment, "=") {
+		return "", fragment, true
+	}
+	return fragment, "", false
 }
 
 func mustDecodeHex(value string) []byte {

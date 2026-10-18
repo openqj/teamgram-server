@@ -19,6 +19,69 @@ import (
 
 const businessProviderBodyLimit = 1 << 20
 
+const (
+	businessProviderMaxAttempts = 2
+	businessProviderRetryDelay  = 50 * time.Millisecond
+)
+
+// Mini App calls may be retried after a transient provider failure. The
+// provider contract carries a stable Idempotency-Key, so a retry cannot turn
+// a repeated WebView action into a second provider mutation when the provider
+// has already committed the first attempt.
+func retryableMiniAppProviderOperation(operation string) bool {
+	switch operation {
+	case "messages.getBotApp",
+		"messages.requestAppWebView",
+		"messages.requestChatJoinWebView",
+		"messages.sendWebViewData",
+		"messages.sendWebViewResultMessage",
+		"bots.getPopularAppBots",
+		"bots.checkDownloadFileParams",
+		"bots.invokeWebViewCustomMethod":
+		return true
+	default:
+		return false
+	}
+}
+
+func retryableBusinessProviderStatus(status int) bool {
+	return status == http.StatusRequestTimeout || status == http.StatusTooManyRequests ||
+		(status >= http.StatusInternalServerError && status < 600)
+}
+
+func (c *ApiFullCore) logBusinessProviderFailure(operation string, userID int64, attempt, maxAttempts int, status int, err error) {
+	if c == nil || c.Logger == nil {
+		return
+	}
+	if err != nil {
+		c.Logger.Errorf("business provider operation=%s user_id=%d attempt=%d/%d transport_error=%v", operation, userID, attempt, maxAttempts, err)
+		return
+	}
+	c.Logger.Errorf("business provider operation=%s user_id=%d attempt=%d/%d http_status=%d", operation, userID, attempt, maxAttempts, status)
+}
+
+func (c *ApiFullCore) logBusinessProviderRetry(operation string, userID int64, attempt, maxAttempts, status int, err error) {
+	if c == nil || c.Logger == nil {
+		return
+	}
+	if err != nil {
+		c.Logger.Infof("business provider retry operation=%s user_id=%d attempt=%d/%d transport_error=%v", operation, userID, attempt, maxAttempts, err)
+		return
+	}
+	c.Logger.Infof("business provider retry operation=%s user_id=%d attempt=%d/%d http_status=%d", operation, userID, attempt, maxAttempts, status)
+}
+
+func waitBusinessProviderRetry(ctx context.Context) error {
+	timer := time.NewTimer(businessProviderRetryDelay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
 func (c *ApiFullCore) businessProviderConfigured() bool {
 	return c != nil && c.svcCtx != nil && strings.TrimSpace(c.svcCtx.Config.BusinessProviderEndpoint) != "" && len(strings.TrimSpace(c.svcCtx.Config.BusinessProviderSigningKey)) >= 32
 }
@@ -122,42 +185,84 @@ func (c *ApiFullCore) callBusinessProviderAs(userID int64, operation string, pay
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
-	if err != nil {
-		return mtproto.ErrInternalServerError
-	}
-	providercontract.SetRequestHeaders(req, body, key,
-		businessProviderIdempotencyKey(userID, operation, payloadJSON),
-		"X-Teamgram-Business-Provider-Request-Signature", signingKey)
+	idempotencyKey := businessProviderIdempotencyKey(userID, operation, payloadJSON)
 	client := &http.Client{Timeout: timeout, CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}
-	resp, err := client.Do(req)
-	if err != nil {
-		return mtproto.ErrMethodNotImpl
+	maxAttempts := 1
+	if retryableMiniAppProviderOperation(operation) {
+		maxAttempts = businessProviderMaxAttempts
 	}
-	defer resp.Body.Close()
-	responseBody, err := io.ReadAll(io.LimitReader(resp.Body, businessProviderBodyLimit+1))
-	if err != nil || len(responseBody) > businessProviderBodyLimit || resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return mtproto.ErrMethodNotImpl
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		req, requestErr := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+		if requestErr != nil {
+			return mtproto.ErrInternalServerError
+		}
+		providercontract.SetRequestHeaders(req, body, key, idempotencyKey,
+			"X-Teamgram-Business-Provider-Request-Signature", signingKey)
+		resp, requestErr := client.Do(req)
+		if requestErr != nil {
+			if attempt < maxAttempts && ctx.Err() == nil {
+				c.logBusinessProviderRetry(operation, userID, attempt, maxAttempts, 0, requestErr)
+				if waitErr := waitBusinessProviderRetry(ctx); waitErr != nil {
+					return mtproto.ErrMethodNotImpl
+				}
+				continue
+			}
+			c.logBusinessProviderFailure(operation, userID, attempt, maxAttempts, 0, requestErr)
+			return mtproto.ErrMethodNotImpl
+		}
+		responseBody, readErr := io.ReadAll(io.LimitReader(resp.Body, businessProviderBodyLimit+1))
+		status := resp.StatusCode
+		_ = resp.Body.Close()
+		if readErr != nil {
+			if attempt < maxAttempts && ctx.Err() == nil {
+				c.logBusinessProviderRetry(operation, userID, attempt, maxAttempts, status, readErr)
+				if waitErr := waitBusinessProviderRetry(ctx); waitErr != nil {
+					return mtproto.ErrMethodNotImpl
+				}
+				continue
+			}
+			c.logBusinessProviderFailure(operation, userID, attempt, maxAttempts, status, readErr)
+			return mtproto.ErrMethodNotImpl
+		}
+		if len(responseBody) > businessProviderBodyLimit {
+			c.logBusinessProviderFailure(operation, userID, attempt, maxAttempts, status, nil)
+			return mtproto.ErrMethodNotImpl
+		}
+		if status < http.StatusOK || status >= http.StatusMultipleChoices {
+			if attempt < maxAttempts && retryableBusinessProviderStatus(status) && ctx.Err() == nil {
+				c.logBusinessProviderRetry(operation, userID, attempt, maxAttempts, status, nil)
+				if waitErr := waitBusinessProviderRetry(ctx); waitErr != nil {
+					return mtproto.ErrMethodNotImpl
+				}
+				continue
+			}
+			c.logBusinessProviderFailure(operation, userID, attempt, maxAttempts, status, nil)
+			return mtproto.ErrMethodNotImpl
+		}
+		if !verifyBusinessProviderSignature(signingKey, resp.Header.Get("X-Teamgram-Business-Provider-Signature"), responseBody) {
+			return mtproto.ErrInternalServerError
+		}
+		var envelope businessProviderEnvelope
+		if err = json.Unmarshal(responseBody, &envelope); err != nil || envelope.RequestID != request.RequestID || envelope.Operation != request.Operation || envelope.UserID != request.UserID {
+			return mtproto.ErrInternalServerError
+		}
+		// A signed provider error is an authoritative capability miss (for example,
+		// an operation that has not been provisioned for this caller), not a
+		// malformed response. Preserve the canonical unavailable-method error while
+		// keeping an unsigned or otherwise incomplete success response fail-closed.
+		if envelope.Error != "" {
+			return mtproto.ErrMethodNotImpl
+		}
+		if !envelope.Verified || len(envelope.Result) == 0 || string(envelope.Result) == "null" {
+			return mtproto.ErrInternalServerError
+		}
+		if err = json.Unmarshal(envelope.Result, result); err != nil {
+			return mtproto.ErrInternalServerError
+		}
+		if attempt > 1 && c.Logger != nil {
+			c.Logger.Infof("business provider operation=%s user_id=%d completed_after_retry attempt=%d/%d", operation, userID, attempt, maxAttempts)
+		}
+		return nil
 	}
-	if !verifyBusinessProviderSignature(signingKey, resp.Header.Get("X-Teamgram-Business-Provider-Signature"), responseBody) {
-		return mtproto.ErrInternalServerError
-	}
-	var envelope businessProviderEnvelope
-	if err = json.Unmarshal(responseBody, &envelope); err != nil || envelope.RequestID != request.RequestID || envelope.Operation != request.Operation || envelope.UserID != request.UserID {
-		return mtproto.ErrInternalServerError
-	}
-	// A signed provider error is an authoritative capability miss (for example,
-	// an operation that has not been provisioned for this caller), not a
-	// malformed response. Preserve the canonical unavailable-method error while
-	// keeping an unsigned or otherwise incomplete success response fail-closed.
-	if envelope.Error != "" {
-		return mtproto.ErrMethodNotImpl
-	}
-	if !envelope.Verified || len(envelope.Result) == 0 || string(envelope.Result) == "null" {
-		return mtproto.ErrInternalServerError
-	}
-	if err = json.Unmarshal(envelope.Result, result); err != nil {
-		return mtproto.ErrInternalServerError
-	}
-	return nil
+	return mtproto.ErrMethodNotImpl
 }

@@ -17,6 +17,7 @@ package core
 import (
 	"context"
 	"errors"
+	"net/url"
 	"os"
 	"testing"
 	"time"
@@ -26,6 +27,7 @@ import (
 	apifullDao "github.com/teamgram/teamgram-server/app/bff/apifull/internal/dao"
 	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/persist"
 	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/svc"
+	"github.com/teamgram/teamgram-server/app/botapi"
 	user_client "github.com/teamgram/teamgram-server/app/service/biz/user/client"
 	userpb "github.com/teamgram/teamgram-server/app/service/biz/user/user"
 	"google.golang.org/protobuf/types/known/wrapperspb"
@@ -105,12 +107,13 @@ func TestMiniBotWebViewAndPermissionHandlersPostgres(t *testing.T) {
 	uid := time.Now().UnixNano()
 	botID := uid + 1
 	accessHash := uid + 2
+	botToken := "123456:miniapp-postgres-test-token"
 	client := &miniBotAppsUserClient{
 		users: map[int64]*mtproto.ImmutableUser{
 			botID: miniBotProfile(botID, accessHash, true),
 		},
 		botInfos: map[int64]*userpb.BotInfoData{
-			botID: {MainAppUrl: wrapperspb.String("https://bot.example.test/main")},
+			botID: {MainAppUrl: wrapperspb.String("https://bot.example.test/main"), Token: botToken},
 		},
 	}
 	if err := persist.SetMiniBotPermission(uid, botID, false); err != nil {
@@ -129,10 +132,21 @@ func TestMiniBotWebViewAndPermissionHandlersPostgres(t *testing.T) {
 	if err != nil {
 		t.Fatalf("request webview: %v", err)
 	}
-	if result == nil || result.GetUrl() != "https://bot.example.test/app" || result.GetQueryId_FLAGINT64() == nil || result.GetQueryId_FLAGINT64().GetValue() <= 0 {
+	if result == nil || result.GetQueryId_FLAGINT64() == nil || result.GetQueryId_FLAGINT64().GetValue() <= 0 {
 		t.Fatalf("webview result = %#v", result)
 	}
-	if _, err = c.MessagesProlongWebView(&mtproto.TLMessagesProlongWebView{QueryId: result.GetQueryId_FLAGINT64().GetValue()}); err != nil {
+	parsed, err := url.Parse(result.GetUrl())
+	if err != nil {
+		t.Fatalf("parse signed webview URL: %v", err)
+	}
+	if _, err = botapi.ValidateWebAppInitData(miniAppHashValues(t, parsed).Get("tgWebAppData"), botToken, time.Now(), time.Minute); err != nil {
+		t.Fatalf("signed webview URL did not validate: %v", err)
+	}
+	if _, err = c.MessagesProlongWebView(&mtproto.TLMessagesProlongWebView{
+		Peer:    mtproto.MakeTLInputPeerSelf(nil).To_InputPeer(),
+		Bot:     bot,
+		QueryId: result.GetQueryId_FLAGINT64().GetValue(),
+	}); err != nil {
 		t.Fatalf("prolong webview: %v", err)
 	}
 	allowed, err := c.BotsCanSendMessage(&mtproto.TLBotsCanSendMessage{Bot: bot})

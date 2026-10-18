@@ -52,6 +52,10 @@ func (c *SyncCore) SyncPushBotUpdates(in *sync.TLSyncPushBotUpdates) (*mtproto.V
 	if err != nil {
 		return nil, err
 	}
+	// The APIFull sender carries messages.sendWebViewData.random_id in the
+	// internal SavedPeerId field solely for Bot API deduplication. Strip that
+	// marker before the update reaches ordinary MTProto user sessions.
+	stripWebViewDataDedupeMarkers(in.GetUpdates())
 	go c.svcCtx.Dao.Postgres.BotAPI.DeliverWebhook(context.Background(), in.GetUserId())
 
 	notification, err := requestCore.processUpdates(syncTypeUser, in.GetUserId(), true, in.GetUpdates())
@@ -66,6 +70,25 @@ func (c *SyncCore) SyncPushBotUpdates(in *sync.TLSyncPushBotUpdates) (*mtproto.V
 	}
 
 	return mtproto.EmptyVoid, nil
+}
+
+func stripWebViewDataDedupeMarkers(updates *mtproto.Updates) {
+	if updates == nil {
+		return
+	}
+	mtproto.VisitUpdates(0, updates, map[string]mtproto.UpdateVisitedFunc{
+		mtproto.Predicate_updateNewMessage:        stripWebViewDataDedupeMarker,
+		mtproto.Predicate_updateNewChannelMessage: stripWebViewDataDedupeMarker,
+	})
+}
+
+func stripWebViewDataDedupeMarker(_ int64, update *mtproto.Update, _ []*mtproto.User, _ []*mtproto.Chat, _ int32) {
+	if update == nil || update.GetMessage_MESSAGE() == nil || update.GetMessage_MESSAGE().GetAction() == nil {
+		return
+	}
+	if update.GetMessage_MESSAGE().GetAction().GetPredicateName() == mtproto.Predicate_messageActionWebViewDataSentMe {
+		update.GetMessage_MESSAGE().SavedPeerId = nil
+	}
 }
 
 // botPaymentDeliveryReceipt gives a payment query a stable sync receipt so a

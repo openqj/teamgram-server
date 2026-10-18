@@ -137,7 +137,7 @@ func aimemoryTokenHandler(serverCtx *svc.ServiceContext) http.HandlerFunc {
 			status := http.StatusServiceUnavailable
 			message := "AIMemory token exchange is unavailable"
 			switch {
-			case errors.Is(err, core.ErrAIMemoryTokenProof):
+			case errors.Is(err, core.ErrAIMemoryTokenProof), errors.Is(err, core.ErrAIMemoryTokenReplay):
 				status = http.StatusUnauthorized
 				message = "invalid MTProto proof"
 			case errors.Is(err, core.ErrAIMemoryTokenIdentity):

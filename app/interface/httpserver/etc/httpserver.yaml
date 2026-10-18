@@ -40,11 +40,17 @@ PaymentProviderName: external
 PaymentProviderWebhookSigningKey: ""
 PaymentProviderWebhookMaxBodyBytes: 1048576
 
-# Optional Product Identity bridge. Set both values to enable
-# POST /v1/internal/aimemory/token.
+# Optional Product Identity bridge. Set all values, including shared Redis
+# replay storage, to enable POST /v1/internal/aimemory/token.
 IdentityBaseURL: ${TEAMGRAM_IDENTITY_BASE_URL}
-IdentityInternalServiceToken: ${TEAMGRAM_IDENTITY_INTERNAL_SERVICE_TOKEN}
+IdentityTeamgramServiceToken: ${TEAMGRAM_IDENTITY_TEAMGRAM_SERVICE_TOKEN}
+IdentityTeamgramInstanceID: ${TEAMGRAM_IDENTITY_INSTANCE_ID}
+IdentityReplayTTLSeconds: 60
 IdentityRequestTimeoutSeconds: ${TEAMGRAM_IDENTITY_REQUEST_TIMEOUT_SECONDS}
+IdentityReplayKV:
+  - Host: ${TEAMGRAM_IDENTITY_REPLAY_REDIS_HOST}
+    Pass: ${TEAMGRAM_IDENTITY_REPLAY_REDIS_PASS}
+    Tls: ${TEAMGRAM_IDENTITY_REPLAY_REDIS_TLS}
 
 UserClient:
   Etcd:

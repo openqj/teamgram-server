@@ -118,6 +118,7 @@ func (c *UserCore) UserGetBotInfoV2(in *user.TLUserGetBotInfoV2) (*user.BotInfoD
 		BotInfo:    botInfo,
 		MainAppUrl: mtproto.MakeFlagsString(botsDO.MainAppUrl),
 		BotInline:  botsDO.BotInlinePlaceholder != "",
+		Token:      botsDO.Token,
 		BotId:      botsDO.BotId,
 	}).To_BotInfoData(), nil
 }

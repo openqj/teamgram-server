@@ -35,7 +35,8 @@ func TestApplyPaymentProviderEnvironmentRejectsInvalidBodyLimit(t *testing.T) {
 
 func TestApplyIdentityEnvironment(t *testing.T) {
 	t.Setenv("TEAMGRAM_IDENTITY_BASE_URL", " https://identity.internal ")
-	t.Setenv("TEAMGRAM_IDENTITY_INTERNAL_SERVICE_TOKEN", " internal-secret ")
+	t.Setenv("TEAMGRAM_IDENTITY_TEAMGRAM_SERVICE_TOKEN", " teamgram-secret ")
+	t.Setenv("TEAMGRAM_IDENTITY_INSTANCE_ID", " instance-a ")
 	t.Setenv("TEAMGRAM_IDENTITY_REQUEST_TIMEOUT_SECONDS", "7")
 
 	c := config.Config{}
@@ -45,8 +46,11 @@ func TestApplyIdentityEnvironment(t *testing.T) {
 	if c.IdentityBaseURL != "https://identity.internal" {
 		t.Fatalf("IdentityBaseURL = %q", c.IdentityBaseURL)
 	}
-	if c.IdentityInternalServiceToken != "internal-secret" {
-		t.Fatalf("IdentityInternalServiceToken = %q", c.IdentityInternalServiceToken)
+	if c.IdentityTeamgramServiceToken != "teamgram-secret" {
+		t.Fatalf("IdentityTeamgramServiceToken = %q", c.IdentityTeamgramServiceToken)
+	}
+	if c.IdentityTeamgramInstanceID != "instance-a" {
+		t.Fatalf("IdentityTeamgramInstanceID = %q", c.IdentityTeamgramInstanceID)
 	}
 	if c.IdentityRequestTimeoutSeconds != 7 {
 		t.Fatalf("IdentityRequestTimeoutSeconds = %d", c.IdentityRequestTimeoutSeconds)

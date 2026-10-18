@@ -62,8 +62,18 @@ func applyIdentityEnvironment(c *config.Config) error {
 	if value, ok := os.LookupEnv("TEAMGRAM_IDENTITY_BASE_URL"); ok {
 		c.IdentityBaseURL = strings.TrimSpace(value)
 	}
-	if value, ok := os.LookupEnv("TEAMGRAM_IDENTITY_INTERNAL_SERVICE_TOKEN"); ok {
-		c.IdentityInternalServiceToken = strings.TrimSpace(value)
+	if value, ok := os.LookupEnv("TEAMGRAM_IDENTITY_TEAMGRAM_SERVICE_TOKEN"); ok {
+		c.IdentityTeamgramServiceToken = strings.TrimSpace(value)
+	}
+	if value, ok := os.LookupEnv("TEAMGRAM_IDENTITY_INSTANCE_ID"); ok {
+		c.IdentityTeamgramInstanceID = strings.TrimSpace(value)
+	}
+	if value, ok := os.LookupEnv("TEAMGRAM_IDENTITY_REPLAY_TTL_SECONDS"); ok {
+		parsed, err := strconv.Atoi(strings.TrimSpace(value))
+		if err != nil || parsed <= 0 || parsed > 300 {
+			return errors.Errorf("TEAMGRAM_IDENTITY_REPLAY_TTL_SECONDS must be between 1 and 300")
+		}
+		c.IdentityReplayTTLSeconds = parsed
 	}
 	if value, ok := os.LookupEnv("TEAMGRAM_IDENTITY_REQUEST_TIMEOUT_SECONDS"); ok {
 		parsed, err := strconv.Atoi(strings.TrimSpace(value))

@@ -1,5 +1,5 @@
--- Durable deduplication keys for Bot API payment query updates.
--- Queue rows can be deleted after getUpdates/webhook delivery, so query keys
+-- Durable deduplication keys for Bot API payment query and Mini App updates.
+-- Queue rows can be deleted after getUpdates/webhook delivery, so these keys
 -- live separately and remain authoritative across outbox retries.
 CREATE TABLE IF NOT EXISTS bot_api_update_dedup (
     bot_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,

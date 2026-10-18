@@ -8,10 +8,14 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+
+	"github.com/teamgram/teamgram-server/pkg/providercontract"
 )
 
 const businessFixtureTestKey = "business-provider-fixture-test-signing-key-0123456789"
@@ -31,6 +35,7 @@ func signedFixtureRequest(t *testing.T, fixture *server, request requestEnvelope
 	}
 	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(body))
 	req.Header.Set("X-Teamgram-Business-Provider-Request-Signature", fixture.sign(body))
+	req.Header.Set("Idempotency-Key", providercontract.IdempotencyKey(request.UserID, request.Operation, request.Payload))
 	req.Header.Set("Content-Type", "application/json")
 	recorder := httptest.NewRecorder()
 	fixture.handle(recorder, req)
@@ -159,6 +164,36 @@ func TestBusinessProviderWebViewDataEchoMode(t *testing.T) {
 	}
 }
 
+func TestBusinessProviderDispatchesMiniAppOperationsByFingerprint(t *testing.T) {
+	store := newMemoryStore()
+	payloads := map[string]json.RawMessage{
+		"messages.getBotApp":                json.RawMessage(`{"app":{"predicate_name":"inputBotAppID","id":7}}`),
+		"messages.requestAppWebView":        json.RawMessage(`{"scope_key":"mini-app","peer":{"predicate_name":"inputPeerSelf"}}`),
+		"messages.sendWebViewData":          json.RawMessage(`{"random_id":99,"button_text":"Open","data":"confirm"}`),
+		"messages.sendWebViewResultMessage": json.RawMessage(`{"bot_query_id":"query-1","result":{"predicate_name":"botInlineResult","id":"1","type":"article","send_message":{"predicate_name":"botInlineMessageText","message":"ok"}}}`),
+	}
+	for operation, payload := range payloads {
+		fingerprint := sha256.Sum256(payload)
+		store.botOps[fmt.Sprintf("42:%s:%x", operation, fingerprint[:])] = []byte(`{"predicate_name":"updates","updates":[],"users":[],"chats":[],"date":1760000000,"seq":0}`)
+	}
+	fixture := &server{key: []byte(businessFixtureTestKey), store: store, maxAge: 5}
+	for operation, payload := range payloads {
+		response := signedFixtureRequest(t, fixture, requestEnvelope{
+			RequestID: operation + "-request", Operation: operation, UserID: 42, Payload: payload,
+		})
+		if response.Code != http.StatusOK {
+			t.Fatalf("%s status = %d, body=%s", operation, response.Code, response.Body.String())
+		}
+		var envelope responseEnvelope
+		if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil {
+			t.Fatalf("%s response: %v", operation, err)
+		}
+		if !envelope.Verified || envelope.Operation != operation || len(envelope.Result) == 0 {
+			t.Fatalf("%s envelope = %+v", operation, envelope)
+		}
+	}
+}
+
 func TestBusinessProviderRequiresBearerAuthorization(t *testing.T) {
 	fixture := &server{key: []byte(businessFixtureTestKey), authKey: "provider-key", store: newMemoryStore(), maxAge: 5}
 	request := requestEnvelope{
@@ -182,10 +217,46 @@ func TestBusinessProviderRequiresBearerAuthorization(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(body))
 	req.Header.Set("Authorization", "Bearer provider-key")
 	req.Header.Set("X-Teamgram-Business-Provider-Request-Signature", fixture.sign(body))
+	req.Header.Set("Idempotency-Key", providercontract.IdempotencyKey(request.UserID, request.Operation, request.Payload))
 	recorder := httptest.NewRecorder()
 	fixture.handle(recorder, req)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("valid authorization status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestBusinessProviderRequiresPayloadBoundIdempotencyKey(t *testing.T) {
+	fixture := &server{key: []byte(businessFixtureTestKey), store: newMemoryStore(), maxAge: 5}
+	request := requestEnvelope{
+		RequestID: "idempotency-request", Operation: "fragment.getCollectibleInfo", UserID: 42,
+		Payload: json.RawMessage(`{"collectible":{"username":"name"}}`),
+	}
+	body, err := json.Marshal(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, key := range map[string]string{
+		"missing": "",
+		"wrong":   strings.Repeat("0", 64),
+	} {
+		t.Run(name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(body))
+			req.Header.Set("X-Teamgram-Business-Provider-Request-Signature", fixture.sign(body))
+			req.Header.Set("Idempotency-Key", key)
+			recorder := httptest.NewRecorder()
+			fixture.handle(recorder, req)
+			if recorder.Code != http.StatusBadRequest {
+				t.Fatalf("idempotency key %q status=%d body=%s", name, recorder.Code, recorder.Body.String())
+			}
+		})
+	}
+	valid := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(body))
+	valid.Header.Set("X-Teamgram-Business-Provider-Request-Signature", fixture.sign(body))
+	valid.Header.Set("Idempotency-Key", providercontract.IdempotencyKey(request.UserID, request.Operation, request.Payload))
+	recorder := httptest.NewRecorder()
+	fixture.handle(recorder, valid)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("valid idempotency key status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
 }
 

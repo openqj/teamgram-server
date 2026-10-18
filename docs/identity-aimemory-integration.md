@@ -11,7 +11,12 @@ Set these environment variables for the `interface.httpserver` process:
 
 ```text
 TEAMGRAM_IDENTITY_BASE_URL=http://identity:8090
-TEAMGRAM_IDENTITY_INTERNAL_SERVICE_TOKEN=<same value as IDENTITY_INTERNAL_SERVICE_TOKEN>
+TEAMGRAM_IDENTITY_TEAMGRAM_SERVICE_TOKEN=<same value as IDENTITY_TEAMGRAM_SERVICE_TOKEN>
+TEAMGRAM_IDENTITY_INSTANCE_ID=default
+TEAMGRAM_IDENTITY_REPLAY_REDIS_HOST=redis:6379
+TEAMGRAM_IDENTITY_REPLAY_REDIS_PASS=
+TEAMGRAM_IDENTITY_REPLAY_REDIS_TLS=false
+TEAMGRAM_IDENTITY_REPLAY_TTL_SECONDS=60
 TEAMGRAM_IDENTITY_REQUEST_TIMEOUT_SECONDS=5
 ```
 
@@ -21,8 +26,10 @@ use a routable address such as `http://host.docker.internal:28082`, or attach
 both stacks to one external network before using the service name.
 
 The `AuthsessionClient` configuration must resolve the existing
-`service.authsession` RPC service. The bridge is disabled when both Identity
-values are empty and fails startup when only one is supplied.
+`service.authsession` RPC service. The bridge is disabled when all Identity
+values are empty and fails startup when only part of the required configuration
+is supplied. When enabled, the shared Redis replay store is required; it
+prevents a load-balancer retry from exchanging the same encrypted ping twice.
 
 ## Provision a binding
 

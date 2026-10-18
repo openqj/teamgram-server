@@ -95,6 +95,12 @@ for migration in "${migrations[@]}"; do
     # partial schema.
     legacy_checksum_condition="version = '078_apifull_payment_provider_control_plane' AND checksum = 'fd59b3b61ad52a8eed47d8d8dcc57f6d78c969993a0d9f63aea442af48908a17' AND to_regclass('public.apifull_payment_provider_operation') IS NOT NULL AND to_regclass('public.apifull_payment_provider_receipt') IS NOT NULL AND to_regclass('public.apifull_payment_provider_entitlement') IS NOT NULL"
   fi
+  if [[ "$version" == "091_biz_bot_api_update_dedup" && "$checksum" == "a68ad7731c3643a2e53a35374de3786b897f665af81c92633912045444e66d31" ]]; then
+    # 091 was applied once with comment-only wording before Mini App update
+    # deduplication was documented. Accept that exact journal entry only when
+    # the authoritative deduplication table already exists.
+    legacy_checksum_condition="version = '091_biz_bot_api_update_dedup' AND checksum = 'd0577c3e30e89a114631c57436fdd2d38ab34b2ff7bfe9c3a02b03570d19e069' AND to_regclass('public.bot_api_update_dedup') IS NOT NULL"
+  fi
   {
     printf '%s\n' 'BEGIN;'
     printf '%s\n' "SELECT pg_advisory_xact_lock(hashtextextended('teamgram-schema-migrations', 0));"

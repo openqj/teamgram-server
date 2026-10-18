@@ -50,8 +50,11 @@ func TestMiniBotPermissionAndWebViewRequestPostgres(t *testing.T) {
 	if ok, err := ProlongWebViewRequest(userID, request.RequestID, 5*time.Minute); err != nil || !ok {
 		t.Fatalf("prolong request = %v, %v", ok, err)
 	}
-	if ok, err := ProlongWebViewQuery(userID, 9981, 5*time.Minute); err != nil || !ok {
+	if ok, err := ProlongWebViewQuery(userID, botID, 9981, 5*time.Minute); err != nil || !ok {
 		t.Fatalf("prolong query = %v, %v", ok, err)
+	}
+	if ok, err := ProlongWebViewQuery(userID, botID+1, 9981, 5*time.Minute); err != nil || ok {
+		t.Fatalf("prolong query with wrong bot = %v, %v", ok, err)
 	}
 	if err := PutWebViewRequestIfAbsent(WebViewRequest{
 		RequestID: request.RequestID,

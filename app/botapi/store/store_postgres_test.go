@@ -15,7 +15,7 @@ import (
 	"github.com/teamgram/proto/mtproto"
 )
 
-func TestAppendOncePaymentQueryDedupPostgres(t *testing.T) {
+func TestAppendOncePaymentAndWebViewDedupPostgres(t *testing.T) {
 	dsn := os.Getenv("BOTAPI_POSTGRES_DSN")
 	if dsn == "" {
 		dsn = os.Getenv("TEAMGRAM_POSTGRES_DSN")
@@ -101,6 +101,28 @@ func TestAppendOncePaymentQueryDedupPostgres(t *testing.T) {
 		t.Fatalf("after consumed retry dedup rows=%d update rows=%d", dedupRows, updateRows)
 	}
 
+	webViewData := mtproto.MakeUpdatesByUpdates(webViewDataUpdateForDedupe(920002, 920103))
+	inserted, err = botStore.AppendOnce(ctx, botID, webViewData)
+	if err != nil || !inserted {
+		t.Fatalf("first web app data append inserted=%v err=%v", inserted, err)
+	}
+	if _, err := pool.Exec(ctx, `DELETE FROM bot_api_updates WHERE bot_id=$1`, botID); err != nil {
+		t.Fatal(err)
+	}
+	inserted, err = botStore.AppendOnce(ctx, botID, webViewData)
+	if err != nil || inserted {
+		t.Fatalf("consumed web app data retry inserted=%v err=%v", inserted, err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM bot_api_update_dedup WHERE bot_id=$1`, botID).Scan(&dedupRows); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM bot_api_updates WHERE bot_id=$1`, botID).Scan(&updateRows); err != nil {
+		t.Fatal(err)
+	}
+	if dedupRows != 2 || updateRows != 0 {
+		t.Fatalf("after consumed web app data retry dedup rows=%d update rows=%d", dedupRows, updateRows)
+	}
+
 	precheckout := mtproto.MakeUpdatesByUpdates(mtproto.MakeTLUpdateBotPrecheckoutQuery(&mtproto.Update{
 		QueryId_INT64:                 920102,
 		UserId:                        920002,
@@ -140,7 +162,7 @@ func TestAppendOncePaymentQueryDedupPostgres(t *testing.T) {
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM bot_api_updates WHERE bot_id=$1`, botID).Scan(&updateRows); err != nil {
 		t.Fatal(err)
 	}
-	if dedupRows != 2 || updateRows != 1 {
+	if dedupRows != 3 || updateRows != 1 {
 		t.Fatalf("after concurrent precheckout dedup rows=%d update rows=%d", dedupRows, updateRows)
 	}
 }

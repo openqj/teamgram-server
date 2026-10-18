@@ -2,18 +2,43 @@ package core
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/proto/mtproto/rpc/metadata"
 	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/config"
+	apifullDao "github.com/teamgram/teamgram-server/app/bff/apifull/internal/dao"
 	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/svc"
 )
 
 const businessProviderGapTestKey = "business-provider-gap-test-signing-key-0123456789"
+
+func TestRetryableMiniAppProviderOperations(t *testing.T) {
+	for _, operation := range []string{
+		"bots.getPopularAppBots",
+		"bots.checkDownloadFileParams",
+		"bots.invokeWebViewCustomMethod",
+		"messages.getBotApp",
+		"messages.requestAppWebView",
+		"messages.requestChatJoinWebView",
+		"messages.sendWebViewData",
+		"messages.sendWebViewResultMessage",
+	} {
+		if !retryableMiniAppProviderOperation(operation) {
+			t.Fatalf("Mini App operation %q is not retryable", operation)
+		}
+	}
+	for _, operation := range []string{"bots.sendCustomRequest", "payments.settleStars", "messages.getPaidReactionPrivacy"} {
+		if retryableMiniAppProviderOperation(operation) {
+			t.Fatalf("non-Mini App operation %q is retryable", operation)
+		}
+	}
+}
 
 func TestSecureBusinessProviderURLAllowsFixtureHTTPOnlyWhenConfigured(t *testing.T) {
 	fixture, err := url.Parse("http://business-provider-fixture:23190")
@@ -64,11 +89,17 @@ func newBusinessProviderGapCore(t *testing.T, operation string, result any) *Api
 	}))
 	t.Cleanup(server.Close)
 	return &ApiFullCore{
-		svcCtx: &svc.ServiceContext{Config: config.Config{
-			BusinessProviderEndpoint:       server.URL,
-			BusinessProviderSigningKey:     businessProviderGapTestKey,
-			BusinessProviderTimeoutSeconds: 2,
-		}},
+		svcCtx: &svc.ServiceContext{
+			Config: config.Config{
+				BusinessProviderEndpoint:       server.URL,
+				BusinessProviderSigningKey:     businessProviderGapTestKey,
+				BusinessProviderTimeoutSeconds: 2,
+			},
+			Dao: &apifullDao.Dao{UserClient: &miniBotAppsUserClient{users: map[int64]*mtproto.ImmutableUser{
+				7:  miniBotProfile(7, 9, true),
+				42: miniBotProfile(42, 42, true),
+			}}},
+		},
 		MD: &metadata.RpcMetadata{UserId: 42},
 	}
 }
@@ -76,7 +107,7 @@ func newBusinessProviderGapCore(t *testing.T, operation string, result any) *Api
 func TestAffiliateAndBotBusinessMethodsUseSignedProvider(t *testing.T) {
 	core := newBusinessProviderGapCore(t, "bots.updateStarRefProgram", map[string]any{"predicate_name": mtproto.Predicate_starRefProgram, "bot_id": 7, "commission_permille": 125})
 	program, err := core.BotsUpdateStarRefProgram(&mtproto.TLBotsUpdateStarRefProgram{
-		Bot:                &mtproto.InputUser{UserId: 7, AccessHash: 9},
+		Bot:                miniBotInput(7, 9),
 		CommissionPermille: 125,
 	})
 	if err != nil || program == nil || program.GetBotId() != 7 || program.GetCommissionPermille() != 125 {
@@ -128,6 +159,93 @@ func TestBusinessProviderUsesStableIdempotencyKey(t *testing.T) {
 	}
 	if len(idempotencyKeys) != 2 || len(idempotencyKeys[0]) != 64 || idempotencyKeys[0] != idempotencyKeys[1] {
 		t.Fatalf("idempotency keys = %#v, want same 64-character key", idempotencyKeys)
+	}
+}
+
+func TestMiniAppBusinessProviderRetriesTransientFailureWithSameRequest(t *testing.T) {
+	var attempts int
+	var idempotencyKeys []string
+	var requestBodies []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read request body: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		requestBodies = append(requestBodies, string(body))
+		idempotencyKeys = append(idempotencyKeys, r.Header.Get("Idempotency-Key"))
+		if attempts == 1 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		var request struct {
+			RequestID string `json:"request_id"`
+			Operation string `json:"operation"`
+			UserID    int64  `json:"user_id"`
+		}
+		if err := json.Unmarshal(body, &request); err != nil {
+			t.Errorf("decode request: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		result, _ := json.Marshal(map[string]any{"accepted": true})
+		response, _ := json.Marshal(businessProviderEnvelope{
+			RequestID: request.RequestID,
+			Operation: request.Operation,
+			Verified:  true,
+			UserID:    request.UserID,
+			Result:    result,
+		})
+		w.Header().Set("X-Teamgram-Business-Provider-Signature", businessProviderSignature(businessProviderGapTestKey, response))
+		_, _ = w.Write(response)
+	}))
+	defer server.Close()
+
+	core := &ApiFullCore{
+		svcCtx: &svc.ServiceContext{Config: config.Config{
+			BusinessProviderEndpoint:   server.URL,
+			BusinessProviderSigningKey: businessProviderGapTestKey,
+		}},
+		MD: &metadata.RpcMetadata{UserId: 42},
+	}
+	var result map[string]any
+	if err := core.callBusinessProvider("messages.sendWebViewData", map[string]any{"random_id": 77, "data": "payload"}, &result); err != nil {
+		t.Fatalf("transient Mini App provider failure = %v", err)
+	}
+	if !result["accepted"].(bool) {
+		t.Fatalf("provider result = %#v", result)
+	}
+	if attempts != 2 || len(idempotencyKeys) != 2 || idempotencyKeys[0] == "" || idempotencyKeys[0] != idempotencyKeys[1] {
+		t.Fatalf("attempts=%d idempotency keys=%#v, want two attempts with one stable key", attempts, idempotencyKeys)
+	}
+	if len(requestBodies) != 2 || requestBodies[0] != requestBodies[1] {
+		t.Fatalf("request bodies changed across retry: %#v", requestBodies)
+	}
+}
+
+func TestMiniAppBusinessProviderDoesNotRetryOversizedResponse(t *testing.T) {
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		_, _ = w.Write([]byte(strings.Repeat("x", businessProviderBodyLimit+1)))
+	}))
+	defer server.Close()
+
+	core := &ApiFullCore{
+		svcCtx: &svc.ServiceContext{Config: config.Config{
+			BusinessProviderEndpoint:   server.URL,
+			BusinessProviderSigningKey: businessProviderGapTestKey,
+		}},
+		MD: &metadata.RpcMetadata{UserId: 42},
+	}
+	var result map[string]any
+	if err := core.callBusinessProvider("messages.sendWebViewData", map[string]any{"random_id": 77}, &result); err != mtproto.ErrMethodNotImpl {
+		t.Fatalf("oversized provider response = %v, want METHOD_NOT_IMPL", err)
+	}
+	if attempts != 1 {
+		t.Fatalf("oversized provider response attempts = %d, want 1", attempts)
 	}
 }
 
@@ -184,7 +302,7 @@ func TestBusinessProviderGapRejectsMalformedResult(t *testing.T) {
 func TestMiniAppProviderMethodsUseSignedResponses(t *testing.T) {
 	core := newBusinessProviderGapCore(t, "messages.sendWebViewData", map[string]any{"predicate_name": "updates", "date": 1})
 	updates, err := core.MessagesSendWebViewData(&mtproto.TLMessagesSendWebViewData{
-		Bot: &mtproto.InputUser{UserId: 7, AccessHash: 9}, RandomId: 1, ButtonText: "Open", Data: "payload",
+		Bot: miniBotInput(7, 9), RandomId: 1, ButtonText: "Open", Data: "payload",
 	})
 	if err != nil || updates == nil || updates.GetPredicateName() == "" {
 		t.Fatalf("send webview data = (%v, %v)", updates, err)
@@ -198,7 +316,7 @@ func TestMiniAppProviderMethodsUseSignedResponses(t *testing.T) {
 
 	core = newBusinessProviderGapCore(t, "bots.invokeWebViewCustomMethod", map[string]any{"data": `{"ok":true}`})
 	data, err := core.BotsInvokeWebViewCustomMethod(&mtproto.TLBotsInvokeWebViewCustomMethod{
-		Bot: &mtproto.InputUser{UserId: 7, AccessHash: 9}, CustomMethod: "status", Params: &mtproto.DataJSON{Data: `{}`},
+		Bot: miniBotInput(7, 9), CustomMethod: "status", Params: &mtproto.DataJSON{Data: `{}`},
 	})
 	if err != nil || data == nil || data.GetData() == "" {
 		t.Fatalf("invoke webview method = (%v, %v)", data, err)

@@ -35,6 +35,7 @@ type ServiceContext struct {
 	BotAPIStore                *store.Store
 	AuthsessionClient          authsession_client.AuthsessionClient
 	AIMemoryTokenExchanger     AIMemoryTokenExchanger
+	IdentityReplayStore        ProofReplayStore
 	UserClient                 user_client.UserClient
 	BotRegistryClient          user_client.BotRegistryClient
 	ChatClient                 chat_client.ChatClient
@@ -95,22 +96,40 @@ func NewServiceContext(c config.Config) (*ServiceContext, error) {
 		ChatClient:        chat_client.NewChatClient(rpcx.GetCachedRpcClient(c.ChatClient)),
 		MsgClient:         msg_client.NewMsgClient(rpcx.GetCachedRpcClient(c.MsgClient)),
 	}
-	if strings.TrimSpace(c.IdentityBaseURL) != "" || strings.TrimSpace(c.IdentityInternalServiceToken) != "" {
-		if strings.TrimSpace(c.IdentityBaseURL) == "" || strings.TrimSpace(c.IdentityInternalServiceToken) == "" {
+	if strings.TrimSpace(c.IdentityBaseURL) != "" || strings.TrimSpace(c.IdentityTeamgramServiceToken) != "" {
+		if strings.TrimSpace(c.IdentityBaseURL) == "" || strings.TrimSpace(c.IdentityTeamgramServiceToken) == "" {
 			service.Close()
-			return nil, errors.New("httpserver: IdentityBaseURL and IdentityInternalServiceToken must be configured together")
+			return nil, errors.New("httpserver: IdentityBaseURL and IdentityTeamgramServiceToken must be configured together")
+		}
+		if strings.TrimSpace(c.IdentityTeamgramInstanceID) == "" {
+			service.Close()
+			return nil, errors.New("httpserver: IdentityTeamgramInstanceID is required when Identity integration is enabled")
+		}
+		if c.IdentityReplayTTLSeconds < 0 || c.IdentityReplayTTLSeconds > 300 {
+			service.Close()
+			return nil, errors.New("httpserver: IdentityReplayTTLSeconds must be between 0 and 300")
+		}
+		if len(c.IdentityReplayKV) == 0 {
+			service.Close()
+			return nil, errors.New("httpserver: IdentityReplayKV is required when Identity integration is enabled")
 		}
 		if c.AuthsessionClient.Etcd.Key == "" && len(c.AuthsessionClient.Endpoints) == 0 {
 			service.Close()
 			return nil, errors.New("httpserver: AuthsessionClient is required when Identity integration is enabled")
 		}
 		service.AuthsessionClient = authsession_client.NewAuthsessionClient(rpcx.GetCachedRpcClient(c.AuthsessionClient))
-		exchanger, err := NewIdentityTokenExchanger(c.IdentityBaseURL, c.IdentityInternalServiceToken, c.IdentityRequestTimeoutSeconds)
+		exchanger, err := NewIdentityTokenExchanger(c.IdentityBaseURL, c.IdentityTeamgramServiceToken, c.IdentityTeamgramInstanceID, c.IdentityRequestTimeoutSeconds)
 		if err != nil {
 			service.Close()
 			return nil, err
 		}
 		service.AIMemoryTokenExchanger = exchanger
+		replayStore, err := NewProofReplayStore(c.IdentityReplayKV)
+		if err != nil {
+			service.Close()
+			return nil, err
+		}
+		service.IdentityReplayStore = replayStore
 	}
 	if c.BffClient.Etcd.Key != "" || len(c.BffClient.Endpoints) > 0 {
 		bffConn := rpcx.GetCachedRpcClient(c.BffClient).Conn()

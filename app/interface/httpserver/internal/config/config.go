@@ -11,6 +11,7 @@ package config
 
 import (
 	"github.com/teamgram/teamgram-server/pkg/storage/postgres"
+	"github.com/zeromicro/go-zero/core/stores/kv"
 	"github.com/zeromicro/go-zero/rest"
 	"github.com/zeromicro/go-zero/zrpc"
 )
@@ -25,12 +26,15 @@ type Config struct {
 	BffClient                          zrpc.RpcClientConf `json:",optional"`
 	DfsClient                          zrpc.RpcClientConf `json:",optional"`
 	Postgres                           postgres.Config
-	PaymentProviderName                string `json:",optional"`
-	PaymentProviderWebhookSigningKey   string `json:",optional"`
-	PaymentProviderWebhookMaxBodyBytes int64  `json:",optional"`
-	IdentityBaseURL                    string `json:",optional"`
-	IdentityInternalServiceToken       string `json:",optional"`
-	IdentityRequestTimeoutSeconds      int    `json:",optional"`
+	PaymentProviderName                string    `json:",optional"`
+	PaymentProviderWebhookSigningKey   string    `json:",optional"`
+	PaymentProviderWebhookMaxBodyBytes int64     `json:",optional"`
+	IdentityBaseURL                    string    `json:",optional"`
+	IdentityTeamgramServiceToken       string    `json:",optional"`
+	IdentityTeamgramInstanceID         string    `json:",optional"`
+	IdentityReplayKV                   kv.KvConf `json:",optional"`
+	IdentityReplayTTLSeconds           int       `json:",optional"`
+	IdentityRequestTimeoutSeconds      int       `json:",optional"`
 	KeyFile                            string
 	KeyFingerprint                     string
 }

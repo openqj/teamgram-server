@@ -41,6 +41,9 @@ func (c *ApiFullCore) MessagesRequestMainWebView(in *mtproto.TLMessagesRequestMa
 	if in == nil || in.GetPeer() == nil {
 		return nil, mtproto.ErrInputRequestInvalid
 	}
+	if err := validateMiniAppThemeParams(in.GetThemeParams()); err != nil {
+		return nil, err
+	}
 	if err := c.validateMiniAppPeer(uid, in.GetPeer()); err != nil {
 		return nil, err
 	}
@@ -61,7 +64,7 @@ func (c *ApiFullCore) MessagesRequestMainWebView(in *mtproto.TLMessagesRequestMa
 	if botInfo == nil || botInfo.GetMainAppUrl() == nil || botInfo.GetMainAppUrl().GetValue() == "" {
 		return nil, mtproto.ErrMethodNotImpl
 	}
-	return c.requestMiniWebView(uid, in.GetBot(), botInfo.GetMainAppUrl().GetValue(), "requestMainWebView", in.GetPlatform(), !in.GetCompact(), in.GetFullscreen(), in)
+	return c.requestMiniWebView(uid, in.GetBot(), botInfo.GetMainAppUrl().GetValue(), miniStartParam(in.GetStartParam()), "requestMainWebView", in.GetPlatform(), !in.GetCompact(), in.GetFullscreen(), in)
 }
 
 func validPopularAppBots(result *mtproto.Bots_PopularAppBots) bool {
