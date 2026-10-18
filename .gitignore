@@ -66,5 +66,9 @@ v2
 
 docs/specs
 
+# Local Python tooling environments and bytecode.
+tools/ptb-bot/.venv/
+tools/ptb-bot/__pycache__/
+
 .pending
 AGENTS.md
