@@ -26,13 +26,24 @@ live_updates_json=${LIVE_UPDATES_JSON:-}
 business_connections_json=${BUSINESS_CONNECTIONS_JSON:-}
 gift_ownerships_json=${GIFT_OWNERSHIPS_JSON:-}
 stars_credits_json=${STARS_CREDITS_JSON:-}
+stars_topup_offers_json=${STARS_TOPUP_OFFERS_JSON:-}
+stars_topup_offers_file=${STARS_TOPUP_OFFERS_FILE:-}
 business_bot_operations_json=${BUSINESS_BOT_OPERATIONS_JSON:-}
 business_payment_operations_json=${BUSINESS_PAYMENT_OPERATIONS_JSON:-}
 business_connections_enabled=false
 gift_ownerships_enabled=false
 stars_credits_enabled=false
+stars_topup_offers_enabled=false
 business_bot_operations_enabled=false
 business_payment_operations_enabled=false
+
+if [[ -z "$stars_topup_offers_json" && -n "$stars_topup_offers_file" ]]; then
+  if [[ ! -r "$stars_topup_offers_file" ]]; then
+    printf 'STARS_TOPUP_OFFERS_FILE must point to a readable JSON file\n' >&2
+    exit 1
+  fi
+  stars_topup_offers_json=$(<"$stars_topup_offers_file")
+fi
 
 for value_name in CALLBACK_USER_ID CALLBACK_MESSAGE_ID CALLBACK_TTL_SECONDS COLLECTIBLE_PURCHASE_DATE COLLECTIBLE_AMOUNT COLLECTIBLE_CRYPTO_AMOUNT; do
   value=${!value_name}
@@ -246,6 +257,66 @@ SQL
   stars_credits_enabled=true
 fi
 
+if [[ -n "$stars_topup_offers_json" ]]; then
+  stars_topup_offers_valid=$(psql "$DATABASE_URL" --set=ON_ERROR_STOP=1 \
+    --variable=stars_topup_offers_json="$stars_topup_offers_json" -Atq <<'SQL'
+WITH input AS (
+  SELECT :'stars_topup_offers_json'::jsonb AS value
+), rows AS (
+  SELECT item
+  FROM input, jsonb_array_elements(value) AS item
+)
+SELECT CASE
+  WHEN jsonb_typeof((SELECT value FROM input)) <> 'array' THEN 'false'
+  WHEN EXISTS (
+    SELECT 1
+    FROM rows
+    WHERE jsonb_typeof(item) IS DISTINCT FROM 'object'
+       OR jsonb_typeof(item->'stars') IS DISTINCT FROM 'number'
+       OR (item->>'stars') !~ '^[1-9][0-9]*$'
+       OR jsonb_typeof(item->'store_product') IS DISTINCT FROM 'string'
+       OR COALESCE(btrim(item->>'store_product'), '') = ''
+       OR char_length(btrim(item->>'store_product')) > 191
+       OR jsonb_typeof(item->'currency') IS DISTINCT FROM 'string'
+       OR btrim(item->>'currency') !~ '^[A-Z]{3}$'
+       OR jsonb_typeof(item->'amount') IS DISTINCT FROM 'number'
+       OR (item->>'amount') !~ '^[0-9]+$'
+       OR (item ? 'extended' AND jsonb_typeof(item->'extended') IS DISTINCT FROM 'boolean')
+  ) THEN 'false'
+  ELSE 'true'
+END;
+SQL
+  )
+  if [[ "$stars_topup_offers_valid" != "true" ]]; then
+    printf 'STARS_TOPUP_OFFERS_JSON must contain positive stars, unique store_product, ISO currency, non-negative amount and optional boolean extended\n' >&2
+    exit 1
+  fi
+  stars_topup_offers_unique=$(psql "$DATABASE_URL" --set=ON_ERROR_STOP=1 \
+    --variable=stars_topup_offers_json="$stars_topup_offers_json" -Atq <<'SQL'
+WITH input AS (
+  SELECT :'stars_topup_offers_json'::jsonb AS value
+), rows AS (
+  SELECT btrim(store_product) AS store_product
+  FROM input, jsonb_to_recordset(value) AS item(
+    stars bigint,
+    store_product text,
+    currency text,
+    amount bigint,
+    extended boolean
+  )
+)
+SELECT CASE WHEN EXISTS (
+  SELECT store_product FROM rows GROUP BY store_product HAVING count(*) > 1
+) THEN 'false' ELSE 'true' END;
+SQL
+  )
+  if [[ "$stars_topup_offers_unique" != "true" ]]; then
+    printf 'STARS_TOPUP_OFFERS_JSON must not contain duplicate store_product values\n' >&2
+    exit 1
+  fi
+  stars_topup_offers_enabled=true
+fi
+
 for operations_name in business_bot_operations business_payment_operations; do
   operations_json=${operations_name}_json
   operations_enabled=${operations_name}_enabled
@@ -365,6 +436,8 @@ psql "$DATABASE_URL" --set=ON_ERROR_STOP=1 \
   --variable=gift_ownerships_json="$gift_ownerships_json" \
   --variable=stars_credits_enabled="$stars_credits_enabled" \
   --variable=stars_credits_json="$stars_credits_json" \
+  --variable=stars_topup_offers_enabled="$stars_topup_offers_enabled" \
+  --variable=stars_topup_offers_json="$stars_topup_offers_json" \
   --variable=business_bot_operations_enabled="$business_bot_operations_enabled" \
   --variable=business_bot_operations_json="$business_bot_operations_json" \
   --variable=business_payment_operations_enabled="$business_payment_operations_enabled" \
@@ -476,6 +549,23 @@ SELECT user_id, amount
 FROM totals
 ON CONFLICT (user_id) DO UPDATE
   SET balance = apifull_stars.balance + EXCLUDED.balance;
+\endif
+
+\if :stars_topup_offers_enabled
+INSERT INTO apifull_stars_offer
+  (kind, stars, store_product, currency, amount, extended, active)
+SELECT 'topup', stars, btrim(store_product), upper(btrim(currency)), amount,
+       CASE WHEN COALESCE(extended, FALSE) THEN 1 ELSE 0 END, 1
+FROM jsonb_to_recordset(:'stars_topup_offers_json'::jsonb) AS item(
+  stars bigint,
+  store_product text,
+  currency text,
+  amount bigint,
+  extended boolean
+)
+ON CONFLICT (kind, stars, store_product, currency, amount) DO UPDATE
+  SET extended = EXCLUDED.extended,
+      active = 1;
 \endif
 
 \if :business_bot_operations_enabled

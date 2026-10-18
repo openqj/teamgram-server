@@ -74,7 +74,7 @@ def experiment(lab: Lab, args: argparse.Namespace, report: dict) -> None:
     report["preflight"] = lab.preflight()
     report["image"] = {"name": args.image,
                        "id": lab.run(["docker", "image", "inspect", args.image, "--format", "{{.Id}}"], timeout=30).stdout.strip()}
-    lab.start("postgres", "postgres-migrate", "kafka", "redis", "etcd", "minio")
+    lab.start("postgres", "postgres-migrate", "kafka", "redis", "etcd", "seaweedfs")
     lab.compose("wait", "postgres-migrate")
     if lab.container("postgres-migrate")["State"].get("ExitCode") != 0:
         raise ProbeError("isolated PostgreSQL migrations failed")
@@ -88,14 +88,14 @@ def experiment(lab: Lab, args: argparse.Namespace, report: dict) -> None:
     wait_backend(lab)
     run_probe(lab, args.gramjs_dir.resolve(), args.probe_timeout, report)
     report["database_cleanup"] = cleanup_snapshot(lab, report["recovery"]["channelId"])
-    for service in ("postgres", "kafka", "redis", "etcd", "minio", "backend"):
+    for service in ("postgres", "kafka", "redis", "etcd", "seaweedfs", "backend"):
         state = lab.container(service)["State"]
         health = state.get("Health", {}).get("Status")
         if not state["Running"] or health not in (None, "healthy"):
             raise ProbeError(f"isolated dependency {service} was not healthy at completion")
     report["dependencies_at_completion"] = {service: {"running": True,
             "health": lab.container(service)["State"].get("Health", {}).get("Status")}
-            for service in ("postgres", "kafka", "redis", "etcd", "minio", "backend")}
+            for service in ("postgres", "kafka", "redis", "etcd", "seaweedfs", "backend")}
 
 
 def main() -> int:

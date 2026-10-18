@@ -9,7 +9,7 @@ local single-node deployment. Use Docker for the complete stack.
 - Homebrew and Go 1.25 or newer
 - PostgreSQL 18 and the `psql` client
 - Redis 7, etcd 3.5, Kafka 3.x in KRaft mode
-- MinIO (or another S3-compatible object store) and FFmpeg
+- SeaweedFS S3 (or another S3-compatible object store) and FFmpeg
 
 Only PostgreSQL 18 on port `5432` is supported for persistent state.
 
@@ -22,7 +22,7 @@ brew services start redis
 brew services start etcd
 ```
 
-Start Kafka and MinIO using their vendor instructions. Verify PostgreSQL 18 on
+Start Kafka and SeaweedFS using their vendor instructions. Verify PostgreSQL 18 on
 port `5432`:
 
 ```sh
@@ -54,8 +54,8 @@ input.
 ## Configure and run
 
 Set the PostgreSQL DSN for every persistent service in `teamgramd/etc/` (or
-`teamgramd/etc2/` for Docker), plus Redis, etcd, Kafka, MinIO, and FFmpeg
-endpoints. A missing or unreachable PostgreSQL DSN must stop startup.
+`teamgramd/etc2/` for Docker), plus Redis, etcd, Kafka, the S3 endpoint, and
+FFmpeg. A missing or unreachable PostgreSQL DSN must stop startup.
 
 ```sh
 make

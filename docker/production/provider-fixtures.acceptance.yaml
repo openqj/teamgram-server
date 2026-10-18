@@ -225,10 +225,13 @@ services:
       BUSINESS_CONNECTIONS_JSON: "${BUSINESS_CONNECTIONS_JSON:-}"
       GIFT_OWNERSHIPS_JSON: "${GIFT_OWNERSHIPS_JSON:-}"
       STARS_CREDITS_JSON: "${STARS_CREDITS_JSON:-}"
+      STARS_TOPUP_OFFERS_JSON: "${STARS_TOPUP_OFFERS_JSON:-}"
+      STARS_TOPUP_OFFERS_FILE: "${STARS_TOPUP_OFFERS_FILE:-/workspace/stars-topup-offers.json}"
       BUSINESS_BOT_OPERATIONS_JSON: "${BUSINESS_BOT_OPERATIONS_JSON:-}"
       BUSINESS_PAYMENT_OPERATIONS_JSON: "${BUSINESS_PAYMENT_OPERATIONS_JSON:-}"
     volumes:
       - ./docker/production/seed-provider-fixtures.sh:/workspace/seed-provider-fixtures.sh:ro
+      - ./docker/production/stars-topup-offers.acceptance.json:/workspace/stars-topup-offers.json:ro
     entrypoint: ["/bin/bash", "-euc"]
     command: ["/workspace/seed-provider-fixtures.sh"]
     restart: "no"

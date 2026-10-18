@@ -36,7 +36,7 @@
 | [Redis](https://redis.io/) | 缓存、会话、去重 |
 | [etcd](https://etcd.io/) | 服务发现与配置 |
 | [Kafka](https://kafka.apache.org/) | 消息与事件管道 |
-| [MinIO](https://minio.io/) | 对象存储 |
+| [SeaweedFS](https://github.com/seaweedfs/seaweedfs)（S3） | 对象存储；可替换为 RustFS 或云 S3 |
 | [FFmpeg](https://ffmpeg.org/) | 媒体转码（需在服务端安装） |
 
 版本建议与可选监控栈详见 [依赖与运行环境（specs）](specs/dependencies-and-runtime.md)。
@@ -63,7 +63,7 @@
 ## Docker 安装
 
 使用 Docker 一键运行完整栈。依赖栈首次启动时会运行 PostgreSQL 迁移
-runner，并通过 `minio-mc` 初始化 MinIO 桶。
+runner，并初始化 SeaweedFS 的四个 S3 桶。
 
 ### 1. 克隆仓库
 
@@ -74,7 +74,7 @@ cd teamgram-server
 
 ### 2. 启动依赖栈
 
-将启动包含 PostgreSQL 18、Redis、etcd、Kafka、MinIO 及可选监控组件的依赖栈。
+将启动包含 PostgreSQL 18、Redis、etcd、Kafka、SeaweedFS 及可选监控组件的依赖栈。
 `postgres-migrate` 任务会应用仓库内 schema。仅需数据库时可使用
 `docker-compose-postgres.yaml`。
 
@@ -87,6 +87,9 @@ docker compose -f docker-compose-env.yaml up -d
 ```bash
 docker compose up -d
 ```
+
+S3 契约、旧 MinIO 到 SeaweedFS/RustFS 的迁移，以及生产 HA 部署手册见
+[对象存储](docs/object-storage-zh.md)。
 
 ---
 

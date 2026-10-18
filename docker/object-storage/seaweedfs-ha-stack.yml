@@ -1,0 +1,313 @@
+# Production SeaweedFS S3 topology for Docker Swarm.
+#
+# All secrets/configs and node-local volumes are external. Create them with
+# docker secret/config before deploying; this file intentionally contains no
+# production credentials or single-host PostgreSQL service.
+
+x-seaweedfs-image: &seaweedfs-image
+  ${SEAWEEDFS_IMAGE:-chrislusf/seaweedfs@sha256:ce9e796f1fe6f06968f4c04bdaf8f678dad9c8acdfef3d244133d71bfa6bf882}
+
+x-deploy-defaults: &deploy-defaults
+  replicas: 1
+  update_config:
+    parallelism: 1
+    order: stop-first
+    failure_action: rollback
+  rollback_config:
+    parallelism: 1
+    order: stop-first
+  restart_policy:
+    condition: on-failure
+    delay: 5s
+    max_attempts: 10
+    window: 2m
+
+services:
+  master1:
+    image: *seaweedfs-image
+    command:
+      - master
+      - -ip=master1
+      - -ip.bind=0.0.0.0
+      - -port=9333
+      - -port.grpc=19333
+      - -mdir=/data
+      - -peers=master1:9333,master2:9333,master3:9333
+      - -defaultReplication=200
+      - -telemetry=false
+    volumes:
+      - seaweedfs_master1:/data
+    networks: [seaweedfs_overlay]
+    deploy:
+      <<: *deploy-defaults
+      placement:
+        constraints:
+          - node.labels.s3.master_domain == dc1
+
+  master2:
+    image: *seaweedfs-image
+    command:
+      - master
+      - -ip=master2
+      - -ip.bind=0.0.0.0
+      - -port=9333
+      - -port.grpc=19333
+      - -mdir=/data
+      - -peers=master1:9333,master2:9333,master3:9333
+      - -defaultReplication=200
+      - -telemetry=false
+    volumes:
+      - seaweedfs_master2:/data
+    networks: [seaweedfs_overlay]
+    deploy:
+      <<: *deploy-defaults
+      placement:
+        constraints:
+          - node.labels.s3.master_domain == dc2
+
+  master3:
+    image: *seaweedfs-image
+    command:
+      - master
+      - -ip=master3
+      - -ip.bind=0.0.0.0
+      - -port=9333
+      - -port.grpc=19333
+      - -mdir=/data
+      - -peers=master1:9333,master2:9333,master3:9333
+      - -defaultReplication=200
+      - -telemetry=false
+    volumes:
+      - seaweedfs_master3:/data
+    networks: [seaweedfs_overlay]
+    deploy:
+      <<: *deploy-defaults
+      placement:
+        constraints:
+          - node.labels.s3.master_domain == dc3
+
+  volume1:
+    image: *seaweedfs-image
+    command:
+      - volume
+      - -ip=volume1
+      - -ip.bind=0.0.0.0
+      - -port=8080
+      - -port.grpc=18080
+      - -dir=/data
+      - -master=master1:9333,master2:9333,master3:9333
+      - -dataCenter=dc1
+      - -rack=rack1
+      - -index=leveldb
+      - -max=${SEAWEEDFS_VOLUME_MAX:-256}
+    volumes:
+      - seaweedfs_volume1:/data
+    networks: [seaweedfs_overlay]
+    deploy:
+      <<: *deploy-defaults
+      placement:
+        constraints:
+          - node.labels.s3.volume_domain == dc1
+          - node.labels.s3.volume_disk == disk1
+
+  volume2:
+    image: *seaweedfs-image
+    command:
+      - volume
+      - -ip=volume2
+      - -ip.bind=0.0.0.0
+      - -port=8080
+      - -port.grpc=18080
+      - -dir=/data
+      - -master=master1:9333,master2:9333,master3:9333
+      - -dataCenter=dc2
+      - -rack=rack1
+      - -index=leveldb
+      - -max=${SEAWEEDFS_VOLUME_MAX:-256}
+    volumes:
+      - seaweedfs_volume2:/data
+    networks: [seaweedfs_overlay]
+    deploy:
+      <<: *deploy-defaults
+      placement:
+        constraints:
+          - node.labels.s3.volume_domain == dc2
+          - node.labels.s3.volume_disk == disk1
+
+  volume3:
+    image: *seaweedfs-image
+    command:
+      - volume
+      - -ip=volume3
+      - -ip.bind=0.0.0.0
+      - -port=8080
+      - -port.grpc=18080
+      - -dir=/data
+      - -master=master1:9333,master2:9333,master3:9333
+      - -dataCenter=dc3
+      - -rack=rack1
+      - -index=leveldb
+      - -max=${SEAWEEDFS_VOLUME_MAX:-256}
+    volumes:
+      - seaweedfs_volume3:/data
+    networks: [seaweedfs_overlay]
+    deploy:
+      <<: *deploy-defaults
+      placement:
+        constraints:
+          - node.labels.s3.volume_domain == dc3
+          - node.labels.s3.volume_disk == disk1
+
+  filer1:
+    image: *seaweedfs-image
+    command:
+      - filer
+      - -ip=filer1
+      - -ip.bind=0.0.0.0
+      - -port=8888
+      - -port.grpc=18888
+      - -master=master1:9333,master2:9333,master3:9333
+      - -filerGroup=teamgram
+      - -defaultReplicaPlacement=200
+      - -maxMB=${SEAWEEDFS_FILER_MAX_MB:-64}
+      - -config=/run/secrets/seaweedfs_filer_toml
+      - -s3=false
+      - -webdav=false
+      - -sftp=false
+    secrets:
+      - source: seaweedfs_filer_toml
+        target: seaweedfs_filer_toml
+    networks: [seaweedfs_overlay]
+    deploy:
+      <<: *deploy-defaults
+      placement:
+        constraints:
+          - node.labels.s3.filer_domain == dc1
+
+  filer2:
+    image: *seaweedfs-image
+    command:
+      - filer
+      - -ip=filer2
+      - -ip.bind=0.0.0.0
+      - -port=8888
+      - -port.grpc=18888
+      - -master=master1:9333,master2:9333,master3:9333
+      - -filerGroup=teamgram
+      - -defaultReplicaPlacement=200
+      - -maxMB=${SEAWEEDFS_FILER_MAX_MB:-64}
+      - -config=/run/secrets/seaweedfs_filer_toml
+      - -s3=false
+      - -webdav=false
+      - -sftp=false
+    secrets:
+      - source: seaweedfs_filer_toml
+        target: seaweedfs_filer_toml
+    networks: [seaweedfs_overlay]
+    deploy:
+      <<: *deploy-defaults
+      placement:
+        constraints:
+          - node.labels.s3.filer_domain == dc2
+
+  s3-gateway1:
+    image: *seaweedfs-image
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        export AWS_ACCESS_KEY_ID="$$(cat /run/secrets/seaweedfs_s3_access_key)"
+        export AWS_SECRET_ACCESS_KEY="$$(cat /run/secrets/seaweedfs_s3_secret_key)"
+        exec weed s3 -ip=s3-gateway1 -ip.bind=0.0.0.0 -port=8333 -port.grpc=18333 -filer=filer1:8888,filer2:8888 -config=/run/secrets/seaweedfs_s3_json -iam=false -port.iceberg=0 -port.lance=0
+    secrets:
+      - source: seaweedfs_s3_json
+        target: seaweedfs_s3_json
+      - source: seaweedfs_s3_access_key
+        target: seaweedfs_s3_access_key
+      - source: seaweedfs_s3_secret_key
+        target: seaweedfs_s3_secret_key
+    networks: [seaweedfs_overlay]
+    deploy:
+      <<: *deploy-defaults
+      placement:
+        constraints:
+          - node.labels.s3.gateway_domain == dc1
+
+  s3-gateway2:
+    image: *seaweedfs-image
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        export AWS_ACCESS_KEY_ID="$$(cat /run/secrets/seaweedfs_s3_access_key)"
+        export AWS_SECRET_ACCESS_KEY="$$(cat /run/secrets/seaweedfs_s3_secret_key)"
+        exec weed s3 -ip=s3-gateway2 -ip.bind=0.0.0.0 -port=8333 -port.grpc=18333 -filer=filer1:8888,filer2:8888 -config=/run/secrets/seaweedfs_s3_json -iam=false -port.iceberg=0 -port.lance=0
+    secrets:
+      - source: seaweedfs_s3_json
+        target: seaweedfs_s3_json
+      - source: seaweedfs_s3_access_key
+        target: seaweedfs_s3_access_key
+      - source: seaweedfs_s3_secret_key
+        target: seaweedfs_s3_secret_key
+    networks: [seaweedfs_overlay]
+    deploy:
+      <<: *deploy-defaults
+      placement:
+        constraints:
+          - node.labels.s3.gateway_domain == dc2
+
+  s3-lb:
+    image: ${HAPROXY_IMAGE:-haproxy@sha256:1ed7048482a1550aaea61d886dcbefcb70a60f5612b2a1ead2171cef860c94fc}
+    ports:
+      - target: 443
+        published: ${SEAWEEDFS_S3_TLS_PORT:-443}
+        protocol: tcp
+        mode: host
+    configs:
+      - source: seaweedfs_haproxy_cfg
+        target: /usr/local/etc/haproxy/haproxy.cfg
+    secrets:
+      - source: seaweedfs_tls_bundle
+        target: /etc/haproxy/tls/teamgram-s3.pem
+    networks: [seaweedfs_overlay]
+    deploy:
+      <<: *deploy-defaults
+      placement:
+        constraints:
+          - node.labels.s3.lb == true
+      endpoint_mode: vip
+
+secrets:
+  seaweedfs_filer_toml:
+    external: true
+  seaweedfs_s3_json:
+    external: true
+  seaweedfs_s3_access_key:
+    external: true
+  seaweedfs_s3_secret_key:
+    external: true
+  seaweedfs_tls_bundle:
+    external: true
+
+configs:
+  seaweedfs_haproxy_cfg:
+    external: true
+
+volumes:
+  seaweedfs_master1:
+    external: true
+  seaweedfs_master2:
+    external: true
+  seaweedfs_master3:
+    external: true
+  seaweedfs_volume1:
+    external: true
+  seaweedfs_volume2:
+    external: true
+  seaweedfs_volume3:
+    external: true
+
+networks:
+  seaweedfs_overlay:
+    driver: overlay
+    attachable: true
+    driver_opts:
+      encrypted: "true"

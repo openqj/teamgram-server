@@ -9,7 +9,7 @@
 - Homebrew 与 Go 1.25 或更高版本
 - PostgreSQL 18 与 `psql` 客户端
 - Redis 7、etcd 3.5、Kafka 3.x（KRaft 模式）
-- MinIO（或其他 S3 兼容对象存储）和 FFmpeg
+- SeaweedFS S3（或其他 S3 兼容对象存储）和 FFmpeg
 
 持久化状态仅支持 PostgreSQL 18 的 `5432` 端口。
 
@@ -22,7 +22,7 @@ brew services start redis
 brew services start etcd
 ```
 
-按照 Kafka 和 MinIO 的官方说明启动它们。确认 PostgreSQL 主版本为 18 且
+按照 Kafka 和 SeaweedFS 的官方说明启动它们。确认 PostgreSQL 主版本为 18 且
 监听 `5432`：
 
 ```sh
@@ -52,7 +52,7 @@ runner 按文件名顺序应用 `teamgramd/deploy/sql/postgres/*.sql`，在
 ## 配置并运行
 
 在 `teamgramd/etc/`（或 Docker 使用的 `teamgramd/etc2/`）配置所有持久化
-服务的 PostgreSQL DSN，同时配置 Redis、etcd、Kafka、MinIO 和 FFmpeg 地址。
+服务的 PostgreSQL DSN，同时配置 Redis、etcd、Kafka、S3 endpoint 和 FFmpeg 地址。
 PostgreSQL DSN 缺失或不可达时必须停止启动。
 
 ```sh

@@ -44,7 +44,7 @@ Services must be started in this order (as in `runall2.sh`):
 
 ## Infrastructure dependencies
 
-| Service     | etcd | PostgreSQL | Redis (Cache/KV) | Kafka        | MinIO |
+| Service     | etcd | PostgreSQL | Redis (Cache/KV) | Kafka        | S3 (SeaweedFS) |
 |-------------|------|-------|------------------|--------------|-------|
 | **idgen**   | ✓    | —     | ✓ (SeqIDGen)     | —            | —     |
 | **status**  | ✓    | —     | ✓ (Status)       | —            | —     |
@@ -59,7 +59,7 @@ Services must be started in this order (as in `runall2.sh`):
 | **gnetway** | ✓    | —     | —                 | —            | —     |
 | **httpserver** | ✓  | —     | —                 | —            | —     |
 
-Default endpoints in configs: **etcd** 127.0.0.1:2379, **PostgreSQL 18** 127.0.0.1:5432, **Redis** 127.0.0.1:6379, **Kafka** 127.0.0.1:9092, **MinIO** localhost:9000.
+Default endpoints in configs: **etcd** 127.0.0.1:2379, **PostgreSQL 18** 127.0.0.1:5432, **Redis** 127.0.0.1:6379, **Kafka** 127.0.0.1:9092, **SeaweedFS S3** localhost:8333.
 
 ---
 
@@ -72,7 +72,7 @@ Default endpoints in configs: **etcd** 127.0.0.1:2379, **PostgreSQL 18** 127.0.0
 - **msg** → **idgen**, **biz**; consumes **Inbox-T**, produces/consumes **Sync-T**.
 - **sync** → **idgen**, **status**, **session**, **biz** (Channel/Chat); consumes **Sync-T**.
 - **media** → **dfs**.
-- **dfs** → **idgen**; uses MinIO for object storage.
+- **dfs** → **idgen**; uses SeaweedFS through the standard S3 API.
 - **authsession**, **idgen**, **status** → no gRPC callouts (only etcd, DB, Redis).
 
 Optional **httpserver** talks to **session** only.
@@ -115,7 +115,7 @@ flowchart TB
     PostgreSQL[(PostgreSQL 18 5432)]
     Redis[(Redis 6379)]
     Kafka[Kafka 9092]
-    MinIO[MinIO 9000]
+    SeaweedFS[SeaweedFS S3 8333]
   end
 
   ClientApp -->|TCP/WebSocket MTProto| Gnetway
@@ -146,7 +146,7 @@ flowchart TB
   Sync --> Biz
   Media --> Dfs
   Dfs --> Idgen
-  Dfs --> MinIO
+  Dfs --> SeaweedFS
   AuthSession --> PostgreSQL
   AuthSession --> Redis
   Idgen --> Redis

@@ -44,7 +44,7 @@
 
 ## 基础设施依赖
 
-| 服务        | etcd | PostgreSQL | Redis (Cache/KV) | Kafka        | MinIO |
+| 服务        | etcd | PostgreSQL | Redis (Cache/KV) | Kafka        | S3（SeaweedFS） |
 |-------------|------|-------|------------------|--------------|-------|
 | **idgen**   | ✓    | —     | ✓ (SeqIDGen)     | —            | —     |
 | **status**  | ✓    | —     | ✓ (Status)       | —            | —     |
@@ -59,7 +59,7 @@
 | **gnetway** | ✓    | —     | —                 | —            | —     |
 | **httpserver** | ✓  | —     | —                 | —            | —     |
 
-配置中默认端点：**etcd** 127.0.0.1:2379、**PostgreSQL 18** 127.0.0.1:5432、**Redis** 127.0.0.1:6379、**Kafka** 127.0.0.1:9092、**MinIO** localhost:9000。
+配置中默认端点：**etcd** 127.0.0.1:2379、**PostgreSQL 18** 127.0.0.1:5432、**Redis** 127.0.0.1:6379、**Kafka** 127.0.0.1:9092、**SeaweedFS S3** localhost:8333。
 
 ---
 
@@ -72,7 +72,7 @@
 - **msg** → 调用 **idgen**、**biz**；消费 **Inbox-T**，生产/消费 **Sync-T**。
 - **sync** → 调用 **idgen**、**status**、**session**、**biz**（Channel/Chat）；消费 **Sync-T**。
 - **media** → 调用 **dfs**。
-- **dfs** → 调用 **idgen**；使用 MinIO 存储对象。
+- **dfs** → 调用 **idgen**；通过标准 S3 API 使用 SeaweedFS 存储对象。
 - **authsession**、**idgen**、**status** 不调用其他 gRPC 服务（仅依赖 etcd、DB、Redis）。
 
 可选的 **httpserver** 仅与 **session** 通信。
@@ -115,7 +115,7 @@ flowchart TB
     PostgreSQL[(PostgreSQL 18 5432)]
     Redis[(Redis 6379)]
     Kafka[Kafka 9092]
-    MinIO[MinIO 9000]
+    SeaweedFS[SeaweedFS S3 8333]
   end
 
   ClientApp -->|TCP/WebSocket MTProto| Gnetway
@@ -146,7 +146,7 @@ flowchart TB
   Sync --> Biz
   Media --> Dfs
   Dfs --> Idgen
-  Dfs --> MinIO
+  Dfs --> SeaweedFS
   AuthSession --> PostgreSQL
   AuthSession --> Redis
   Idgen --> Redis

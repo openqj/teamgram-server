@@ -10,14 +10,14 @@ stack.
 - Go 1.25 or newer
 - PostgreSQL 18 and the `psql` client
 - Redis 7, etcd 3.5, Kafka 3.x in KRaft mode
-- MinIO (or another S3-compatible object store) and FFmpeg
+- SeaweedFS S3 (or another S3-compatible object store) and FFmpeg
 
 Only PostgreSQL 18 on port `5432` is supported for persistent state.
 
 ## Install dependencies
 
 Use your distribution package manager to install the required tools and enable
-PostgreSQL, Redis, etcd, Kafka, MinIO, and FFmpeg with `systemctl`. Verify that
+PostgreSQL, Redis, etcd, Kafka, SeaweedFS, and FFmpeg with `systemctl`. Verify that
 PostgreSQL reports major version 18 and listens on `5432`:
 
 ```sh
@@ -51,7 +51,7 @@ input.
 
 Set the PostgreSQL DSN for each persistent service in `teamgramd/etc/` (or the
 Docker-oriented files in `teamgramd/etc2/`). Configure Redis, etcd, Kafka,
-MinIO, and FFmpeg endpoints as well. A missing or unreachable PostgreSQL DSN
+the S3 endpoint, and FFmpeg as well. A missing or unreachable PostgreSQL DSN
 must stop startup.
 
 ```sh

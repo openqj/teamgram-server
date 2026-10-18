@@ -221,7 +221,7 @@ def start_lab(lab: Lab, args: argparse.Namespace, report: dict) -> Path:
         raise ProbeError("installed GramJS tsx runtime required")
     report["image"] = lab.run(["docker", "image", "inspect", args.image, "--format", "{{.Id}}"]).stdout.strip()
     report["docker"] = lab.run(["docker", "info", "--format", "CPUs={{.NCPU}}; MemoryBytes={{.MemTotal}}; OS={{.OperatingSystem}}"]).stdout.strip()
-    lab.start("postgres", "postgres-migrate", "kafka", "redis", "etcd", "minio")
+    lab.start("postgres", "postgres-migrate", "kafka", "redis", "etcd", "seaweedfs")
     lab.compose("wait", "postgres-migrate")
     if lab.container("postgres-migrate")["State"]["ExitCode"]:
         raise ProbeError("capacity lab migrations failed")
@@ -314,7 +314,7 @@ def experiment(lab: Lab, args: argparse.Namespace, report: dict) -> None:
     report["status"] = ("PASS" if len(passed) == len(args.rates) else "PROFILE_FAILED"
                         if any(not row["summary"]["consistency"] for row in report["profiles"]) else "BUDGET_EXCEEDED")
     report["dependencies_at_completion"] = {}
-    for service in ("postgres", "kafka", "redis", "etcd", "minio", "backend", "prometheus"):
+    for service in ("postgres", "kafka", "redis", "etcd", "seaweedfs", "backend", "prometheus"):
         state = lab.container(service)["State"]
         health = state.get("Health", {}).get("Status")
         if not state["Running"] or health not in (None, "healthy"):

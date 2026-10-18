@@ -30,10 +30,11 @@ MiniHttp:
 Cache:
   - Host: 127.0.0.1:6379
 Minio:
-  Endpoint: localhost:9000
-  AccessKeyID: minio
-  SecretAccessKey: miniostorage
+  Endpoint: localhost:8333
+  AccessKeyID: seaweedfs
+  SecretAccessKey: seaweedfs-secret
   UseSSL: false
+  Region: us-east-1
   Bucket:
     Documents: documents
     Photos: photos

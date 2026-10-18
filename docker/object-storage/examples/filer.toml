@@ -1,0 +1,31 @@
+# Render this file with the external HA PostgreSQL endpoint and credentials,
+# then create it as the Docker Swarm secret seaweedfs_filer_toml.
+
+[filer.options]
+recursive_delete = false
+
+[leveldb2]
+enabled = false
+
+[postgres2]
+enabled = true
+createTable = false
+hostname = "postgres-ha.example.internal"
+port = 5432
+username = "seaweedfs_filer"
+password = "REPLACE_FROM_SECRET_MANAGER"
+database = "seaweedfs_filer"
+schema = "public"
+sslmode = "verify-full"
+connection_max_idle = 20
+connection_max_open = 100
+connection_max_lifetime_seconds = 300
+pgbouncer_compatible = false
+enableUpsert = true
+upsertQuery = """
+  INSERT INTO "%[1]s" (dirhash, name, directory, meta)
+    VALUES($1, $2, $3, $4)
+    ON CONFLICT (dirhash, name) DO UPDATE SET
+      directory=EXCLUDED.directory,
+      meta=EXCLUDED.meta
+"""

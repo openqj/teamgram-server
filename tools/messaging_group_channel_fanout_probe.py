@@ -252,7 +252,7 @@ def experiment(lab: Lab, args: argparse.Namespace, report: dict, session_file: P
         raise ProbeError("--gramjs-dir must contain the Layer 229 Web client and installed tsx runtime")
     report["image"] = {"name": args.image,
                        "id": lab.run(["docker", "image", "inspect", args.image, "--format", "{{.Id}}"], timeout=30).stdout.strip()}
-    lab.start("postgres", "postgres-migrate", "kafka", "redis", "etcd", "minio")
+    lab.start("postgres", "postgres-migrate", "kafka", "redis", "etcd", "seaweedfs")
     lab.compose("wait", "postgres-migrate")
     if lab.container("postgres-migrate")["State"].get("ExitCode") != 0:
         raise ProbeError("isolated migrations failed")
@@ -342,14 +342,14 @@ ON CONFLICT (channel_id,user_id) DO NOTHING;""")
         report["status"] = report["acceptance"]["status"]
         return
 
-    for service in services + ["postgres", "kafka", "redis", "etcd", "minio"]:
+    for service in services + ["postgres", "kafka", "redis", "etcd", "seaweedfs"]:
         state = lab.container(service)["State"]
         health = state.get("Health", {}).get("Status")
         if not state["Running"] or health not in (None, "healthy"):
             raise ProbeError(f"fan-out dependency {service} is not healthy")
     report["dependenciesAtCompletion"] = {service: {"running": True,
             "health": lab.container(service)["State"].get("Health", {}).get("Status")}
-            for service in services + ["postgres", "kafka", "redis", "etcd", "minio"]}
+            for service in services + ["postgres", "kafka", "redis", "etcd", "seaweedfs"]}
     report["status"] = "PASS"
 
 

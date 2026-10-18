@@ -134,11 +134,15 @@ services:
       - etcd_data:/etcd-data
     restart: "no"
 
-  minio:
+  # Disposable reliability storage uses the same S3 contract as production.
+  seaweedfs:
     image: chrislusf/seaweedfs:4.47
     profiles: [backend]
     labels: *lab-labels
     command: [server, -s3, -dir=/data, -master.telemetry=false]
+    environment:
+      AWS_ACCESS_KEY_ID: "${TEAMGRAM_RELIABILITY_S3_ACCESS_KEY:-reliability-s3}"
+      AWS_SECRET_ACCESS_KEY: "${TEAMGRAM_RELIABILITY_S3_SECRET_KEY:-reliability-s3-secret}"
     volumes:
       - object_data:/data
     healthcheck:
@@ -161,17 +165,18 @@ services:
         condition: service_started
       etcd:
         condition: service_started
-      minio:
+      seaweedfs:
         condition: service_healthy
     environment:
       TEAMGRAM_POSTGRES_DSN: "postgresql://teamgram_reliability:${TEAMGRAM_RELIABILITY_DB_PASSWORD:?A disposable database password is required}@postgres:5432/teamgram_reliability?sslmode=disable"
       TEAMGRAM_SYNC_POSTGRES_MAX_CONNS: "${TEAMGRAM_SYNC_POSTGRES_MAX_CONNS:-16}"
       TEAMGRAM_KAFKA_HANDLER_CONCURRENCY: "${TEAMGRAM_KAFKA_HANDLER_CONCURRENCY:-64}"
       TEAMGRAM_APIFULL_SCHEMA_READONLY: "true"
-      S3_ENDPOINT: minio:8333
-      S3_ACCESS_KEY: ""
-      S3_SECRET_KEY: ""
+      S3_ENDPOINT: seaweedfs:8333
+      S3_ACCESS_KEY: "${TEAMGRAM_RELIABILITY_S3_ACCESS_KEY:-reliability-s3}"
+      S3_SECRET_KEY: "${TEAMGRAM_RELIABILITY_S3_SECRET_KEY:-reliability-s3-secret}"
       S3_USE_SSL: "false"
+      S3_REGION: us-east-1
     ports:
       - "127.0.0.1:${TEAMGRAM_RELIABILITY_MT_PORT:-21543}:11443"
     healthcheck:

@@ -38,7 +38,7 @@
 | **PostgreSQL 18** | 独立实现的唯一生产业务数据存储；所有新部署先执行 PostgreSQL 初始化与迁移脚本 |
 | **Redis** | 缓存、会话、去重 |
 | **Kafka** | 消息与事件管道（msg、sync、inbox） |
-| **MinIO** | 对象存储：桶 `documents`、`encryptedfiles`、`photos`、`videos` |
+| **SeaweedFS S3** | S3 兼容对象存储：桶 `documents`、`encryptedfiles`、`photos`、`videos` |
 | **etcd** | 服务发现与配置 |
 
 ## 端口与配置

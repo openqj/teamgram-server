@@ -39,10 +39,10 @@
   # 检查所有迁移文件编号连续性
   ls -1 teamgramd/deploy/sql/postgres/*.sql | wc -l
   ```
-- [ ] 1.3 启动最小依赖栈（PostgreSQL + Redis + MinIO）
+- [ ] 1.3 启动最小依赖栈（PostgreSQL + Redis + SeaweedFS S3）
   ```bash
-  docker compose up -d postgres redis minio
-  docker compose ps
+  docker compose -f docker-compose-env.yaml up -d postgres redis seaweedfs
+  docker compose -f docker-compose-env.yaml ps
   ```
 - [ ] 1.4 健康检查通过验证
   ```bash

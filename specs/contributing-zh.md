@@ -33,11 +33,11 @@
 
 ### 依赖环境
 
-- PostgreSQL 18 是唯一生产数据库。历史生成 DAO 不属于生产运行时；生产配置只接受 PostgreSQL DSN。另需 Redis、etcd、Kafka、MinIO（及可选 FFmpeg）。可选：`docker compose -f docker-compose-env.yaml up -d`。
+- PostgreSQL 18 是唯一生产数据库。历史生成 DAO 不属于生产运行时；生产配置只接受 PostgreSQL DSN。另需 Redis、etcd、Kafka、SeaweedFS S3（及可选 FFmpeg）。可选：`docker compose -f docker-compose-env.yaml up -d`。
 - **数据库**：创建库 `teamgram`，然后使用 PostgreSQL 18 迁移 runner：
   `DATABASE_URL='postgresql://teamgram:teamgram@127.0.0.1:5432/teamgram?sslmode=disable' ./teamgramd/deploy/postgres/apply.sh`。
   `teamgramd/deploy/sql/` 根目录下的 SQL 仅是历史 Teamgram schema 归档，不是部署输入。
-- **MinIO**：桶 `documents`、`encryptedfiles`、`photos`、`videos`（使用 docker-compose-env 时可由 minio-mc 自动创建）。
+- **SeaweedFS S3**：桶 `documents`、`encryptedfiles`、`photos`、`videos`（使用 docker-compose-env 时由 `mini` 启动参数创建）。
 
 ### 运行服务
 

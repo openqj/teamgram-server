@@ -258,7 +258,7 @@ def experiment(lab: Lab, args: argparse.Namespace, report: dict) -> None:
         raise ProbeError("--gramjs-dir must contain the Layer 229 Web client and its installed tsx runtime")
     image = lab.run(["docker", "image", "inspect", args.image, "--format", "{{.Id}}"]).stdout.strip()
     report["image"] = {"name": args.image, "id": image}
-    lab.start("postgres", "postgres-migrate", "kafka", "redis", "etcd", "minio")
+    lab.start("postgres", "postgres-migrate", "kafka", "redis", "etcd", "seaweedfs")
     lab.compose("wait", "postgres-migrate")
     if lab.container("postgres-migrate")["State"]["ExitCode"] != 0:
         raise ProbeError("isolated migrations failed")
@@ -287,7 +287,7 @@ def experiment(lab: Lab, args: argparse.Namespace, report: dict) -> None:
         report["go_tests"] = {"status": "PASS", "packages": packages, "passed_tests": passed}
 
     seed_accounts(lab)
-    for service in ("postgres", "kafka", "redis", "etcd", "minio"):
+    for service in ("postgres", "kafka", "redis", "etcd", "seaweedfs"):
         if not lab.container(service)["State"]["Running"]:
             raise ProbeError(f"isolated dependency {service} exited during startup")
     lab.start("backend", "prometheus")
@@ -335,7 +335,7 @@ def experiment(lab: Lab, args: argparse.Namespace, report: dict) -> None:
     else:
         raise ProbeError("Prometheus did not receive fresh delivery metrics")
     report["dependencies_at_completion"] = {}
-    for service in ("postgres", "kafka", "redis", "etcd", "minio", "backend", "prometheus"):
+    for service in ("postgres", "kafka", "redis", "etcd", "seaweedfs", "backend", "prometheus"):
         state = lab.container(service)["State"]
         health = state.get("Health", {}).get("Status")
         if not state["Running"] or health not in (None, "healthy"):

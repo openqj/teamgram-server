@@ -12,7 +12,7 @@ A self-contained environment stack based on `docker-compose-env.yaml`. It includ
 | etcd | Configuration and discovery |
 | redis | Cache |
 | postgres | Relational database (PostgreSQL 18) |
-| minio / minio-mc | Object storage and bucket initialization |
+| seaweedfs | S3-compatible object storage and bucket initialization |
 | jaeger | Distributed tracing |
 | prometheus | Metrics collection |
 | node-exporter | Host metrics export |
@@ -34,7 +34,7 @@ A self-contained environment stack based on `docker-compose-env.yaml`. It includ
 
 ```bash
 cp .env.example .env
-# Edit .env for POSTGRES_*, MINIO_*, GRAFANA_*, etc.
+# Edit .env for POSTGRES_*, S3_*, GRAFANA_*, etc.
 ```
 
 | Variable | Default | Description |
@@ -42,8 +42,12 @@ cp .env.example .env
 | POSTGRES_DB | teamgram | Default database name |
 | POSTGRES_USER | teamgram | Application DB user |
 | POSTGRES_PASSWORD | teamgram | Application DB password |
-| MINIO_ROOT_USER | minio | MinIO username |
-| MINIO_ROOT_PASSWORD | miniostorage | MinIO password |
+| S3_ENDPOINT | seaweedfs:8333 | S3 API host:port used by Teamgram |
+| S3_ACCESS_KEY | seaweedfs | Disposable local S3 access key |
+| S3_SECRET_KEY | seaweedfs-secret | Disposable local S3 secret |
+| S3_USE_SSL | false | Set true behind the production TLS load balancer |
+| S3_REGION | us-east-1 | S3 signing region |
+| SEAWEEDFS_S3_PORT | 8333 | Host port for the local SeaweedFS S3 API |
 | GRAFANA_ADMIN_USER | admin | Grafana admin username |
 | GRAFANA_ADMIN_PASSWORD | admin | Grafana admin password |
 | GRAFANA_ROOT_URL | http://localhost:3000 | Grafana root URL |
@@ -76,8 +80,7 @@ All services bind to `127.0.0.1` only (local access).
 | Prometheus | 9090 | http://127.0.0.1:9090 |
 | Grafana | 3000 | http://127.0.0.1:3000 |
 | Kibana | 5601 | http://127.0.0.1:5601 |
-| MinIO API | 9000 | http://127.0.0.1:9000 |
-| MinIO Console | 9001 | http://127.0.0.1:9001 |
+| SeaweedFS S3 API | 8333 | http://127.0.0.1:8333 |
 | PostgreSQL | 5432 | 127.0.0.1:5432 |
 | Redis | 6379 | 127.0.0.1:6379 |
 | etcd | 2379 | http://127.0.0.1:2379 |
@@ -111,12 +114,12 @@ Data is stored in **local directories** under the project `data/` folder:
 | etcd | `./data/etcd` |
 | redis | `./data/redis` |
 | postgres | `./data/postgres` |
-| minio | `./data/minio` |
+| seaweedfs | `./data/seaweedfs` |
 | prometheus | `./data/prometheus` |
 | grafana | `./data/grafana` |
 | elasticsearch | `./data/elasticsearch` |
 
-Docker Compose creates these directories on first run. Running `down` does not remove them; back up or migrate by copying the `data/` directory.
+Docker Compose creates these directories on first run. Running `down` does not remove them. A same-provider SeaweedFS backup may copy its dedicated data directory; cross-provider migration between SeaweedFS, RustFS, or another provider must use the [S3 object migration tool](docs/object-storage.md) and verify every object. Do not copy provider-specific data directories across implementations.
 
 ## Notes
 

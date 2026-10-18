@@ -38,7 +38,7 @@ Client → gnetway (MTProto) → session → BFF → biz / msg / dfs / media / s
 | **PostgreSQL 18** | Sole production business data store for the independent implementation; initialize it on every new deployment |
 | **Redis** | Cache, session, deduplication |
 | **Kafka** | Message and event pipeline (msg, sync, inbox) |
-| **MinIO** | Object storage: buckets `documents`, `encryptedfiles`, `photos`, `videos` |
+| **SeaweedFS S3** | S3-compatible object storage: buckets `documents`, `encryptedfiles`, `photos`, `videos` |
 | **etcd** | Service discovery and config |
 
 ## Ports and config

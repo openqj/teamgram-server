@@ -145,7 +145,7 @@
 
 - 🔧 PostgreSQL 18（必需，不支持 MySQL 5.7）
 - 🔧 Redis（Session challenge 存储）
-- 🔧 MinIO（DFS 文件存储）
+- 🔧 SeaweedFS S3（DFS 文件存储；生产使用 HA S3 origin）
 - 🔧 Kafka（Sync 消息队列，已在 docker-compose 中）
 
 ---
@@ -163,10 +163,10 @@ cp .env.example .env
 # 多副本: 按 (副本数 × 224) + 40 迁移/运维连接计算
 
 # 3. 启动基础栈
-docker compose up -d postgres redis minio kafka
+docker compose -f docker-compose-env.yaml up -d postgres redis seaweedfs kafka
 
 # 4. 验证迁移完成
-docker compose exec postgres psql -U teamgram -d teamgram -c "SELECT COUNT(*) FROM schema_migrations;"
+docker compose -f docker-compose-env.yaml exec postgres psql -U teamgram -d teamgram -c "SELECT COUNT(*) FROM schema_migrations;"
 # 预期输出: count=99
 ```
 
@@ -174,13 +174,13 @@ docker compose exec postgres psql -U teamgram -d teamgram -c "SELECT COUNT(*) FR
 
 ```bash
 # 1. 启动所有服务
-docker compose up -d
+docker compose -f docker-compose-env.yaml -f docker-compose.yaml up -d
 
 # 2. 等待 30 秒健康检查
 sleep 30
 
 # 3. 验证服务状态
-docker compose ps --format json | jq '.[] | select(.State!="running")'
+docker compose -f docker-compose-env.yaml -f docker-compose.yaml ps --format json | jq '.[] | select(.State!="running")'
 # 无输出 = 所有服务运行中
 
 # 4. 检查 Prometheus 指标
@@ -192,7 +192,7 @@ curl -s http://localhost:9090/metrics | grep -c "^teamgram_"
 
 - [ ] PostgreSQL max_connections 已调整
 - [ ] Redis 连接正常（PING）
-- [ ] MinIO 存储空间充足（> 100GB）
+- [ ] SeaweedFS S3 存储空间充足（> 100GB；生产按故障域和副本策略验收）
 - [ ] Kafka brokers 全部在线
 - [ ] Prometheus scrape 配置完成
 - [ ] Grafana dashboard 加载正常

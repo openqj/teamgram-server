@@ -9,14 +9,14 @@
 - Go 1.25 或更高版本
 - PostgreSQL 18 与 `psql` 客户端
 - Redis 7、etcd 3.5、Kafka 3.x（KRaft 模式）
-- MinIO（或其他 S3 兼容对象存储）和 FFmpeg
+- SeaweedFS S3（或其他 S3 兼容对象存储）和 FFmpeg
 
 持久化状态仅支持 PostgreSQL 18 的 `5432` 端口。
 
 ## 安装依赖
 
 使用发行版包管理器安装所需工具，并通过 `systemctl` 启用 PostgreSQL、Redis、
-etcd、Kafka、MinIO 和 FFmpeg。确认 PostgreSQL 主版本为 18 且监听 `5432`：
+etcd、Kafka、SeaweedFS 和 FFmpeg。确认 PostgreSQL 主版本为 18 且监听 `5432`：
 
 ```sh
 psql --version
@@ -46,7 +46,7 @@ runner 按文件名顺序应用 `teamgramd/deploy/sql/postgres/*.sql`，在
 ## 配置并运行
 
 在 `teamgramd/etc/`（或 Docker 使用的 `teamgramd/etc2/`）为每个持久化服务
-配置 PostgreSQL DSN，同时配置 Redis、etcd、Kafka、MinIO 和 FFmpeg 地址。
+配置 PostgreSQL DSN，同时配置 Redis、etcd、Kafka、S3 endpoint 和 FFmpeg 地址。
 PostgreSQL DSN 缺失或不可达时必须停止启动。
 
 ```sh

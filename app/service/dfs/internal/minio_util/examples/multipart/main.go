@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strconv"
 
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
@@ -36,28 +37,50 @@ type uploadPartsState struct {
 	parts    map[int32]minio.CompletePart
 }
 
-func init() {
-	var err error
-	minioCore, err = minio.NewCore(
-		"127.0.0.1:9000",
-		&minio.Options{
-			Creds:  credentials.NewStaticV4("TLXH0OZVP0AKOJAZ8DIT", "9Sw+Xbhc3aWvxQ78rRgUkTQQLLZ24SyelA+B6Rwe", ""),
-			Secure: false,
-		})
-	if err != nil {
-		panic("new minio error")
+func newS3Core() (*minio.Core, error) {
+	endpoint := os.Getenv("S3_ENDPOINT")
+	if endpoint == "" {
+		endpoint = "127.0.0.1:8333"
 	}
+	accessKey := os.Getenv("S3_ACCESS_KEY")
+	secretKey := os.Getenv("S3_SECRET_KEY")
+	if accessKey == "" || secretKey == "" {
+		return nil, fmt.Errorf("S3_ACCESS_KEY and S3_SECRET_KEY are required")
+	}
+	useSSL := false
+	if value := os.Getenv("S3_USE_SSL"); value != "" {
+		parsed, err := strconv.ParseBool(value)
+		if err != nil {
+			return nil, fmt.Errorf("S3_USE_SSL must be true or false: %w", err)
+		}
+		useSSL = parsed
+	}
+	return minio.NewCore(endpoint, &minio.Options{
+		Creds:        credentials.NewStaticV4(accessKey, secretKey, ""),
+		Secure:       useSSL,
+		BucketLookup: minio.BucketLookupPath,
+	})
+}
+
+func ensureS3Core() error {
+	if minioCore != nil {
+		return nil
+	}
+	core, err := newS3Core()
+	if err != nil {
+		return err
+	}
+	minioCore = core
+	if partsStates == nil {
+		partsStates = make(map[string]*uploadPartsState)
+	}
+	return nil
 }
 
 func SaveFilePart(creator, fileId int64, filePart int32, b []byte) error {
-	//Endpoint:  http://192.168.2.145:9000  http://127.0.0.1:9000
-	//AccessKey: TLXH0OZVP0AKOJAZ8DIT
-	//SecretKey: 9Sw+Xbhc3aWvxQ78rRgUkTQQLLZ24SyelA+B6Rwe
-
-	//endpoint := "127.0.0.1:9000"
-	//accessKeyID := "Q3AM3UQ867SPQQA43P2F"
-	//secretAccessKey := "zuf+tfteSlswRu7BJ86wekitnifILbZam1KYY3TG"
-	//useSSL := true
+	if err := ensureS3Core(); err != nil {
+		return err
+	}
 
 	var (
 		err    error
@@ -78,6 +101,7 @@ func SaveFilePart(creator, fileId int64, filePart int32, b []byte) error {
 			parts:    make(map[int32]minio.CompletePart),
 		}
 	}
+	state = partsStates[object]
 
 	objPart, err := minioCore.PutObjectPart(
 		context.Background(),
@@ -86,7 +110,7 @@ func SaveFilePart(creator, fileId int64, filePart int32, b []byte) error {
 		state.uploadID,
 		int(filePart),
 		bytes.NewReader(b),
-		int64(filePart),
+		int64(len(b)),
 		"",
 		"",
 		nil)
@@ -111,6 +135,10 @@ const (
 )
 
 func main() {
+	if err := ensureS3Core(); err != nil {
+		logx.Errorf("error: %v", err)
+		return
+	}
 	var (
 		err      error
 		bucket   = "echat"

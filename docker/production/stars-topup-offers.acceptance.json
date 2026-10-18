@@ -1,0 +1,17 @@
+[
+  {"stars": 100, "store_product": "teamgram-stars-topup-100", "currency": "CNY", "amount": 1399},
+  {"stars": 150, "store_product": "teamgram-stars-topup-150", "currency": "CNY", "amount": 2059},
+  {"stars": 250, "store_product": "teamgram-stars-topup-250", "currency": "CNY", "amount": 3349},
+  {"stars": 350, "store_product": "teamgram-stars-topup-350", "currency": "CNY", "amount": 4629},
+  {"stars": 500, "store_product": "teamgram-stars-topup-500", "currency": "CNY", "amount": 6599},
+  {"stars": 750, "store_product": "teamgram-stars-topup-750", "currency": "CNY", "amount": 9799},
+  {"stars": 1000, "store_product": "teamgram-stars-topup-1000", "currency": "CNY", "amount": 12900},
+  {"stars": 1500, "store_product": "teamgram-stars-topup-1500", "currency": "CNY", "amount": 19499},
+  {"stars": 2500, "store_product": "teamgram-stars-topup-2500", "currency": "CNY", "amount": 32299},
+  {"stars": 5000, "store_product": "teamgram-stars-topup-5000", "currency": "CNY", "amount": 64900},
+  {"stars": 10000, "store_product": "teamgram-stars-topup-10000", "currency": "CNY", "amount": 129900},
+  {"stars": 25000, "store_product": "teamgram-stars-topup-25000", "currency": "CNY", "amount": 319900},
+  {"stars": 50000, "store_product": "teamgram-stars-topup-50000", "currency": "CNY", "amount": 649900},
+  {"stars": 100000, "store_product": "teamgram-stars-topup-100000", "currency": "CNY", "amount": 1299900},
+  {"stars": 150000, "store_product": "teamgram-stars-topup-150000", "currency": "CNY", "amount": 1929900}
+]

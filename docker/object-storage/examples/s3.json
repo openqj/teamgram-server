@@ -1,0 +1,14 @@
+{
+  "identities": [
+    {
+      "name": "teamgram-s3",
+      "credentials": [
+        {
+          "accessKey": "REPLACE_FROM_SECRET_MANAGER",
+          "secretKey": "REPLACE_FROM_SECRET_MANAGER"
+        }
+      ],
+      "actions": ["Read", "List", "Write", "Tagging"]
+    }
+  ]
+}

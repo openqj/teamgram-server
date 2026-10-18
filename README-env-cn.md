@@ -12,7 +12,7 @@
 | etcd | 配置与发现 |
 | redis | 缓存 |
 | postgres | 关系数据库（PostgreSQL 18） |
-| minio / minio-mc | 对象存储及初始化 bucket |
+| seaweedfs | S3 兼容对象存储及 bucket 初始化 |
 | jaeger | 分布式追踪 |
 | prometheus | 指标采集 |
 | node-exporter | 主机指标导出 |
@@ -34,7 +34,7 @@
 
 ```bash
 cp .env.example .env
-# 编辑 .env 修改 POSTGRES_*、MINIO_*、GRAFANA_* 等
+# 编辑 .env 修改 POSTGRES_*、S3_*、GRAFANA_* 等
 ```
 
 | 变量 | 默认值 | 说明 |
@@ -42,8 +42,12 @@ cp .env.example .env
 | POSTGRES_DB | teamgram | 默认数据库名 |
 | POSTGRES_USER | teamgram | 应用用数据库用户 |
 | POSTGRES_PASSWORD | teamgram | 应用用数据库密码 |
-| MINIO_ROOT_USER | minio | MinIO 用户名 |
-| MINIO_ROOT_PASSWORD | miniostorage | MinIO 密码 |
+| S3_ENDPOINT | seaweedfs:8333 | Teamgram 使用的 S3 API host:port |
+| S3_ACCESS_KEY | seaweedfs | 本地 disposable S3 access key |
+| S3_SECRET_KEY | seaweedfs-secret | 本地 disposable S3 secret |
+| S3_USE_SSL | false | 生产 TLS LB 后设置为 true |
+| S3_REGION | us-east-1 | S3 签名 region |
+| SEAWEEDFS_S3_PORT | 8333 | 本地 SeaweedFS S3 API 的宿主机端口 |
 | GRAFANA_ADMIN_USER | admin | Grafana 管理员用户名 |
 | GRAFANA_ADMIN_PASSWORD | admin | Grafana 管理员密码 |
 | GRAFANA_ROOT_URL | http://localhost:3000 | Grafana 访问根 URL |
@@ -76,8 +80,7 @@ Compose 会自动读取当前目录下的 `.env`；若未配置 `.env`，将使�
 | Prometheus | 9090 | http://127.0.0.1:9090 |
 | Grafana | 3000 | http://127.0.0.1:3000 |
 | Kibana | 5601 | http://127.0.0.1:5601 |
-| MinIO API | 9000 | http://127.0.0.1:9000 |
-| MinIO Console | 9001 | http://127.0.0.1:9001 |
+| SeaweedFS S3 API | 8333 | http://127.0.0.1:8333 |
 | PostgreSQL | 5432 | 127.0.0.1:5432 |
 | Redis | 6379 | 127.0.0.1:6379 |
 | etcd | 2379 | http://127.0.0.1:2379 |
@@ -111,12 +114,12 @@ PostgreSQL schema 由 `postgres-migrate` 服务自动执行 `teamgramd/deploy/po
 | etcd | `./data/etcd` |
 | redis | `./data/redis` |
 | postgres | `./data/postgres` |
-| minio | `./data/minio` |
+| seaweedfs | `./data/seaweedfs` |
 | prometheus | `./data/prometheus` |
 | grafana | `./data/grafana` |
 | elasticsearch | `./data/elasticsearch` |
 
-首次启动时 Docker Compose 会自动创建上述目录。执行 `down` 不会删除这些目录及其中数据；备份或迁移时直接复制 `data/` 即可。
+首次启动时 Docker Compose 会自动创建上述目录。执行 `down` 不会删除这些目录及其中数据。同一套 SeaweedFS 可备份其专用数据目录；跨 SeaweedFS、RustFS 或其他 provider 迁移时禁止复制底层目录，必须使用 [S3 对象迁移工具](docs/object-storage-zh.md) 并逐对象校验。
 
 ## 注意事项
 

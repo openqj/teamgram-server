@@ -43,7 +43,10 @@ services:
       - teamgram_net
 
   teamgram:
-    build: .
+    build:
+      context: .
+      additional_contexts:
+        proto: ../proto
     stop_grace_period: 45s
     ulimits:
       nofile:
@@ -62,6 +65,11 @@ services:
     environment:
       TEAMGRAM_POSTGRES_DSN: postgresql://${POSTGRES_USER:-teamgram}:${POSTGRES_PASSWORD:-teamgram}@postgres:5432/${POSTGRES_DB:-teamgram}?sslmode=disable
       TEAMGRAM_SYNC_POSTGRES_MAX_CONNS: ${TEAMGRAM_SYNC_POSTGRES_MAX_CONNS:-16}
+      S3_ENDPOINT: ${S3_ENDPOINT:-seaweedfs:8333}
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:-seaweedfs}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:-seaweedfs-secret}
+      S3_USE_SSL: ${S3_USE_SSL:-false}
+      S3_REGION: ${S3_REGION:-us-east-1}
       TEAMGRAM_IDENTITY_BASE_URL: ${TEAMGRAM_IDENTITY_BASE_URL:-}
       TEAMGRAM_IDENTITY_TEAMGRAM_SERVICE_TOKEN: ${TEAMGRAM_IDENTITY_TEAMGRAM_SERVICE_TOKEN:-}
       TEAMGRAM_IDENTITY_INSTANCE_ID: ${TEAMGRAM_IDENTITY_INSTANCE_ID:-default}

@@ -45,6 +45,7 @@ class MethodProbeResult:
     route: str
     status: str
     detail: str = ""
+    category: str = "success"
 
 
 def _integer_env(name: str, default: int = 0) -> int:
@@ -71,6 +72,10 @@ def _probe_params(method: str) -> dict[str, Any]:
     gift_star_count = _integer_env("BOT_PROBE_GIFT_STAR_COUNT", 1)
     params: dict[str, Any] = {}
 
+    if method == "getUpdates":
+        # Keep the catalog probe non-blocking so it does not compete with the
+        # application's long-polling update consumer on the same bot token.
+        return {"limit": 1, "timeout": 0}
     if method == "getFile":
         return {"file_id": file_id}
     if method == "setWebhook":
@@ -493,12 +498,34 @@ async def call_method(bot: Any, method: str) -> MethodProbeResult:
                 ):
                     raise
                 await bot.do_api_request(method, api_kwargs=params)
-                return MethodProbeResult(method, "ptb.do_api_request (typed fallback)", "ok")
+                return MethodProbeResult(method, "ptb.do_api_request (typed fallback)", "ok", category="success")
         await bot.do_api_request(method, api_kwargs=params)
-        return MethodProbeResult(method, "ptb.do_api_request", "ok")
+        return MethodProbeResult(method, "ptb.do_api_request", "ok", category="success")
     except Exception as exc:  # noqa: BLE001 - the report is the interface
+        from telegram.error import BadRequest, NetworkError, TelegramError
+
+        detail = str(exc)
+        if method in TERMINAL_METHODS:
+            category = "terminal"
+        elif isinstance(exc, BadRequest):
+            provider_markers = (
+                "provider",
+                "payment provider",
+                "business provider",
+                "not configured",
+                "unavailable",
+            )
+            category = (
+                "provider_dependency"
+                if any(marker in detail.lower() for marker in provider_markers)
+                else "telegram_business_error"
+            )
+        elif isinstance(exc, (NetworkError, TelegramError)):
+            category = "local_error"
+        else:
+            category = "local_error"
         return MethodProbeResult(method, f"ptb.{snake_case(method)}" if typed_ready else "ptb.do_api_request",
-                                 "error", str(exc))
+                                 "error", detail, category)
 
 
 def method_page_text(page: int = 0) -> str:
@@ -607,8 +634,17 @@ async def smoke(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         results.append(result)
         LOGGER.info("method=%s route=%s status=%s", result.method, result.route, result.status)
     counts = Counter(result.status for result in results)
+    categories = Counter(result.category for result in results)
     errors = [result.method for result in results if result.status == "error"]
     summary = f"PTB smoke complete. requested={len(results)} ok={counts['ok']} error={counts['error']}"
+    deferred_terminal_count = 0 if include_lifecycle else len(TERMINAL_METHODS)
+    summary += (
+        f"\nCategories: success={categories['success']} "
+        f"telegram_business_error={categories['telegram_business_error']} "
+        f"provider_dependency={categories['provider_dependency']} "
+        f"local_error={categories['local_error']} "
+        f"terminal={deferred_terminal_count}"
+    )
     if include_lifecycle:
         summary += (
             "\n183 non-terminal methods completed. The two terminal methods are now called last; "

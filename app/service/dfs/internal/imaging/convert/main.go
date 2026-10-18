@@ -26,17 +26,10 @@ import (
 	"path/filepath"
 
 	"github.com/teamgram/teamgram-server/app/service/dfs/internal/imaging"
-
-	"github.com/minio/minio-go/v7"
-	"github.com/minio/minio-go/v7/pkg/credentials"
 )
 
 var imageFile = flag.String("image", "", "convert image file")
 var isABC = flag.Bool("abc", true, "output isABC")
-
-var (
-	minioCore *minio.Core
-)
 
 func main() {
 	flag.Parse()
@@ -56,17 +49,4 @@ func main() {
 	imaging.ReSizeImage(rb, ext, *isABC, func(szType string, localId int, w, h int32, b []byte) error {
 		return ioutil.WriteFile(fmt.Sprintf("%s.%s%s", *imageFile, szType, ext), b, 0644)
 	})
-}
-
-func init() {
-	var err error
-	minioCore, err = minio.NewCore(
-		"127.0.0.1:9000",
-		&minio.Options{
-			Creds:  credentials.NewStaticV4("TLXH0OZVP0AKOJAZ8DIT", "9Sw+Xbhc3aWvxQ78rRgUkTQQLLZ24SyelA+B6Rwe", ""),
-			Secure: false,
-		})
-	if err != nil {
-		panic("new minio error")
-	}
 }

@@ -29,11 +29,7 @@ import (
 	"github.com/zeromicro/go-zero/core/logx"
 )
 
-// BucketConfig
-// endpoint := "127.0.0.1:9000"
-// accessKeyID := "Q3AM3UQ867SPQQA43P2F"
-// secretAccessKey := "zuf+tfteSlswRu7BJ86wekitnifILbZam1KYY3TG"
-// useSSL := true
+// BucketConfig is the bucket mapping used by the S3-compatible client.
 type BucketConfig struct {
 	Documents      string `json:",default=documents"`
 	Photos         string `json:",default=photos"`
@@ -46,6 +42,7 @@ type MinioConfig struct {
 	AccessKeyID     string
 	SecretAccessKey string
 	UseSSL          bool
+	Region          string
 
 	Bucket BucketConfig
 }
@@ -59,8 +56,10 @@ func MustNewMinioClient(c *MinioConfig) *MinioUtil {
 	core, err := minio.NewCore(
 		c.Endpoint,
 		&minio.Options{
-			Creds:  credentials.NewStaticV4(c.AccessKeyID, c.SecretAccessKey, ""),
-			Secure: c.UseSSL,
+			Creds:        credentials.NewStaticV4(c.AccessKeyID, c.SecretAccessKey, ""),
+			Secure:       c.UseSSL,
+			Region:       c.Region,
+			BucketLookup: minio.BucketLookupPath,
 		})
 	if err != nil {
 		logx.Must(err)

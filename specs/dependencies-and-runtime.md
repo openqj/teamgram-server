@@ -10,7 +10,7 @@ This document covers core dependencies, recommended versions, and the Docker sta
 | **Redis** | Cache, session, deduplication | 6.x / 7.x |
 | **etcd** | Service discovery and config | v3.5.x |
 | **Kafka** | Message and event pipeline | 3.x (KRaft, no Zookeeper) |
-| **MinIO** | Object storage (documents, photos, videos) | Current stable |
+| **SeaweedFS (S3)** | Object storage (documents, photos, videos) | 4.47 digest-pinned |
 | **FFmpeg** | Media transcoding (install on server) | Per install docs |
 
 - Create an empty `teamgram` database on PostgreSQL 18 and apply the checked-in
@@ -27,7 +27,7 @@ This document covers core dependencies, recommended versions, and the Docker sta
   complete method coverage, transaction and update-recovery checks, focused
   tests, deployment checks, and Layer 229 compatibility probes. A migrated
   schema alone is not production-readiness evidence.
-- MinIO: create buckets `documents`, `encryptedfiles`, `photos`, `videos` (auto-created by minio-mc when using the provided Docker stack).
+- SeaweedFS: create buckets `documents`, `encryptedfiles`, `photos`, `videos` (created by the `mini` startup configuration in the provided Docker stack).
 
 ## PostgreSQL runtime contract
 
@@ -74,7 +74,7 @@ Aligned with `docker-compose-env.yaml` and [README-env-cn.md](../README-env-cn.m
 - **etcd**: quay.io/coreos/etcd:v3.5.11
 - **Redis**: redis:7-alpine
 - **PostgreSQL**: postgres:18
-- **MinIO**: minio/minio:latest; minio-mc for bucket init
+- **SeaweedFS**: `chrislusf/seaweedfs` 4.47 (`mini` S3 mode, digest-pinned)
 - **Jaeger**: jaegertracing/all-in-one:1.52
 - **Prometheus**: prom/prometheus:v2.47.2
 - **Grafana**: grafana/grafana:10.2.3
@@ -95,5 +95,5 @@ If you install components yourself, see:
 - [Manual installation (Linux)](../docs/install-manual-linux.md)
 - [Manual installation (macOS)](../docs/install-manual-macos.md)
 
-Then ensure PostgreSQL, Redis, etcd, Kafka, MinIO, and FFmpeg are available,
+Then ensure PostgreSQL, Redis, etcd, Kafka, an S3-compatible provider, and FFmpeg are available,
 apply the PostgreSQL migrations, and run `make` and `teamgramd/bin/runall2.sh`.

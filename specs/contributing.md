@@ -33,12 +33,12 @@ This document covers branching, PR rules, code style, commit messages, and local
 
 ### Dependencies
 
-- PostgreSQL 18 is the sole production database. Legacy generated DAOs remain outside the production runtime; production configs accept only a PostgreSQL DSN. Redis, etcd, Kafka, MinIO (and FFmpeg if needed) are also required. Optional: `docker compose -f docker-compose-env.yaml up -d`.
+- PostgreSQL 18 is the sole production database. Legacy generated DAOs remain outside the production runtime; production configs accept only a PostgreSQL DSN. Redis, etcd, Kafka, SeaweedFS S3 (and FFmpeg if needed) are also required. Optional: `docker compose -f docker-compose-env.yaml up -d`.
 - **Database**: Create DB `teamgram`, then apply the PostgreSQL 18 migrations with
   `DATABASE_URL='postgresql://teamgram:teamgram@127.0.0.1:5432/teamgram?sslmode=disable' ./teamgramd/deploy/postgres/apply.sh`.
   The SQL files directly under `teamgramd/deploy/sql/` are a historical Teamgram
   schema archive and are not deployment inputs.
-- **MinIO**: Buckets `documents`, `encryptedfiles`, `photos`, `videos` (auto-created when using docker-compose-env).
+- **SeaweedFS S3**: Buckets `documents`, `encryptedfiles`, `photos`, `videos` (created by the `mini` startup configuration when using docker-compose-env).
 
 ### Run services
 

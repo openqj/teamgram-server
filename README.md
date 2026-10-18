@@ -36,7 +36,7 @@ Unofficial open-source [MTProto](https://core.telegram.org/mtproto) server imple
 | [Redis](https://redis.io/) | Cache, session, deduplication |
 | [etcd](https://etcd.io/) | Service discovery & config |
 | [Kafka](https://kafka.apache.org/) | Message & event pipeline |
-| [MinIO](https://minio.io/) | Object storage |
+| [SeaweedFS](https://github.com/seaweedfs/seaweedfs) (S3) | Object storage; replaceable with RustFS or cloud S3 |
 | [FFmpeg](https://ffmpeg.org/) | Media transcoding (on server) |
 
 Detailed versions and optional monitoring stack: [Dependencies and runtime (specs)](specs/dependencies-and-runtime.md).
@@ -59,7 +59,7 @@ fail closed; see the roadmap and method ledger for current acceptance status.
 ## Docker installation
 
 For running the full stack with Docker. The PostgreSQL migration runner and
-MinIO bucket initializer run as dependency jobs on first start.
+SeaweedFS bucket initialization runs as part of the dependency stack on first start.
 
 ### 1. Clone
 
@@ -71,7 +71,7 @@ cd teamgram-server
 ### 2. Start dependency stack
 
 This starts the dependency stack, including PostgreSQL 18, Redis, etcd, Kafka,
-MinIO, and optional monitoring. The `postgres-migrate` job applies the checked-
+SeaweedFS, and optional monitoring. The `postgres-migrate` job applies the checked-
 in schema. For a database-only setup, use `docker-compose-postgres.yaml`.
 
 ```bash
@@ -83,6 +83,9 @@ docker compose -f docker-compose-env.yaml up -d
 ```bash
 docker compose up -d
 ```
+
+The S3 contract, legacy MinIO-to-SeaweedFS/RustFS migration, and production HA
+runbook are documented in [Object storage](docs/object-storage.md).
 
 ---
 

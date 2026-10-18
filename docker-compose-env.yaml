@@ -1,6 +1,6 @@
 # docker-compose-env2: 高性能组件栈（独立方案，不依赖 docker-compose-env.yaml）
 # 组件: jaeger, prometheus, grafana, elasticsearch, kibana,
-#       go-stash, filebeat, kafka, postgres, redis, etcd, minio, minio-mc, node-exporter
+#       go-stash, filebeat, kafka, postgres, redis, etcd, seaweedfs, node-exporter
 # 启动: docker compose -f docker-compose-env2.yaml up -d
 
 services:
@@ -121,40 +121,34 @@ services:
     networks:
       - teamgram_net
 
-  # --- 对象存储 ---
-  minio:
-    image: minio/minio:latest
-    container_name: minio
-    ports:
-      - "9000:9000"
-      - "9001:9001"
-    environment:
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minio}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-miniostorage}
-    command: server /data --console-address ":9001"
-    volumes:
-      - ./data/minio:/data
-    restart: always
-    networks:
-      - teamgram_net
-
-  minio-mc:
-    image: minio/mc:latest
-    container_name: minio-mc
-    entrypoint: ["/bin/sh", "-c"]
+  # --- S3-compatible object storage ---
+  # Single-node SeaweedFS is for local development and staging. Production
+  # uses the HA Swarm stack under docker/object-storage/.
+  seaweedfs:
+    image: ${SEAWEEDFS_IMAGE:-chrislusf/seaweedfs@sha256:ce9e796f1fe6f06968f4c04bdaf8f678dad9c8acdfef3d244133d71bfa6bf882}
+    container_name: seaweedfs
     command:
-      - |
-        sleep 10
-        mc alias set myminio http://minio:9000 $${MINIO_ROOT_USER:-minio} $${MINIO_ROOT_PASSWORD:-miniostorage}
-        mc mb myminio/documents --ignore-existing
-        mc mb myminio/encryptedfiles --ignore-existing
-        mc mb myminio/photos --ignore-existing
-        mc mb myminio/videos --ignore-existing
+      - mini
+      - -dir=/data
+      - -ip.bind=0.0.0.0
+      - -bucket=documents,encryptedfiles,photos,videos
+      - -master.telemetry=false
+      - -s3.iam=false
     environment:
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minio}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-miniostorage}
-    depends_on:
-      - minio
+      AWS_ACCESS_KEY_ID: ${S3_ACCESS_KEY:-seaweedfs}
+      AWS_SECRET_ACCESS_KEY: ${S3_SECRET_KEY:-seaweedfs-secret}
+    ports:
+      - "127.0.0.1:${SEAWEEDFS_S3_PORT:-8333}:8333"
+    volumes:
+      - ./data/seaweedfs:/data
+    restart: always
+    init: true
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8333/status"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
     networks:
       - teamgram_net
 
