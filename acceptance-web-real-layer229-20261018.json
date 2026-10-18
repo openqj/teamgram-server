@@ -1,0 +1,138 @@
+{
+  "run": {
+    "date": "2026-10-18",
+    "surface": "Telegram WebA real browser acceptance",
+    "base_url": "http://127.0.0.1:1234/",
+    "test_command": "npm run test:playwright:real -- --reporter=line",
+    "result": "PASS",
+    "tests_passed": 7,
+    "tests_total": 7,
+    "rerun": {
+      "result": "PASS",
+      "tests_passed": 7,
+      "tests_total": 7,
+      "observed_at_local": "2026-10-18T06:20:27+08:00"
+    },
+    "cleanup": "Playwright finally blocks removed temporary groups, channels, contacts, notification settings, and direct messages"
+  },
+  "ui_flows": [
+    {
+      "name": "bot_and_mini_app",
+      "result": "PASS",
+      "business_methods": [
+        "messages.startBot",
+        "messages.requestMainWebView"
+      ]
+    },
+    {
+      "name": "channel_create_post_inspect_delete",
+      "result": "PASS",
+      "business_methods": [
+        "channels.createChannel",
+        "channels.getFullChannel",
+        "messages.sendMessage",
+        "messages.getHistory",
+        "channels.deleteChannel"
+      ]
+    },
+    {
+      "name": "channel_notification_settings_reload",
+      "result": "PASS",
+      "business_methods": [
+        "account.updateNotifySettings",
+        "account.getNotifySettings"
+      ]
+    },
+    {
+      "name": "contact_add_remove",
+      "result": "PASS",
+      "business_methods": [
+        "contacts.addContact",
+        "contacts.deleteContacts"
+      ]
+    },
+    {
+      "name": "gramjs_layer229_runtime",
+      "result": "PASS",
+      "business_methods": []
+    },
+    {
+      "name": "group_create_message_member_readback",
+      "result": "PASS",
+      "business_methods": [
+        "messages.createChat",
+        "messages.sendMessage",
+        "messages.getHistory",
+        "messages.getFullChat"
+      ]
+    },
+    {
+      "name": "direct_message_edit_cross_account_readback_and_delete",
+      "result": "PASS",
+      "business_methods": [
+        "messages.sendMessage",
+        "messages.editMessage",
+        "messages.getHistory",
+        "messages.deleteMessages",
+        "messages.getPeerDialogs"
+      ]
+    }
+  ],
+  "layer229_transport_observation": {
+    "frontend_layer": 229,
+    "observed_methods": [
+      "messages.sendMessage",
+      "messages.editMessage",
+      "messages.getHistory",
+      "messages.deleteMessages",
+      "messages.getPeerDialogs",
+      "messages.getFullChat",
+      "messages.createChat",
+      "channels.createChannel",
+      "channels.getFullChannel",
+      "channels.deleteChannel",
+      "account.updateNotifySettings",
+      "account.getNotifySettings",
+      "contacts.addContact",
+      "contacts.deleteContacts",
+      "messages.startBot",
+      "messages.requestMainWebView"
+    ],
+    "backend_log_assertions": [
+      "invokeWithLayer layer:229",
+      "authsession.setLayer layer:229"
+    ]
+  },
+  "manual_browser_roundtrip": {
+    "chat": "Isolated Test Nine",
+    "steps": [
+      "sent manual-web-layer229-<timestamp>",
+      "edited the message to manual-web-layer229-<timestamp>-edited",
+      "confirmed the delete dialog after explicit user approval",
+      "final visible state: No messages here yet..."
+    ],
+    "methods": [
+      "messages.sendMessage",
+      "messages.editMessage",
+      "messages.deleteMessages",
+      "messages.getHistory"
+    ],
+    "result": "PASS"
+  },
+  "verification": {
+    "strict_ledger_command": "python3 tools/layer229_acceptance_report.py --strict --json",
+    "ledger_rows": 813,
+    "source_methods": 813,
+    "constructor_ids": 813,
+    "missing_methods": 0,
+    "duplicate_methods": 0,
+    "duplicate_constructor_ids": 0,
+    "constructor_id_mismatches": 0,
+    "git_diff_check": "PASS",
+    "frontend_build": "PASS"
+  },
+  "residual_scope": [
+    "Most Layer 229 methods remain PARTIAL_ISOLATED_SESSION_E2E, PARTIAL_ISOLATED_DB_ONLY, or PARTIAL_COMPONENT_ONLY because production provider, restart, cross-device update, and production-traffic gates are separate acceptance requirements.",
+    "Browser console warnings for unavailable language detector, push permission, service worker, and missing fixture media did not fail the seven business flows."
+  ]
+}

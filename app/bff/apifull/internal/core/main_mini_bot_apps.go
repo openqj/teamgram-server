@@ -58,6 +58,26 @@ func (c *ApiFullCore) MessagesRequestMainWebView(in *mtproto.TLMessagesRequestMa
 	return c.requestMiniWebView(uid, in.GetBot(), botInfo.GetMainAppUrl().GetValue(), "requestMainWebView", in.GetPlatform(), !in.GetCompact(), in.GetFullscreen(), in)
 }
 
+func validPopularAppBots(result *mtproto.Bots_PopularAppBots) bool {
+	if result == nil || result.GetPredicateName() != mtproto.Predicate_bots_popularAppBots || len(result.GetUsers()) > 10000 {
+		return false
+	}
+	if next := result.GetNextOffset(); next != nil && len(next.GetValue()) > 256 {
+		return false
+	}
+	for _, user := range result.GetUsers() {
+		if user == nil || user.GetId() <= 0 {
+			return false
+		}
+		switch user.GetPredicateName() {
+		case mtproto.Predicate_user, mtproto.Predicate_userEmpty:
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 func (c *ApiFullCore) BotsGetPopularAppBots(in *mtproto.TLBotsGetPopularAppBots) (*mtproto.Bots_PopularAppBots, error) {
 	if _, err := c.requireUserId(); err != nil {
 		return nil, err
@@ -75,7 +95,7 @@ func (c *ApiFullCore) BotsGetPopularAppBots(in *mtproto.TLBotsGetPopularAppBots)
 	if local, err := c.loadLocalBusinessResult("bots.getPopularAppBots", fmt.Sprintf("offset:%s:limit:%d", in.GetOffset(), in.GetLimit()), result); err != nil {
 		return nil, err
 	} else if local {
-		if result.GetPredicateName() == "" || len(result.GetUsers()) > 10000 || (result.GetNextOffset() != nil && len(result.GetNextOffset().GetValue()) > 256) {
+		if !validPopularAppBots(result) {
 			return nil, mtproto.ErrInternalServerError
 		}
 		return result, nil
@@ -88,7 +108,7 @@ func (c *ApiFullCore) BotsGetPopularAppBots(in *mtproto.TLBotsGetPopularAppBots)
 	}, result); err != nil {
 		return nil, err
 	}
-	if result.GetPredicateName() == "" || len(result.GetUsers()) > 10000 || (result.GetNextOffset() != nil && len(result.GetNextOffset().GetValue()) > 256) {
+	if !validPopularAppBots(result) {
 		return nil, mtproto.ErrInternalServerError
 	}
 	return result, nil

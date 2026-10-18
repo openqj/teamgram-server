@@ -23,13 +23,13 @@ func SettleStarsSpendRequest(payerID, beneficiaryID, recipientID int64, requestK
 	if db == nil {
 		return PaymentRequest{}, PaymentReceipt{}, errors.New("domain PostgreSQL is not open")
 	}
-	if payerID <= 0 || beneficiaryID < 0 || recipientID < 0 || strings.TrimSpace(requestKey) == "" || strings.TrimSpace(fingerprint) == "" || strings.TrimSpace(transactionID) == "" || len(transactionID) > 191 || strings.TrimSpace(currency) == "" || strings.TrimSpace(title) == "" || amount < 0 || amount != stars || stars <= 0 || len(receipt) == 0 {
+	if payerID <= 0 || beneficiaryID < 0 || strings.TrimSpace(requestKey) == "" || strings.TrimSpace(fingerprint) == "" || strings.TrimSpace(transactionID) == "" || len(transactionID) > 191 || strings.TrimSpace(currency) == "" || strings.TrimSpace(title) == "" || amount < 0 || amount != stars || stars <= 0 || len(receipt) == 0 {
 		return PaymentRequest{}, PaymentReceipt{}, ErrInvalidPaymentRequest
 	}
 	if kind != StarsSpendGift && kind != StarsSpendPremiumGift && kind != StarsSpendBusinessTransfer {
 		return PaymentRequest{}, PaymentReceipt{}, ErrInvalidPaymentRequest
 	}
-	if kind == StarsSpendGift && (beneficiaryID != 0 || recipientID <= 0 || strings.TrimSpace(giftSlug) == "" || premiumMonths != 0) {
+	if kind == StarsSpendGift && (beneficiaryID != 0 || recipientID == 0 || strings.TrimSpace(giftSlug) == "" || premiumMonths != 0) {
 		return PaymentRequest{}, PaymentReceipt{}, ErrInvalidPaymentRequest
 	}
 	if kind == StarsSpendPremiumGift && (beneficiaryID != 0 || recipientID <= 0 || (premiumMonths != 3 && premiumMonths != 6 && premiumMonths != 12) || giftSlug != "") {
@@ -136,7 +136,7 @@ func ensureStarsSpendSideEffectsTx(tx *sql.Tx, requestID, payerID, beneficiaryID
 	case StarsSpendGift:
 		result, err := tx.Exec(`INSERT INTO apifull_gift
 			(from_user, to_user, slug, stars, saved, payment_request_id)
-			VALUES ($1,$2,$3,$4,1,$5) ON CONFLICT (payment_request_id) DO NOTHING`, payerID, recipientID, giftSlug, stars, requestID)
+			VALUES ($1,$2,$3,$4,1,$5) ON CONFLICT (payment_request_id) WHERE payment_request_id IS NOT NULL DO NOTHING`, payerID, recipientID, giftSlug, stars, requestID)
 		if err != nil {
 			return err
 		}

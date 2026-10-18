@@ -51,6 +51,10 @@ func (c *AccountCore) AccountSendConfirmPhoneCode(in *mtproto.TLAccountSendConfi
 	if user == nil || user.GetUser() == nil {
 		return nil, mtproto.ErrInternalServerError
 	}
+	if user.GetUser().GetId() != c.MD.GetUserId() {
+		c.Logger.Errorf("account.sendConfirmPhoneCode - user service returned mismatched user id: %d", user.GetUser().GetId())
+		return nil, mtproto.ErrInternalServerError
+	}
 	if strings.TrimSpace(user.GetUser().GetPhone()) == "" {
 		return nil, mtproto.ErrPhoneNumberInvalid
 	}

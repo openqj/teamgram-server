@@ -59,6 +59,19 @@ func TestAccountSendConfirmPhoneCodeRejectsMalformedUserProviderResult(t *testin
 	}
 }
 
+func TestAccountSendConfirmPhoneCodeRejectsMismatchedUserProviderResult(t *testing.T) {
+	client := &sendConfirmPhoneUserClient{user: &mtproto.ImmutableUser{User: &mtproto.UserData{
+		Id: 8, Phone: "+14155552671",
+	}}}
+	result, err := newSendConfirmPhoneCodeCore(client).AccountSendConfirmPhoneCode(&mtproto.TLAccountSendConfirmPhoneCode{
+		Hash:     "purpose-hash",
+		Settings: &mtproto.CodeSettings{},
+	})
+	if result != nil || !errors.Is(err, mtproto.ErrInternalServerError) {
+		t.Fatalf("send confirm-phone code = (%v, %v), want (nil, INTERNAL_SERVER_ERROR)", result, err)
+	}
+}
+
 func TestAccountSendConfirmPhoneCodeRejectsUserWithoutPhone(t *testing.T) {
 	client := &sendConfirmPhoneUserClient{user: &mtproto.ImmutableUser{User: &mtproto.UserData{Id: 7}}}
 	result, err := newSendConfirmPhoneCodeCore(client).AccountSendConfirmPhoneCode(&mtproto.TLAccountSendConfirmPhoneCode{

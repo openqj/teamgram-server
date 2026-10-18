@@ -43,6 +43,26 @@ func TestPaidReactionMethodsUseSignedBusinessProvider(t *testing.T) {
 	}
 }
 
+func TestPaidReactionMethodsRejectUnknownProviderConstructors(t *testing.T) {
+	core := newBusinessProviderGapCore(t, "messages.sendPaidReaction", map[string]any{
+		"predicate_name": "updatesUnknown",
+	})
+	updates, err := core.MessagesSendPaidReaction(&mtproto.TLMessagesSendPaidReaction{
+		Peer: paidReactionPeerForProviderTest(), MsgId: 3, Count: 2, RandomId: 4,
+	})
+	if updates != nil || err != mtproto.ErrInternalServerError {
+		t.Fatalf("unknown send constructor = (%v, %v), want nil and INTERNAL_SERVER_ERROR", updates, err)
+	}
+
+	core = newBusinessProviderGapCore(t, "messages.getPaidReactionPrivacy", map[string]any{
+		"predicate_name": "updatesUnknown",
+	})
+	privacy, err := core.MessagesGetPaidReactionPrivacy(&mtproto.TLMessagesGetPaidReactionPrivacy{})
+	if privacy != nil || err != mtproto.ErrInternalServerError {
+		t.Fatalf("unknown privacy constructor = (%v, %v), want nil and INTERNAL_SERVER_ERROR", privacy, err)
+	}
+}
+
 func TestBotGapMethodsUseSignedBusinessProvider(t *testing.T) {
 	core := newBusinessProviderGapCore(t, "bots.getPopularAppBots", map[string]any{
 		"predicate_name": "bots_popularAppBots", "users": []*mtproto.User{},

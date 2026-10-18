@@ -19,6 +19,7 @@ package core
 
 import (
 	"errors"
+	"hash/fnv"
 	"strconv"
 	"strings"
 
@@ -83,6 +84,73 @@ func (c *ApiFullCore) giftActorID() (int64, error) {
 	return c.requireUserId()
 }
 
+func validateSavedGiftOwnerPeer(ownerID int64, peer *mtproto.InputPeer) (int64, error) {
+	if peer == nil {
+		return 0, mtproto.ErrPeerIdInvalid
+	}
+	switch peer.GetPredicateName() {
+	case mtproto.Predicate_inputPeerSelf:
+		return ownerID, nil
+	case mtproto.Predicate_inputPeerUser:
+		if peer.GetUserId() != ownerID || peer.GetAccessHash() == 0 {
+			return 0, mtproto.ErrPeerIdInvalid
+		}
+		return ownerID, nil
+	case mtproto.Predicate_inputPeerChat:
+		key, err := domain.GiftOwnerKey(mtproto.PEER_CHAT, peer.GetChatId())
+		if err != nil {
+			return 0, mtproto.ErrPeerIdInvalid
+		}
+		return key, nil
+	case mtproto.Predicate_inputPeerChannel:
+		if peer.GetAccessHash() == 0 {
+			return 0, mtproto.ErrPeerIdInvalid
+		}
+		key, err := domain.GiftOwnerKey(mtproto.PEER_CHANNEL, peer.GetChannelId())
+		if err != nil {
+			return 0, mtproto.ErrPeerIdInvalid
+		}
+		return key, nil
+	default:
+		return 0, mtproto.ErrPeerIdInvalid
+	}
+}
+
+func savedGiftHasUnsupportedFilters(in *mtproto.TLPaymentsGetSavedStarGifts) bool {
+	return in != nil && (in.GetExcludeUnlimited() || in.GetExcludeUnique() || in.GetSortByValue() ||
+		in.GetExcludeUpgradable() || in.GetExcludeUnupgradable() || in.GetPeerColorAvailable() ||
+		in.GetExcludeHosted() || in.GetCollectionId() != nil || in.GetExcludeLimited())
+}
+
+// localSavedGiftID resolves the Layer 229 chat reference used for a saved
+// gift owned by the current actor. The local ledger has no message resolver,
+// so only a stable saved ID scoped to the actor can be consumed here.
+func localSavedGiftID(ownerID int64, stargift *mtproto.InputSavedStarGift) (int64, bool, error) {
+	if stargift == nil {
+		return 0, false, mtproto.ErrInputConstructorInvalid
+	}
+	if stargift.GetPredicateName() != mtproto.Predicate_inputSavedStarGiftChat {
+		return 0, false, nil
+	}
+	if stargift.GetSavedId() <= 0 || stargift.GetMsgId() != 0 || stargift.GetSlug() != "" {
+		return 0, false, mtproto.ErrInputConstructorInvalid
+	}
+	peer := stargift.GetPeer()
+	if peer == nil {
+		return 0, false, mtproto.ErrPeerIdInvalid
+	}
+	switch peer.GetPredicateName() {
+	case mtproto.Predicate_inputPeerSelf:
+	case mtproto.Predicate_inputPeerUser:
+		if peer.GetUserId() != ownerID || peer.GetAccessHash() == 0 {
+			return 0, false, mtproto.ErrPeerIdInvalid
+		}
+	default:
+		return 0, false, mtproto.ErrPeerIdInvalid
+	}
+	return stargift.GetSavedId(), true, nil
+}
+
 func (c *ApiFullCore) PaymentsGetStarGifts(in *mtproto.TLPaymentsGetStarGifts) (*mtproto.Payments_StarGifts, error) {
 	if _, err := c.requireUserId(); err != nil {
 		return nil, err
@@ -94,12 +162,42 @@ func (c *ApiFullCore) PaymentsGetStarGifts(in *mtproto.TLPaymentsGetStarGifts) (
 	if err != nil {
 		return nil, giftDomainError(err)
 	}
+	return starGiftCatalogResult(records, in.GetHash()), nil
+}
+
+// starGiftCatalogHash is a stable cache token for the canonical local gift
+// projection. The wire method has only hash:int, so include every field that
+// makeWireStarGift exposes instead of returning a constant token.
+func starGiftCatalogHash(records []domain.Gift) int32 {
+	h := fnv.New32a()
+	for _, record := range records {
+		_, _ = h.Write([]byte(strconv.FormatInt(record.ID, 10)))
+		_, _ = h.Write([]byte{0})
+		_, _ = h.Write([]byte(record.Slug))
+		_, _ = h.Write([]byte{0})
+		_, _ = h.Write([]byte(strconv.FormatInt(record.Stars, 10)))
+		_, _ = h.Write([]byte{0})
+	}
+	// Telegram clients use zero to mean an uncached request. Avoid producing
+	// that sentinel for a non-empty catalog even if the hash collides.
+	hash := int32(h.Sum32() & 0x7fffffff)
+	if hash == 0 && len(records) > 0 {
+		return 1
+	}
+	return hash
+}
+
+func starGiftCatalogResult(records []domain.Gift, requestedHash int32) *mtproto.Payments_StarGifts {
+	catalogHash := starGiftCatalogHash(records)
+	if requestedHash != 0 && requestedHash == catalogHash {
+		return mtproto.MakeTLPaymentsStarGiftsNotModified(&mtproto.Payments_StarGifts{Hash: catalogHash}).To_Payments_StarGifts()
+	}
 	return mtproto.MakeTLPaymentsStarGifts(&mtproto.Payments_StarGifts{
-		Hash:  0,
+		Hash:  catalogHash,
 		Gifts: makeStarGifts(records),
 		Chats: []*mtproto.Chat{},
 		Users: []*mtproto.User{},
-	}).To_Payments_StarGifts(), nil
+	}).To_Payments_StarGifts()
 }
 
 func (c *ApiFullCore) PaymentsSaveStarGift(in *mtproto.TLPaymentsSaveStarGift) (*mtproto.Bool, error) {
@@ -124,7 +222,7 @@ func (c *ApiFullCore) PaymentsSaveStarGift(in *mtproto.TLPaymentsSaveStarGift) (
 }
 
 func (c *ApiFullCore) PaymentsConvertStarGift(in *mtproto.TLPaymentsConvertStarGift) (*mtproto.Bool, error) {
-	uid, err := c.requireUserId()
+	uid, err := c.giftActorID()
 	if err != nil {
 		return nil, err
 	}
@@ -134,7 +232,21 @@ func (c *ApiFullCore) PaymentsConvertStarGift(in *mtproto.TLPaymentsConvertStarG
 	if in.GetMsgId() != 0 || in.GetUserId() != nil {
 		return nil, mtproto.ErrMethodNotImpl
 	}
-	slug, err := localGiftSlug(in.GetStargift())
+	stargift := in.GetStargift()
+	if stargift == nil {
+		return nil, mtproto.ErrInputConstructorInvalid
+	}
+	giftID, byID, err := localSavedGiftID(uid, stargift)
+	if err != nil {
+		return nil, err
+	}
+	if byID {
+		if err = domain.ConvertGiftByID(uid, giftID); err != nil {
+			return nil, giftDomainError(err)
+		}
+		return mtproto.BoolTrue, nil
+	}
+	slug, err := localGiftSlug(stargift)
 	if err != nil {
 		return nil, err
 	}
@@ -166,15 +278,53 @@ func localGiftSlug(stargift *mtproto.InputSavedStarGift) (string, error) {
 	return slug, nil
 }
 
+// localSavedGiftReference accepts the references that the local inventory can
+// resolve without a message or chat history lookup. Bot API numeric
+// owned_gift_id values arrive as inputSavedStarGiftChat(self, saved_id).
+func localSavedGiftReference(ownerID int64, stargift *mtproto.InputSavedStarGift) (int64, string, error) {
+	if stargift == nil {
+		return 0, "", mtproto.ErrInputConstructorInvalid
+	}
+	predicate := stargift.GetPredicateName()
+	if predicate == mtproto.Predicate_inputSavedStarGiftChat ||
+		(predicate == "" && stargift.GetPeer() != nil) {
+		if predicate == "" {
+			copy := *stargift
+			copy.PredicateName = mtproto.Predicate_inputSavedStarGiftChat
+			stargift = &copy
+		}
+		giftID, byID, err := localSavedGiftID(ownerID, stargift)
+		if err != nil {
+			return 0, "", err
+		}
+		if !byID {
+			return 0, "", mtproto.ErrInputConstructorInvalid
+		}
+		return giftID, "", nil
+	}
+	if predicate == mtproto.Predicate_inputSavedStarGiftUser || stargift.GetMsgId() != 0 {
+		return 0, "", mtproto.ErrMethodNotImpl
+	}
+	if predicate != "" && predicate != mtproto.Predicate_inputSavedStarGiftSlug {
+		return 0, "", mtproto.ErrMethodNotImpl
+	}
+	slug, err := localGiftSlug(stargift)
+	if err != nil {
+		return 0, "", err
+	}
+	return 0, slug, nil
+}
+
 func (c *ApiFullCore) PaymentsGetStarGiftUpgradePreview(in *mtproto.TLPaymentsGetStarGiftUpgradePreview) (*mtproto.Payments_StarGiftUpgradePreview, error) {
-	if _, err := c.requireUserId(); err != nil {
+	uid, err := c.giftActorID()
+	if err != nil {
 		return nil, err
 	}
 	if in == nil || in.GetGiftId() <= 0 {
 		return nil, mtproto.ErrInputConstructorInvalid
 	}
 	result := new(mtproto.Payments_StarGiftUpgradePreview)
-	if err := c.callBusinessProvider("payments.getStarGiftUpgradePreview", map[string]any{"gift_id": in.GetGiftId()}, result); err != nil {
+	if err := c.callBusinessProviderAs(uid, "payments.getStarGiftUpgradePreview", map[string]any{"gift_id": in.GetGiftId()}, result); err != nil {
 		return nil, err
 	}
 	if !validGiftProviderPredicate(result, mtproto.Predicate_payments_starGiftUpgradePreview) {
@@ -184,14 +334,15 @@ func (c *ApiFullCore) PaymentsGetStarGiftUpgradePreview(in *mtproto.TLPaymentsGe
 }
 
 func (c *ApiFullCore) PaymentsUpgradeStarGift(in *mtproto.TLPaymentsUpgradeStarGift) (*mtproto.Updates, error) {
-	if _, err := c.requireUserId(); err != nil {
+	uid, err := c.giftActorID()
+	if err != nil {
 		return nil, err
 	}
 	if in == nil || in.GetStargift() == nil {
 		return nil, mtproto.ErrInputConstructorInvalid
 	}
 	result := new(mtproto.Updates)
-	if err := c.callBusinessProvider("payments.upgradeStarGift", map[string]any{"keep_original_details": in.GetKeepOriginalDetails(), "stargift": in.GetStargift(), "msg_id": in.GetMsgId()}, result); err != nil {
+	if err := c.callBusinessProviderAs(uid, "payments.upgradeStarGift", map[string]any{"keep_original_details": in.GetKeepOriginalDetails(), "stargift": in.GetStargift(), "msg_id": in.GetMsgId()}, result); err != nil {
 		return nil, err
 	}
 	if !validUpdatesProviderResult(result) {
@@ -201,7 +352,7 @@ func (c *ApiFullCore) PaymentsUpgradeStarGift(in *mtproto.TLPaymentsUpgradeStarG
 }
 
 func (c *ApiFullCore) PaymentsTransferStarGift(in *mtproto.TLPaymentsTransferStarGift) (*mtproto.Updates, error) {
-	uid, err := c.requireUserId()
+	uid, err := c.giftActorID()
 	if err != nil {
 		return nil, err
 	}
@@ -211,7 +362,8 @@ func (c *ApiFullCore) PaymentsTransferStarGift(in *mtproto.TLPaymentsTransferSta
 	stargift := in.GetStargift()
 	if predicate := stargift.GetPredicateName(); predicate != "" &&
 		predicate != mtproto.Predicate_inputSavedStarGiftSlug &&
-		predicate != mtproto.Predicate_inputSavedStarGiftUser {
+		predicate != mtproto.Predicate_inputSavedStarGiftUser &&
+		predicate != mtproto.Predicate_inputSavedStarGiftChat {
 		return nil, mtproto.ErrMethodNotImpl
 	}
 	// The local ledger has no message or chat gift resolver. Reject those
@@ -220,19 +372,28 @@ func (c *ApiFullCore) PaymentsTransferStarGift(in *mtproto.TLPaymentsTransferSta
 	if stargift.GetMsgId() != 0 || stargift.GetPredicateName() == mtproto.Predicate_inputSavedStarGiftUser {
 		return nil, mtproto.ErrMethodNotImpl
 	}
+	giftID, byID, err := localSavedGiftID(uid, stargift)
+	if err != nil {
+		return nil, err
+	}
+	if !byID && stargift.GetPredicateName() == mtproto.Predicate_inputSavedStarGiftSlug && stargift.GetPeer() != nil {
+		return nil, mtproto.ErrPeerIdInvalid
+	}
 	if stargift.GetSavedId() < 0 || (stargift.GetSavedId() == 0 && stargift.GetSlug() == "") {
 		return nil, mtproto.ErrInputConstructorInvalid
 	}
 	if stargift.GetSlug() != strings.TrimSpace(stargift.GetSlug()) {
 		return nil, mtproto.ErrInputConstructorInvalid
 	}
-	if peer := stargift.GetPeer(); peer != nil {
+	if peer := stargift.GetPeer(); peer != nil && stargift.GetPredicateName() != mtproto.Predicate_inputSavedStarGiftChat {
 		switch peer.GetPredicateName() {
 		case mtproto.Predicate_inputPeerSelf:
 		case mtproto.Predicate_inputPeerUser:
 			if peer.GetUserId() != uid {
 				return nil, mtproto.ErrPeerIdInvalid
 			}
+		case mtproto.Predicate_inputPeerChat, mtproto.Predicate_inputPeerChannel:
+			return nil, mtproto.ErrPeerIdInvalid
 		default:
 			return nil, mtproto.ErrPeerIdInvalid
 		}
@@ -241,7 +402,13 @@ func (c *ApiFullCore) PaymentsTransferStarGift(in *mtproto.TLPaymentsTransferSta
 	if err != nil {
 		return nil, err
 	}
-	if err = domain.TransferGift(uid, target, stargift.GetSavedId(), stargift.GetSlug()); err != nil {
+	transferID := int64(0)
+	transferSlug := stargift.GetSlug()
+	if byID {
+		transferID = giftID
+		transferSlug = ""
+	}
+	if err = domain.TransferGift(uid, target, transferID, transferSlug); err != nil {
 		return nil, giftDomainError(err)
 	}
 	// The durable inventory mutation is the source of truth. The generic
@@ -276,36 +443,29 @@ func (c *ApiFullCore) PaymentsGetSavedStarGifts(in *mtproto.TLPaymentsGetSavedSt
 	if err != nil {
 		return nil, err
 	}
-	if in != nil {
-		if in.GetLimit() < 0 {
-			return nil, mtproto.ErrLimitInvalid
-		}
-		if peer := in.GetPeer(); peer != nil {
-			switch peer.GetPredicateName() {
-			case mtproto.Predicate_inputPeerSelf:
-			case mtproto.Predicate_inputPeerUser:
-				if peer.GetUserId() != uid {
-					return nil, mtproto.ErrPeerIdInvalid
-				}
-			default:
-				return nil, mtproto.ErrPeerIdInvalid
-			}
-		}
-		if _, err = parseStarsOffset(in.GetOffset()); err != nil {
-			return nil, err
-		}
-		if in.GetExcludeUnlimited() || in.GetExcludeUnique() || in.GetSortByValue() ||
-			in.GetExcludeUpgradable() || in.GetExcludeUnupgradable() || in.GetPeerColorAvailable() ||
-			in.GetExcludeHosted() || in.GetCollectionId() != nil || in.GetExcludeLimited() {
-			return nil, mtproto.ErrMethodNotImpl
-		}
-	}
 	if in == nil {
 		return nil, mtproto.ErrInputConstructorInvalid
 	}
-	records, err := domain.ListGifts(uid, false)
+	ownerKey, err := validateSavedGiftOwnerPeer(uid, in.GetPeer())
+	if err != nil {
+		return nil, err
+	}
+	if in.GetLimit() < 0 {
+		return nil, mtproto.ErrLimitInvalid
+	}
+	if _, err = parseStarsOffset(in.GetOffset()); err != nil {
+		return nil, err
+	}
+	records, err := domain.ListGifts(ownerKey, false)
 	if err != nil {
 		return nil, giftDomainError(err)
+	}
+	// The local ledger does not carry the catalog metadata needed to classify
+	// limited/unique/upgradable/hosted gifts. An empty ledger is authoritative
+	// for this caller, so return the typed empty result used by WebA startup;
+	// never claim a non-empty filtered view without that metadata.
+	if savedGiftHasUnsupportedFilters(in) && len(records) > 0 {
+		return nil, mtproto.ErrMethodNotImpl
 	}
 	filtered := records[:0]
 	for _, record := range records {
@@ -379,7 +539,7 @@ func makeSavedStarGifts(records []domain.Gift) []*mtproto.SavedStarGift {
 }
 
 func (c *ApiFullCore) PaymentsGetSavedStarGift(in *mtproto.TLPaymentsGetSavedStarGift) (*mtproto.Payments_SavedStarGifts, error) {
-	uid, err := c.requireUserId()
+	uid, err := c.giftActorID()
 	if err != nil {
 		return nil, err
 	}
@@ -387,24 +547,8 @@ func (c *ApiFullCore) PaymentsGetSavedStarGift(in *mtproto.TLPaymentsGetSavedSta
 		return nil, mtproto.ErrInputConstructorInvalid
 	}
 	for _, input := range in.GetStargift() {
-		if input == nil {
-			return nil, mtproto.ErrInputConstructorInvalid
-		}
-		if predicate := input.GetPredicateName(); predicate != "" &&
-			predicate != mtproto.Predicate_inputSavedStarGiftSlug &&
-			predicate != mtproto.Predicate_inputSavedStarGiftUser &&
-			predicate != mtproto.Predicate_inputSavedStarGiftChat {
-			return nil, mtproto.ErrMethodNotImpl
-		}
-		if input.GetPredicateName() == mtproto.Predicate_inputSavedStarGiftUser ||
-			input.GetPredicateName() == mtproto.Predicate_inputSavedStarGiftChat || input.GetMsgId() != 0 {
-			return nil, mtproto.ErrMethodNotImpl
-		}
-		if input.GetSavedId() < 0 {
-			return nil, mtproto.ErrInputConstructorInvalid
-		}
-		if input.GetSavedId() == 0 && input.GetSlug() == "" && input.GetMsgId() == 0 {
-			return nil, mtproto.ErrInputConstructorInvalid
+		if _, _, err = localSavedGiftReference(uid, input); err != nil {
+			return nil, err
 		}
 	}
 	records, err := domain.ListGifts(uid, false)
@@ -413,9 +557,13 @@ func (c *ApiFullCore) PaymentsGetSavedStarGift(in *mtproto.TLPaymentsGetSavedSta
 	}
 	matched := make([]domain.Gift, 0, len(in.GetStargift()))
 	for _, input := range in.GetStargift() {
+		giftID, slug, err := localSavedGiftReference(uid, input)
+		if err != nil {
+			return nil, err
+		}
 		for _, record := range records {
-			if !record.Saved || (input.GetSavedId() != 0 && input.GetSavedId() != record.ID) ||
-				(input.GetSavedId() == 0 && input.GetSlug() != record.Slug) {
+			if !record.Saved || (giftID != 0 && giftID != record.ID) ||
+				(giftID == 0 && slug != record.Slug) {
 				continue
 			}
 			matched = append(matched, record)
@@ -645,6 +793,14 @@ func (c *ApiFullCore) PaymentsGetStarGiftAuctionAcquiredGifts(in *mtproto.TLPaym
 	return result, nil
 }
 
+func emptyStarGiftActiveAuctions() *mtproto.Payments_StarGiftActiveAuctions {
+	return mtproto.MakeTLPaymentsStarGiftActiveAuctions(&mtproto.Payments_StarGiftActiveAuctions{
+		Auctions: []*mtproto.StarGiftActiveAuctionState{},
+		Users:    []*mtproto.User{},
+		Chats:    []*mtproto.Chat{},
+	}).To_Payments_StarGiftActiveAuctions()
+}
+
 func (c *ApiFullCore) PaymentsGetStarGiftActiveAuctions(in *mtproto.TLPaymentsGetStarGiftActiveAuctions) (*mtproto.Payments_StarGiftActiveAuctions, error) {
 	if _, err := c.requireUserId(); err != nil {
 		return nil, err
@@ -654,6 +810,12 @@ func (c *ApiFullCore) PaymentsGetStarGiftActiveAuctions(in *mtproto.TLPaymentsGe
 	}
 	result := new(mtproto.Payments_StarGiftActiveAuctions)
 	if err := c.callBusinessProvider("payments.getStarGiftActiveAuctions", map[string]any{"request": in}, result); err != nil {
+		// There is no local auction projection. For the initial uncached read,
+		// an absent provider is represented by the valid empty result so clients
+		// can finish startup; a non-zero cache hash still requires authority.
+		if in.GetHash() == 0 && errors.Is(err, mtproto.ErrMethodNotImpl) {
+			return emptyStarGiftActiveAuctions(), nil
+		}
 		return nil, err
 	}
 	if !validGiftProviderPredicate(result, mtproto.Predicate_payments_starGiftActiveAuctions, mtproto.Predicate_payments_starGiftActiveAuctionsNotModified) || len(result.GetAuctions()) > 10000 {
@@ -697,14 +859,15 @@ func (c *ApiFullCore) PaymentsSendStarGiftOffer(in *mtproto.TLPaymentsSendStarGi
 }
 
 func (c *ApiFullCore) PaymentsGetStarGiftUpgradeAttributes(in *mtproto.TLPaymentsGetStarGiftUpgradeAttributes) (*mtproto.Payments_StarGiftUpgradeAttributes, error) {
-	if _, err := c.requireUserId(); err != nil {
+	uid, err := c.giftActorID()
+	if err != nil {
 		return nil, err
 	}
 	if in == nil {
 		return nil, mtproto.ErrInputConstructorInvalid
 	}
 	result := new(mtproto.Payments_StarGiftUpgradeAttributes)
-	if err := c.callBusinessProvider("payments.getStarGiftUpgradeAttributes", map[string]any{"request": in}, result); err != nil {
+	if err := c.callBusinessProviderAs(uid, "payments.getStarGiftUpgradeAttributes", map[string]any{"request": in}, result); err != nil {
 		return nil, err
 	}
 	if !validGiftProviderPredicate(result, mtproto.Predicate_payments_starGiftUpgradeAttributes) || len(result.GetAttributes()) > 10000 {
@@ -825,17 +988,32 @@ func giftTransferTarget(selfID int64, in *mtproto.TLPaymentsTransferStarGift) (i
 		case mtproto.Predicate_inputPeerSelf:
 			return 0, mtproto.ErrPeerIdInvalid
 		case mtproto.Predicate_inputPeerUser:
-			if peer.GetUserId() <= 0 || peer.GetUserId() == selfID {
+			if peer.GetUserId() <= 0 || peer.GetUserId() == selfID || peer.GetAccessHash() == 0 {
 				return 0, mtproto.ErrPeerIdInvalid
 			}
 			return peer.GetUserId(), nil
+		case mtproto.Predicate_inputPeerChat:
+			key, err := domain.GiftOwnerKey(mtproto.PEER_CHAT, peer.GetChatId())
+			if err != nil {
+				return 0, mtproto.ErrPeerIdInvalid
+			}
+			return key, nil
+		case mtproto.Predicate_inputPeerChannel:
+			if peer.GetAccessHash() == 0 {
+				return 0, mtproto.ErrPeerIdInvalid
+			}
+			key, err := domain.GiftOwnerKey(mtproto.PEER_CHANNEL, peer.GetChannelId())
+			if err != nil {
+				return 0, mtproto.ErrPeerIdInvalid
+			}
+			return key, nil
 		default:
 			return 0, mtproto.ErrPeerIdInvalid
 		}
 	}
 	if user := in.GetToId_INPUTUSER(); user != nil {
 		peer := mtproto.FromInputUser(selfID, user)
-		if peer == nil || peer.PeerType != mtproto.PEER_USER || peer.PeerId <= 0 || peer.PeerId == selfID {
+		if peer == nil || peer.PeerType != mtproto.PEER_USER || peer.PeerId <= 0 || peer.PeerId == selfID || user.GetAccessHash() == 0 {
 			return 0, mtproto.ErrPeerIdInvalid
 		}
 		return peer.PeerId, nil
@@ -865,6 +1043,9 @@ func giftDomainError(err error) error {
 	if err == nil {
 		return nil
 	}
+	if errors.Is(err, domain.ErrGiftOwnerInvalid) {
+		return mtproto.ErrPeerIdInvalid
+	}
 	if !domain.Ready() || errors.Is(err, domain.ErrGiftNotFound) || errors.Is(err, domain.ErrGiftNotConvertible) {
 		return mtproto.ErrMethodNotImpl
 	}
@@ -886,10 +1067,15 @@ func giftPage(offset string, limit int32) (int, int, error) {
 }
 
 func sliceGifts(records []domain.Gift, start, limit int) ([]domain.Gift, int) {
-	if start >= len(records) {
+	if start < 0 || limit <= 0 || start >= len(records) {
 		return []domain.Gift{}, -1
 	}
-	end := start + limit
+	// Compare before adding so a malformed or very large page size cannot
+	// overflow the index and produce an invalid slice.
+	end := len(records)
+	if limit <= len(records)-start {
+		end = start + limit
+	}
 	if end > len(records) {
 		end = len(records)
 	}

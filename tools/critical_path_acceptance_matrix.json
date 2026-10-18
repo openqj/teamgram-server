@@ -77,7 +77,7 @@
     "required_env": ["TEAMGRAM_GRAMJS_DIR"],
     "env_defaults": {"TG_DC_HOST": "127.0.0.1", "TG_DC_PORT": "11443", "CHANNEL_MEDIA_USER_ID": "5"},
     "requires_docker": true,
-    "evidence": "Production-shaped channel creation, contact media, album grouping, retry idempotency, history hydration and cleanup.",
+    "evidence": "2026-10-18 /tmp/teamgram-agent-channel-native-media-roundtrip-layer229-rerun-2.json: Layer 229/DC2 TCPObfuscated channel creation, contact single/album media, exact random-id retries, grouped_id/history hydration, updates.ChannelDifference recovery and delete cleanup all passed; deletedRows were zero.",
     "known_gap": "Uses the configured PostgreSQL/auth-key fixture; external media/CDN, process restart and cross-device fan-out remain open.",
     "destructive": true
   },
@@ -91,7 +91,7 @@
     "required_env": ["TEAMGRAM_GRAMJS_DIR", "RUN_RESTART_PROBE"],
     "env_defaults": {"RESTART_PROBE_KIND": "channel", "TG_DC_HOST": "127.0.0.1", "TG_DC_PORT": "11443"},
     "requires_docker": true,
-    "evidence": "Create a tagged channel, member, message and invite; restart only the backend/session service; reconnect both accounts and verify all objects, pts/date/seq continuity and update fan-out.",
+    "evidence": "2026-10-18 /tmp/teamgram-agent-channel-backend-restart-final.json PASS: image check matched teamgram-server-e2e-botapi:20261018-current, before marker was written, backend Compose restart reached a healthy barrier, fresh A/B sessions read the tagged channel and fan-out message with monotonic pts/date/seq, and cleanup deleted the tagged channel.",
     "known_gap": "The probe uses PostgreSQL-backed fixture auth and verifies canonical fan-out after restart; production SMS login and external channel media remain separate gates.",
     "destructive": true,
     "manual_steps": []
@@ -149,7 +149,7 @@
     "required_env": ["TEAMGRAM_GRAMJS_DIR", "RUN_RESTART_PROBE"],
     "env_defaults": {"RESTART_PROBE_KIND": "settings", "TG_DC_HOST": "127.0.0.1", "TG_DC_PORT": "11443"},
     "requires_docker": true,
-    "evidence": "Change tagged notification/privacy/session state, restart the backend, reconnect two accounts, read state back and verify recipient/update state before restoring it.",
+    "evidence": "2026-10-18 /tmp/teamgram-agent-settings-backend-restart-final.json PASS: image check, before marker, backend Compose restart and healthy barrier succeeded; fresh A/B sessions read the notification marker without cross-account leakage and cleanup restored the original settings.",
     "known_gap": "The probe covers notification settings persistence and restoration; provider-backed authorization and external device push delivery remain separate gates.",
     "destructive": true,
     "manual_steps": []
@@ -466,7 +466,7 @@
     "required_env": ["TEAMGRAM_GRAMJS_DIR", "RUN_RESTART_PROBE"],
     "env_defaults": {"RESTART_PROBE_KIND": "business", "TG_DC_HOST": "127.0.0.1", "TG_DC_PORT": "11443"},
     "requires_docker": true,
-    "evidence": "Business settings/link state survives restart, a resolver account sees the exact link and a recipient receives the canonical update; users.getFullUser hydrates all business fields.",
+    "evidence": "2026-10-18 /tmp/teamgram-agent-business-backend-restart-final.json PASS: image check, before marker, backend Compose restart and healthy barrier succeeded; fresh sessions resolved the tagged Business link, users.getFullUser returned users.UserFull, the recipient received the canonical update, and cleanup deleted tagged rows.",
     "known_gap": "The probe verifies the tagged link, UserFull constructor and post-restart recipient update using fixture auth; signed external Business provider authority remains separate.",
     "destructive": true,
     "manual_steps": []
@@ -481,7 +481,7 @@
     "required_env": ["TEAMGRAM_GRAMJS_DIR"],
     "env_defaults": {"TG_DC_ID": "2", "TG_DC_HOST": "127.0.0.1", "TG_DC_PORT": "11443"},
     "requires_docker": true,
-    "evidence": "A real DC2 Layer 229 session sends a login code through the configured code provider, reads the provider delivery by challenge ID, consumes the code with auth.signIn, and verifies the canonical authorization result.",
+    "evidence": "2026-10-18 /tmp/teamgram-agent-account-auth-provider-layer229-final-1792272418.json: a real DC2 TCPObfuscated Layer 229 session completed auth.sendCode, auth.signIn and auth.cancelCode against the signed code-provider fixture; typed SentCode/Authorization results, provider challenge binding and exit 0 were recorded.",
     "known_gap": "The code provider is a local signed fixture; real SMS delivery, multi-device login, MFA and production traffic remain open.",
     "destructive": true
   },
@@ -495,7 +495,7 @@
     "required_env": ["TEAMGRAM_GRAMJS_DIR"],
     "env_defaults": {"TG_DC_ID": "2", "TG_DC_HOST": "127.0.0.1", "TG_DC_PORT": "11443"},
     "requires_docker": true,
-    "evidence": "A real browser virtual authenticator completes passkey registration, listing, login and deletion through the Layer 229 session and verifies the authsession binding and challenge/credential cleanup.",
+    "evidence": "2026-10-18 /tmp/teamgram-agent-account-passkey-layer229-final-1792272446.json: a real HTTPS virtual authenticator completed Layer 229 passkey registration, listing, login, auth.logOut and deletion over DC2 TCPObfuscated; active credentials and pending sessions were zero after cleanup.",
     "known_gap": "The RP and authenticator are isolated fixtures; production RP registry, hardware credentials, restart recovery and production traffic remain open.",
     "destructive": true
   },
@@ -985,7 +985,7 @@
     "required_env": ["TEAMGRAM_GRAMJS_DIR", "AUTH_B64", "USER_ID"],
     "env_defaults": {"TG_DC_ID": "2", "TG_DC_HOST": "127.0.0.1", "TG_DC_PORT": "11443"},
     "requires_docker": true,
-    "evidence": "A real session obtains a Stars top-up option and Stars payment form, submits the same request twice, and verifies one provider settlement/ledger operation with a balance delta.",
+    "evidence": "2026-10-18 /tmp/teamgram-agent-stars-topup.json: user 7 over DC2 TCPObfuscated obtained a StarsTopupOption and typed payments.PaymentFormStars (formId=990025), replayed sendStarsForm exactly, observed one settled request/provider operation and balance 0->101 before cleanup; tagged requests, provider rows and offer rows were zero afterward.",
     "known_gap": "This is local signed payment-fixture evidence; App Store/Play receipt authority, real billing, refund/revoke and restart reconciliation remain open.",
     "destructive": true
   },
@@ -999,7 +999,7 @@
     "required_env": ["TEAMGRAM_GRAMJS_DIR", "AUTH_B64", "USER_ID"],
     "env_defaults": {"TG_DC_ID": "2", "TG_DC_HOST": "127.0.0.1", "TG_DC_PORT": "11443"},
     "requires_docker": true,
-    "evidence": "A real session provisions signed provider rows for prepaid giveaway, upgrade, withdrawal, resale, price, auction, offer and craft operations, validates typed Updates/results and verifies all 15 rows are cleaned.",
+    "evidence": "2026-10-18 /tmp/teamgram-agent-star-gift-payment-operations.json: user 7 over DC2 TCPObfuscated provisioned signed provider rows for prepaid giveaway, upgrade, withdrawal, resale, price, auction, offer and craft operations, validated typed Layer 229 Updates/results for all 15 methods, and cleaned 15/15 rows with remaining=0.",
     "known_gap": "This is isolated signed gift-provider evidence; real gift inventory/ownership, Stars charging, auction authority, refund and restart reconciliation remain open.",
     "destructive": true
   },
@@ -1111,8 +1111,22 @@
     "required_env": ["TEAMGRAM_GRAMJS_DIR", "AUTH_B64", "USER_ID"],
     "env_defaults": {"TG_DC_ID": "2", "TG_DC_HOST": "127.0.0.1", "TG_DC_PORT": "11443", "USER_ID": "7"},
     "requires_docker": true,
-    "evidence": "A real Stars fixture settlement then refund replay returned Updates twice, left one refund row and one provider refund operation, restored balance 0->0 and removed all tagged rows; /tmp/teamgram-agent-stars-refund.json.",
+    "evidence": "2026-10-18 /tmp/teamgram-agent-stars-refund-provider-20261018.json: real Layer 229/DC2 TCPObfuscated Stars settlement/refund replay returned typed Updates, exactly one refund/provider operation, restored the balance and cleaned all tagged rows; payment fixture restart was followed by a second passing probe.",
     "known_gap": "Local signed settlement/refund idempotency is covered; Apple/Google billing, external refund authority, webhook replay and backend restart reconciliation remain open.",
+    "destructive": true
+  },
+  {
+    "id": "premium.gift-collections-session",
+    "category": "premium",
+    "gate": "session_idempotency_cleanup",
+    "kind": "tsx",
+    "methods": ["payments.createStarGiftCollection", "payments.getStarGiftCollections", "payments.updateStarGiftCollection", "payments.reorderStarGiftCollections", "payments.deleteStarGiftCollection"],
+    "script": "docker/production/probe-gift-collections.ts",
+    "required_env": ["TEAMGRAM_GRAMJS_DIR", "AUTH_B64", "USER_ID"],
+    "env_defaults": {"TG_DC_ID": "2", "TG_DC_HOST": "127.0.0.1", "TG_DC_PORT": "11443", "USER_ID": "10"},
+    "requires_docker": true,
+    "evidence": "A real Layer 229 session creates, lists, updates, reorders and deletes tagged Star Gift collections; list hash NotModified and exact mutation replays are asserted, then tagged PostgreSQL collections, items and gifts are zero.",
+    "known_gap": "The signed PostgreSQL fixture proves the session contract only; external gift inventory/ownership, backend restart and production traffic remain open.",
     "destructive": true
   },
   {
@@ -1167,7 +1181,7 @@
     "required_env": ["TEAMGRAM_GRAMJS_DIR", "A_AUTH_B64", "B_AUTH_B64", "A_USER_ID", "B_USER_ID"],
     "env_defaults": {"TG_DC_ID": "2", "TG_DC_HOST": "127.0.0.1", "TG_DC_PORT": "11443", "A_USER_ID": "2", "B_USER_ID": "3", "B_ACCESS_HASH": "900000000000000003"},
     "requires_docker": true,
-    "evidence": "Two real sessions created, titled, invited, read, joined, left and discarded a temporary group call; non-creator title edit and post-discard read were rejected with canonical errors; /tmp/teamgram-agent-control-plane.json.",
+    "evidence": "2026-10-18 /tmp/teamgram-agent-calls-group-control-layer229-rerun.json: two real Layer 229 sessions created, titled, invited, read, joined, left and discarded a temporary group call; non-creator title edit returned CHAT_ADMIN_REQUIRED and post-discard read returned GROUPCALL_INVALID.",
     "known_gap": "Call control and authorization are covered; media source allocation, TURN/WebRTC negotiation, realtime fan-out and restart recovery remain open.",
     "destructive": true
   },
@@ -1181,7 +1195,7 @@
     "required_env": ["TEAMGRAM_GRAMJS_DIR", "A_AUTH_B64", "B_AUTH_B64", "A_USER_ID", "B_USER_ID", "A_ACCESS_HASH", "B_ACCESS_HASH"],
     "env_defaults": {"TG_DC_ID": "2", "TG_DC_HOST": "127.0.0.1", "TG_DC_PORT": "11443", "A_USER_ID": "2", "B_USER_ID": "3", "A_ACCESS_HASH": "900000000000000002", "B_ACCESS_HASH": "900000000000000003"},
     "requires_docker": true,
-    "evidence": "Two real sessions sent a two-item contact album, read both media rows and one shared grouped_id from the recipient, verified sender history and deleted both copies; /tmp/teamgram-agent-multi-media.json.",
+    "evidence": "2026-10-18 /tmp/teamgram-agent-channel-native-media-roundtrip-layer229-rerun-2.json: Layer 229 channel media probe sent a single contact and two-item album, verified exact retries, grouped_id/history and ChannelDifference recovery, then deleted the temporary channel with zero deletedRows.",
     "known_gap": "Direct contact albums are covered; external media providers, channel albums, multi-member delivery and restart replay remain open.",
     "destructive": true
   },

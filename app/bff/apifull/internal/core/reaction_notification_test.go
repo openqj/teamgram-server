@@ -141,3 +141,23 @@ func TestReactionNotifySettingsRoundTrip(t *testing.T) {
 		t.Fatalf("stored default reaction notification settings = %#v", got)
 	}
 }
+
+func TestReactionNotifySettingsRejectUnknownConstructors(t *testing.T) {
+	const userID int64 = 81019003
+	store := &reactionNotifySettingsStore{values: make(map[string]string)}
+	previous := persist.Default
+	persist.Use(store)
+	t.Cleanup(func() { persist.Use(previous) })
+	c := &ApiFullCore{MD: &metadata.RpcMetadata{UserId: userID}}
+	unknown := mtproto.MakeTLReactionsNotifySettings(&mtproto.ReactionsNotifySettings{
+		Sound: &mtproto.NotificationSound{PredicateName: "notificationSoundUnknown"},
+	}).To_ReactionsNotifySettings()
+	if got, err := c.AccountSetReactionsNotifySettings(&mtproto.TLAccountSetReactionsNotifySettings{Settings: unknown}); got != nil || err != mtproto.ErrInputConstructorInvalid {
+		t.Fatalf("unknown input sound = (%v, %v), want nil and INPUT_CONSTRUCTOR_INVALID", got, err)
+	}
+
+	store.values[reactionNotifySettingsKey(userID)] = `{"sound_predicate":"notificationSoundUnknown"}`
+	if got, err := c.AccountGetReactionsNotifySettings(nil); got != nil || err != mtproto.ErrInternalServerError {
+		t.Fatalf("unknown stored sound = (%v, %v), want nil and INTERNAL_SERVER_ERROR", got, err)
+	}
+}

@@ -127,3 +127,27 @@ func TestStickerSetIDRequiresExactAccessHash(t *testing.T) {
 		t.Fatalf("valid access hash rejected: %v", err)
 	}
 }
+
+func TestMessagesGetStickerSetSupportsBuiltinShortNames(t *testing.T) {
+	c := &ApiFullCore{MD: &metadata.RpcMetadata{UserId: 229905}}
+	for _, name := range []string{"FestiveFontEmoji", "RestrictedEmoji"} {
+		t.Run(name, func(t *testing.T) {
+			input := mtproto.MakeTLInputStickerSetShortName(&mtproto.InputStickerSet{ShortName: name}).To_InputStickerSet()
+			got, err := c.MessagesGetStickerSet(&mtproto.TLMessagesGetStickerSet{Stickerset: input})
+			if err != nil {
+				t.Fatalf("get builtin set: %v", err)
+			}
+			if got == nil || got.GetSet() == nil || got.GetSet().GetShortName() != name || got.GetSet().GetId() <= 0 {
+				t.Fatalf("unexpected builtin set: %v", got)
+			}
+			hash := stickerRefHash(storedStickerRef{id: got.GetSet().GetId(), short: name})
+			notModified, err := c.MessagesGetStickerSet(&mtproto.TLMessagesGetStickerSet{Stickerset: input, Hash: hash})
+			if err != nil {
+				t.Fatalf("get builtin set with hash: %v", err)
+			}
+			if notModified == nil || notModified.GetSet() != nil {
+				t.Fatalf("expected messages.stickerSetNotModified, got %v", notModified)
+			}
+		})
+	}
+}

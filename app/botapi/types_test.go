@@ -19,6 +19,88 @@ func TestAllowedUpdateTypesIncludeWebAppQuery(t *testing.T) {
 	if IsValidAllowedUpdateType("unknown_update") {
 		t.Fatal("unknown update type must be rejected")
 	}
+	for _, name := range []string{"managed_bot", "subscription", "stopped_message_generation"} {
+		if !IsValidAllowedUpdateType(name) {
+			t.Fatalf("%s must be accepted by allowed_updates", name)
+		}
+	}
+}
+
+func TestUpdateFromMTProtoManagedBotAndSubscription(t *testing.T) {
+	users := []*mtproto.User{{Id: 10, FirstName: wrapperspb.String("Owner")}, {Id: 20, Bot: true, FirstName: wrapperspb.String("Managed")}}
+	managed, ok := UpdateFromMTProto(&mtproto.Update{
+		PredicateName: mtproto.Predicate_updateManagedBot,
+		UserId:        10,
+		BotId:         20,
+	}, users, nil)
+	if !ok || managed == nil || managed.ManagedBot == nil || managed.ManagedBot.User.ID != 10 || managed.ManagedBot.Bot.ID != 20 {
+		t.Fatalf("managed_bot update = %#v", managed)
+	}
+
+	subscription, ok := UpdateFromMTProto(&mtproto.Update{
+		PredicateName: mtproto.Predicate_updateBotStarsSubscription,
+		UserId:        10,
+		Canceled:      true,
+		Payload_BYTES: []byte("monthly"),
+	}, users, nil)
+	if !ok || subscription == nil || subscription.Subscription == nil {
+		t.Fatalf("subscription update = %#v", subscription)
+	}
+	if subscription.Subscription.User.ID != 10 || subscription.Subscription.InvoicePayload != "monthly" || subscription.Subscription.State != "canceled" {
+		t.Fatalf("unexpected subscription conversion: %#v", subscription.Subscription)
+	}
+}
+
+func TestMessageFromMTProtoSenderFields(t *testing.T) {
+	message := MessageFromMTProto(&mtproto.Message{
+		FromBoostsApplied: wrapperspb.Int32(3),
+		FromRank:          wrapperspb.String("moderator"),
+		ViaBusinessBotId:  wrapperspb.Int64(20),
+		InvertMedia:       true,
+	}, []*mtproto.User{{Id: 20, Bot: true}}, nil)
+	if message == nil || message.SenderBoostCount != 3 || message.SenderTag != "moderator" || message.SenderBusinessBot == nil || message.SenderBusinessBot.ID != 20 || !message.ShowCaptionAboveMedia {
+		t.Fatalf("unexpected sender fields: %#v", message)
+	}
+}
+
+func TestReplyMarkupFromMTProtoOmitsNonInlineMessageMarkup(t *testing.T) {
+	reply := mtproto.MakeTLReplyKeyboardMarkup(&mtproto.ReplyMarkup{
+		Rows: []*mtproto.KeyboardButtonRow{
+			mtproto.MakeTLKeyboardButtonRow(&mtproto.KeyboardButtonRow{
+				Buttons: []*mtproto.KeyboardButton{
+					mtproto.MakeTLKeyboardButton(&mtproto.KeyboardButton{Text: "Keyboard ping"}).To_KeyboardButton(),
+				},
+			}).To_KeyboardButtonRow(),
+		},
+	}).To_ReplyMarkup()
+	if got := replyMarkupFromMTProto(reply); got != nil {
+		t.Fatalf("reply keyboard must not be serialized as Message.reply_markup: %#v", got)
+	}
+
+	inline := mtproto.MakeTLReplyInlineMarkup(&mtproto.ReplyMarkup{
+		Rows: []*mtproto.KeyboardButtonRow{
+			mtproto.MakeTLKeyboardButtonRow(&mtproto.KeyboardButtonRow{
+				Buttons: []*mtproto.KeyboardButton{
+					mtproto.MakeTLKeyboardButtonCallback(&mtproto.KeyboardButton{Text: "Ping", Data: []byte("ping")}).To_KeyboardButton(),
+				},
+			}).To_KeyboardButtonRow(),
+		},
+	}).To_ReplyMarkup()
+	if got := replyMarkupFromMTProto(inline); got == nil {
+		t.Fatal("inline keyboard must remain in Message.reply_markup")
+	}
+}
+
+func TestMessageFromMTProtoManagedBotCreated(t *testing.T) {
+	message := MessageFromMTProto(&mtproto.Message{
+		Action: &mtproto.MessageAction{
+			PredicateName: mtproto.Predicate_messageActionManagedBotCreated,
+			BotId:         20,
+		},
+	}, []*mtproto.User{{Id: 20, Bot: true}}, nil)
+	if message == nil || message.ManagedBotCreated == nil || message.ManagedBotCreated.Bot == nil || message.ManagedBotCreated.Bot.ID != 20 {
+		t.Fatalf("managed_bot_created = %#v", message)
+	}
 }
 
 func TestUpdateFromMTProtoEphemeralMessage(t *testing.T) {
@@ -145,9 +227,26 @@ func TestMessageFromMTProtoPaidMediaPreview(t *testing.T) {
 	}
 }
 
+func TestEntityTypeUsesBotAPINames(t *testing.T) {
+	for predicate, want := range map[string]string{
+		mtproto.Predicate_messageEntityBotCommand:  "bot_command",
+		mtproto.Predicate_messageEntityStrike:      "strikethrough",
+		mtproto.Predicate_messageEntityTextUrl:     "text_link",
+		mtproto.Predicate_messageEntityMentionName: "text_mention",
+		mtproto.Predicate_messageEntityCustomEmoji: "custom_emoji",
+		mtproto.Predicate_messageEntityPhone:       "phone_number",
+		mtproto.Predicate_messageEntityBlockquote:  "blockquote",
+	} {
+		if got := entityType(predicate); got != want {
+			t.Fatalf("entityType(%q) = %q, want %q", predicate, got, want)
+		}
+	}
+}
+
 func TestUpdateFromMTProtoDoesNotFabricateUnsupportedUpdates(t *testing.T) {
 	unsupported := []string{
 		mtproto.Predicate_updateDeleteEphemeralMessages,
+		mtproto.Predicate_updateBotStopped,
 	}
 	for _, predicate := range unsupported {
 		if update, ok := UpdateFromMTProto(&mtproto.Update{PredicateName: predicate}, nil, nil); ok || update != nil {
@@ -212,5 +311,25 @@ func TestUpdateFromMTProtoChatMemberUpdates(t *testing.T) {
 	}
 	if chatMember.ChatMember.Chat.ID != -55 || chatMember.ChatMember.NewChatMember.Status != "administrator" {
 		t.Fatalf("unexpected group member update: %#v", chatMember.ChatMember)
+	}
+}
+
+func TestCallbackMessageUsesClickerChatForBotPrivatePeer(t *testing.T) {
+	converted, ok := UpdateFromMTProtoForBot(&mtproto.Update{
+		PredicateName:  mtproto.Predicate_updateBotCallbackQuery,
+		QueryId_INT64:  99,
+		UserId:         7,
+		Peer_PEER:      mtproto.MakePeerUser(900000000001),
+		MsgId_INT32:    636,
+		Data_FLAGBYTES: []byte("ping"),
+	}, []*mtproto.User{{Id: 7, FirstName: wrapperspb.String("Clicker")}, {Id: 900000000001, Bot: true}}, nil, 900000000001)
+	if !ok || converted == nil || converted.CallbackQuery == nil || converted.CallbackQuery.Message == nil {
+		t.Fatalf("callback update = %#v", converted)
+	}
+	if got := converted.CallbackQuery.Message.Chat.ID; got != 7 {
+		t.Fatalf("callback chat id = %d, want clicker id 7", got)
+	}
+	if got := converted.CallbackQuery.Message.MessageID; got != 636 {
+		t.Fatalf("callback message id = %d, want 636", got)
 	}
 }

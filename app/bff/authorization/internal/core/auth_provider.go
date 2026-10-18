@@ -309,7 +309,7 @@ func (c *AuthorizationCore) loadBotByProviderToken(token string, expectedID int6
 	if err != nil {
 		return nil, err
 	}
-	if user == nil || user.GetUser() == nil || user.Deleted() || !user.IsBot() || (expectedID > 0 && user.GetUser().GetId() != expectedID) {
+	if user == nil || user.GetUser() == nil || user.GetUser().GetId() <= 0 || user.Deleted() || !user.IsBot() || (expectedID > 0 && user.GetUser().GetId() != expectedID) {
 		return nil, mtproto.ErrAccessTokenInvalid
 	}
 	return user, nil

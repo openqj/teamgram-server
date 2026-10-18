@@ -118,6 +118,24 @@ func TestStarsStatusMappingUsesLedgerBalance(t *testing.T) {
 	if len(status.GetSubscriptions()) != 0 || len(status.GetChats()) != 0 || len(status.GetUsers()) != 0 {
 		t.Fatalf("stars status synthesized related records: %#v", status)
 	}
+	empty := makeStarsStatus(0, nil, nil)
+	if empty == nil || empty.GetBalance_INT64() != 0 || empty.GetBalance_STARSAMOUNT() == nil || empty.GetBalance_STARSAMOUNT().GetAmount() != 0 {
+		t.Fatalf("empty stars status = %#v, want typed zero balance", empty)
+	}
+}
+
+func TestStarsTopupOptionsMappingReturnsEmptyVector(t *testing.T) {
+	options := makeStarsTopupOptions(nil)
+	if options == nil || options.GetDatas() == nil || len(options.GetDatas()) != 0 {
+		t.Fatalf("empty top-up options = %#v, want typed empty vector", options)
+	}
+}
+
+func TestStarsGiftOptionsMappingReturnsEmptyVector(t *testing.T) {
+	options := makeStarsGiftOptions(nil)
+	if options == nil || options.GetDatas() == nil || len(options.GetDatas()) != 0 {
+		t.Fatalf("empty gift options = %#v, want typed empty vector", options)
+	}
 }
 
 func TestStarsReadMethodsUseDurableLedger(t *testing.T) {
@@ -142,11 +160,12 @@ func TestStarsReadMethodsUseDurableLedger(t *testing.T) {
 	}
 
 	c := &ApiFullCore{MD: &metadata.RpcMetadata{UserId: uid}}
-	status, err := c.PaymentsGetStarsStatus(&mtproto.TLPaymentsGetStarsStatus{})
+	selfPeer := mtproto.MakeTLInputPeerSelf(nil).To_InputPeer()
+	status, err := c.PaymentsGetStarsStatus(&mtproto.TLPaymentsGetStarsStatus{Peer: selfPeer})
 	if err != nil || status == nil || status.GetBalance_INT64() != 73 {
 		t.Fatalf("status = (%#v, %v), want durable balance 73", status, err)
 	}
-	history, err := c.PaymentsGetStarsTransactions(&mtproto.TLPaymentsGetStarsTransactions{Limit: 10})
+	history, err := c.PaymentsGetStarsTransactions(&mtproto.TLPaymentsGetStarsTransactions{Peer: selfPeer, Limit: 10})
 	if err != nil || history == nil || history.GetBalance_INT64() != 73 || len(history.GetHistory()) != 1 {
 		t.Fatalf("history = (%#v, %v), want one durable transaction", history, err)
 	}
@@ -154,12 +173,33 @@ func TestStarsReadMethodsUseDurableLedger(t *testing.T) {
 		t.Fatalf("transaction id = %q, want %q", got, idem)
 	}
 	byID, err := c.PaymentsGetStarsTransactionsByID(&mtproto.TLPaymentsGetStarsTransactionsByID{
+		Peer: selfPeer,
 		Id: []*mtproto.InputStarsTransaction{
 			mtproto.MakeTLInputStarsTransaction(&mtproto.InputStarsTransaction{Id: idem}).To_InputStarsTransaction(),
 		},
 	})
 	if err != nil || byID == nil || len(byID.GetHistory()) != 1 || byID.GetHistory()[0].GetId() != idem {
 		t.Fatalf("by id = (%#v, %v), want the durable transaction", byID, err)
+	}
+}
+
+func TestStarsStatusReturnsTypedZeroForEmptyLedger(t *testing.T) {
+	dsn := os.Getenv("APIFULL_POSTGRES_DSN")
+	if dsn == "" {
+		t.Skip("APIFULL_POSTGRES_DSN is not configured")
+	}
+	if err := domain.OpenPostgresReadOnly(dsn); err != nil {
+		t.Skipf("PostgreSQL schema unavailable: %v", err)
+	}
+	t.Cleanup(func() { _ = domain.Close() })
+
+	uid := time.Now().UnixNano()
+	c := &ApiFullCore{MD: &metadata.RpcMetadata{UserId: uid}}
+	status, err := c.PaymentsGetStarsStatus(&mtproto.TLPaymentsGetStarsStatus{
+		Peer: mtproto.MakeTLInputPeerSelf(nil).To_InputPeer(),
+	})
+	if err != nil || status == nil || status.GetBalance_INT64() != 0 || status.GetBalance_STARSAMOUNT() == nil || status.GetBalance_STARSAMOUNT().GetAmount() != 0 {
+		t.Fatalf("empty ledger status = (%#v, %v), want typed zero balance", status, err)
 	}
 }
 

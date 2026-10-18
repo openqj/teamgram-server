@@ -20,12 +20,14 @@ dialog_filter_id = 1  → "推荐" (Recommended) - 系统固定，新增
 dialog_filter_id ≥ 2  → 用户自定义文件夹
 ```
 
+> Layer 229 已将 `folder_id=1` 用于归档文件夹。为保持 Telegram 兼容性，当前生产 Dialog/MTProto 路径不会把 `1` 改成推荐文件夹。推荐能力先通过内部 Dialog RPC 和 PostgreSQL 表提供；公开 `messages.getRecommendedDialogs` 与推荐反馈入口仍标记为实验接口，不能直接加入正式 Layer 229 schema。
+
 ## 三、数据库设计
 
 ### 3.1 推荐对话关系表
 
 ```sql
--- teamgram-server/app/service/biz/dialog/internal/dal/dataobject/dialog_recommendations.sql
+-- teamgram-server/teamgramd/deploy/sql/postgres/104_biz_dialog_recommendations.sql
 CREATE TABLE IF NOT EXISTS dialog_recommendations (
     id BIGSERIAL PRIMARY KEY,
     user_id BIGINT NOT NULL,
@@ -615,6 +617,8 @@ func (c *DialogCore) DialogAddPromotedDialog(ctx context.Context,
 ```
 
 ## 五、BFF 层实现（MTProto API）
+
+> 本节是目标设计草案。当前生产路径不把 `folder_id=1` 改成推荐文件夹；推荐查询和反馈 BFF 仅保留 `recommendation_experimental` 实验 build tag，不能作为正式 Layer 229 方法启用。
 
 ### 5.1 修改 messages.getDialogFilters
 

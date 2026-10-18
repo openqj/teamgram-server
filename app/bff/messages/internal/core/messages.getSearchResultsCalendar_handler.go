@@ -25,7 +25,13 @@ import (
 // MessagesGetSearchResultsCalendar
 // messages.getSearchResultsCalendar#6aa3f6bd flags:# peer:InputPeer saved_peer_id:flags.2?InputPeer filter:MessagesFilter offset_id:int offset_date:int = messages.SearchResultsCalendar;
 func (c *MessagesCore) MessagesGetSearchResultsCalendar(in *mtproto.TLMessagesGetSearchResultsCalendar) (*mtproto.Messages_SearchResultsCalendar, error) {
-	if in == nil || in.GetPeer() == nil {
+	if c == nil || c.MD == nil || c.MD.UserId <= 0 {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
+	if in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if in.GetPeer() == nil {
 		return nil, mtproto.ErrPeerIdInvalid
 	}
 	if in.GetFilter() == nil {
@@ -42,11 +48,15 @@ func (c *MessagesCore) MessagesGetSearchResultsCalendar(in *mtproto.TLMessagesGe
 		Limit:       limit,
 	})
 	if err != nil {
-		c.Logger.Errorf("messages.getSearchResultsCalendar - error: %v", err)
+		if c.Logger != nil {
+			c.Logger.Errorf("messages.getSearchResultsCalendar - error: %v", err)
+		}
 		return nil, err
 	}
 	if found == nil {
-		c.Logger.Errorf("messages.getSearchResultsCalendar - search returned nil result")
+		if c.Logger != nil {
+			c.Logger.Errorf("messages.getSearchResultsCalendar - search returned nil result")
+		}
 		return nil, mtproto.ErrInternalServerError
 	}
 

@@ -12,7 +12,6 @@ func paymentRPCErrorCode(got, want error) bool {
 	return got != nil && want != nil && status.Code(got) == status.Code(want) &&
 		status.Convert(got).Message() == status.Convert(want).Message()
 }
-
 // Payment methods that would mutate provider-owned inventory or recurring
 // entitlements must not manufacture a successful TL result while those
 // authoritative providers are absent.
@@ -210,7 +209,6 @@ func TestPaymentProviderGapsFailClosed(t *testing.T) {
 			want: mtproto.ErrInputRequestInvalid,
 		},
 	}
-
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			result, err := test.call()

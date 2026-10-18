@@ -55,5 +55,9 @@ func (c *AuthorizationCore) AuthBindTempAuthKey(in *mtproto.TLAuthBindTempAuthKe
 		c.Logger.Errorf("auth.bindTempAuthKey - error: %v", err)
 		return nil, err
 	}
+	if ok == nil || ok.GetPredicateName() != mtproto.Predicate_boolTrue {
+		c.Logger.Errorf("auth.bindTempAuthKey - authsession returned no success result")
+		return nil, mtproto.ErrInternalServerError
+	}
 	return ok, nil
 }

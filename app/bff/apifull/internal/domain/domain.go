@@ -1402,6 +1402,35 @@ func GetStarsTransaction(userID int64, id string) (StarsTransaction, bool, error
 }
 
 var ErrGiftNotFound = errors.New("gift not found")
+var ErrGiftOwnerInvalid = errors.New("gift owner is invalid")
+
+const (
+	// Gift owner peer values mirror the MTProto peer type enum without making
+	// the domain package depend on the generated protocol package.
+	giftOwnerPeerUser    int32 = 2
+	giftOwnerPeerChat    int32 = 3
+	giftOwnerPeerChannel int32 = 4
+)
+
+// GiftOwnerKey maps a Layer 229 user/chat/channel peer to the durable owner
+// key used by apifull_gift.to_user. User gifts retain their positive user ID;
+// chat and channel keys use the same negative chat IDs accepted by the Bot
+// API, so a gift cannot be mistaken for a user inventory row.
+func GiftOwnerKey(peerType int32, peerID int64) (int64, error) {
+	if peerID <= 0 {
+		return 0, ErrGiftOwnerInvalid
+	}
+	switch peerType {
+	case giftOwnerPeerUser:
+		return peerID, nil
+	case giftOwnerPeerChat:
+		return -peerID, nil
+	case giftOwnerPeerChannel:
+		return -1000000000000 - peerID, nil
+	default:
+		return 0, ErrGiftOwnerInvalid
+	}
+}
 
 type Gift struct {
 	ID    int64
@@ -1565,7 +1594,7 @@ func TransferGift(from, to, giftID int64, slug string) error {
 	if db == nil {
 		return errors.New("domain PostgreSQL is not open")
 	}
-	if from <= 0 || to <= 0 || from == to || (giftID <= 0 && strings.TrimSpace(slug) == "") {
+	if from <= 0 || to == 0 || from == to || (giftID <= 0 && strings.TrimSpace(slug) == "") {
 		return ErrGiftNotFound
 	}
 	tx, err := db.Begin()
@@ -1616,6 +1645,56 @@ func ConvertGift(to int64, from *int64, slug string) error {
 	var giftID, stars int64
 	var saved int
 	if err = tx.QueryRow(query, args...).Scan(&giftID, &stars, &saved); err != nil {
+		if err == sql.ErrNoRows {
+			return ErrGiftNotFound
+		}
+		return err
+	}
+	idem := "gift:convert:" + strconv.FormatInt(giftID, 10)
+	if saved == 0 {
+		var existing int64
+		if err = tx.QueryRow(`SELECT amount FROM apifull_star_tx WHERE user_id=$1 AND idem=$2`, to, idem).Scan(&existing); err == nil {
+			if existing != stars {
+				return ErrStarsIdempotencyConflict
+			}
+			return tx.Commit()
+		}
+		if err != sql.ErrNoRows {
+			return err
+		}
+		return ErrGiftNotFound
+	}
+	if stars <= 0 {
+		return ErrGiftNotConvertible
+	}
+	if _, err = applyStarsTx(tx, to, stars, idem); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(`UPDATE apifull_gift SET saved=0 WHERE id=$1`, giftID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// ConvertGiftByID consumes one saved gift by the stable owned-gift ID
+// returned by payments.getSavedStarGifts. The ownership check and balance
+// credit are kept in the same transaction as the slug-based path.
+func ConvertGiftByID(to, giftID int64) error {
+	if db == nil {
+		return errors.New("domain PostgreSQL is not open")
+	}
+	if to <= 0 || giftID <= 0 {
+		return ErrGiftNotFound
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	var slug string
+	var stars int64
+	var saved int
+	if err = tx.QueryRow(`SELECT slug, stars, saved FROM apifull_gift WHERE id=$1 AND to_user=$2 FOR UPDATE`, giftID, to).Scan(&slug, &stars, &saved); err != nil {
 		if err == sql.ErrNoRows {
 			return ErrGiftNotFound
 		}
@@ -1738,7 +1817,7 @@ func listGifts(to int64, savedOnly bool) ([]Gift, error) {
 	if db == nil {
 		return nil, errors.New("domain PostgreSQL is not open")
 	}
-	if to <= 0 {
+	if to == 0 {
 		return nil, ErrGiftNotFound
 	}
 	query := `SELECT id, from_user, to_user, slug, stars, saved FROM apifull_gift WHERE to_user=$1`

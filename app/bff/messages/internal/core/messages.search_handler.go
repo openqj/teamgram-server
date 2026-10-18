@@ -42,6 +42,9 @@ func (c *MessagesCore) MessagesSearch(in *mtproto.TLMessagesSearch) (*mtproto.Me
 		c.Logger.Errorf("messages.search - error: %v", err)
 		return nil, err
 	}
+	if in.GetLimit() < 0 {
+		return nil, mtproto.ErrLimitInvalid
+	}
 
 	var (
 		rValues  *mtproto.Messages_Messages

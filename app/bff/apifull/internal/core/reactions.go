@@ -20,6 +20,7 @@ package core
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
@@ -650,6 +651,18 @@ func loadAvailableReactionList() ([]*mtproto.AvailableReaction, int32, error) {
 	return availableFromEmojis(emojis), h, nil
 }
 
+func validAvailableReactionCatalog(reactions []*mtproto.AvailableReaction) bool {
+	if len(reactions) > 10000 {
+		return false
+	}
+	for _, reaction := range reactions {
+		if reaction == nil || reaction.GetPredicateName() != mtproto.Predicate_availableReaction {
+			return false
+		}
+	}
+	return true
+}
+
 func (c *ApiFullCore) MessagesGetAvailableReactions(in *mtproto.TLMessagesGetAvailableReactions) (*mtproto.Messages_AvailableReactions, error) {
 	if _, err := c.requireUserId(); err != nil {
 		return nil, err
@@ -657,6 +670,9 @@ func (c *ApiFullCore) MessagesGetAvailableReactions(in *mtproto.TLMessagesGetAva
 	reactions, hash, err := loadAvailableReactionList()
 	if err != nil {
 		return nil, err
+	}
+	if !validAvailableReactionCatalog(reactions) {
+		return nil, mtproto.ErrInternalServerError
 	}
 	if in != nil && in.GetHash() != 0 && in.GetHash() == hash {
 		return mtproto.MakeTLMessagesAvailableReactionsNotModified(&mtproto.Messages_AvailableReactions{}).To_Messages_AvailableReactions(), nil
@@ -1092,7 +1108,7 @@ func (c *ApiFullCore) MessagesSendPaidReaction(in *mtproto.TLMessagesSendPaidRea
 	}, result); err != nil {
 		return nil, err
 	}
-	if result.GetPredicateName() == "" {
+	if !validUpdatesProviderResult(result) {
 		return nil, mtproto.ErrInternalServerError
 	}
 	return result, nil
@@ -1162,9 +1178,16 @@ func (c *ApiFullCore) MessagesGetPaidReactionPrivacy(in *mtproto.TLMessagesGetPa
 	}
 	result := new(mtproto.Updates)
 	if err := c.callBusinessProvider("messages.getPaidReactionPrivacy", map[string]any{}, result); err != nil {
+		if errors.Is(err, mtproto.ErrMethodNotImpl) {
+			state, loadErr := loadPaidReactionPrivacy(uid)
+			if loadErr != nil {
+				return nil, loadErr
+			}
+			return paidReactionPrivacyUpdates(state), nil
+		}
 		return nil, err
 	}
-	if result.GetPredicateName() == "" {
+	if !validUpdatesProviderResult(result) {
 		return nil, mtproto.ErrInternalServerError
 	}
 	return result, nil

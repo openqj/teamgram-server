@@ -128,6 +128,14 @@ func setStickerSetThumbnail(ctx *svc.ServiceContext, r *http.Request, botID int6
 	if ctx == nil || ctx.StickersClient == nil {
 		return nil, http.StatusNotImplemented, 501, "Not Implemented: sticker service is not configured"
 	}
+	if _, err := botAPIStickerOwner(request, botID); err != nil {
+		return nil, http.StatusBadRequest, 400, "Bad Request: user_id is invalid"
+	}
+	if r != nil && strings.HasPrefix(strings.ToLower(r.Header.Get("Content-Type")), "multipart/form-data") {
+		if _, _, err := r.FormFile("thumbnail"); err == nil {
+			return nil, http.StatusNotImplemented, 501, "Not Implemented: multipart thumbnail upload is not supported by the Layer 229 sticker adapter"
+		}
+	}
 	set, err := botAPIInputStickerSet(request.string("name"))
 	if err != nil {
 		return nil, http.StatusBadRequest, 400, "Bad Request: name is invalid"

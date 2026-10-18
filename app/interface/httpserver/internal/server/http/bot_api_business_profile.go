@@ -32,6 +32,17 @@ func botAPIBusinessProfileScope(ctx *svc.ServiceContext, r *http.Request, botID 
 	return scope, 0, 0, ""
 }
 
+func botAPIProfilePhotoPublicOption(request *botAPIRequest) (bool, error) {
+	isPublic, err := request.bool("is_public")
+	if err != nil {
+		return false, errors.New("is_public is invalid")
+	}
+	if isPublic {
+		return false, errors.New("is_public is not supported by the Layer 229 profile photo adapter")
+	}
+	return false, nil
+}
+
 func setBusinessAccountName(ctx *svc.ServiceContext, r *http.Request, botID int64, request *botAPIRequest) (any, int, int, string) {
 	if ctx == nil || ctx.UserChannelProfilesClient == nil {
 		return nil, http.StatusNotImplemented, 501, "Not Implemented: profile service is not configured"
@@ -108,6 +119,12 @@ func setBusinessAccountProfilePhoto(ctx *svc.ServiceContext, r *http.Request, bo
 	if code != 0 {
 		return nil, status, code, description
 	}
+	if _, optionErr := botAPIProfilePhotoPublicOption(request); optionErr != nil {
+		if strings.Contains(optionErr.Error(), "not supported") {
+			return nil, http.StatusNotImplemented, 501, "Not Implemented: " + optionErr.Error()
+		}
+		return nil, http.StatusBadRequest, 400, "Bad Request: " + optionErr.Error()
+	}
 	if request == nil || len(request.raw("photo")) == 0 || string(request.raw("photo")) == "null" {
 		return nil, http.StatusBadRequest, 400, "Bad Request: photo is required"
 	}
@@ -163,6 +180,12 @@ func removeBusinessAccountProfilePhoto(ctx *svc.ServiceContext, r *http.Request,
 	scope, status, code, description := botAPIBusinessProfileScope(ctx, r, botID, request, func(scope businessctx.Scope) bool { return scope.CanEditPhoto })
 	if code != 0 {
 		return nil, status, code, description
+	}
+	if _, optionErr := botAPIProfilePhotoPublicOption(request); optionErr != nil {
+		if strings.Contains(optionErr.Error(), "not supported") {
+			return nil, http.StatusNotImplemented, 501, "Not Implemented: " + optionErr.Error()
+		}
+		return nil, http.StatusBadRequest, 400, "Bad Request: " + optionErr.Error()
 	}
 	owner, err := ctx.UserClient.UserGetImmutableUser(botRPCContext(requestContext(r), botID), &userpb.TLUserGetImmutableUser{Id: scope.OwnerID})
 	if err != nil || owner == nil || owner.GetUser() == nil {

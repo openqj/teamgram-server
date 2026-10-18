@@ -2,15 +2,16 @@
 
 ## 当前状态
 
-✅ **已完成的基础架构**（约 60%）：
+✅ **当前已完成的基础架构**：
 - 数据库表结构和 DAO 层
 - 核心业务逻辑和推荐算法
-- Protobuf 接口定义
+- 已生成的内部 gRPC protobuf 接口
+- 反馈事务和活跃用户推广路径
 
-⚠️ **待完成**：
-- Protobuf 代码生成
-- BFF 层实现
-- 集成测试
+⚠️ **当前边界**：
+- 推荐 BFF 仍是 `recommendation_experimental` build tag，不进入 Layer 229 正式 schema
+- `folder_id=1` 保持归档语义，不能在生产 Dialog Filters 中复用
+- 消息级频率和社交关系数据源尚未接入
 
 ## 立即可执行的步骤
 
@@ -21,7 +22,7 @@
 psql -U postgres -d teamgram
 
 # 执行迁移脚本
-\i teamgramd/deploy/sql/postgres/103_dialog_recommendations.sql
+\i teamgramd/deploy/sql/postgres/104_biz_dialog_recommendations.sql
 
 # 验证表已创建
 \dt dialog_recommendations
@@ -32,26 +33,24 @@ psql -U postgres -d teamgram
 SELECT * FROM recommendation_configs;
 ```
 
-### 2. 生成 Protobuf 代码
+### 2. 验证内部 protobuf 代码
 
-项目使用自定义的 protobuf 工具链。需要找到正确的生成命令：
+内部 gRPC 类型已经生成；需要确认生成文件仍在工作树中：
 
 ```bash
-# 方法 1: 查找项目中的生成脚本
+# 查找生成文件
 find . -name "*.sh" | xargs grep -l "mtprotoc\|protoc"
 
-# 方法 2: 查看其他服务如何生成
-ls -la app/service/biz/message/message/*.pb.go
+# 查看生成结果
+ls -la app/service/biz/dialog/dialog/*.pb.go
 
-# 方法 3: 使用 go generate（如果配置了）
-cd app/service/biz/dialog
-go generate ./...
+# 编译验证（在仓库根目录执行）
+go test ./app/service/biz/dialog/...
 
-# 方法 4: 查看 Makefile
-find . -name Makefile | xargs grep -i proto
+# 实验性推荐类型不加入通用 MTProto codec
 ```
 
-**临时解决方案**：注释掉依赖 protobuf 生成代码的部分，先测试其他组件。
+内部 gRPC protobuf 已生成；这里的实验性推荐类型不加入通用 MTProto codec，不能当作正式 Layer 229 方法使用。
 
 ### 3. 测试 DAO 层
 
@@ -98,66 +97,31 @@ SELECT * FROM dialog_recommendations WHERE user_id = 12345;
 
 ## 后续实施步骤
 
-### Step 1: 完成 Protobuf 生成（优先级：最高）
+### Step 1: 验证内部 Protobuf 代码
 
-一旦找到正确的生成命令：
-
-```bash
-# 重新生成 dialog service 的 protobuf 代码
-cd app/service/biz/dialog
-[proto-gen-command]
-
-# 验证生成的文件
-ls -la dialog/*.pb.go
-grep -r "RecommendedDialog" dialog/*.pb.go
-```
-
-### Step 2: 实现 BFF 层 Handler
-
-创建以下文件：
-
-1. **messages.getRecommendedDialogs_handler.go**
-```go
-package core
-
-import (
-    "context"
-    "github.com/teamgram/proto/mtproto"
-)
-
-// MessagesGetRecommendedDialogs
-// messages.getRecommendedDialogs#a1b2c3d4 offset_date:int offset_id:int 
-//   offset_peer:InputPeer limit:int hash:long = messages.Dialogs;
-func (c *MessagesCore) MessagesGetRecommendedDialogs(ctx context.Context, 
-    in *mtproto.TLMessagesGetRecommendedDialogs) (*mtproto.Messages_Dialogs, error) {
-    
-    // TODO: 实现获取推荐对话逻辑
-    return nil, nil
-}
-```
-
-2. **修改 messages.getDialogFilters_handler.go**
-```go
-// 在返回结果中添加固定的"推荐"文件夹（id=1）
-result.Filters = append(result.Filters, &mtproto.DialogFilter{
-    Constructor: mtproto.CRC32_dialogFilterDefault,
-    Data2: &mtproto.DialogFilter_Data{
-        Id:    1,
-        Title: "Recommended",
-        // 其他必要字段
-    },
-})
-```
-
-### Step 3: 创建定时任务
+内部 gRPC 代码已经生成，推荐类型未加入通用 MTProto codec。由仓库根目录执行：
 
 ```bash
-# 创建推荐刷新任务
-vi app/service/biz/dialog/internal/jobs/recommendation_refresh_job.go
-
-# 创建过期清理任务
-vi app/service/biz/dialog/internal/jobs/recommendation_cleanup_job.go
+go test ./app/service/biz/dialog/...
+ls -la app/service/biz/dialog/dialog/*.pb.go
+grep -r "RecommendedDialog" app/service/biz/dialog/dialog/*.pb.go
 ```
+
+### Step 2: 完善实验性 BFF Handler
+
+以下文件已经存在，并已补齐 Dialog、top message、User 和 Chat 返回对象：
+
+- `app/bff/messages/internal/core/messages.getRecommendedDialogs_handler.go`
+- `app/bff/messages/internal/core/messages.reportRecommendationFeedback_handler.go`
+
+生产 `messages.getDialogFilters` 不注入推荐文件夹；`folder_id=1` 保持 Layer 229 归档语义。
+
+### Step 3: 注册定时任务
+
+推荐刷新和过期清理任务文件已经存在，需要由部署调度器注册并接入任务监控：
+
+- `app/service/biz/dialog/internal/jobs/recommendation_refresh_job.go`
+- `app/service/biz/dialog/internal/jobs/recommendation_cleanup_job.go`
 
 ### Step 4: 集成测试
 
@@ -247,14 +211,13 @@ WHERE deleted = FALSE AND expires_at > 0;
 
 ## 故障排查
 
-### 问题 1: Protobuf 编译失败
+### 问题 1: Protobuf 代码不一致
 ```bash
-# 检查 protoc 版本
-protoc --version
+# 确认内部生成文件存在
+ls -la app/service/biz/dialog/dialog/*.pb.go
 
-# 检查 Go protobuf 插件
-go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
-go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
+# 从仓库根目录重新编译验证
+go test ./app/service/biz/dialog/...
 ```
 
 ### 问题 2: 数据库连接失败
@@ -358,6 +321,6 @@ go tool cover -html=coverage.out
 
 ---
 
-**最后更新**: 2026-10-17  
-**当前阶段**: 基础架构完成，待 Protobuf 生成  
-**下一里程碑**: BFF 层实现和集成测试
+**最后更新**: 2026-10-18
+**当前阶段**: PostgreSQL/Dialog 核心能力和实验性 BFF hydration 完成，调度注册待完善
+**下一里程碑**: 接入部署调度器并维护独立实验 schema

@@ -41,6 +41,17 @@ function rpcName(value: any): string {
   return value?.className || value?.constructor?.name || typeof value;
 }
 
+function forceLayer229(client: any): void {
+  const initWith = client._initWith.bind(client);
+  client._initWith = (query: any) => {
+    const original = initWith(query);
+    if (rpcName(original) !== 'InvokeWithLayer' || rpcName(original.query) !== 'InitConnection') {
+      throw new Error('INVALID_INIT_CONNECTION_WRAPPER');
+    }
+    return new Api.InvokeWithLayer({ layer: 229, query: original.query });
+  };
+}
+
 function isExpectedCleanupNoise(args: unknown[]): boolean {
   if (args.length !== 1) return false;
   const [value] = args;
@@ -141,6 +152,7 @@ function makeClient(authKeyBase64: string): any {
     autoReconnect: false,
     baseLogger: quietLogger,
   });
+  forceLayer229(client);
   (client as any)._borrowExportedSender = async () => undefined;
   (client as any)._updateLoop = async () => undefined;
   return client;
@@ -161,6 +173,7 @@ function makeUnauthenticatedClient(): any {
     autoReconnect: false,
     baseLogger: quietLogger,
   });
+  forceLayer229(client);
   (client as any)._borrowExportedSender = async () => undefined;
   (client as any)._updateLoop = async () => undefined;
   return client;
@@ -301,6 +314,7 @@ async function main() {
     const afterSessions = Number(sql(`SELECT count(*) FROM apifull_passkey_session WHERE used = false AND expires_at > extract(epoch from now())::bigint`));
     console.log(JSON.stringify({
       ok: true,
+      layer: 229,
       transport: `DC${dcId} TCPObfuscated -> gateway -> session -> Passkey/PostgreSQL`,
       userId: String(userId),
       origin: `https://${rpHost}:${port}`,

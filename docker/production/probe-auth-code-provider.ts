@@ -37,6 +37,17 @@ function className(value: any): string {
   return value?.className || value?.constructor?.name || typeof value;
 }
 
+function forceLayer229(client: any): void {
+  const initWith = client._initWith.bind(client);
+  client._initWith = (query: any) => {
+    const original = initWith(query);
+    if (className(original) !== 'InvokeWithLayer' || className(original.query) !== 'InitConnection') {
+      throw new Error('INVALID_INIT_CONNECTION_WRAPPER');
+    }
+    return new Api.InvokeWithLayer({ layer: 229, query: original.query });
+  };
+}
+
 function loadAuthKey(): { authKeyBase64: string; userId: string } {
   const query = [
     "SELECT encode(k.body, 'base64'), u.user_id",
@@ -79,6 +90,7 @@ function makeClient(authKeyBase64: string): any {
     autoReconnect: false,
     baseLogger: quietLogger,
   });
+  forceLayer229(client);
   // Keep this probe on the supplied primary key. GramJS otherwise attempts a
   // media sender that needs a separately exported auth key.
   (client as any)._borrowExportedSender = async () => undefined;
@@ -150,6 +162,7 @@ async function main() {
 
     console.log(JSON.stringify({
       ok: true,
+      layer: 229,
       authUserId: userId,
       sendCodeType: type,
       providerChannel: delivery.channel,

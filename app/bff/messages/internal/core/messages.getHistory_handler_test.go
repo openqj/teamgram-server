@@ -218,6 +218,15 @@ func TestMessagesGetHistoryRejectsInvalidBounds(t *testing.T) {
 	}
 }
 
+func TestMessagesGetHistoryRejectsUnprovenChannelHash(t *testing.T) {
+	peer := mtproto.MakeTLInputPeerChannel(&mtproto.InputPeer{ChannelId: 77, AccessHash: 770}).To_InputPeer()
+	core := newGetHistoryTestCore(&getHistoryMessageClientStub{}, nil, nil)
+	got, err := core.MessagesGetHistory(&mtproto.TLMessagesGetHistory{Peer: peer, Limit: 1, Hash: 1})
+	if got != nil || err != mtproto.ErrMethodNotImpl {
+		t.Fatalf("MessagesGetHistory(channel hash) = (%v, %v), want nil and METHOD_NOT_IMPL until canonical hash is available", got, err)
+	}
+}
+
 func TestMessagesGetHistoryRejectsMismatchedUserAccessHash(t *testing.T) {
 	peer := mtproto.MakeTLInputPeerUser(&mtproto.InputPeer{UserId: 84, AccessHash: 841}).To_InputPeer()
 	users := &getHistoryUserClientStub{response: getHistoryValidatedUser(84, 840)}
@@ -293,6 +302,23 @@ func TestMessagesGetHistoryTrimsProviderBackwardAddOffset(t *testing.T) {
 	})
 	if err != nil || got == nil || len(got.GetMessages()) != 1 || got.GetMessages()[0].GetId() != 99 {
 		t.Fatalf("MessagesGetHistory() = (%v, %v), want one message after provider add_offset", got, err)
+	}
+}
+
+func TestMessagesGetHistoryAllowsForwardAddOffset(t *testing.T) {
+	messages := &getHistoryMessageClientStub{response: &messagepb.Vector_MessageBox{
+		Datas: []*mtproto.MessageBox{getHistoryBox(100, mtproto.MakePeerUser(41))},
+	}, count: &mtproto.Int32{V: 1}}
+	users := &getHistoryUserClientStub{response: getHistoryUsers(41)}
+	core := newGetHistoryTestCore(messages, users, nil)
+
+	got, err := core.MessagesGetHistory(&mtproto.TLMessagesGetHistory{
+		Peer:      mtproto.MakeTLInputPeerSelf(nil).To_InputPeer(),
+		AddOffset: -1,
+		Limit:     1,
+	})
+	if err != nil || got == nil || len(got.GetMessages()) != 1 || got.GetMessages()[0].GetId() != 100 {
+		t.Fatalf("MessagesGetHistory() = (%v, %v), want one message for forward add_offset", got, err)
 	}
 }
 

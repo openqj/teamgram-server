@@ -3,6 +3,7 @@ package http
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http/httptest"
 	"reflect"
@@ -29,12 +30,70 @@ func TestCanonicalBotAPIMethod(t *testing.T) {
 
 func TestBotAPIMethodSurface(t *testing.T) {
 	if len(botAPIMethodNames) != 186 {
-		t.Fatalf("canonical method table has %d entries, want 183 official methods plus two project extensions and kickChatMember", len(botAPIMethodNames))
+		t.Fatalf("canonical method table has %d entries, want 185 official methods plus kickChatMember compatibility alias", len(botAPIMethodNames))
 	}
 	for _, method := range []string{"logOut", "close", "savePreparedInlineMessage", "deleteEphemeralMessage", "sendRichMessage", "sendRichMessageDraft", "kickChatMember"} {
 		if got := canonicalBotAPIMethod(strings.ToUpper(method)); got != method {
 			t.Fatalf("canonicalBotAPIMethod(%q) = %q, want %q", strings.ToUpper(method), got, method)
 		}
+	}
+}
+
+func TestBotAPIUnimplementedCanonicalMethodsFailClosedWithMethodName(t *testing.T) {
+	bot := &mtproto.ImmutableUser{User: &mtproto.UserData{Id: 42}}
+	request := &botAPIRequest{values: map[string]json.RawMessage{}}
+	_, status, code, description := dispatchBotAPIMethod(nil, httptest.NewRequest("POST", "/", nil), bot, "futureMethod", request)
+	if status != 501 || code != 501 || description != "Not Implemented: futureMethod requires a Layer 229/service adapter" {
+		t.Fatalf("futureMethod = (%d, %d, %q), want method-specific 501", status, code, description)
+	}
+}
+
+func TestBotAPILifecycleMethodsFailClosedWithoutInstanceState(t *testing.T) {
+	bot := &mtproto.ImmutableUser{User: &mtproto.UserData{Id: 42}}
+	request := &botAPIRequest{values: map[string]json.RawMessage{}}
+	for _, method := range []string{"logOut", "close"} {
+		_, status, code, description := dispatchBotAPIMethod(nil, httptest.NewRequest("POST", "/", nil), bot, method, request)
+		if status != 501 || code != 501 || description != "Not Implemented: bot lifecycle store is not configured" {
+			t.Fatalf("%s = (%d, %d, %q), want explicit lifecycle 501", method, status, code, description)
+		}
+	}
+}
+
+func TestBotAPISetMyCommandsRequiresCommandsField(t *testing.T) {
+	bot := &mtproto.ImmutableUser{User: &mtproto.UserData{Id: 42}}
+	request := &botAPIRequest{values: map[string]json.RawMessage{}}
+	_, status, code, description := dispatchBotAPIMethod(nil, httptest.NewRequest("POST", "/", nil), bot, "setMyCommands", request)
+	if status != 400 || code != 400 || description != "Bad Request: commands must be a JSON array" {
+		t.Fatalf("missing commands = (%d, %d, %q), want required array error", status, code, description)
+	}
+}
+
+func TestBotAPIEphemeralSendRejectsDroppedMediaFlags(t *testing.T) {
+	bot := &mtproto.ImmutableUser{User: &mtproto.UserData{Id: 42}}
+	base := map[string]json.RawMessage{
+		"chat_id":                      json.RawMessage("-10042"),
+		"text":                         json.RawMessage(`"hello"`),
+		"ephemeral_message_parameters": json.RawMessage(`{"receiver_user_id":7}`),
+	}
+	for name, value := range map[string]json.RawMessage{
+		"show caption": json.RawMessage("true"),
+		"link preview": json.RawMessage(`{"show_above_text":true}`),
+	} {
+		t.Run(name, func(t *testing.T) {
+			values := make(map[string]json.RawMessage, len(base)+1)
+			for key, item := range base {
+				values[key] = item
+			}
+			if name == "show caption" {
+				values["show_caption_above_media"] = value
+			} else {
+				values["link_preview_options"] = value
+			}
+			_, status, code, description := sendMessage(nil, httptest.NewRequest("POST", "/", nil), bot, &botAPIRequest{values: values})
+			if status != 501 || code != 501 || !strings.Contains(description, "not represented") {
+				t.Fatalf("ephemeral dropped flag = (%d, %d, %q), want explicit 501", status, code, description)
+			}
+		})
 	}
 }
 
@@ -59,9 +118,20 @@ func TestBotAPIProfileOptionsFailClosedForScopedAndLocalizedVariants(t *testing.
 		"getMyName", "setMyDescription", "getMyDescription",
 		"setMyShortDescription", "getMyShortDescription",
 	} {
-		_, status, code, description := dispatchBotAPIMethod(nil, httptest.NewRequest("POST", "/", nil), bot, method, request(`{"type":"chat"}`))
-		if status != 501 || code != 501 || !strings.Contains(description, "scope variants") {
-			t.Fatalf("%s scoped request = (%d, %d, %q), want profile scope 501", method, status, code, description)
+		scopedRequest := request(`{"type":"chat","chat_id":42}`)
+		if method == "setMyCommands" {
+			scopedRequest.values["commands"] = json.RawMessage(`[]`)
+		}
+		_, status, code, description := dispatchBotAPIMethod(nil, httptest.NewRequest("POST", "/", nil), bot, method, scopedRequest)
+		if status != 501 || code != 501 {
+			t.Fatalf("%s scoped request = (%d, %d, %q), want scoped 501", method, status, code, description)
+		}
+		if method == "setMyCommands" || method == "deleteMyCommands" || method == "getMyCommands" {
+			if !strings.Contains(description, "scoped bot command store") {
+				t.Fatalf("%s scoped request = %q, want command store error", method, description)
+			}
+		} else if !strings.Contains(description, "scope variants") {
+			t.Fatalf("%s scoped request = %q, want profile scope error", method, description)
 		}
 	}
 	_, status, code, description := dispatchBotAPIMethod(nil, httptest.NewRequest("POST", "/", nil), bot, "getMyName", &botAPIRequest{values: map[string]json.RawMessage{
@@ -123,6 +193,24 @@ func TestSetWebhookFailClosedForUnsupportedFieldsAndAllowsRemoval(t *testing.T) 
 	}})
 	if status != 500 || code != 500 || description == "Bad Request: url is required" {
 		t.Fatalf("empty webhook URL removal = (%d, %d, %q), want removal path", status, code, description)
+	}
+}
+
+func TestWebhookMethodsFailClosedWithoutStore(t *testing.T) {
+	r := httptest.NewRequest("POST", "/", nil)
+	request := &botAPIRequest{values: map[string]json.RawMessage{"url": json.RawMessage(`"https://example.test/hook"`)}}
+	if _, status, code, _ := getUpdates(nil, r, 42, request); status != 501 || code != 501 {
+		t.Fatalf("getUpdates without store = (%d, %d), want 501", status, code)
+	}
+	if _, status, code, _ := setWebhook(nil, context.Background(), 42, request); status != 501 || code != 501 {
+		t.Fatalf("setWebhook without store = (%d, %d), want 501", status, code)
+	}
+	if _, status, code, _ := deleteWebhook(nil, context.Background(), 42, &botAPIRequest{values: map[string]json.RawMessage{}}); status != 501 || code != 501 {
+		t.Fatalf("deleteWebhook without store = (%d, %d), want 501", status, code)
+	}
+	bot := &mtproto.ImmutableUser{User: &mtproto.UserData{Id: 42}}
+	if _, status, code, _ := dispatchBotAPIMethod(nil, r, bot, "getWebhookInfo", &botAPIRequest{values: map[string]json.RawMessage{}}); status != 501 || code != 501 {
+		t.Fatalf("getWebhookInfo without store = (%d, %d), want 501", status, code)
 	}
 }
 
@@ -212,6 +300,83 @@ func TestBotAPIMediaGroupInputTypes(t *testing.T) {
 	})
 	if err != nil || livePhoto == nil || !livePhoto.GetLivePhoto() || livePhoto.GetVideo() == nil {
 		t.Fatalf("live photo media = %#v, %v; want live photo with video document", livePhoto, err)
+	}
+}
+
+func TestBotAPIMediaUnsupportedFieldsFailClosed(t *testing.T) {
+	bot := &mtproto.ImmutableUser{User: &mtproto.UserData{Id: 42}}
+	for _, test := range []struct {
+		kind  string
+		field string
+	}{
+		{kind: "document", field: "thumbnail"},
+		{kind: "document", field: "disable_content_type_detection"},
+		{kind: "video", field: "thumbnail"},
+		{kind: "video", field: "cover"},
+		{kind: "video", field: "start_timestamp"},
+		{kind: "animation", field: "thumbnail"},
+		{kind: "video_note", field: "thumbnail"},
+	} {
+		t.Run(test.kind+"/"+test.field, func(t *testing.T) {
+			request := &botAPIRequest{values: map[string]json.RawMessage{
+				test.field: json.RawMessage(`"unsupported"`),
+			}}
+			_, status, code, description := sendBotAPIMedia(nil, httptest.NewRequest("POST", "/", nil), bot, request, test.kind, test.kind)
+			if status != 501 || code != 501 || !strings.Contains(description, test.field+" is not supported") {
+				t.Fatalf("%s unsupported %s = (%d, %d, %q), want explicit 501", test.kind, test.field, status, code, description)
+			}
+		})
+	}
+
+	_, err := botAPIMediaGroupInput(nil, nil, bot.GetUser().GetId(), botAPIMediaGroupItem{
+		Type:  "video",
+		Media: "document_1_2",
+		Cover: json.RawMessage(`"document_3_4"`),
+	})
+	if !errors.Is(err, errBotAPIMediaFieldUnsupported) {
+		t.Fatalf("media-group unsupported cover error = %v, want media field sentinel", err)
+	}
+}
+
+func TestBotAPIEditMessageTextRichMessageUsesLayer229RichField(t *testing.T) {
+	bot := &mtproto.ImmutableUser{User: &mtproto.UserData{Id: 42}}
+	request := &botAPIRequest{values: map[string]json.RawMessage{
+		"inline_message_id": json.RawMessage(`"inline-1"`),
+		"rich_message":      json.RawMessage(`{"html":"<b>hello</b>"}`),
+	}}
+	_, status, code, description := editMessageText(nil, httptest.NewRequest("POST", "/", nil), bot, request)
+	if status != 501 || code != 501 || description != "Not Implemented: inline message service is not configured" {
+		t.Fatalf("rich edit = (%d, %d, %q), want inline service error after rich parsing", status, code, description)
+	}
+
+	request.values["text"] = json.RawMessage(`"plain"`)
+	_, status, code, description = editMessageText(nil, httptest.NewRequest("POST", "/", nil), bot, request)
+	if status != 400 || code != 400 || description != "Bad Request: text and rich_message are mutually exclusive" {
+		t.Fatalf("text plus rich edit = (%d, %d, %q), want mutual exclusion", status, code, description)
+	}
+}
+
+func TestBotAPICopyMessageUnsupportedCaptionFailsClosed(t *testing.T) {
+	bot := &mtproto.ImmutableUser{User: &mtproto.UserData{Id: 42}}
+	request := &botAPIRequest{values: map[string]json.RawMessage{
+		"caption": json.RawMessage(`"replacement"`),
+	}}
+	_, status, code, description := forwardMessage(nil, httptest.NewRequest("POST", "/", nil), bot, request, true)
+	if status != 501 || code != 501 || !strings.Contains(description, "caption is not supported") {
+		t.Fatalf("copy caption = (%d, %d, %q), want explicit 501", status, code, description)
+	}
+}
+
+func TestBotAPIProfilePhotoPublicOptionFailsClosed(t *testing.T) {
+	if _, err := botAPIProfilePhotoPublicOption(&botAPIRequest{values: map[string]json.RawMessage{
+		"is_public": json.RawMessage("true"),
+	}}); err == nil || err.Error() != "is_public is not supported by the Layer 229 profile photo adapter" {
+		t.Fatalf("public profile photo option error = %v, want explicit unsupported error", err)
+	}
+	if value, err := botAPIProfilePhotoPublicOption(&botAPIRequest{values: map[string]json.RawMessage{
+		"is_public": json.RawMessage("false"),
+	}}); err != nil || value {
+		t.Fatalf("private profile photo option = (%t, %v), want (false, nil)", value, err)
 	}
 }
 

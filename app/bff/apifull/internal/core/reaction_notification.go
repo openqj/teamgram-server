@@ -75,6 +75,48 @@ func reactionNotifySettingsRecordFromTL(settings *mtproto.ReactionsNotifySetting
 	return record
 }
 
+func validReactionNotifySettings(settings *mtproto.ReactionsNotifySettings) bool {
+	if settings == nil {
+		return true
+	}
+	if predicate := settings.GetPredicateName(); predicate != "" && predicate != mtproto.Predicate_reactionsNotifySettings {
+		return false
+	}
+	validFrom := func(from *mtproto.ReactionNotificationsFrom) bool {
+		if from == nil || from.GetPredicateName() == "" {
+			return true
+		}
+		switch from.GetPredicateName() {
+		case mtproto.Predicate_reactionNotificationsFromContacts, mtproto.Predicate_reactionNotificationsFromAll:
+			return true
+		default:
+			return false
+		}
+	}
+	if !validFrom(settings.GetMessagesNotifyFrom()) || !validFrom(settings.GetStoriesNotifyFrom()) || !validFrom(settings.GetPollVotesNotifyFrom()) {
+		return false
+	}
+	if sound := settings.GetSound(); sound != nil && sound.GetPredicateName() != "" {
+		switch sound.GetPredicateName() {
+		case mtproto.Predicate_notificationSoundDefault, mtproto.Predicate_notificationSoundNone,
+			mtproto.Predicate_notificationSoundLocal, mtproto.Predicate_notificationSoundRingtone:
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func validReactionNotifySettingsRecord(record reactionNotifySettingsRecord) bool {
+	return validReactionNotifySettings(&mtproto.ReactionsNotifySettings{
+		PredicateName:       mtproto.Predicate_reactionsNotifySettings,
+		MessagesNotifyFrom:  &mtproto.ReactionNotificationsFrom{PredicateName: record.MessagesNotifyFrom},
+		StoriesNotifyFrom:   &mtproto.ReactionNotificationsFrom{PredicateName: record.StoriesNotifyFrom},
+		PollVotesNotifyFrom: &mtproto.ReactionNotificationsFrom{PredicateName: record.PollVotesNotifyFrom},
+		Sound:               &mtproto.NotificationSound{PredicateName: record.SoundPredicate},
+	})
+}
+
 func (r reactionNotifySettingsRecord) toTL() *mtproto.ReactionsNotifySettings {
 	soundPredicate := r.SoundPredicate
 	if soundPredicate == "" {
@@ -116,6 +158,9 @@ func (c *ApiFullCore) AccountGetReactionsNotifySettings(in *mtproto.TLAccountGet
 		if err = json.Unmarshal([]byte(raw), &record); err != nil {
 			return nil, err
 		}
+		if !validReactionNotifySettingsRecord(record) {
+			return nil, mtproto.ErrInternalServerError
+		}
 		return record.toTL(), nil
 	}
 
@@ -148,6 +193,9 @@ func (c *ApiFullCore) AccountSetReactionsNotifySettings(in *mtproto.TLAccountSet
 	}
 	if settings == nil {
 		settings = defaultReactionNotifySettings()
+	}
+	if !validReactionNotifySettings(settings) {
+		return nil, mtproto.ErrInputConstructorInvalid
 	}
 	record, marshalErr := json.Marshal(reactionNotifySettingsRecordFromTL(settings))
 	if marshalErr != nil {

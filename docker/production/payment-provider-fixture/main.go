@@ -342,6 +342,19 @@ func (f *fixture) responseWithContext(ctx context.Context, fields map[string]jso
 		})
 		return body, "X-Teamgram-Payment-Signature", err
 	}
+	if operation == "export_invoice" {
+		invoiceMedia := fields["invoice_media"]
+		if uid <= 0 || len(invoiceMedia) == 0 || string(invoiceMedia) == "null" {
+			return nil, "", fmt.Errorf("invalid invoice export request")
+		}
+		digest := sha256.Sum256(invoiceMedia)
+		body, err := json.Marshal(map[string]any{
+			"verified": true,
+			"user_id":  uid,
+			"url":      "https://t.me/$fixture-" + hex.EncodeToString(digest[:8]),
+		})
+		return body, "X-Teamgram-Payment-Signature", err
+	}
 	if operation == "get_paid_messages_revenue" {
 		callerID := rawInt64(fields, "caller_user_id")
 		targetID := rawInt64(fields, "user_id")

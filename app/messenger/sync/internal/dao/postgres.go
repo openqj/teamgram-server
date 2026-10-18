@@ -51,7 +51,8 @@ func newPostgresDao(c config.Config) (*Postgres, error) {
 	}
 	if err := postgres.VerifySchema(context.Background(), pool,
 		`SELECT bot_id,chat_id,button_type,button_text,button_url FROM bot_api_chat_menu_buttons LIMIT 0`,
-		`SELECT id,bot_id,short_name,title,description,url,domain,created_at,updated_at FROM bot_mini_apps LIMIT 0`); err != nil {
+		`SELECT id,bot_id,short_name,title,description,url,domain,created_at,updated_at FROM bot_mini_apps LIMIT 0`,
+		`SELECT bot_id,state FROM bot_api_lifecycle LIMIT 0`); err != nil {
 		pool.Close()
 		return nil, err
 	}

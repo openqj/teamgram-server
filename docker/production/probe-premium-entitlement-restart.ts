@@ -582,8 +582,8 @@ async function main(): Promise<void> {
     evidence.userRowBeforeRestart = readUserPremiumRow();
     evidence.sessionsBeforeRestart = await readPremium(pair.a, pair.b, true);
 
-    await Promise.all([disconnect(pair.a), disconnect(pair.b)]);
     if (runRestart) {
+      await Promise.all([disconnect(pair.a), disconnect(pair.b)]);
       restartBackend();
       await waitForTcp();
       pair = await connectPairWithRetry();

@@ -1,5 +1,40 @@
 # Layer 229 API 功能验收
 
+## 2026-10-18：WebA 礼物初始化空投影边界
+
+- 真实 WebA 重启日志显示 `payments.getSavedStarGifts` 带 `exclude_unlimited`、`exclude_upgradable` 和 `exclude_unupgradable`；本地 PostgreSQL 礼物账本没有这些分类字段。现在先读取 caller-owned projection：空账本返回可编码的 `payments.savedStarGifts`（count/gifts/chats/users 均为空），非空但无法分类的账本继续返回 `METHOD_NOT_IMPL`，不伪造筛选结果。
+- `payments.getStarGiftActiveAuctions` 没有本地拍卖投影。签名 business provider 未配置或未 provision 时，首个 `hash=0` 请求返回空的 `payments.starGiftActiveAuctions`；带非零缓存 hash 仍返回 `METHOD_NOT_IMPL`，因为没有权威 hash 可证明 `NotModified`。已保留 provider 返回的 `StarGiftActiveAuctions` / `StarGiftActiveAuctionsNotModified` 路径。
+- 新增 `TestSavedStarGiftsEmptyProjectionAllowsWebAFilters`、`TestStarGiftActiveAuctionsWithoutProviderReturnsEmptyInitialResult`；前者需要 PostgreSQL 18 DSN，后者覆盖 Layer 229 编码和非零 hash 边界。完整包测试当前受并行 `inline_bot.go` 未完成改动阻塞，真实重启后的 provider/auction authority 仍未验收。
+
+## 2026-10-18：`payments.getStarGifts` hash/not-modified
+
+- `payments.getStarGifts#c4563590` 现在从 PostgreSQL 礼物目录中对 canonical `StarGift` 暴露的 `id`、`slug`、`stars` 计算稳定 hash；请求带相同的非零 hash 时返回 Layer 229 `payments.starGiftsNotModified`，目录变化时继续返回带新 hash 的 `payments.StarGifts`。
+- `TestStarGiftCatalogHashReturnsNotModifiedForStableCatalog` 覆盖初次读取、相同目录的 not-modified 构造器和目录变化刷新；没有把本地目录当成外部 inventory/Stars settlement authority，生产状态仍保持现有 partial 等级。
+
+## 2026-10-18：`account.invalidateSignInCodes` 共享 challenge 撤销
+
+- `account.invalidateSignInCodes` 现在先用现有 sign-in cache transaction 匹配请求的验证码或 `phone_code_hash`，再撤销同一 hash 的 SMS 与 App shared challenge，最后删除旧 phone/hash cache aliases。challenge provider 缺失、读取/撤销失败都会 fail-closed，不返回 `BoolTrue`；避免旧 cache 已删但共享 challenge 仍可被 `auth.signIn` 消费。
+- 新增 `TestRevokeMatchingSignInCodeChallengesRevokesSMSAndApp`、provider-error 和缺依赖 focused tests；当前仍只有组件级证据，没有 live Redis/user-service/session、重启或生产验收，因此台账保持 `PARTIAL_COMPONENT_VERIFIED` / `PARTIAL_COMPONENT_ONLY`。
+
+## 2026-10-18：Star Gift collections session probe
+
+- `/tmp/teamgram-agent-gift-collections.json` 通过真实 DC2 TCPObfuscated -> gateway -> session -> APIFull/PostgreSQL 链路覆盖 `payments.createStarGiftCollection`、`payments.getStarGiftCollections`、`payments.updateStarGiftCollection`、`payments.reorderStarGiftCollections` 和 `payments.deleteStarGiftCollection`。结果构造器分别为 `StarGiftCollection`、`payments.StarGiftCollectionsNotModified` 和 `Boolean`；列表 hash、update/reorder exact replay 通过，带 tag 的 collections/items/gifts 清理为 0。
+- 这五项从 `PARTIAL_ISOLATED_DB_ONLY` 提升为 `PARTIAL_ISOLATED_SESSION_E2E`，audit status 从 `PARTIAL_COMPONENT_VERIFIED` 提升为 `PARTIAL_SESSION_VERIFIED`。报告只证明签名 PostgreSQL fixture 的 session 合约；外部 gift inventory/ownership provider、backend restart、跨设备 fan-out 和生产流量仍未验收。
+- 当前台账仍为 813 个唯一方法；本次台账重算前的生产状态为 `PARTIAL_ISOLATED_SESSION_E2E=409`、`PARTIAL_ISOLATED_DB_ONLY=223`、`PARTIAL_COMPONENT_ONLY=162`、`TRANSPORT_ONLY=11`、`ISOLATED_COMPONENT_ONLY=6`、`ISOLATED_DB_ONLY=2`。账户状态和 saved-dialog 两条 live probe 尚在运行，最终计数以其报告合并后的严格重算为准；完整 Layer 229 生产验收仍不是 813/813。
+
+## 2026-10-18：`account.updateStatus` 双 session Updates
+
+- `/tmp/teamgram-account-update-status-1792269671613.json` 通过真实 DC2 TCPObfuscated -> gateway -> session -> UserChannelProfiles/User/Sync 链路；fixture user11 的两个不同永久 auth-key session 由 A 写入 online/offline，B 收到对应 `UpdateUserStatus`，A 未收到自己的状态 update，`user_presences` 的 last-seen/expires 与事件匹配，finally 恢复原值。
+- `account.updateStatus` 从 `PARTIAL_COMPONENT_ONLY` 提升为 `PARTIAL_ISOLATED_SESSION_E2E`，audit status 从 `PARTIAL_COMPONENT_VERIFIED` 提升为 `PARTIAL_SESSION_VERIFIED`。联系人隐私解析、真实多账户收件人集合、backend restart 和生产流量仍未验收。
+
+## 2026-10-18：PostgreSQL 18 设置、联系人与只读构造器复验
+
+- 当前 production DC2（`127.0.0.1:11443`，TCPObfuscated）探针改从 PostgreSQL 18 读取 user 1 的永久授权和权威快照。`account.getContentSettings`、`account.getWallPapers`、`account.getThemes`、`account.getChatThemes`、`account.getAutoDownloadSettings`、`account.getGlobalPrivacySettings`、`account.checkUsername`、`users.getUsers`、`users.getFullUser` 与 `messages.getPeerSettings` 均返回类型化 Layer 229 结果；hash/not-modified 分支与底层值匹配，所有只读探针写入为 0。
+- `contacts.getContactIDs`、`contacts.getStatuses`、`contacts.getContacts` 和 `contacts.search` 通过同一 DC2 session 与 PostgreSQL 18 联系人/用户快照匹配；联系人、presence、hydrated User 和搜索结果前后未变，写入为 0。联系人多用户、外部电话目录、跨设备 fan-out 和重启持久性仍未验收。
+- `probe-readonly-contracts.ts` 复验 `help.getAppConfig`、`help.getUserInfo`、peer/profile colors、attach-menu bots、saved dialogs/history/by-ID 以及 `account.getRecentEmojiStatuses` 的 `EmojiStatuses`/`EmojiStatusesNotModified`；当前空目录/fixture 状态通过，非空目录、provider authority 与重启持久性仍未验收。
+- 可逆 session 探针验证了 user 1 的 content-setting true/false 写入恢复、user 7 的 personal-channel 与 quick-reply 创建/排序/删除恢复、user 7/8 的 saved-ringtone 保存/hash/取消恢复，以及 user 7 的 suggested dialog filters。PostgreSQL 临时行/KV 均清理；这些结果不覆盖上传或目录 provider、跨设备更新、服务重启和完整客户端行为。
+- 本轮只提升当前证据记录，不把单用户/空目录结果升格为完整生产通过；provider/upload/catalogue authority、重启恢复、跨设备 fan-out、非空目录和多账户策略仍是发布门槛。
+
 ## 2026-10-17：账户删除、消息编辑能力和 legacy Mini App WebView
 
 - `account.deleteAccount` 现在在执行用户数据删除前要求 caller 同时拥有有效用户和永久 auth key；缺少永久 key 直接返回 `AUTH_KEY_UNREGISTERED`，避免把未绑定会话当作可删除账户的授权来源。
@@ -2853,3 +2888,46 @@
 - 论坛探针 `/tmp/teamgram-forum-topics-final.json` 经真实 DC2 TCPObfuscated -> gateway -> session -> APIFull/PostgreSQL 完成两个主题的创建、列表、按 ID 读回、编辑、置顶和重排，临时频道清理成功。`messages.createForumTopic`、`messages.getForumTopics`、`messages.getForumTopicsByID`、`messages.editForumTopic`、`messages.updatePinnedForumTopic` 和 `messages.reorderPinnedForumTopics` 已从 `PARTIAL_ISOLATED_DB_ONLY` 提升为 `PARTIAL_ISOLATED_SESSION_E2E`；参与者权限、主题消息投递、backend restart、独立设备 updates 和生产 authority 仍未关闭。
 - Stars 订阅探针 `/tmp/teamgram-stars-subscription-final.json` 经真实 DC2 session 完成订阅读取、取消/精确 replay、履约/精确 replay、bot 取消/精确 replay；每种 mutation 只保留一条 provider operation，临时 provider/account/subscription 行全部清理。对应四个 Stars subscription 方法提升为 `PARTIAL_ISOLATED_SESSION_E2E`；真实 Stars billing、余额结算、bot 身份、webhook/refund/restart reconciliation 和生产 provider 仍未验收。既有 `/tmp/teamgram-agent-stars-refund.json` 也已将 `payments.refundStarsCharge` 补为 session evidence。
 - 严格台账校验再次通过：813/813 方法、constructor ID、source match 无误；当前生产证据计数为 `PARTIAL_ISOLATED_SESSION_E2E=407`、`PARTIAL_ISOLATED_DB_ONLY=230`、`PARTIAL_COMPONENT_ONLY=157`、`ISOLATED_COMPONENT_ONLY=6`、`ISOLATED_DB_ONLY=2`、`TRANSPORT_ONLY=11`。这些仍是隔离证据等级，完整 Layer 229 生产验收仍为 `0/813`。真实 Apple/Google receipt、store webhook/refund authority、外部 Bot/WebView/Stars/CDN/TURN provider、跨进程 update/restart 和生产流量继续保留为发布门禁。
+
+## 2026-10-18：三链路 Layer 229 生产探针续验
+
+- 消息、频道和群通话探针修正了 GramJS 默认使用 Layer 228 的问题：`probe-multi-media.ts`、`probe-chat-reactions.ts`、`probe-control-plane.ts`、`probe-channel-media-production.ts` 和 `probe-channel-difference-recovery.ts` 现在显式包裹 `InvokeWithLayer(229)`。只计入以下新报告，旧的同名无 `layer` 字段报告不作为 Layer 229 证据：`/tmp/teamgram-agent-messaging-cross-account-live-updates.json`、`/tmp/teamgram-agent-messaging-multi-media-layer229.json`、`/tmp/teamgram-agent-messaging-chat-reactions-layer229.json`、`/tmp/teamgram-agent-calls-group-control-layer229.json`、`/tmp/teamgram-agent-channel-native-media-roundtrip-layer229.json` 和 `/tmp/teamgram-agent-channel-access-hash-boundary-layer229.json`。
+- 六组 Layer 229 session 探针均通过 DC2 TCPObfuscated -> gateway -> session -> APIFull/PostgreSQL。双账号消息报告验证了 4 次双向 Updates、random-id replay、fresh-session readback 和连续 `pts`；媒体/相册报告验证了 grouped ID、history/media hydration、重试幂等和删除；反应报告验证了 UTF-8 `👍` 的 `ChatReactionsSome`/`ChatReactionsNone` 持久化；群通话报告验证了 create/edit/invite/read/join/leave/discard、`CHAT_ADMIN_REQUIRED` 和 `GROUPCALL_INVALID`；频道差异报告验证了 5 条掉线消息的分页恢复、`USER_NOT_PARTICIPANT`、`CHANNEL_INVALID` 和 cleanup。活跃业务残留为 0；Telegram 删除墓碑和 deactivated chat/participant 历史按协议保留。
+- 账户/设置链路使用 guarded runner 在实际 production Compose project 上执行 `before -> restart -> healthy barrier -> after -> cleanup`，报告 `/tmp/teamgram-agent-settings-backend-restart.json` 为 `PASS`。真实 11443 端口的新 A/B session 读回 settings marker，`pts/qts/seq/date` 为 `1171/0/7/1792268072` 与 `1513/0/7/1792268072`，跨账号未泄漏，cleanup 恢复原值。生产 PostgreSQL 的 content settings、8 字段 global privacy、contact export token 和 account TTL roundtrip 也均恢复到原状态；127.0.0.1:31443 isolated gateway 未监听，三个 web-isolated 失败不计为生产通过。
+- 支付、Business、Bot/Mini App provider 探针均通过真实 DC2 session：`/tmp/teamgram-agent-stars-refund-provider-1792267506.json` 验证 Stars refund/replay 和 provider row；`/tmp/teamgram-agent-star-gift-payment-operations-1792267563.json` 验证 15/15 typed gift operations 并清理 15/15 rows；`/tmp/teamgram-agent-business-provider-operations-1792267747.json` 验证 Fragment/callback/stories typed results；`/tmp/teamgram-agent-bot-webview-provider-boundary-1792267808.json` 验证 WebView/control-plane boundary；`/tmp/teamgram-agent-bot-callback-payment-update-fanout-1792267866.json` 验证 14 个 bot operations、shipping/precheckout cleanup 和 outbox=0。Business WebView cross-account probe 因 31443 未监听而保留为未通过，不启动额外 gateway。
+- Premium probe 修复了 `RUN_BACKEND_RESTART=0` 时提前断开 A/B client 导致 final read 卡住的问题。`/tmp/teamgram-agent-premium-entitlement-fixture-no-restart-fixed-1792268827.json` 以 Layer 229/DC2 session 完成 PaymentForm、payment replay、A/B entitlement readback、签名 refund webhook `202`、reversal/reconciliation；该次明确跳过 restart，且保留 durable reconciliation rows 作为审计证据。既有 settings restart 报告承担本轮实际 backend restart 门禁；本地 payment fixture 仍不能替代 Apple/Google receipt、真实 store webhook/refund authority。
+- 本轮结果仍属于 `PARTIAL_ISOLATED_SESSION_E2E` 或更低证据等级。外部 Bot/WebView/Stars/CDN/TURN/Live provider、跨设备/跨实例 fan-out、真实生产流量和完整生产支付 authority 未关闭，因此不能宣称 813 个 Telegram API 已完成生产验收。
+
+## 2026-10-18：Saved Dialog / Dialog Filter Layer 229 roundtrip
+
+- `/tmp/teamgram-agent-dialog-saved-layer229-current.json` 由当前探针重新生成并通过标准 JSON 解析，退出码为 0，stderr 为空。两个独立 fixture 用户经 DC2 TCPObfuscated -> gateway -> session -> APIFull/PostgreSQL 完成 `messages.getDialogFilters`、`messages.updateDialogFilter`、`messages.updateDialogFiltersOrder` 的创建、跨账号隔离、精确排序和删除；同时完成 `messages.sendMessage` 到 Saved Messages、`messages.getSavedHistory` (`messages.Messages`)、`messages.getSavedDialogs` (`messages.SavedDialogsSlice`) 及 raw Layer 229 `messages.getSavedDialogsByID#6f6f9c96` (`messages.SavedDialogs`) 读回。
+- cleanup 字段为 `savedMessageRowsAfter=0`、`filterRowsAfter=0`、`savedDialogRestored=true`、`errors=[]`；PostgreSQL 中保留的 Telegram 删除墓碑不计为活动残留。saved-dialog native channel peer、backend restart、独立设备 update 和外部 provider 仍未验收。
+- `python3 tools/layer229_acceptance_report.py --strict --json` 在本次 ledger 更新前为 813/813 source match，生产列为 `PARTIAL_ISOLATED_SESSION_E2E=412`、`PARTIAL_ISOLATED_DB_ONLY=221`、`PARTIAL_COMPONENT_ONLY=161`、`ISOLATED_COMPONENT_ONLY=6`、`ISOLATED_DB_ONLY=2`、`TRANSPORT_ONLY=11`；完成本段台账更新后应为 session `413`、DB-only `220`，完整生产验收仍为 `0/813`。
+
+## 2026-10-18：三子任务业务链路闭环续验
+
+- 消息/频道/通话链：`/tmp/teamgram-agent-calls-group-control-layer229-rerun.json` 退出码 0，两个独立 session 完成 group call create/edit/invite/read/join/leave/discard；非 creator 修改返回 `CHAT_ADMIN_REQUIRED`，discard 后读回返回 `GROUPCALL_INVALID`。`/tmp/teamgram-agent-channel-native-media-roundtrip-layer229-rerun-2.json` 在 backend listener 健康后退出码 0，完成 Layer 229 channel single/album media、exact random-id retry、grouped ID、history hydration、`updates.ChannelDifference` 恢复和删除；`deletedRows` 各项为 0。首次连接失败仅为 readiness race，不计入通过证据。
+- 账户/认证链：`/tmp/teamgram-agent-account-auth-provider-layer229-final-1792272418.json` 退出码 0，Layer 229/DC2 session 完成 `auth.sendCode`、`auth.signIn`、`auth.cancelCode`，provider challenge 绑定和 canonical authorization 通过。`/tmp/teamgram-agent-account-passkey-layer229-final-1792272446.json` 退出码 0，完成 passkey registration/list/login/logout/delete；PostgreSQL active credentials 和 pending sessions 清零。两个探针都强制并断言 `InvokeWithLayer(229)`，没有把 GramJS 默认 Layer 228 当作证据。
+- 支付链：`/tmp/teamgram-agent-stars-refund-provider-20261018.json` 退出码 0，完成 Stars topup/payment/refund exact replay，单一 refund/provider operation、余额恢复和 tagged-row cleanup；`teamgram-payment-fixture` 重启后再次 probe 仍通过。backend 没有在三个子任务并行期间重启，故没有把 payment-fixture restart 当作 backend restart barrier。
+- 本轮新增证据仍是隔离 session、signed provider、虚拟 WebAuthn 和本地 payment fixture；真实 SMS/email/MFA、生产 RP/硬件 credential、外部 Apple/Google/Stars/refund authority、TURN/WebRTC、跨设备 fan-out、backend restart reconciliation 和 production traffic 仍未关闭。严格台账在 auth 两项由 component-only 提升后应保持 813/813 source match，生产计数为 `PARTIAL_ISOLATED_SESSION_E2E=415`、`PARTIAL_ISOLATED_DB_ONLY=220`、`PARTIAL_COMPONENT_ONLY=159`、`ISOLATED_COMPONENT_ONLY=6`、`ISOLATED_DB_ONLY=2`、`TRANSPORT_ONLY=11`；这不是完整 813/813 生产验收。
+
+## 2026-10-18：三条 backend restart barrier
+
+- `/tmp/teamgram-agent-channel-backend-restart-final.json`、`/tmp/teamgram-agent-settings-backend-restart-final.json` 和 `/tmp/teamgram-agent-business-backend-restart-final.json` 均为 `PASS`。三次均通过 Compose image check（`teamgram-server-e2e-botapi:20261018-current`）、before marker、真实 backend restart、healthy barrier、独立 A/B session after readback 和 cleanup；没有把客户端重连或 payment-fixture restart 当作 backend restart。
+- channel 报告验证重启后的 tagged channel、message、invite、fan-out 和 `pts/date/seq`；settings 报告验证 notification marker 跨重启保存、账号隔离，并在 cleanup 恢复原设置；business 报告验证 Business link、`users.UserFull` hydration、recipient canonical update 和 tagged row cleanup。Settings 的 after 阶段 `restored=false` 是预期 marker 仍待 cleanup，cleanup 阶段明确 `restored=true`。
+- 这些 restart barrier 仍使用 fixture auth/provider 和本地 Compose image；真实 SMS/外部 provider、跨实例故障恢复、production traffic 和完整 payment/store reconciliation 仍未关闭。
+
+## 2026-10-18：WebA 真实浏览器 Layer 229 业务链路复验
+
+- `telegram-tt-master` 真实 WebA 套件 `npm run test:playwright:real -- --reporter=line` 通过 `7/7`。两个隔离 Chromium 会话实际完成 Bot/Mini App、频道创建/发帖/资料检查/删除、频道通知设置 reload 持久化、联系人增删、GramJS Layer 229 runtime、群组创建/消息发送/成员读回，以及私聊发送/编辑/跨账号读回/删除清理。
+- 本次前端启动实际使用 `AllTLObjects.ts` 的 Layer 229；后端日志同时观察到 `invokeWithLayer layer:229`、`authsession.setLayer layer:229`，以及真实 `messages.sendMessage`、`messages.editMessage`、`messages.getHistory`、`messages.deleteMessages`、`messages.getPeerDialogs` 等方法。结构化步骤与方法映射见 `acceptance-web-real-layer229-20261018.json`，临时副本为 `/tmp/teamgram-agent-web-real-layer229-closure-20261018.json`。
+- `npm run build:dev` 和 `git diff --check` 通过；`python3 tools/layer229_acceptance_report.py --strict --json` 继续确认 813/813 方法、constructor ID 和 source match，无 missing/duplicate/extra/mismatch。浏览器控制台的语言模型、推送权限、ServiceWorker 和 fixture media 警告没有导致业务测试失败。
+- 这次 UI 通过只证明前端可操作业务链路与当前隔离后端契约相符；生产状态仍按台账中的 `PARTIAL_ISOLATED_SESSION_E2E=415`、`PARTIAL_ISOLATED_DB_ONLY=220`、`PARTIAL_COMPONENT_ONLY=159`、`ISOLATED_COMPONENT_ONLY=6`、`ISOLATED_DB_ONLY=2`、`TRANSPORT_ONLY=11` 计数，不能据此宣称 813 个 Telegram API 已完成生产级验收。
+
+## 2026-10-18：三组 API 缺口的 fail-closed 收口
+
+- `stories.getPeerMaxIDs78499170` 按输入 peer 读取 self 或 `InputPeerUser` 对应的 PostgreSQL-backed user story store，并为无权威 story store 的 chat/channel/未解析 peer 返回空 `recentStory`，保持 mixed batch 的 vector 顺序，避免 WebA 的后台批量请求因单个 channel 失败。新增 self/target-user、mixed-peer ordering 和 malformed-peer focused tests；channel story authority 与生产 session 仍未验收。
+- WebA Settings → My Stars 的 Layer 229 只读请求现在在 PostgreSQL 已连接但账户无 Stars 流水时返回 typed `payments.StarsStatus(balance=0)`，商品目录为空时返回 typed empty `Vector<StarsTopupOption>`；`ton=true` 仍返回 `PAYMENT_UNSUPPORTED`，未伪造 TON 余额或充值商品。数据库不可用继续 `METHOD_NOT_IMPL`，外部 checkout/settlement/entitlement provider 与真实 WebA 支付流程仍未验收。
+- 原生频道 `messages.getHistory` 接入 APIFull PostgreSQL channel projection，返回 Layer 229 `messages.channelMessages`，携带 persisted `pts/count`，支持 offset date、min/max ID 和正/负 `add_offset`；非零 hash 因缺少 canonical hash 计算仍明确返回 `METHOD_NOT_IMPL`。频道访问 hash、public/private visibility 与分页 focused tests 通过。
+- Gifts/reactions 侧补齐 saved-gift 分页边界、numeric saved-gift ownership、paid-reaction provider typed `Updates`、available-reaction catalog constructor、reaction notification settings constructor/存储回读校验；未知 constructor 和越界输入 fail-closed。四个后端包 uncached `go test` 通过。
+- 这些是契约和输入边界收口，没有把本地 projection、provider fixture 或 focused test 提升为生产验收；严格台账仍为 813/813 source match，生产状态计数保持原级别。

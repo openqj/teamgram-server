@@ -61,6 +61,22 @@ func TestAuthImportAuthorizationDoesNotConsumeMissingUser(t *testing.T) {
 	}
 }
 
+func TestAuthImportAuthorizationDoesNotConsumeMismatchedUser(t *testing.T) {
+	importer := newImportAuthorizationTestImporter()
+	importer.user = &mtproto.ImmutableUser{User: &mtproto.UserData{Id: importAuthorizationUserID + 1}}
+
+	result, err := newImportAuthorizationCore().importAuthorization(importAuthorizationRequest(), importAuthorizationTargetDCID, importer)
+	if result != nil || err != mtproto.ErrAuthBytesInvalid {
+		t.Fatalf("importAuthorization() = (%v, %v), want (nil, AUTH_BYTES_INVALID)", result, err)
+	}
+	if importer.claimCalls != 0 {
+		t.Fatalf("ClaimExportedAuthorization() calls = %d, want 0", importer.claimCalls)
+	}
+	if importer.authorization == nil {
+		t.Fatal("mismatched user consumed the credential")
+	}
+}
+
 func TestAuthImportAuthorizationBindingFailureCanRetrySameTarget(t *testing.T) {
 	importer := newImportAuthorizationTestImporter()
 	bindFailure := errors.New("bind transport failure")

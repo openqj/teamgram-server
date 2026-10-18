@@ -69,7 +69,9 @@ func New(ctx context.Context, cfg postgres.Config) (*Store, error) {
 		`SELECT bot_id,url,max_connections,allowed_updates,secret_token,last_error_date,last_error_message,last_synchronization_error_date FROM bot_api_webhooks LIMIT 0`,
 		`SELECT bot_id,menu_button_type,menu_button_text,menu_button_url FROM bots LIMIT 0`,
 		`SELECT bot_id,chat_id,button_type,button_text,button_url FROM bot_api_chat_menu_buttons LIMIT 0`,
-		`SELECT bot_id,group_rights,broadcast_rights FROM bot_api_default_admin_rights LIMIT 0`); err != nil {
+		`SELECT bot_id,group_rights,broadcast_rights FROM bot_api_default_admin_rights LIMIT 0`,
+		`SELECT bot_id,scope_key,language_code,commands FROM bot_api_commands LIMIT 0`,
+		`SELECT bot_id,state FROM bot_api_lifecycle LIMIT 0`); err != nil {
 		pool.Close()
 		return nil, err
 	}
@@ -135,6 +137,15 @@ func (s *Store) AppendOnce(ctx context.Context, botID int64, updates *mtproto.Up
 		mtproto.Predicate_updateEditEphemeralMessage: func(_ int64, update *mtproto.Update, users []*mtproto.User, chats []*mtproto.Chat, _ int32) {
 			s.appendConverted(ctx, &encoded, update, users, chats)
 		},
+		mtproto.Predicate_updateManagedBot: func(_ int64, update *mtproto.Update, users []*mtproto.User, chats []*mtproto.Chat, _ int32) {
+			s.appendConverted(ctx, &encoded, update, users, chats)
+		},
+		mtproto.Predicate_updateBotStarsSubscription: func(_ int64, update *mtproto.Update, users []*mtproto.User, chats []*mtproto.Chat, _ int32) {
+			s.appendConverted(ctx, &encoded, update, users, chats)
+		},
+		mtproto.Predicate_updateBotStopped: func(_ int64, update *mtproto.Update, users []*mtproto.User, chats []*mtproto.Chat, _ int32) {
+			s.appendConverted(ctx, &encoded, update, users, chats)
+		},
 		mtproto.Predicate_updateBotInlineQuery: func(_ int64, update *mtproto.Update, users []*mtproto.User, chats []*mtproto.Chat, _ int32) {
 			s.appendConverted(ctx, &encoded, update, users, chats)
 		},
@@ -142,7 +153,7 @@ func (s *Store) AppendOnce(ctx context.Context, botID int64, updates *mtproto.Up
 			s.appendConverted(ctx, &encoded, update, users, chats)
 		},
 		mtproto.Predicate_updateBotCallbackQuery: func(_ int64, update *mtproto.Update, users []*mtproto.User, chats []*mtproto.Chat, _ int32) {
-			s.appendConverted(ctx, &encoded, update, users, chats)
+			s.appendConvertedForBot(ctx, &encoded, botID, update, users, chats)
 		},
 		mtproto.Predicate_updateInlineBotCallbackQuery: func(_ int64, update *mtproto.Update, users []*mtproto.User, chats []*mtproto.Chat, _ int32) {
 			s.appendConverted(ctx, &encoded, update, users, chats)
@@ -341,8 +352,23 @@ WHERE bot_id=$1 AND update_id < COALESCE((SELECT MAX(update_id) FROM bot_api_upd
 			return nil, err
 		}
 	}
-	rows, err := tx.Query(ctx, `SELECT update_data FROM bot_api_updates
-WHERE bot_id=$1 ORDER BY update_id LIMIT $2`, botID, limit*4)
+	var rows pgx.Rows
+	defaultFilter := allowed != nil && len(allowed) == 0
+	if allowed == nil {
+		rows, err = tx.Query(ctx, `SELECT update_data FROM bot_api_updates
+WHERE bot_id=$1 ORDER BY update_id LIMIT $2`, botID, limit)
+	} else if defaultFilter {
+		// Telegram treats an explicitly empty allowed_updates list as the
+		// default filter: all update types except chat_member and reactions.
+		rows, err = tx.Query(ctx, `SELECT update_data FROM bot_api_updates
+	WHERE bot_id=$1 AND NOT (update_data ?| $2::text[]) ORDER BY update_id LIMIT $3`, botID, defaultAllowedUpdateExclusions, limit)
+	} else {
+		// allowed_updates names are the top-level Bot API update keys. Filter
+		// in PostgreSQL so disallowed rows cannot starve later allowed rows
+		// when the caller requests a small page.
+		rows, err = tx.Query(ctx, `SELECT update_data FROM bot_api_updates
+WHERE bot_id=$1 AND update_data ?| $2::text[] ORDER BY update_id LIMIT $3`, botID, allowed, limit)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -357,11 +383,18 @@ WHERE bot_id=$1 ORDER BY update_id LIMIT $2`, botID, limit*4)
 		if err := rows.Scan(&data); err != nil {
 			return nil, err
 		}
+		if defaultFilter && defaultDisallowedUpdate(data) {
+			continue
+		}
 		if len(allowedSet) != 0 && !allowedUpdate(data, allowedSet) {
 			continue
 		}
 		result = append(result, json.RawMessage(data))
 	}
+	// The loop can stop after reaching limit while rows still owns the
+	// transaction connection. Close it before committing so small-page
+	// getUpdates calls do not fail with pgx's "conn busy" error.
+	rows.Close()
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
@@ -369,6 +402,21 @@ WHERE bot_id=$1 ORDER BY update_id LIMIT $2`, botID, limit*4)
 		return nil, err
 	}
 	return result, nil
+}
+
+var defaultAllowedUpdateExclusions = []string{"chat_member", "message_reaction", "message_reaction_count"}
+
+func defaultDisallowedUpdate(data []byte) bool {
+	var value map[string]json.RawMessage
+	if json.Unmarshal(data, &value) != nil {
+		return false
+	}
+	for _, name := range defaultAllowedUpdateExclusions {
+		if _, ok := value[name]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 func allowedUpdate(data []byte, allowed map[string]struct{}) bool {
@@ -604,6 +652,150 @@ func (s *Store) GetDefaultAdministratorRights(ctx context.Context, botID int64, 
 	return rights, true, nil
 }
 
+const (
+	BotLifecycleActive    = "active"
+	BotLifecycleLoggedOut = "logged_out"
+	BotLifecycleClosed    = "closed"
+)
+
+// SetBotCommands stores a Bot API command variant that cannot be represented
+// by the current MTProto user.setBotCommands contract. The scope key is
+// normalized by the HTTP adapter before it reaches this store.
+func (s *Store) SetBotCommands(ctx context.Context, botID int64, scopeKey, languageCode string, commands []botapi.BotCommand) error {
+	if s == nil || s.Pool == nil || botID <= 0 || strings.TrimSpace(scopeKey) == "" || len(languageCode) > 2 {
+		return mtproto.ErrInputRequestInvalid
+	}
+	data, err := json.Marshal(commands)
+	if err != nil || !json.Valid(data) {
+		return mtproto.ErrInputRequestInvalid
+	}
+	return postgres.WithTx(ctx, s.Pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `INSERT INTO bot_api_commands(bot_id,scope_key,language_code,commands)
+VALUES($1,$2,$3,$4::jsonb)
+ON CONFLICT(bot_id,scope_key,language_code) DO UPDATE SET commands=EXCLUDED.commands,updated_at=CURRENT_TIMESTAMP`,
+			botID, strings.TrimSpace(scopeKey), strings.ToLower(strings.TrimSpace(languageCode)), string(data))
+		return err
+	})
+}
+
+func (s *Store) GetBotCommands(ctx context.Context, botID int64, scopeKey, languageCode string) ([]botapi.BotCommand, bool, error) {
+	if s == nil || s.Pool == nil || botID <= 0 || strings.TrimSpace(scopeKey) == "" || len(languageCode) > 2 {
+		return nil, false, mtproto.ErrInputRequestInvalid
+	}
+	var raw []byte
+	err := s.Pool.QueryRow(ctx, `SELECT commands FROM bot_api_commands
+WHERE bot_id=$1 AND scope_key=$2 AND language_code=$3`, botID, strings.TrimSpace(scopeKey), strings.ToLower(strings.TrimSpace(languageCode))).Scan(&raw)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return []botapi.BotCommand{}, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	var commands []botapi.BotCommand
+	if err := json.Unmarshal(raw, &commands); err != nil {
+		return nil, false, err
+	}
+	if commands == nil {
+		commands = []botapi.BotCommand{}
+	}
+	return commands, true, nil
+}
+
+func (s *Store) DeleteBotCommands(ctx context.Context, botID int64, scopeKey, languageCode string) error {
+	if s == nil || s.Pool == nil || botID <= 0 || strings.TrimSpace(scopeKey) == "" || len(languageCode) > 2 {
+		return mtproto.ErrInputRequestInvalid
+	}
+	return postgres.WithTx(ctx, s.Pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `DELETE FROM bot_api_commands
+WHERE bot_id=$1 AND scope_key=$2 AND language_code=$3`, botID, strings.TrimSpace(scopeKey), strings.ToLower(strings.TrimSpace(languageCode)))
+		return err
+	})
+}
+
+// GetBotLifecycle returns active for bots without an explicit lifecycle row.
+func (s *Store) GetBotLifecycle(ctx context.Context, botID int64) (string, error) {
+	if s == nil || s.Pool == nil || botID <= 0 {
+		return "", mtproto.ErrInputRequestInvalid
+	}
+	var state string
+	err := s.Pool.QueryRow(ctx, `SELECT state FROM bot_api_lifecycle WHERE bot_id=$1`, botID).Scan(&state)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return BotLifecycleActive, nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return state, nil
+}
+
+func (s *Store) SetBotLifecycle(ctx context.Context, botID int64, state string) error {
+	if s == nil || s.Pool == nil || botID <= 0 {
+		return mtproto.ErrInputRequestInvalid
+	}
+	if state != BotLifecycleActive && state != BotLifecycleLoggedOut && state != BotLifecycleClosed {
+		return mtproto.ErrInputRequestInvalid
+	}
+	return postgres.WithTx(ctx, s.Pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `INSERT INTO bot_api_lifecycle(bot_id,state)
+VALUES($1,$2)
+ON CONFLICT(bot_id) DO UPDATE SET state=EXCLUDED.state,updated_at=CURRENT_TIMESTAMP`, botID, state)
+		return err
+	})
+}
+
+// TransitionBotLifecycle atomically applies the HTTP-only lifecycle action.
+// logOut is idempotent while active or already logged out and clears pending
+// updates in the same transaction. close is only valid from active; an
+// inactive instance remains unauthorized until an explicit administrative
+// reset or token rotation recreates its lifecycle row.
+func (s *Store) TransitionBotLifecycle(ctx context.Context, botID int64, target string) (bool, error) {
+	if s == nil || s.Pool == nil || botID <= 0 {
+		return false, mtproto.ErrInputRequestInvalid
+	}
+	if target != BotLifecycleLoggedOut && target != BotLifecycleClosed {
+		return false, mtproto.ErrInputRequestInvalid
+	}
+	allowed := false
+	err := postgres.WithTx(ctx, s.Pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+		// Materialize the implicit active state before taking the row lock. This
+		// makes a first logOut/close race serialize on the same lifecycle row.
+		if _, err := tx.Exec(ctx, `INSERT INTO bot_api_lifecycle(bot_id,state)
+VALUES($1,$2) ON CONFLICT(bot_id) DO NOTHING`, botID, BotLifecycleActive); err != nil {
+			return err
+		}
+		var current string
+		err := tx.QueryRow(ctx, `SELECT state FROM bot_api_lifecycle WHERE bot_id=$1 FOR UPDATE`, botID).Scan(&current)
+		if err != nil {
+			return err
+		}
+		switch target {
+		case BotLifecycleLoggedOut:
+			if current == BotLifecycleClosed {
+				return nil
+			}
+			allowed = true
+			if _, err := tx.Exec(ctx, `INSERT INTO bot_api_lifecycle(bot_id,state)
+VALUES($1,$2)
+ON CONFLICT(bot_id) DO UPDATE SET state=EXCLUDED.state,updated_at=CURRENT_TIMESTAMP`, botID, target); err != nil {
+				return err
+			}
+			_, err = tx.Exec(ctx, `DELETE FROM bot_api_updates WHERE bot_id=$1`, botID)
+			return err
+		case BotLifecycleClosed:
+			if current != BotLifecycleActive {
+				return nil
+			}
+			allowed = true
+			_, err := tx.Exec(ctx, `INSERT INTO bot_api_lifecycle(bot_id,state)
+VALUES($1,$2)
+ON CONFLICT(bot_id) DO UPDATE SET state=EXCLUDED.state,updated_at=CURRENT_TIMESTAMP`, botID, target)
+			return err
+		}
+		return nil
+	})
+	return allowed, err
+}
+
 func validateMenuButton(button botapi.MenuButton) error {
 	if button.Type != "default" && button.Type != "commands" && button.Type != "web_app" {
 		return mtproto.ErrInputRequestInvalid
@@ -675,6 +867,10 @@ func (s *Store) DeliverWebhook(ctx context.Context, botID int64) {
 		delete(s.delivering, botID)
 		s.deliverMu.Unlock()
 	}()
+	state, err := s.GetBotLifecycle(ctx, botID)
+	if err != nil || state != BotLifecycleActive {
+		return
+	}
 	webhook, _, err := s.GetWebhook(ctx, botID)
 	if err != nil || webhook == nil || webhook.URL == "" {
 		return
@@ -696,6 +892,7 @@ WHERE bot_id=$1 ORDER BY update_id LIMIT $2`, botID, webhookDeliverySize)
 	if err := rows.Err(); err != nil {
 		return
 	}
+	defaultFilter := webhook.AllowedUpdates != nil && len(webhook.AllowedUpdates) == 0
 	allowedSet := make(map[string]struct{}, len(webhook.AllowedUpdates))
 	for _, name := range webhook.AllowedUpdates {
 		allowedSet[name] = struct{}{}
@@ -740,15 +937,19 @@ WHERE bot_id=$1 ORDER BY update_id LIMIT $2`, botID, webhookDeliverySize)
 					s.recordWebhookError(ctx, botID, readErr)
 					continue
 				}
-				_, _ = s.Pool.Exec(ctx, `DELETE FROM bot_api_updates WHERE bot_id=$1 AND update_id=$2`, botID, item.id)
+				if _, deleteErr := s.Pool.Exec(ctx, `DELETE FROM bot_api_updates WHERE bot_id=$1 AND update_id=$2`, botID, item.id); deleteErr != nil {
+					s.recordWebhookError(ctx, botID, deleteErr)
+				}
 			}
 		}()
 	}
 	for _, item := range items {
-		if len(allowedSet) > 0 && !allowedUpdate(item.data, allowedSet) {
+		if (defaultFilter && defaultDisallowedUpdate(item.data)) || (len(allowedSet) > 0 && !allowedUpdate(item.data, allowedSet)) {
 			// A filtered update must not block delivery of a later allowed
 			// update at the head of the queue.
-			_, _ = s.Pool.Exec(ctx, `DELETE FROM bot_api_updates WHERE bot_id=$1 AND update_id=$2`, botID, item.id)
+			if _, deleteErr := s.Pool.Exec(ctx, `DELETE FROM bot_api_updates WHERE bot_id=$1 AND update_id=$2`, botID, item.id); deleteErr != nil {
+				s.recordWebhookError(ctx, botID, deleteErr)
+			}
 			continue
 		}
 		jobs <- item

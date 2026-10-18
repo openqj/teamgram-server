@@ -16,6 +16,24 @@ func TestCommunityPeerTypeRejectsIncompleteChannel(t *testing.T) {
 	}
 }
 
+func TestCommunityPeerTypeRejectsIncompleteUser(t *testing.T) {
+	peer := mtproto.MakeTLInputPeerUser(&mtproto.InputPeer{UserId: 81031001}).To_InputPeer()
+	if _, _, _, err := communityPeerType(81031000, peer); !errors.Is(err, mtproto.ErrPeerIdInvalid) {
+		t.Fatalf("incomplete user peer = %v, want PEER_ID_INVALID", err)
+	}
+}
+
+func TestCommunityPeerTypeAcceptsSelf(t *testing.T) {
+	const callerID = int64(81031000)
+	typ, id, accessHash, err := communityPeerType(callerID, mtproto.MakeTLInputPeerSelf(nil).To_InputPeer())
+	if err != nil {
+		t.Fatalf("self peer = (%v, %v, %v, %v), want success", typ, id, accessHash, err)
+	}
+	if typ != domain.CommunityPeerUser || id != callerID || accessHash != 0 {
+		t.Fatalf("self peer = (%v, %v, %v), want user caller with zero hash", typ, id, accessHash)
+	}
+}
+
 func TestCommunityPeerTypeRejectsStaleOrUnknownChannel(t *testing.T) {
 	if !domain.Ready() {
 		t.Skip("APIFULL_POSTGRES_DSN is not configured")

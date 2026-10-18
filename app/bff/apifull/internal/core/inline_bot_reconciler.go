@@ -74,9 +74,13 @@ func deliverInlineBotQuery(ctx context.Context, svcCtx *svc.ServiceContext, item
 }
 
 func inlineBotQueryUpdate(ctx context.Context, svcCtx *svc.ServiceContext, item persist.InlineBotQuery) (*mtproto.Updates, error) {
-	peerType, err := inlineQueryPeerTypeFromPredicate(item.PeerType)
-	if err != nil {
-		return nil, err
+	var peerType *mtproto.InlineQueryPeerType
+	var err error
+	if item.PeerType != "" {
+		peerType, err = inlineQueryPeerTypeFromPredicate(item.PeerType)
+		if err != nil {
+			return nil, err
+		}
 	}
 	var geo *mtproto.GeoPoint
 	if item.HasGeo {

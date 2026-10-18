@@ -29,7 +29,7 @@ function makeClient(auth: string): any {
     (session as any)._serverAddress = process.env.TG_DC_HOST || '127.0.0.1';
     (session as any)._port = Number(process.env.TG_DC_PORT || '11443');
   };
-  return new TelegramClient(session, 1, '0123456789abcdef0123456789abcdef', {
+  const client = new TelegramClient(session, 1, '0123456789abcdef0123456789abcdef', {
     connection: Connection,
     fallbackConnection: Connection,
     shouldAllowHttpTransport: false,
@@ -42,6 +42,13 @@ function makeClient(auth: string): any {
     autoReconnect: false,
     baseLogger: quietLogger,
   });
+  const initWith = client._initWith.bind(client);
+  client._initWith = (query: any) => {
+    const original = initWith(query);
+    if (rpcName(original) !== 'InvokeWithLayer' || rpcName(original.query) !== 'InitConnection') throw new Error('INVALID_INIT_CONNECTION_WRAPPER');
+    return new Api.InvokeWithLayer({ layer: 229, query: original.query });
+  };
+  return client;
 }
 
 const rpcName = (value: any) => value?.className || value?.constructor?.name || typeof value;
@@ -57,7 +64,7 @@ async function main() {
     if (filters.length !== 3 || filters.some((item: any) => rpcName(item) !== 'DialogFilterSuggested')) {
       throw new Error(`unexpected suggested filters: ${rpcName(result)} count=${filters.length}`);
     }
-    console.log(JSON.stringify({ type: rpcName(result), count: filters.length, titles: filters.map((item: any) => item?.filter?.title || '') }));
+    console.log(JSON.stringify({ layer: 229, type: rpcName(result), count: filters.length, titles: filters.map((item: any) => item?.filter?.title || '') }));
   } finally {
     client.destroy();
   }

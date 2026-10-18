@@ -499,6 +499,9 @@ func (c *ApiFullCore) MessagesGetStickerSet(in *mtproto.TLMessagesGetStickerSet)
 	if ref, ok := builtinStickerRef(in.GetStickerset()); ok {
 		return messagesStickerSetFromRef(ref, in.GetHash()), nil
 	}
+	if ref, ok := namedBuiltinStickerRef(short); ok {
+		return messagesStickerSetFromRef(ref, in.GetHash()), nil
+	}
 	if setID == 0 && short == "" {
 		return nil, mtproto.ErrStickersetInvalid
 	}

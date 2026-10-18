@@ -80,27 +80,38 @@ func connectedBotPeer(in *mtproto.InputPeer) (int64, int64, error) {
 	if in == nil {
 		return 0, 0, mtproto.ErrInputRequestInvalid
 	}
-	if id := in.GetUserId(); id > 0 {
-		return 0, id, nil
+	switch in.GetPredicateName() {
+	case mtproto.Predicate_inputPeerUser:
+		if in.GetUserId() <= 0 || in.GetAccessHash() == 0 {
+			return 0, 0, mtproto.ErrPeerIdInvalid
+		}
+		return 0, in.GetUserId(), nil
+	case mtproto.Predicate_inputPeerChat:
+		if in.GetChatId() <= 0 {
+			return 0, 0, mtproto.ErrPeerIdInvalid
+		}
+		return 1, in.GetChatId(), nil
+	case mtproto.Predicate_inputPeerChannel:
+		if in.GetChannelId() <= 0 || in.GetAccessHash() == 0 {
+			return 0, 0, mtproto.ErrChannelInvalid
+		}
+		return 2, in.GetChannelId(), nil
 	}
-	if id := in.GetChatId(); id > 0 {
-		return 1, id, nil
-	}
-	if id := in.GetChannelId(); id > 0 {
-		return 2, id, nil
-	}
-	return 0, 0, mtproto.ErrInputRequestInvalid
+	return 0, 0, mtproto.ErrPeerIdInvalid
 }
 
-func inputUserIDs(users []*mtproto.InputUser) []int64 {
+func inputUserIDs(users []*mtproto.InputUser) ([]int64, error) {
 	out := make([]int64, 0, len(users))
 	for _, u := range users {
-		if u == nil {
-			continue
+		if u == nil || u.GetPredicateName() != mtproto.Predicate_inputUser {
+			return nil, mtproto.ErrInputConstructorInvalid
+		}
+		if u.GetUserId() <= 0 || u.GetAccessHash() == 0 {
+			return nil, mtproto.ErrUserIdInvalid
 		}
 		out = append(out, u.GetUserId())
 	}
-	return out
+	return out, nil
 }
 
 // hydrateCanonicalUsers resolves only the requested IDs through the
@@ -177,9 +188,17 @@ func (c *ApiFullCore) hydrateCanonicalUsers(ids []int64, viewerID int64, botIDs 
 	return users, nil
 }
 
-func businessBotRecipientsFromInput(in *mtproto.InputBusinessBotRecipients) *mtproto.BusinessBotRecipients {
+func businessBotRecipientsFromInput(in *mtproto.InputBusinessBotRecipients) (*mtproto.BusinessBotRecipients, error) {
 	if in == nil {
-		return nil
+		return nil, nil
+	}
+	users, err := inputUserIDs(in.GetUsers())
+	if err != nil {
+		return nil, err
+	}
+	excludeUsers, err := inputUserIDs(in.GetExcludeUsers())
+	if err != nil {
+		return nil, err
 	}
 	return mtproto.MakeTLBusinessBotRecipients(&mtproto.BusinessBotRecipients{
 		ExistingChats:   in.GetExistingChats(),
@@ -187,14 +206,18 @@ func businessBotRecipientsFromInput(in *mtproto.InputBusinessBotRecipients) *mtp
 		Contacts:        in.GetContacts(),
 		NonContacts:     in.GetNonContacts(),
 		ExcludeSelected: in.GetExcludeSelected(),
-		Users:           inputUserIDs(in.GetUsers()),
-		ExcludeUsers:    inputUserIDs(in.GetExcludeUsers()),
-	}).To_BusinessBotRecipients()
+		Users:           users,
+		ExcludeUsers:    excludeUsers,
+	}).To_BusinessBotRecipients(), nil
 }
 
-func businessRecipientsFromInput(in *mtproto.InputBusinessRecipients) *mtproto.BusinessRecipients {
+func businessRecipientsFromInput(in *mtproto.InputBusinessRecipients) (*mtproto.BusinessRecipients, error) {
 	if in == nil {
-		return nil
+		return nil, nil
+	}
+	users, err := inputUserIDs(in.GetUsers())
+	if err != nil {
+		return nil, err
 	}
 	return mtproto.MakeTLBusinessRecipients(&mtproto.BusinessRecipients{
 		ExistingChats:   in.GetExistingChats(),
@@ -202,8 +225,8 @@ func businessRecipientsFromInput(in *mtproto.InputBusinessRecipients) *mtproto.B
 		Contacts:        in.GetContacts(),
 		NonContacts:     in.GetNonContacts(),
 		ExcludeSelected: in.GetExcludeSelected(),
-		Users:           inputUserIDs(in.GetUsers()),
-	}).To_BusinessRecipients()
+		Users:           users,
+	}).To_BusinessRecipients(), nil
 }
 
 func (c *ApiFullCore) verifyConnectedBot(input *mtproto.InputUser) (int64, error) {
@@ -271,12 +294,18 @@ func (c *ApiFullCore) AccountUpdateConnectedBot(in *mtproto.TLAccountUpdateConne
 		if err != nil {
 			return nil, err
 		}
-		recipientsBotValue := businessBotRecipientsFromInput(in.GetRecipients_INPUTBUSINESSBOTRECIPIENTS())
+		recipientsBotValue, err := businessBotRecipientsFromInput(in.GetRecipients_INPUTBUSINESSBOTRECIPIENTS())
+		if err != nil {
+			return nil, err
+		}
 		recipientsBot, err := marshalConnectedJSON(recipientsBotValue)
 		if err != nil {
 			return nil, err
 		}
-		recipientsValue := businessRecipientsFromInput(in.GetRecipients_INPUTBUSINESSRECIPIENTS())
+		recipientsValue, err := businessRecipientsFromInput(in.GetRecipients_INPUTBUSINESSRECIPIENTS())
+		if err != nil {
+			return nil, err
+		}
 		recipients, err := marshalConnectedJSON(recipientsValue)
 		if err != nil {
 			return nil, err
@@ -316,8 +345,14 @@ func (c *ApiFullCore) AccountUpdateConnectedBot(in *mtproto.TLAccountUpdateConne
 	var rec *mtproto.BusinessRecipients
 	if in != nil {
 		rights = in.GetRights()
-		recBot = businessBotRecipientsFromInput(in.GetRecipients_INPUTBUSINESSBOTRECIPIENTS())
-		rec = businessRecipientsFromInput(in.GetRecipients_INPUTBUSINESSRECIPIENTS())
+		recBot, err = businessBotRecipientsFromInput(in.GetRecipients_INPUTBUSINESSBOTRECIPIENTS())
+		if err != nil {
+			return nil, err
+		}
+		rec, err = businessRecipientsFromInput(in.GetRecipients_INPUTBUSINESSRECIPIENTS())
+		if err != nil {
+			return nil, err
+		}
 	}
 	row := connectedBotJSON{
 		BotId:         botID,
@@ -486,21 +521,23 @@ func (c *ApiFullCore) AccountToggleConnectedBotPaused(in *mtproto.TLAccountToggl
 	if err := c.requirePremium(); err != nil {
 		return nil, err
 	}
+	var peer *mtproto.InputPeer
+	if in != nil {
+		peer = in.GetPeer()
+	}
+	peerType, peerID, err := connectedBotPeer(peer)
+	if err != nil {
+		return nil, err
+	}
 	paused := false
 	var peerUser, peerChat, peerChannel int64
-	if in != nil {
-		if in.GetPaused() != nil {
-			paused = mtproto.FromBool(in.GetPaused())
-		}
-		if p := in.GetPeer(); p != nil {
-			peerUser, peerChat, peerChannel = p.GetUserId(), p.GetChatId(), p.GetChannelId()
-		}
+	if in.GetPaused() != nil {
+		paused = mtproto.FromBool(in.GetPaused())
+	}
+	if peer != nil {
+		peerUser, peerChat, peerChannel = peer.GetUserId(), peer.GetChatId(), peer.GetChannelId()
 	}
 	if domain.Ready() {
-		peerType, peerID, err := connectedBotPeer(in.GetPeer())
-		if err != nil {
-			return nil, err
-		}
 		if err := domain.SetConnectedBotPeerState(c.MD.UserId, peerType, peerID, &paused, nil); err != nil {
 			return nil, err
 		}
@@ -525,17 +562,19 @@ func (c *ApiFullCore) AccountDisablePeerConnectedBot(in *mtproto.TLAccountDisabl
 	if err := c.requirePremium(); err != nil {
 		return nil, err
 	}
-	var peerUser, peerChat, peerChannel int64
+	var peer *mtproto.InputPeer
 	if in != nil {
-		if p := in.GetPeer(); p != nil {
-			peerUser, peerChat, peerChannel = p.GetUserId(), p.GetChatId(), p.GetChannelId()
-		}
+		peer = in.GetPeer()
+	}
+	peerType, peerID, err := connectedBotPeer(peer)
+	if err != nil {
+		return nil, err
+	}
+	var peerUser, peerChat, peerChannel int64
+	if peer != nil {
+		peerUser, peerChat, peerChannel = peer.GetUserId(), peer.GetChatId(), peer.GetChannelId()
 	}
 	if domain.Ready() {
-		peerType, peerID, err := connectedBotPeer(in.GetPeer())
-		if err != nil {
-			return nil, err
-		}
 		disabled := true
 		if err := domain.SetConnectedBotPeerState(c.MD.UserId, peerType, peerID, nil, &disabled); err != nil {
 			return nil, err

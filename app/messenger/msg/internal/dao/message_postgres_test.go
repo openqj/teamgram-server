@@ -225,6 +225,46 @@ INSERT INTO messages
 	}
 }
 
+func TestPostgresReadHistoryClearsSelfIncomingUnreadBehindOutgoingTop(t *testing.T) {
+	d, _ := newMessagePostgresFixture(t)
+	ctx := context.Background()
+	const userID, senderID = int64(101), int64(202)
+	dialogID := mtproto.MakeDialogId(userID, mtproto.PEER_USER, userID)
+	if _, err := d.Pool.Exec(ctx, `
+INSERT INTO messages
+ (user_id,user_message_box_id,dialog_id1,dialog_id2,dialog_message_id,sender_user_id,peer_type,peer_id,message_data,message,date2)
+ VALUES ($1,1,$2,$3,1,$4,$5,$1,'{}','incoming',1),
+        ($1,2,$2,$3,2,$1,$5,$1,'{}','outgoing',2)`, userID, dialogID.A, dialogID.B, senderID, mtproto.PEER_USER); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := d.Store.Dialogs.InsertOrUpdate(ctx, &dataobject.DialogsDO{
+		UserId: userID, PeerType: mtproto.PEER_USER, PeerId: userID,
+		PeerDialogId: mtproto.MakePeerDialogId(mtproto.PEER_USER, userID), TopMessage: 2,
+		DraftMessageData: "null",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	updates, pts, _, err := d.ReadHistoryState(ctx, userID, mtproto.MakePeerUtil(mtproto.PEER_USER, userID), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(updates) != 1 || pts == 0 || updates[0].GetPredicateName() != mtproto.Predicate_updateReadHistoryInbox {
+		t.Fatalf("self read history = updates=%#v pts=%d, want one inbox update", updates, pts)
+	}
+	if updates[0].GetMaxId() != 2 {
+		t.Fatalf("self read history max_id = %d, want 2", updates[0].GetMaxId())
+	}
+
+	var readMax, unread int32
+	if err := d.Pool.QueryRow(ctx, `SELECT read_inbox_max_id,unread_count FROM dialogs WHERE user_id=$1 AND peer_type=$2 AND peer_id=$3`, userID, mtproto.PEER_USER, userID).Scan(&readMax, &unread); err != nil {
+		t.Fatal(err)
+	}
+	if readMax != 2 || unread != 0 {
+		t.Fatalf("self dialog read state = read_max=%d unread=%d, want 2/0", readMax, unread)
+	}
+}
+
 func TestPostgresReadHistoryPersistsGroupReceiptDate(t *testing.T) {
 	d, _ := newMessagePostgresFixture(t)
 	ctx := context.Background()

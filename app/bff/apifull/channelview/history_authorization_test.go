@@ -81,6 +81,10 @@ func TestHistoryAndEditDataCheckInputPeerAuthorization(t *testing.T) {
 	if err != nil || len(got.GetMessages()) != 1 {
 		t.Fatalf("member history: messages=%d err=%v", len(got.GetMessages()), err)
 	}
+	layerHistory, err := HistoryForInputPeerLayer229(member, input, 0, 0, 0, 20, 0, 0)
+	if err != nil || layerHistory == nil || layerHistory.GetPredicateName() != mtproto.Predicate_messages_channelMessages || layerHistory.GetCount() != 1 || layerHistory.GetPts() <= 0 || len(layerHistory.GetMessages()) != 1 {
+		t.Fatalf("layer229 member history: predicate=%s count=%d pts=%d messages=%d err=%v", layerHistory.GetPredicateName(), layerHistory.GetCount(), layerHistory.GetPts(), len(layerHistory.GetMessages()), err)
+	}
 	search, err := SearchForInputPeer(member, input, "stored", 0, 0, 0, 0, 0, 0, 0, 20)
 	if err != nil || len(search.GetMessages()) != 1 {
 		t.Fatalf("member search: messages=%d err=%v", len(search.GetMessages()), err)
@@ -95,6 +99,14 @@ func TestHistoryAndEditDataCheckInputPeerAuthorization(t *testing.T) {
 	hashtagSearch, err := SearchForInputPeer(member, input, "#topic", 0, 0, 0, 0, 0, 0, 0, 20)
 	if err != nil || len(hashtagSearch.GetMessages()) != 1 || hashtagSearch.GetMessages()[0].GetMessage() != "announcement #topic" {
 		t.Fatalf("member hashtag search: messages=%d err=%v", len(hashtagSearch.GetMessages()), err)
+	}
+	dateHistory, err := HistoryForInputPeerLayer229(member, input, 0, int32(time.Now().Unix()+3600), 0, 20, 0, 0)
+	if err != nil || dateHistory == nil || dateHistory.GetCount() != 2 || len(dateHistory.GetMessages()) != 2 {
+		t.Fatalf("layer229 date history: count=%d messages=%d err=%v", dateHistory.GetCount(), len(dateHistory.GetMessages()), err)
+	}
+	addOffsetHistory, err := HistoryForInputPeerLayer229(member, input, 0, 0, 1, 1, 0, 0)
+	if err != nil || addOffsetHistory == nil || len(addOffsetHistory.GetMessages()) != 1 || addOffsetHistory.GetMessages()[0].GetId() != 1 {
+		t.Fatalf("layer229 add_offset history: messages=%v err=%v", addOffsetHistory.GetMessages(), err)
 	}
 
 	editData, err := GetMessageEditData(owner, input, got.GetMessages()[0].GetId())
@@ -114,6 +126,9 @@ func TestHistoryAndEditDataCheckInputPeerAuthorization(t *testing.T) {
 	if _, err = HistoryForInputPeer(member, badHash, 0, 20); !errors.Is(err, mtproto.ErrChannelInvalid) {
 		t.Fatalf("bad access hash: got %v", err)
 	}
+	if _, err = HistoryForInputPeerLayer229(member, badHash, 0, 0, 0, 20, 0, 0); !errors.Is(err, mtproto.ErrChannelInvalid) {
+		t.Fatalf("bad layer229 access hash: got %v", err)
+	}
 	if _, err = SearchForInputPeer(member, badHash, "stored", 0, 0, 0, 0, 0, 0, 0, 20); !errors.Is(err, mtproto.ErrChannelInvalid) {
 		t.Fatalf("bad search access hash: got %v", err)
 	}
@@ -122,6 +137,9 @@ func TestHistoryAndEditDataCheckInputPeerAuthorization(t *testing.T) {
 	}
 	if _, err = HistoryForInputPeer(outsider, input, 0, 20); !errors.Is(err, mtproto.ErrChannelPrivate) {
 		t.Fatalf("private non-member history: got %v", err)
+	}
+	if _, err = HistoryForInputPeerLayer229(outsider, input, 0, 0, 0, 20, 0, 0); !errors.Is(err, mtproto.ErrChannelPrivate) {
+		t.Fatalf("private non-member layer229 history: got %v", err)
 	}
 	if _, err = SearchForInputPeer(outsider, input, "stored", 0, 0, 0, 0, 0, 0, 0, 20); !errors.Is(err, mtproto.ErrChannelPrivate) {
 		t.Fatalf("private non-member search: got %v", err)
@@ -141,6 +159,10 @@ func TestHistoryAndEditDataCheckInputPeerAuthorization(t *testing.T) {
 	publicHistory, err := HistoryForInputPeer(outsider, input, 0, 20)
 	if err != nil || len(publicHistory.GetMessages()) != 2 || !publicHistory.GetChats()[0].GetLeft() {
 		t.Fatalf("public non-member history: messages=%d chats=%+v err=%v", len(publicHistory.GetMessages()), publicHistory.GetChats(), err)
+	}
+	publicLayerHistory, err := HistoryForInputPeerLayer229(outsider, input, 0, 0, 0, 20, 0, 0)
+	if err != nil || publicLayerHistory.GetPredicateName() != mtproto.Predicate_messages_channelMessages || len(publicLayerHistory.GetMessages()) != 2 || !publicLayerHistory.GetChats()[0].GetLeft() {
+		t.Fatalf("public non-member layer229 history: predicate=%s messages=%d chats=%+v err=%v", publicLayerHistory.GetPredicateName(), len(publicLayerHistory.GetMessages()), publicLayerHistory.GetChats(), err)
 	}
 	publicSearch, err := SearchForInputPeer(outsider, input, "stored", 0, 0, 0, 0, 0, 0, 0, 20)
 	if err != nil || len(publicSearch.GetMessages()) != 1 || !publicSearch.GetChats()[0].GetLeft() {

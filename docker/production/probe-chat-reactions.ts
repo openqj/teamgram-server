@@ -17,7 +17,14 @@ const isTrue = (value: any) => value === true || rpcName(value).toLowerCase().in
 function makeClient(auth: string): any {
   const session = new CallbackSession({ mainDcId: dcId, keys: { [dcId]: Buffer.from(auth, 'base64').toString('hex') } }, () => {});
   const load = session.load.bind(session); session.load = async () => { await load(); (session as any)._serverAddress = process.env.TG_DC_HOST || '127.0.0.1'; (session as any)._port = Number(process.env.TG_DC_PORT || '11443'); };
-  return new TelegramClient(session, 1, '0123456789abcdef0123456789abcdef', { connection: Connection, fallbackConnection: Connection, shouldAllowHttpTransport: false, shouldForceHttpTransport: false, timeout: 20, requestRetries: 2, connectionRetries: 2, connectionRetriesToFallback: 0, retryDelay: 250, autoReconnect: false, baseLogger: quietLogger });
+  const client = new TelegramClient(session, 1, '0123456789abcdef0123456789abcdef', { connection: Connection, fallbackConnection: Connection, shouldAllowHttpTransport: false, shouldForceHttpTransport: false, timeout: 20, requestRetries: 2, connectionRetries: 2, connectionRetriesToFallback: 0, retryDelay: 250, autoReconnect: false, baseLogger: quietLogger });
+  const initWith = client._initWith.bind(client);
+  client._initWith = (query: any) => {
+    const original = initWith(query);
+    if (rpcName(original) !== 'InvokeWithLayer' || rpcName(original.query) !== 'InitConnection') throw new Error('INVALID_INIT_CONNECTION_WRAPPER');
+    return new Api.InvokeWithLayer({ layer: 229, query: original.query });
+  };
+  return client;
 }
 function chatDb(chatId: bigint | number): { type: number; reactions: string; hex: string } {
   const sql = `SELECT available_reactions_type,available_reactions,encode(convert_to(available_reactions::text, 'UTF8'), 'hex') FROM chats WHERE id=${chatId}`;
@@ -47,7 +54,7 @@ async function main() {
     if (!rpcName(clear).toLowerCase().includes('updates')) throw new Error(`clear reactions returned ${rpcName(clear)}`);
     const cleared = chatDb(chatId); const fullAfter = await b.invoke(new Api.messages.GetFullChat({ chatId }));
     if (cleared.type !== 1 || cleared.reactions !== '' || cleared.hex !== '') throw new Error(`reaction cleanup failed: ${JSON.stringify(cleared)}`);
-    console.log(JSON.stringify({ create: rpcName(created), before: rpcName(await before), set: rpcName(set), read: rpcName(full), stored, clear: rpcName(clear), cleared, readAfter: rpcName(fullAfter), chatId: String(chatId) }));
+    console.log(JSON.stringify({ layer: 229, create: rpcName(created), before: rpcName(await before), set: rpcName(set), read: rpcName(full), stored, clear: rpcName(clear), cleared, readAfter: rpcName(fullAfter), chatId: String(chatId) }));
     const deleted = await a.invoke(new Api.messages.DeleteChat({ chatId })); if (!isTrue(deleted)) throw new Error(`messages.deleteChat returned ${rpcName(deleted)}`); chatId = undefined;
   } finally {
     if (chatId !== undefined) { try { await a.invoke(new Api.messages.DeleteChat({ chatId })); } catch {} }

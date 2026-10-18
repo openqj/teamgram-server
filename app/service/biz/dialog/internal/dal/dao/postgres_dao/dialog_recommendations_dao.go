@@ -112,6 +112,7 @@ func (d *DialogRecommendationsDAO) SelectActiveList(ctx context.Context, userID 
 		  AND deleted = FALSE
 		  AND dismissed = FALSE
 		  AND (expires_at = 0 OR expires_at > EXTRACT(EPOCH FROM NOW())::BIGINT)
+		  AND (is_promoted = FALSE OR promoted_until = 0 OR promoted_until > EXTRACT(EPOCH FROM NOW())::BIGINT)
 		ORDER BY weight DESC, score DESC, peer_type, peer_id
 		LIMIT $2`, userID, limit)
 	if err != nil {
@@ -244,7 +245,8 @@ func (d *DialogRecommendationsDAO) InsertFeedbackLogOn(ctx context.Context, db D
 func (d *DialogRecommendationsDAO) DeleteExpired(ctx context.Context, beforeTimestamp int64) (int64, error) {
 	tag, err := d.db.Exec(ctx, `UPDATE dialog_recommendations
 		SET deleted = TRUE
-		WHERE expires_at > 0 AND expires_at < $1 AND deleted = FALSE`,
+		WHERE deleted = FALSE AND ((expires_at > 0 AND expires_at < $1)
+			OR (is_promoted = TRUE AND promoted_until > 0 AND promoted_until < $1))`,
 		beforeTimestamp)
 	if err != nil {
 		return 0, err

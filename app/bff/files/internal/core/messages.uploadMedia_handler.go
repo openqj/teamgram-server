@@ -32,8 +32,20 @@ import (
 // messages.uploadMedia#519bc2b1 peer:InputPeer media:InputMedia = MessageMedia;
 func (c *FilesCore) MessagesUploadMedia(in *mtproto.TLMessagesUploadMedia) (*mtproto.MessageMedia, error) {
 	if in == nil || in.GetMedia() == nil {
-		c.Logger.Errorf("messages.uploadMedia - empty request")
+		if c != nil {
+			c.Logger.Errorf("messages.uploadMedia - empty request")
+		}
 		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if c == nil {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
+	if c.MD == nil || c.MD.GetPermAuthKeyId() == 0 {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
+	if err := validateUploadMediaPeer(in.GetPeer()); err != nil {
+		c.Logger.Errorf("messages.uploadMedia - invalid peer: %v", err)
+		return nil, err
 	}
 	rValue, err := c.makeMediaByInputMedia(in.GetMedia())
 	if err != nil {
@@ -42,6 +54,37 @@ func (c *FilesCore) MessagesUploadMedia(in *mtproto.TLMessagesUploadMedia) (*mtp
 	}
 
 	return rValue, nil
+}
+
+func validateUploadMediaPeer(peer *mtproto.InputPeer) error {
+	if peer == nil {
+		return mtproto.ErrPeerIdInvalid
+	}
+	switch peer.GetPredicateName() {
+	case mtproto.Predicate_inputPeerSelf:
+		return nil
+	case mtproto.Predicate_inputPeerUser:
+		if peer.GetUserId() > 0 && peer.GetAccessHash() != 0 {
+			return nil
+		}
+	case mtproto.Predicate_inputPeerChat:
+		if peer.GetChatId() > 0 {
+			return nil
+		}
+	case mtproto.Predicate_inputPeerChannel:
+		if peer.GetChannelId() > 0 && peer.GetAccessHash() != 0 {
+			return nil
+		}
+	case mtproto.Predicate_inputPeerUserFromMessage:
+		if peer.GetUserId() > 0 && peer.GetMsgId() > 0 && validateUploadMediaPeer(peer.GetPeer()) == nil {
+			return nil
+		}
+	case mtproto.Predicate_inputPeerChannelFromMessage:
+		if peer.GetChannelId() > 0 && peer.GetMsgId() > 0 && validateUploadMediaPeer(peer.GetPeer()) == nil {
+			return nil
+		}
+	}
+	return mtproto.ErrPeerIdInvalid
 }
 
 func (c *FilesCore) makeMediaByInputMedia(media *mtproto.InputMedia) (messageMedia *mtproto.MessageMedia, err error) {

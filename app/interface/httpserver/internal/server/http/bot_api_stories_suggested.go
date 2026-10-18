@@ -361,6 +361,10 @@ func postStory(ctx *svc.ServiceContext, r *http.Request, botID int64, request *b
 	if err != nil {
 		return storyBadRequest(err.Error())
 	}
+	postToChatPage, err := request.bool("post_to_chat_page")
+	if err != nil {
+		return storyBadRequest("post_to_chat_page is invalid")
+	}
 	if ctx == nil || ctx.StoriesClient == nil {
 		return nil, http.StatusNotImplemented, 501, "Not Implemented: story service is not configured"
 	}
@@ -372,6 +376,7 @@ func postStory(ctx *svc.ServiceContext, r *http.Request, botID int64, request *b
 		Entities:   entities,
 		MediaAreas: areas,
 		RandomId:   randomMessageID(),
+		Pinned:     postToChatPage,
 		Noforwards: requestBool(request, "protect_content"),
 	})
 	if err != nil {
@@ -397,6 +402,10 @@ func repostStory(ctx *svc.ServiceContext, r *http.Request, botID int64, request 
 	if err != nil || fromStory <= 0 || fromStory > int64(^uint32(0)>>1) {
 		return storyBadRequest("from_story_id is invalid")
 	}
+	postToChatPage, err := request.bool("post_to_chat_page")
+	if err != nil {
+		return storyBadRequest("post_to_chat_page is invalid")
+	}
 	if ctx == nil || ctx.StoriesClient == nil {
 		return nil, http.StatusNotImplemented, 501, "Not Implemented: story service is not configured"
 	}
@@ -406,6 +415,7 @@ func repostStory(ctx *svc.ServiceContext, r *http.Request, botID int64, request 
 		FwdFromStory: wrapperspb.Int32(int32(fromStory)),
 		Period:       wrapperspb.Int32(period),
 		RandomId:     randomMessageID(),
+		Pinned:       postToChatPage,
 		Noforwards:   requestBool(request, "protect_content"),
 	})
 	if err != nil {

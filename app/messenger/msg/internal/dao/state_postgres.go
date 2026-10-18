@@ -262,7 +262,8 @@ func (d *Dao) ReadHistoryState(ctx context.Context, userID int64, peer *mtproto.
 		if maxID == 0 || maxID > dialog.TopMessage {
 			maxID = dialog.TopMessage
 		}
-		if peer.IsSelfUser(userID) || maxID <= dialog.ReadInboxMaxId {
+		isSelfPeer := peer.IsSelfUser(userID)
+		if maxID <= dialog.ReadInboxMaxId {
 			return nil, nil
 		}
 		maxMessage, err = postgres_dao.NewMessagesDAO(tx).SelectByMessageId(ctx, userID, maxID)
@@ -272,11 +273,26 @@ func (d *Dao) ReadHistoryState(ctx context.Context, userID int64, peer *mtproto.
 		if maxMessage == nil || maxMessage.PeerType != peer.PeerType || maxMessage.PeerId != peer.PeerId {
 			return nil, mtproto.ErrMessageIdInvalid
 		}
-		// Reading history advances the inbox cursor only through an incoming
-		// message.  The legacy path treats an outgoing target as no-op; keep
-		// that behavior so a sender cannot manufacture an inbox read update for
-		// its own message when max_id points at the dialog's top outbox row.
-		if maxMessage.SenderUserId == userID {
+		if isSelfPeer {
+			// Saved Messages is stored as the self user dialog, but it can still
+			// contain incoming service messages.  An outgoing top message must not
+			// hide those unread messages from messages.readHistory.
+			var hasUnreadIncoming bool
+			if err := tx.QueryRow(ctx, `SELECT EXISTS(
+ SELECT 1 FROM messages
+ WHERE user_id=$1 AND peer_type=$2 AND peer_id=$3
+ AND sender_user_id<>$1 AND user_message_box_id>$4
+ AND user_message_box_id<=$5 AND NOT deleted
+)`, userID, peer.PeerType, peer.PeerId, dialog.ReadInboxMaxId, maxID).Scan(&hasUnreadIncoming); err != nil {
+				return nil, err
+			}
+			if !hasUnreadIncoming {
+				return nil, nil
+			}
+		} else if maxMessage.SenderUserId == userID {
+			// Reading history advances the inbox cursor only through an incoming
+			// message.  Keep the legacy no-op when max_id points at a dialog's
+			// top outbox row.
 			return nil, nil
 		}
 		if _, err := tx.Exec(ctx, `UPDATE dialogs SET read_inbox_max_id=GREATEST(read_inbox_max_id,$4),unread_mark=FALSE WHERE user_id=$1 AND peer_type=$2 AND peer_id=$3`, userID, peer.PeerType, peer.PeerId, maxID); err != nil {

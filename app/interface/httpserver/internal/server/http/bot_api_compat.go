@@ -176,6 +176,14 @@ func forwardMessages(ctx *svc.ServiceContext, r *http.Request, bot *mtproto.Immu
 	if err != nil || fromPeerID == 0 {
 		return nil, http.StatusBadRequest, 400, "Bad Request: from_chat_id is invalid"
 	}
+	fromPeer, err := botAPIForwardInputPeer(ctx, r.Context(), botID, fromPeerType, fromPeerID)
+	if err != nil {
+		return nil, http.StatusBadRequest, 400, "Bad Request: from_chat_id is invalid"
+	}
+	toPeer, err := botAPIForwardInputPeer(ctx, r.Context(), botID, toPeerType, toPeerID)
+	if err != nil {
+		return nil, http.StatusBadRequest, 400, "Bad Request: chat_id is invalid"
+	}
 
 	var rawIDs []int64
 	if len(request.raw("message_ids")) == 0 || request.json("message_ids", &rawIDs) != nil || len(rawIDs) == 0 || len(rawIDs) > 100 {
@@ -217,10 +225,10 @@ func forwardMessages(ctx *svc.ServiceContext, r *http.Request, bot *mtproto.Immu
 	}
 
 	updates, err := ctx.MessagesClient.MessagesForwardMessages(botMediaRPCContext(r.Context(), botID), &mtproto.TLMessagesForwardMessages{
-		FromPeer:           botAPIInputPeer(botID, fromPeerType, fromPeerID),
+		FromPeer:           fromPeer,
 		Id:                 messageIDs,
 		RandomId:           randomIDs,
-		ToPeer:             botAPIInputPeer(botID, toPeerType, toPeerID),
+		ToPeer:             toPeer,
 		Silent:             disableNotification,
 		Noforwards:         protectContent,
 		DropAuthor:         copyMode,

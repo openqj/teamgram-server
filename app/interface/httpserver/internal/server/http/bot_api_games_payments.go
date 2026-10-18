@@ -76,8 +76,15 @@ func sendChatAction(ctx *svc.ServiceContext, r *http.Request, bot *mtproto.Immut
 	if err != nil {
 		return nil, http.StatusBadRequest, 400, "Bad Request: message_thread_id is invalid"
 	}
+	peer := botAPIInputPeer(actorID, peerType, peerID)
+	if peerType == mtproto.PEER_USER && peerID != actorID {
+		peer, err = botAPIUserPeer(ctx, r.Context(), botID, peerID)
+		if err != nil {
+			return nil, http.StatusBadRequest, 400, rpcDescription(err)
+		}
+	}
 	ok, err := ctx.DialogsClient.MessagesSetTyping(callCtx, &mtproto.TLMessagesSetTyping{
-		Peer:     botAPIInputPeer(actorID, peerType, peerID),
+		Peer:     peer,
 		TopMsgId: topMsgID,
 		Action:   action,
 	})

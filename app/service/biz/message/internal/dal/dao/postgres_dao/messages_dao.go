@@ -213,6 +213,22 @@ WHERE user_id = $1 AND user_message_box_id = ANY($2::integer[]) AND deleted = FA
 	if err != nil {
 		return 0, err
 	}
+	// A saved dialog points at its latest saved message. Keep that pointer
+	// truthful when the message is deleted in the same transaction.
+	if _, err = db.Exec(ctx, `UPDATE saved_dialogs AS sd
+SET top_message = COALESCE((
+    SELECT MAX(m.user_message_box_id)
+    FROM messages AS m
+    WHERE m.user_id = sd.user_id
+      AND m.saved_peer_type = sd.peer_type
+      AND m.saved_peer_id = sd.peer_id
+      AND m.deleted = FALSE
+), 0)
+WHERE sd.user_id = $1
+  AND sd.deleted = FALSE
+  AND sd.top_message = ANY($2::integer[])`, userID, ids); err != nil {
+		return 0, err
+	}
 	return rowsAffected(tag), nil
 }
 

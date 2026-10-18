@@ -368,19 +368,39 @@ func (d *Dao) pgRevokePremium(ctx context.Context, id int64, provider, transacti
 		if err != nil {
 			return err
 		}
-		defer rows.Close()
+		type premiumGrantSchedule struct {
+			key                            []byte
+			createdAt, startsAt, expiresAt int64
+			revokedAt                      int64
+			months                         int32
+		}
+		grants := make([]premiumGrantSchedule, 0)
+		for rows.Next() {
+			var grant premiumGrantSchedule
+			if err = rows.Scan(&grant.key, &grant.createdAt, &grant.months, &grant.startsAt, &grant.expiresAt, &grant.revokedAt); err != nil {
+				rows.Close()
+				return err
+			}
+			grants = append(grants, grant)
+		}
+		if err = rows.Err(); err != nil {
+			rows.Close()
+			return err
+		}
+		rows.Close()
+
 		var hasLifetime bool
 		var maxExpiry int64
 		var hasExpiry bool
 		var scheduleBase int64
 		var revokedPaidGrantSeen bool
-		for rows.Next() {
-			var key []byte
-			var createdAt, startsAt, expiresAt, revokedAt int64
-			var months int32
-			if err = rows.Scan(&key, &createdAt, &months, &startsAt, &expiresAt, &revokedAt); err != nil {
-				return err
-			}
+		for _, grant := range grants {
+			key := grant.key
+			createdAt := grant.createdAt
+			startsAt := grant.startsAt
+			expiresAt := grant.expiresAt
+			revokedAt := grant.revokedAt
+			months := grant.months
 			if revokedAt != 0 {
 				if months > 0 {
 					revokedPaidGrantSeen = true
@@ -413,9 +433,6 @@ func (d *Dao) pgRevokePremium(ctx context.Context, id int64, provider, transacti
 				maxExpiry = expiresAt
 				hasExpiry = true
 			}
-		}
-		if err = rows.Err(); err != nil {
-			return err
 		}
 		if hasLifetime || (currentPremium && currentExpiry == 0) {
 			_, err := tx.Exec(ctx, `UPDATE users SET premium=TRUE,premium_expire_date=0 WHERE id=$1`, id)

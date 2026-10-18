@@ -88,6 +88,7 @@ func getBusinessAccountGifts(ctx *svc.ServiceContext, r *http.Request, botID int
 	if code != 0 {
 		return nil, status, code, description
 	}
+	input.Peer = mtproto.MakeTLInputPeerSelf(nil).To_InputPeer()
 	result, err := ctx.GiftsClient.PaymentsGetSavedStarGifts(businessBotCallContext(requestContext(r), botID, scope), input)
 	if err != nil {
 		return nil, http.StatusBadRequest, 400, rpcDescription(err)
@@ -128,8 +129,30 @@ func getUserGifts(ctx *svc.ServiceContext, r *http.Request, botID int64, request
 }
 
 func getChatGifts(ctx *svc.ServiceContext, r *http.Request, botID int64, request *botAPIRequest) (any, int, int, string) {
-	if _, _, _, err := resolveBotAPIChatID(requestContext(r), ctx, botID, request.string("chat_id")); err != nil {
+	if ctx == nil || ctx.GiftsClient == nil {
+		return nil, http.StatusNotImplemented, 501, "Not Implemented: gifts service is not configured"
+	}
+	input, err := botAPISavedGiftRequest(request)
+	if err != nil {
+		if errors.Is(err, errBotAPIGiftFilterUnsupported) {
+			return nil, http.StatusNotImplemented, 501, "Not Implemented: " + err.Error()
+		}
+		return nil, http.StatusBadRequest, 400, "Bad Request: " + err.Error()
+	}
+	_, peerType, peerID, err := resolveBotAPIChatID(requestContext(r), ctx, botID, request.string("chat_id"))
+	if err != nil || peerID <= 0 {
 		return nil, http.StatusBadRequest, 400, "Bad Request: chat_id is invalid"
 	}
-	return nil, http.StatusNotImplemented, 501, "Not Implemented: chat gift ownership is not available in the Layer 229 ledger"
+	if peerType == mtproto.PEER_USER {
+		return nil, http.StatusBadRequest, 400, "Bad Request: chat_id must identify a chat or channel"
+	}
+	input.Peer = botAPIInputPeer(botID, peerType, peerID)
+	result, err := ctx.GiftsClient.PaymentsGetSavedStarGifts(botRPCContext(requestContext(r), botID), input)
+	if err != nil {
+		return nil, http.StatusBadRequest, 400, rpcDescription(err)
+	}
+	if result == nil {
+		return nil, http.StatusInternalServerError, 500, "Internal Server Error: gifts were not returned"
+	}
+	return botapi.OwnedGiftsFromSavedStarGifts(result), http.StatusOK, 0, ""
 }

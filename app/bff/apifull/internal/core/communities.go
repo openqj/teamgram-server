@@ -56,6 +56,9 @@ func communityPeerType(caller int64, peer *mtproto.InputPeer) (domain.CommunityP
 	var peerType domain.CommunityPeerType
 	switch typ {
 	case mtproto.PEER_USER:
+		if peer.GetPredicateName() == mtproto.Predicate_inputPeerUser && peer.GetAccessHash() == 0 {
+			return 0, 0, 0, mtproto.ErrPeerIdInvalid
+		}
 		peerType = domain.CommunityPeerUser
 	case mtproto.PEER_CHAT:
 		peerType = domain.CommunityPeerChat

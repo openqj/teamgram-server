@@ -103,6 +103,32 @@ func validRevenuePeer(uid int64, peer *mtproto.InputPeer) bool {
 	return peer != nil && validThreadInputPeer(uid, peer)
 }
 
+// validRequiredRevenuePeer enforces the wire-required peer and the access
+// hashes carried by user/channel constructors. Optional peers in adjacent
+// payment RPCs continue to use validRevenuePeer so their existing nil and
+// shorthand behavior remains unchanged.
+func validRequiredRevenuePeer(uid int64, peer *mtproto.InputPeer) bool {
+	if peer == nil || uid <= 0 {
+		return false
+	}
+	switch peer.GetPredicateName() {
+	case mtproto.Predicate_inputPeerSelf:
+		return true
+	case mtproto.Predicate_inputPeerUser:
+		return peer.GetUserId() > 0 && peer.GetAccessHash() != 0
+	case mtproto.Predicate_inputPeerChat:
+		return peer.GetChatId() > 0
+	case mtproto.Predicate_inputPeerChannel:
+		return peer.GetChannelId() > 0 && peer.GetAccessHash() != 0
+	case mtproto.Predicate_inputPeerUserFromMessage:
+		return peer.GetUserId() > 0 && peer.GetMsgId() > 0 && validRequiredRevenuePeer(uid, peer.GetPeer())
+	case mtproto.Predicate_inputPeerChannelFromMessage:
+		return peer.GetChannelId() > 0 && peer.GetMsgId() > 0 && validRequiredRevenuePeer(uid, peer.GetPeer())
+	default:
+		return false
+	}
+}
+
 func validRevenueURL(raw string) bool {
 	parsed, err := url.Parse(strings.TrimSpace(raw))
 	return err == nil && parsed.Host != "" && strings.EqualFold(parsed.Scheme, "https")
@@ -213,20 +239,7 @@ func (c *ApiFullCore) PaymentsGetStarsTopupOptions(in *mtproto.TLPaymentsGetStar
 	if err != nil {
 		return nil, starsDomainError(err)
 	}
-	if len(offers) == 0 {
-		return nil, mtproto.ErrMethodNotImpl
-	}
-	result := make([]*mtproto.StarsTopupOption, 0, len(offers))
-	for _, offer := range offers {
-		result = append(result, mtproto.MakeTLStarsTopupOption(&mtproto.StarsTopupOption{
-			Extended:     offer.Extended,
-			Stars:        offer.Stars,
-			StoreProduct: optionalString(offer.StoreProduct),
-			Currency:     offer.Currency,
-			Amount:       offer.Amount,
-		}).To_StarsTopupOption())
-	}
-	return &mtproto.Vector_StarsTopupOption{Datas: result}, nil
+	return makeStarsTopupOptions(offers), nil
 }
 
 func (c *ApiFullCore) PaymentsGetStarsStatus(in *mtproto.TLPaymentsGetStarsStatus) (*mtproto.Payments_StarsStatus, error) {
@@ -240,30 +253,20 @@ func (c *ApiFullCore) PaymentsGetStarsStatus(in *mtproto.TLPaymentsGetStarsStatu
 	if in.GetTon() {
 		return nil, mtproto.ErrPaymentUnsupported
 	}
-	if peer := in.GetPeer(); peer != nil {
-		switch peer.GetPredicateName() {
-		case mtproto.Predicate_inputPeerSelf:
-		case mtproto.Predicate_inputPeerUser:
-			if peer.GetUserId() != uid {
-				return nil, mtproto.ErrPeerIdInvalid
-			}
-		default:
-			return nil, mtproto.ErrPeerIdInvalid
-		}
+	if !validRequiredStarsPeer(uid, in.GetPeer()) {
+		return nil, mtproto.ErrPeerIdInvalid
 	}
 	balance, err := domain.StarsBalance(uid)
 	if err != nil {
 		return nil, starsDomainError(err)
 	}
-	// A zero balance without any durable transaction is indistinguishable from
-	// an unprovisioned Stars account. Do not advertise a synthetic account.
-	history, err := domain.ListStarsTransactions(uid, false, false, false, 0, 1)
+	_, err = domain.ListStarsTransactions(uid, false, false, false, 0, 1)
 	if err != nil {
 		return nil, starsDomainError(err)
 	}
-	if balance == 0 && len(history) == 0 {
-		return nil, mtproto.ErrMethodNotImpl
-	}
+	// An empty ledger is the normal zero-balance account state. Return the
+	// typed status so clients can render Stars settings without a payment
+	// provider or checkout catalog being configured.
 	return makeStarsStatus(balance, nil, nil), nil
 }
 
@@ -285,7 +288,7 @@ func (c *ApiFullCore) PaymentsGetStarsTransactions(in *mtproto.TLPaymentsGetStar
 	if in.GetTon() {
 		return nil, mtproto.ErrPaymentUnsupported
 	}
-	if !validStarsPeer(uid, in.GetPeer()) {
+	if !validRequiredStarsPeer(uid, in.GetPeer()) {
 		return nil, mtproto.ErrPeerIdInvalid
 	}
 	if _, err := parseStarsOffset(in.GetOffset()); err != nil {
@@ -536,7 +539,7 @@ func (c *ApiFullCore) PaymentsGetStarsRevenueStats(in *mtproto.TLPaymentsGetStar
 	if in.GetTon() {
 		return nil, mtproto.ErrPaymentUnsupported
 	}
-	if !validRevenuePeer(uid, in.GetPeer()) {
+	if !validRequiredRevenuePeer(uid, in.GetPeer()) {
 		return nil, mtproto.ErrPeerIdInvalid
 	}
 	var response starsRevenueStatsProviderResponse
@@ -567,7 +570,7 @@ func (c *ApiFullCore) PaymentsGetStarsRevenueWithdrawalUrl(in *mtproto.TLPayment
 	if in.GetTon() {
 		return nil, mtproto.ErrPaymentUnsupported
 	}
-	if !validRevenuePeer(uid, in.GetPeer()) {
+	if !validRequiredRevenuePeer(uid, in.GetPeer()) {
 		return nil, mtproto.ErrPeerIdInvalid
 	}
 	if in.GetAmount() != nil && in.GetAmount().GetValue() <= 0 {
@@ -602,7 +605,7 @@ func (c *ApiFullCore) PaymentsGetStarsRevenueAdsAccountUrl(in *mtproto.TLPayment
 	if in == nil {
 		return nil, mtproto.ErrInputConstructorInvalid
 	}
-	if !validRevenuePeer(uid, in.GetPeer()) {
+	if !validRequiredRevenuePeer(uid, in.GetPeer()) {
 		return nil, mtproto.ErrPeerIdInvalid
 	}
 	var response starsRevenueURLProviderResponse
@@ -628,10 +631,13 @@ func (c *ApiFullCore) PaymentsGetStarsTransactionsByID(in *mtproto.TLPaymentsGet
 	if in != nil && in.GetTon() {
 		return nil, mtproto.ErrPaymentUnsupported
 	}
-	if in != nil && !validStarsPeer(uid, in.GetPeer()) {
+	if in == nil {
+		return nil, mtproto.ErrInputConstructorInvalid
+	}
+	if !validRequiredStarsPeer(uid, in.GetPeer()) {
 		return nil, mtproto.ErrPeerIdInvalid
 	}
-	if in == nil || len(in.GetId()) == 0 {
+	if len(in.GetId()) == 0 {
 		return nil, mtproto.ErrInputConstructorInvalid
 	}
 	for _, input := range in.GetId() {
@@ -679,9 +685,10 @@ func (c *ApiFullCore) PaymentsGetStarsGiftOptions(in *mtproto.TLPaymentsGetStars
 	if err != nil {
 		return nil, starsDomainError(err)
 	}
-	if len(offers) == 0 {
-		return nil, mtproto.ErrMethodNotImpl
-	}
+	return makeStarsGiftOptions(offers), nil
+}
+
+func makeStarsGiftOptions(offers []domain.StarsOffer) *mtproto.Vector_StarsGiftOption {
 	result := make([]*mtproto.StarsGiftOption, 0, len(offers))
 	for _, offer := range offers {
 		result = append(result, mtproto.MakeTLStarsGiftOption(&mtproto.StarsGiftOption{
@@ -692,7 +699,7 @@ func (c *ApiFullCore) PaymentsGetStarsGiftOptions(in *mtproto.TLPaymentsGetStars
 			Amount:       offer.Amount,
 		}).To_StarsGiftOption())
 	}
-	return &mtproto.Vector_StarsGiftOption{Datas: result}, nil
+	return &mtproto.Vector_StarsGiftOption{Datas: result}
 }
 
 func optionalString(value string) *wrapperspb.StringValue {
@@ -702,15 +709,29 @@ func optionalString(value string) *wrapperspb.StringValue {
 	return wrapperspb.String(value)
 }
 
+func makeStarsTopupOptions(offers []domain.StarsOffer) *mtproto.Vector_StarsTopupOption {
+	result := make([]*mtproto.StarsTopupOption, 0, len(offers))
+	for _, offer := range offers {
+		result = append(result, mtproto.MakeTLStarsTopupOption(&mtproto.StarsTopupOption{
+			Extended:     offer.Extended,
+			Stars:        offer.Stars,
+			StoreProduct: optionalString(offer.StoreProduct),
+			Currency:     offer.Currency,
+			Amount:       offer.Amount,
+		}).To_StarsTopupOption())
+	}
+	return &mtproto.Vector_StarsTopupOption{Datas: result}
+}
+
 func validStarsPeer(selfID int64, peer *mtproto.InputPeer) bool {
 	if peer == nil {
 		return true
 	}
 	switch peer.GetPredicateName() {
 	case mtproto.Predicate_inputPeerSelf:
-		return true
+		return selfID > 0
 	case mtproto.Predicate_inputPeerUser:
-		return peer.GetUserId() == selfID
+		return peer.GetUserId() == selfID && peer.GetAccessHash() != 0
 	default:
 		return false
 	}
@@ -736,6 +757,9 @@ func makeStarsTransaction(item domain.StarsTransaction) *mtproto.StarsTransactio
 }
 
 func starsDomainError(err error) error {
+	if errors.Is(err, domain.ErrGiftOwnerInvalid) {
+		return mtproto.ErrPeerIdInvalid
+	}
 	if err != nil && !domain.Ready() {
 		return mtproto.ErrMethodNotImpl
 	}

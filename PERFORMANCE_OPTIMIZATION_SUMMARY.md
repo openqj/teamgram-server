@@ -1,7 +1,7 @@
 # Teamgram-Server 性能改动与验证状态
 
 **优化日期:** 2026-10-16  
-**目标:** 降低已确认的服务端开销；当前没有 Telegram 官方基准数据  
+**目标:** 降低已确认的服务端开销；当前没有 Telegram 官方基准数据
 **数据库:** PostgreSQL 18  
 **API 层级:** Layer 229 (Telegram User API)
 

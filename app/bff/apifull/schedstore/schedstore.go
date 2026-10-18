@@ -9,6 +9,7 @@ import (
 
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/bff/apifull/persist"
+	"google.golang.org/protobuf/proto"
 )
 
 var storeMu sync.Mutex
@@ -152,6 +153,12 @@ func Delete(userID int64, ids []int32) ([]int32, error) {
 // Append stores one scheduled message and returns updateNewScheduledMessage.
 // The stored JSON is the same array messages.getScheduledHistory already reads.
 func Append(userID int64, peer *mtproto.Peer, text string, when int32) (*mtproto.Updates, error) {
+	return AppendMessage(userID, peer, &mtproto.Message{Message: text}, when)
+}
+
+// AppendMessage stores the complete message payload, including rich content
+// and media references, so scheduled sends cannot silently degrade to text.
+func AppendMessage(userID int64, peer *mtproto.Peer, input *mtproto.Message, when int32) (*mtproto.Updates, error) {
 	if userID <= 0 {
 		return nil, mtproto.ErrAuthKeyUnregistered
 	}
@@ -160,6 +167,9 @@ func Append(userID int64, peer *mtproto.Peer, text string, when int32) (*mtproto
 	}
 	if when <= int32(time.Now().Unix()) {
 		return nil, mtproto.ErrScheduleDateInvalid
+	}
+	if input == nil {
+		return nil, mtproto.ErrInputRequestInvalid
 	}
 	storeMu.Lock()
 	defer storeMu.Unlock()
@@ -175,15 +185,14 @@ func Append(userID int64, peer *mtproto.Peer, text string, when int32) (*mtproto
 	if err = persist.Default.Set(nextKey(userID), strconv.FormatInt(int64(id)+1, 10)); err != nil {
 		return nil, err
 	}
-	msg := mtproto.MakeTLMessage(&mtproto.Message{
-		Out:           true,
-		FromScheduled: true,
-		Id:            id,
-		FromId:        mtproto.MakePeerUser(userID),
-		PeerId:        peer,
-		Date:          when,
-		Message:       text,
-	}).To_Message()
+	msg := proto.Clone(input).(*mtproto.Message)
+	msg.Out = true
+	msg.FromScheduled = true
+	msg.Id = id
+	msg.FromId = mtproto.MakePeerUser(userID)
+	msg.PeerId = peer
+	msg.Date = when
+	msg.EditDate = nil
 	idx[msg.GetId()] = msg
 	if err = save(userID, idx); err != nil {
 		return nil, err

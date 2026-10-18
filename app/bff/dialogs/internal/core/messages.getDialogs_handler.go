@@ -36,6 +36,24 @@ import (
 // MessagesGetDialogs
 // messages.getDialogs#a0f4cb4f flags:# exclude_pinned:flags.0?true folder_id:flags.1?int offset_date:int offset_id:int offset_peer:InputPeer limit:int hash:long = messages.Dialogs;
 func (c *DialogsCore) MessagesGetDialogs(in *mtproto.TLMessagesGetDialogs) (*mtproto.Messages_Dialogs, error) {
+	if c == nil || c.MD == nil || c.MD.UserId <= 0 {
+		return nil, mtproto.ErrAuthKeyUnregistered
+	}
+	if in == nil {
+		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if in.GetOffsetPeer() == nil {
+		return nil, mtproto.ErrOffsetPeerIdInvalid
+	}
+	if in.GetLimit() <= 0 {
+		return nil, mtproto.ErrLimitInvalid
+	}
+	if in.GetOffsetDate() < 0 || in.GetOffsetId() < 0 {
+		return nil, mtproto.ErrOffsetInvalid
+	}
+	if folderID := in.GetFolderId(); folderID != nil && folderID.GetValue() < 0 {
+		return nil, mtproto.ErrFolderIdInvalid
+	}
 	var (
 		offsetPeer         = mtproto.FromInputPeer2(c.MD.UserId, in.OffsetPeer)
 		folderId           = in.GetFolderId().GetValue()
@@ -43,6 +61,21 @@ func (c *DialogsCore) MessagesGetDialogs(in *mtproto.TLMessagesGetDialogs) (*mtp
 		dialogExtList      dialog.DialogExtList
 		notifySettingsList []*userpb.PeerPeerNotifySettings
 	)
+	switch offsetPeer.PeerType {
+	case mtproto.PEER_EMPTY, mtproto.PEER_SELF:
+	case mtproto.PEER_USER, mtproto.PEER_CHAT, mtproto.PEER_CHANNEL:
+		if offsetPeer.PeerId <= 0 {
+			return nil, mtproto.ErrOffsetPeerIdInvalid
+		}
+		if (offsetPeer.PeerType == mtproto.PEER_USER || offsetPeer.PeerType == mtproto.PEER_CHANNEL) && offsetPeer.AccessHash == 0 {
+			return nil, mtproto.ErrOffsetPeerIdInvalid
+		}
+	default:
+		return nil, mtproto.ErrOffsetPeerIdInvalid
+	}
+	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.DialogClient == nil || c.svcCtx.Dao.UserClient == nil {
+		return nil, mtproto.ErrInternalServerError
+	}
 
 	if limit > 500 {
 		limit = 500
@@ -59,6 +92,9 @@ func (c *DialogsCore) MessagesGetDialogs(in *mtproto.TLMessagesGetDialogs) (*mtp
 				c.Logger.Errorf("messages.getDialogs - error: %v", err)
 				return err
 			}
+			if dialogs == nil {
+				return mtproto.ErrInternalServerError
+			}
 			dialogExtList = dialogs.GetDatas()
 			return nil
 		},
@@ -69,6 +105,9 @@ func (c *DialogsCore) MessagesGetDialogs(in *mtproto.TLMessagesGetDialogs) (*mtp
 			if err != nil {
 				c.Logger.Errorf("messages.getDialogs - error: %v", err)
 				return err
+			}
+			if settingsList == nil {
+				return mtproto.ErrInternalServerError
 			}
 			notifySettingsList = settingsList.GetDatas()
 			return nil
@@ -96,6 +135,9 @@ func (c *DialogsCore) MessagesGetDialogs(in *mtproto.TLMessagesGetDialogs) (*mtp
 	)
 
 	for _, dialogEx := range dialogExtList {
+		if dialogEx == nil || dialogEx.GetDialog() == nil || dialogEx.GetDialog().GetPeer() == nil {
+			return nil, mtproto.ErrInternalServerError
+		}
 		peer2 := mtproto.FromPeer(dialogEx.GetDialog().GetPeer())
 
 		if peer2.IsChannel() {
@@ -138,6 +180,10 @@ func (c *DialogsCore) MessagesGetDialogs(in *mtproto.TLMessagesGetDialogs) (*mtp
 				}
 			}
 			if len(msgIdList) > 0 {
+				if c.svcCtx.Dao.MessageClient == nil {
+					recordLoadErr(mtproto.ErrInternalServerError)
+					return nil
+				}
 				boxList, err := c.svcCtx.Dao.MessageClient.MessageGetUserMessageList(c.ctx, &message.TLMessageGetUserMessageList{
 					UserId: c.MD.UserId,
 					IdList: msgIdList,
@@ -151,6 +197,10 @@ func (c *DialogsCore) MessagesGetDialogs(in *mtproto.TLMessagesGetDialogs) (*mtp
 					return nil
 				}
 				boxList.Walk(func(idx int, v *mtproto.MessageBox) {
+					if v == nil || v.GetMessage() == nil {
+						recordLoadErr(mtproto.ErrInternalServerError)
+						return
+					}
 					msgList = append(msgList, v.ToMessage(c.MD.UserId))
 				})
 			}
@@ -158,6 +208,10 @@ func (c *DialogsCore) MessagesGetDialogs(in *mtproto.TLMessagesGetDialogs) (*mtp
 			return msgList
 		},
 		func(ctx context.Context, selfUserId int64, id ...int64) []*mtproto.User {
+			if c.svcCtx.Dao.UserClient == nil {
+				recordLoadErr(mtproto.ErrInternalServerError)
+				return nil
+			}
 			users, err := c.svcCtx.Dao.UserClient.UserGetMutableUsersV2(c.ctx,
 				&userpb.TLUserGetMutableUsersV2{
 					Id:      id,
@@ -169,16 +223,28 @@ func (c *DialogsCore) MessagesGetDialogs(in *mtproto.TLMessagesGetDialogs) (*mtp
 				recordLoadErr(err)
 				return nil
 			}
+			if users == nil {
+				recordLoadErr(mtproto.ErrInternalServerError)
+				return nil
+			}
 
 			return users.GetUserListByIdList(c.MD.UserId, id...)
 		},
 		func(ctx context.Context, selfUserId int64, id ...int64) []*mtproto.Chat {
+			if c.svcCtx.Dao.ChatClient == nil {
+				recordLoadErr(mtproto.ErrInternalServerError)
+				return nil
+			}
 			chats, err := c.svcCtx.Dao.ChatClient.ChatGetChatListByIdList(c.ctx,
 				&chatpb.TLChatGetChatListByIdList{
 					IdList: id,
 				})
 			if err != nil {
 				recordLoadErr(err)
+				return nil
+			}
+			if chats == nil {
+				recordLoadErr(mtproto.ErrInternalServerError)
 				return nil
 			}
 

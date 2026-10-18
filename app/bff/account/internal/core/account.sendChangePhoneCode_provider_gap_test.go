@@ -49,6 +49,7 @@ func TestAccountSendChangePhoneCodeRejectsMalformedUserProviderResult(t *testing
 	for name, client := range map[string]userclient.UserClient{
 		"nil user":        &sendChangePhoneUserClient{},
 		"nil user record": &sendChangePhoneUserClient{user: &mtproto.ImmutableUser{}},
+		"zero user id":    &sendChangePhoneUserClient{user: &mtproto.ImmutableUser{User: &mtproto.UserData{}}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			result, err := newSendChangePhoneCodeCore(client).AccountSendChangePhoneCode(request)

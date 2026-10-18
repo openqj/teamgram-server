@@ -147,7 +147,7 @@ func botAPIStarsInputUser(ctx *svc.ServiceContext, requestCtx context.Context, b
 	if err != nil {
 		return nil, err
 	}
-	if profile == nil || profile.GetUser() == nil || profile.GetUser().GetAccessHash() == 0 {
+	if profile == nil || profile.GetUser() == nil || profile.GetUser().GetId() != userID || profile.GetUser().GetDeleted() || profile.GetUser().GetAccessHash() == 0 {
 		return nil, mtproto.ErrUserIdInvalid
 	}
 	return mtproto.MakeTLInputUser(&mtproto.InputUser{

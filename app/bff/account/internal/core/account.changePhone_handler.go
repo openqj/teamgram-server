@@ -96,7 +96,7 @@ func (c *AccountCore) AccountChangePhone(in *mtproto.TLAccountChangePhone) (*mtp
 			return nil, err
 		}
 	} else {
-		if user == nil || user.GetUser() == nil {
+		if user == nil || user.GetUser() == nil || user.GetUser().GetId() <= 0 {
 			c.Logger.Errorf("checkPhoneNumberExist - user service returned no user")
 			return nil, mtproto.ErrInternalServerError
 		}
@@ -124,7 +124,7 @@ func (c *AccountCore) AccountChangePhone(in *mtproto.TLAccountChangePhone) (*mtp
 		c.Logger.Errorf("account.changePhone - get user error: %v", err)
 		return nil, err
 	}
-	if user == nil || user.GetUser() == nil {
+	if user == nil || user.GetUser() == nil || user.GetUser().GetId() != c.MD.UserId {
 		c.Logger.Errorf("account.changePhone - user not found")
 		return nil, mtproto.ErrInternalServerError
 	}

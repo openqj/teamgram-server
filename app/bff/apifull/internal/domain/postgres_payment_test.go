@@ -340,6 +340,32 @@ func TestPostgresGiftConversionCreditsOnceAndRollsBack(t *testing.T) {
 	}
 }
 
+func TestPostgresGiftSettlementAllowsChatOwnerKey(t *testing.T) {
+	userID := paymentPostgresFixture(t)
+	recipient := int64(-77)
+	key := fmt.Sprintf("gift-chat-%d", userID)
+	slug := fmt.Sprintf("gift-chat-slug-%d", userID)
+	t.Cleanup(func() {
+		_, _ = db.Exec(`DELETE FROM apifull_gift WHERE to_user=$1 OR slug=$2`, recipient, slug)
+	})
+	if _, err := ApplyStars(userID, 25, key+":seed"); err != nil {
+		t.Fatal(err)
+	}
+	request, err := BeginPaymentRequest(userID, key, "fixture", "gift-chat-fingerprint", "XTR", 25, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt := []byte(`{"kind":"star_gift","recipient":-77}`)
+	settled, _, err := SettleStarsSpendRequest(userID, 0, recipient, key, "gift-chat-fingerprint", key+":transaction", "XTR", "Star Gift", 25, 25, receipt, StarsSpendGift, slug, 0)
+	if err != nil || settled.State != PaymentStateSettled {
+		t.Fatalf("chat gift settlement: request=%+v err=%v", request, err)
+	}
+	var to int64
+	if err = db.QueryRow(`SELECT to_user FROM apifull_gift WHERE payment_request_id=$1`, request.ID).Scan(&to); err != nil || to != recipient {
+		t.Fatalf("chat gift row: to=%d err=%v, want %d", to, err, recipient)
+	}
+}
+
 func TestPostgresGiftSaveRechecksOwnerAfterConcurrentTransfer(t *testing.T) {
 	userID := paymentPostgresFixture(t)
 	nextOwner := userID + 2

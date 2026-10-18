@@ -73,6 +73,9 @@ func (c *MessagesCore) MessagesSendMessage(in *mtproto.TLMessagesSendMessage) (*
 	if err != nil {
 		return nil, err
 	}
+	if in.GetSuggestedPost() != nil && (in.GetScheduleDate().GetValue() != 0 || peer.IsChannel()) {
+		return nil, mtproto.ErrMethodNotImpl
+	}
 	replyToMsgID, replyToTopID := storedReplyIDs(in.GetReplyTo(), in.GetReplyToMsgId())
 	if !hasRichMessage {
 		if up, handled, err := c.deliverStored(in.GetPeer(), peer, in.GetScheduleDate().GetValue(), in.Message, replyToMsgID, replyToTopID, in.GetRandomId()); handled {
@@ -91,7 +94,8 @@ func (c *MessagesCore) MessagesSendMessage(in *mtproto.TLMessagesSendMessage) (*
 		return nil, mtproto.ErrPeerIdInvalid
 	}
 
-	if peer.IsUser() && peer.IsSelfUser(actingUserID) {
+	isSavedMessages := peer.IsUser() && peer.IsSelfUser(actingUserID)
+	if isSavedMessages {
 		peer.PeerType = mtproto.PEER_USER
 	}
 	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.MsgClient == nil {
@@ -159,14 +163,18 @@ func (c *MessagesCore) MessagesSendMessage(in *mtproto.TLMessagesSendMessage) (*
 		TtlPeriod:            nil,
 		QuickReplyShortcutId: nil,
 		Effect:               in.Effect,
+		SuggestedPost:        in.GetSuggestedPost(),
 		Factcheck:            nil,
 	}).To_Message()
 	if hasRichMessage {
-		outMessage.RichMessage = inputRichToRich(in.GetRichMessage())
+		outMessage.RichMessage, err = inputRichToRich(in.GetRichMessage())
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	// Fix SavedPeerId
-	if peer.IsSelfUser(actingUserID) {
+	if isSavedMessages {
 		outMessage.SavedPeerId = peer.ToPeer()
 	}
 
@@ -248,6 +256,9 @@ func (c *MessagesCore) MessagesSendMessage(in *mtproto.TLMessagesSendMessage) (*
 	if err != nil {
 		c.Logger.Errorf("messages.sendMessage#fa88427a - error: %v", err)
 		return nil, err
+	}
+	if rUpdate == nil {
+		return nil, mtproto.ErrInternalServerError
 	}
 
 	if in.ClearDraft {

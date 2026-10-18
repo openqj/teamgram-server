@@ -98,6 +98,21 @@ func (c *MessagesCore) MessagesEditMessage(in *mtproto.TLMessagesEditMessage) (*
 	}
 
 	if editMessages == nil || len(editMessages.GetDatas()) != 1 || editMessages.GetDatas()[0] == nil {
+		// Bot API callback messages carry the recipient's per-user message id,
+		// while messages.editMessage authenticates and mutates the sender's
+		// outbox. Resolve that id through the shared dialog id before applying
+		// the normal author check below.
+		if peer.PeerType == mtproto.PEER_USER && peer.PeerId != actingUserID && c.svcCtx != nil && c.svcCtx.MessageClient != nil {
+			if peerMessage, lookupErr := c.svcCtx.MessageClient.MessageGetPeerUserMessage(c.ctx, &message.TLMessageGetPeerUserMessage{
+				UserId:     peer.PeerId,
+				PeerUserId: actingUserID,
+				MsgId:      in.Id,
+			}); lookupErr == nil && peerMessage != nil && peerMessage.GetSenderUserId() == actingUserID && peerMessage.GetPeerType() == mtproto.PEER_USER && peerMessage.GetPeerId() == peer.PeerId {
+				editMessages = &message.Vector_MessageBox{Datas: []*mtproto.MessageBox{peerMessage}}
+			}
+		}
+	}
+	if editMessages == nil || len(editMessages.GetDatas()) != 1 || editMessages.GetDatas()[0] == nil {
 		err = mtproto.ErrMessageEmpty
 		c.Logger.Errorf("messages.editMessage - emptyMessage(%d)", in.Id)
 		return nil, err
@@ -164,6 +179,7 @@ func (c *MessagesCore) MessagesEditMessage(in *mtproto.TLMessagesEditMessage) (*
 			return nil, err
 		}
 		outMessage.Message = in.Message.Value
+		outMessage.RichMessage = nil
 		outMessage.Entities = nil
 		//outMessage, _ = c.fixMessageEntities(c.MD.UserId, peer, in.NoWebpage, outMessage, func() bool {
 		//	hasBot := c.MD.IsBot
@@ -176,6 +192,12 @@ func (c *MessagesCore) MessagesEditMessage(in *mtproto.TLMessagesEditMessage) (*
 		//
 		//	return hasBot
 		//})
+	}
+	if in.RichMessage != nil {
+		outMessage.RichMessage, err = inputRichToRich(in.GetRichMessage())
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	rUpdates, err := c.svcCtx.Dao.MsgClient.MsgEditMessageV2(c.ctx, &msgpb.TLMsgEditMessageV2{

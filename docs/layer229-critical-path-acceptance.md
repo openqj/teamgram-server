@@ -80,6 +80,7 @@ git diff --check
 | 行 | 执行入口 | 覆盖 | 尚未关闭 |
 | --- | --- | --- | --- |
 | `messaging.cross-account-live-updates` | `docker/production/probe-cross-account-live-updates.ts` | 两个独立 auth key/session 保存 `updates.getState` 前后值，双向发送私聊，接收标准 `Updates` 容器，按 recipient state 校验消息 ID、`pts/pts_count/date`、历史回读并删除带 tag 消息 | 频道/Bot/Mini App、backend 重启、provider 和 Web UI 完整流程仍需各自验收 |
+| `messaging.saved-dialog-filter-roundtrip` | `docker/production/probe-dialog-saved-layer229.ts` | 两个 Layer 229 session 创建/读取/排序 DialogFilters，并验证 Saved Message 的 `messages.Messages`、`messages.SavedDialogsSlice` 与 raw `messages.SavedDialogsByID` 构造器，最后恢复 saved-dialog 行和清理活动行 | native channel saved peers、backend 重启、独立设备 updates、外部 provider 与生产流量 |
 
 ### 频道
 
@@ -123,6 +124,7 @@ git diff --check
 | --- | --- | --- | --- |
 | `premium.catalog-session` | `docker/production/probe-premium-readonly.ts` | Premium promo 和可选 payment form 构造器 | 真实目录/provider、权益变更、重启 |
 | `premium.payment-idempotency-provider` | `docker/production/probe-premium-purchase.ts` | form、requested info、payment form、相同请求 replay | Apple/Google 真实 receipt；退款/撤销和生产对账由恢复门槛覆盖 |
+| `premium.gift-collections-session` | `docker/production/probe-gift-collections.ts` | 真实 Layer 229 session 创建、读取/hash NotModified、更新、排序、删除 Star Gift collections；mutation exact replay 和 tagged PostgreSQL cleanup | 签名 PostgreSQL fixture 之外的 gift inventory/ownership provider、backend restart、跨设备 fan-out、生产流量 |
 | `premium.store-receipt-provider` | `docker/production/probe-premium-store-assignments.ts` | App Store/Play assignment 和 replay | 真实 receipt、退款/撤销、重启对账 |
 | `premium.entitlement-restart-fixture` | `docker/production/probe-premium-entitlement-restart.ts` | A/B 两个真实 Layer 229 session 观察 Premium 权益，精确 replay，backend restart 后核对 provider/local receipt、entitlement、outbox、reconciliation、webhook reversal、grant tombstone 和 users 行 | 仅为本地签名 fixture；真实 Apple/Google receipt 和真实 store webhook 仍是手工门槛 |
 | `premium.entitlement-refund-restart` | 手工门槛 | 两账号权益、重启后读回、真实 provider 退款撤销和 canonical update | 需要真实 Apple/Google receipt、store webhook 凭证及生产 provider 对账证据 |
@@ -197,6 +199,30 @@ editable username 行；该行已按精确 probe tag 清理。源码的 `DeleteC
 覆盖；由于 Docker 构建网络无法解析 `ports.ubuntu.com`/`proxy.golang.org`，包含该修复的新 acceptance image
 尚未完成重启部署验证。
 
+### 2026-10-18 Stars/provider 重跑记录
+
+本轮使用 user 7 的活动 auth key，在 DC2 TCPObfuscated -> gateway -> session -> APIFull 上完成四组
+payment/provider 探针；认证 key 只注入子进程环境，报告不包含 secret：
+
+* `/tmp/teamgram-agent-stars-topup.json`：StarsTopupOption、`payments.PaymentFormStars`、精确
+  `sendStarsForm` replay 和一次 provider settlement；余额在清理前由 0 增至 101，tagged rows 清理后为零。
+* `/tmp/teamgram-agent-stars-refund.json`：Stars settlement/replay、退款/replay 均返回 `Updates`，一条
+  refund row 和一条 provider refund operation，余额恢复为 0；清理后 request/provider/refund/offer rows 为零。
+* `/tmp/teamgram-agent-star-referral.json`：五个 Star referral 方法均返回 typed `SuggestedStarRefBots`/
+  `ConnectedStarRefBots`，连接设置 `revoked=true` 后清理 program/connection rows。
+* `/tmp/teamgram-agent-star-gift-payment-operations.json`：15 个 giveaway/upgrade/withdrawal/resale/
+  auction/offer/craft 方法均返回 typed Layer 229 结果，15/15 provider rows 清理，`remaining=0`。
+* `/tmp/teamgram-agent-gift-collections.json`：真实 user10 session 完成五个 Star Gift collection 方法；列表
+  hash `NotModified`、update/reorder exact replay 和 typed `StarGiftCollection`/`Boolean` 通过，cleanup 后
+  collections/items/gifts 均为 0。该报告只证明签名 PostgreSQL fixture 边界。
+* `/tmp/teamgram-account-update-status-1792269671613.json`：fixture user11 的两个永久 auth-key session 在
+  DC2 TCPObfuscated 上完成 online/offline 写入，B 收到 canonical `UpdateUserStatus`，A 未收到自身 update，
+  PostgreSQL presence 恢复原值。联系人隐私收件人解析、backend restart 和生产流量仍未关闭。
+
+这些报告是本地签名 payment/business fixture 与 PostgreSQL 控制面的 `PARTIAL_ISOLATED_SESSION_E2E`
+证据；Apple/Google receipt、真实 Stars/gift/referral provider、生产退款 authority、backend restart
+reconciliation 和生产流量仍由对应手工门槛覆盖。
+
 ## 手工重启门槛
 
 为了避免把“客户端重连”误记为“服务重启”，手工行要求调用方显式提供 Compose 文件和服务名：
@@ -223,3 +249,21 @@ Layer 229 构造器边界。它们不能证明 Apple/Google、Bot API、Mini App
 探针通过后，人工从报告中提取可复核字段，更新对应 `LAYER229_METHOD_LEDGER.csv` 的
 `production_acceptance_evidence`，再执行 `layer229_acceptance_report.py --strict`。只有同时满足对应门槛且有
 真实 session/provider/restart/fan-out 证据，才可以从 `PARTIAL_*` 提升状态；运行器本身不会自动提升状态。
+
+## 2026-10-18 Agent rerun evidence
+
+The three parallel Layer 229 acceptance chains produced the following evidence:
+
+* Messaging/channel/call: `/tmp/teamgram-agent-messaging-cross-account-live-updates.json`, `/tmp/teamgram-agent-messaging-multi-media-layer229.json`, `/tmp/teamgram-agent-messaging-chat-reactions-layer229.json`, `/tmp/teamgram-agent-calls-group-control-layer229.json`, `/tmp/teamgram-agent-channel-native-media-roundtrip-layer229.json`, and `/tmp/teamgram-agent-channel-access-hash-boundary-layer229.json`. These reports use explicit `InvokeWithLayer(229)` over DC2 TCPObfuscated and cover cross-account Updates, `pts` continuity, random-id replay, media/grouped IDs, reactions, group-call control, channel difference recovery, canonical permission errors, and cleanup. The earlier reports without a `layer` field are not counted for this rerun.
+* Account/settings: `/tmp/teamgram-agent-settings-backend-restart.json` passed the guarded production Compose `before -> restart -> healthy barrier -> after -> cleanup` flow. Fresh A/B sessions read back the settings marker after restart without cross-account leakage; content settings, global privacy, contact export token, and TTL probes restored their original PostgreSQL state. The isolated gateway at `127.0.0.1:31443` was not running, so its failed web-isolated probes remain failures rather than production evidence.
+* Payments/business/Bot: `/tmp/teamgram-agent-stars-refund-provider-1792267506.json`, `/tmp/teamgram-agent-star-gift-payment-operations-1792267563.json`, `/tmp/teamgram-agent-business-provider-operations-1792267747.json`, `/tmp/teamgram-agent-bot-webview-provider-boundary-1792267808.json`, and `/tmp/teamgram-agent-bot-callback-payment-update-fanout-1792267866.json` passed their typed-result, idempotency, callback, and cleanup assertions. `/tmp/teamgram-agent-premium-entitlement-fixture-no-restart-fixed-1792268827.json` passed payment replay, entitlement observation, signed refund webhook, reversal, and reconciliation; it explicitly skipped a second restart and retained durable reconciliation rows.
+
+These are isolated session/provider and one guarded local restart gates. They do not close external Apple/Google receipt authority, real store refunds, external Bot/WebView/Stars/CDN/TURN/Live providers, production traffic, or full cross-device fan-out. Run `python3 tools/layer229_acceptance_report.py --strict --json` after any ledger evidence edit and preserve the resulting status counts.
+
+## 2026-10-18 Final Three-Chain Rerun
+
+* Messaging/channel/call: `/tmp/teamgram-agent-calls-group-control-layer229-rerun.json` and `/tmp/teamgram-agent-channel-native-media-roundtrip-layer229-rerun-2.json` both passed with explicit Layer 229 over DC2 TCPObfuscated. The channel retry after the initial listener-readiness race passed grouped media, `updates.ChannelDifference`, exact random-id replay and zero tagged deletion rows.
+* Account/auth: `/tmp/teamgram-agent-account-auth-provider-layer229-final-1792272418.json` and `/tmp/teamgram-agent-account-passkey-layer229-final-1792272446.json` passed with forced `InvokeWithLayer(229)`, covering code-provider send/sign-in/cancel and passkey registration/list/login/logout/delete. Real SMS, hardware RP credentials and authsession restart remain separate gates.
+* Payment: `/tmp/teamgram-agent-stars-refund-provider-20261018.json` passed Stars payment/refund replay, cleanup and payment-fixture restart replay. Backend restart, external store/Stars authority, webhook reconciliation and production traffic remain open.
+
+The guarded backend restart barrier also passed for all three supported restart probes: `/tmp/teamgram-agent-channel-backend-restart-final.json`, `/tmp/teamgram-agent-settings-backend-restart-final.json`, and `/tmp/teamgram-agent-business-backend-restart-final.json`. Each report contains a matching backend image check, before marker, real Compose restart, healthy barrier, fresh-session after assertion, and cleanup. This closes the local channel/settings/business restart gate; it does not close external provider, cross-instance failover, store authority or production-traffic gates.

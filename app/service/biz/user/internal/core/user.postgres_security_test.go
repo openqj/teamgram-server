@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"os"
@@ -217,6 +218,49 @@ func insertUserPostgresFixtures(t *testing.T, pg *userdao.Postgres, ids ...int64
 		if _, err := pg.Pool.Exec(ctx, `INSERT INTO users(id,phone) VALUES($1,$2)`, id, fmt.Sprintf("pg-security-%d", id)); err != nil {
 			t.Fatal(err)
 		}
+	}
+}
+
+func TestUserRevokePremiumPostgresSingleConnection(t *testing.T) {
+	pg := userPostgresTest(t, 1)
+	ctx := context.Background()
+	ownerID := time.Now().UnixNano()
+	insertUserPostgresFixtures(t, pg, ownerID)
+	provider := "fixture"
+	targetTransaction := fmt.Sprintf("revoke-%d", ownerID)
+	laterTransaction := fmt.Sprintf("later-%d", ownerID)
+	grantKey := func(transactionID string) []byte {
+		digest := sha256.Sum256([]byte(provider + "\x00" + transactionID))
+		return digest[:]
+	}
+	now := time.Now().Unix()
+	if _, err := pg.Pool.Exec(ctx, `UPDATE users SET premium=TRUE,premium_expire_date=$2 WHERE id=$1`, ownerID, now+90*86400); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pg.Pool.Exec(ctx, `INSERT INTO user_premium_payment_grant
+		(transaction_key,provider,transaction_id,user_id,months,created_at,starts_at,expires_at,revoked_at)
+		VALUES($1,$2,$3,$4,1,$5,$5,$6,0),($7,$2,$8,$4,1,$9,$9,$10,0)`,
+		grantKey(targetTransaction), provider, targetTransaction, ownerID, now-86400, now+30*86400,
+		grantKey(laterTransaction), laterTransaction, now, now+60*86400); err != nil {
+		t.Fatal(err)
+	}
+	c := New(ctx, &svc.ServiceContext{Dao: &userdao.Dao{Postgres: pg}})
+	result, err := c.UserUpdatePremium(&user.TLUserUpdatePremium{
+		UserId: ownerID, Premium: mtproto.BoolFalse, Provider: provider,
+		TransactionId: targetTransaction, Months: wrapperspb.Int32(1),
+	})
+	if err != nil || !mtproto.FromBool(result) {
+		t.Fatalf("revoke Premium with one PostgreSQL connection = (%v, %v)", result, err)
+	}
+	var revokedAt, startsAt, expiresAt int64
+	if err := pg.Pool.QueryRow(ctx, `SELECT revoked_at FROM user_premium_payment_grant WHERE transaction_key=$1`, grantKey(targetTransaction)).Scan(&revokedAt); err != nil {
+		t.Fatal(err)
+	}
+	if err := pg.Pool.QueryRow(ctx, `SELECT starts_at,expires_at FROM user_premium_payment_grant WHERE transaction_key=$1`, grantKey(laterTransaction)).Scan(&startsAt, &expiresAt); err != nil {
+		t.Fatal(err)
+	}
+	if revokedAt == 0 || startsAt < now || expiresAt <= startsAt {
+		t.Fatalf("grant schedule after revoke = revoked_at:%d starts_at:%d expires_at:%d", revokedAt, startsAt, expiresAt)
 	}
 }
 

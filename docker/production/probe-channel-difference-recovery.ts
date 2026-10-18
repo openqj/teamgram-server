@@ -272,6 +272,7 @@ async function run(): Promise<void> {
   const evidence = {
     schemaVersion: 1,
     probe: 'messaging.channel-difference-recovery',
+    layer: 229,
     evidenceClass: 'local_probe',
     productionSloEvidence: false,
     ok: !failureCode && cleanup,

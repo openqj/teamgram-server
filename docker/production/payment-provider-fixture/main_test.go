@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -394,6 +395,37 @@ func TestFixtureBotInvoiceFormAndValidation(t *testing.T) {
 		t.Fatalf("bot invoice validation = %+v", validationResult)
 	}
 	_ = header
+}
+
+func TestFixtureExportInvoiceReturnsSignedHTTPSURL(t *testing.T) {
+	f := testFixture()
+	fields := testFields(t, map[string]any{
+		"operation": "export_invoice",
+		"user_id":   int64(123),
+		"invoice_media": map[string]any{
+			"predicate_name": "inputMediaInvoice",
+			"title":          "Acceptance invoice",
+		},
+	})
+	body, header, err := f.response(fields)
+	if err != nil {
+		t.Fatalf("export invoice response: %v", err)
+	}
+	if header != "X-Teamgram-Payment-Signature" {
+		t.Fatalf("signature header = %q", header)
+	}
+	assertFixtureSignature(t, f.key, body, f.sign(body))
+	var result struct {
+		Verified bool   `json:"verified"`
+		UserID   int64  `json:"user_id"`
+		URL      string `json:"url"`
+	}
+	if err = json.Unmarshal(body, &result); err != nil {
+		t.Fatalf("decode export invoice response: %v", err)
+	}
+	if !result.Verified || result.UserID != 123 || result.URL == "" || !strings.HasPrefix(result.URL, "https://") {
+		t.Fatalf("export invoice response = %+v", result)
+	}
 }
 
 func TestFixtureBotInvoiceSettlementIsIdempotent(t *testing.T) {

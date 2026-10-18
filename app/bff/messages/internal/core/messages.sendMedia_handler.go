@@ -54,6 +54,7 @@ func (c *MessagesCore) MessagesSendMedia(in *mtproto.TLMessagesSendMedia) (*mtpr
 	if peer == nil || peer.PeerId <= 0 {
 		return nil, mtproto.ErrPeerIdInvalid
 	}
+	isSavedMessages := peer.IsUser() && peer.IsSelfUser(actingUserID)
 	switch peer.PeerType {
 	case mtproto.PEER_SELF:
 		peer.PeerType = mtproto.PEER_USER
@@ -79,6 +80,9 @@ func (c *MessagesCore) MessagesSendMedia(in *mtproto.TLMessagesSendMedia) (*mtpr
 		return nil, err
 	}
 	if viaBusinessBotID != nil && in.GetScheduleDate().GetValue() != 0 {
+		return nil, mtproto.ErrMethodNotImpl
+	}
+	if in.GetSuggestedPost() != nil && peer.IsChannel() {
 		return nil, mtproto.ErrMethodNotImpl
 	}
 
@@ -190,11 +194,12 @@ func (c *MessagesCore) MessagesSendMedia(in *mtproto.TLMessagesSendMedia) (*mtpr
 		TtlPeriod:            nil,
 		QuickReplyShortcutId: nil,
 		Effect:               in.Effect,
+		SuggestedPost:        in.GetSuggestedPost(),
 		Factcheck:            nil,
 	}).To_Message()
 
 	// Fix SavedPeerId
-	if peer.IsSelfUser(actingUserID) {
+	if isSavedMessages {
 		outMessage.SavedPeerId = peer.ToPeer()
 	}
 
@@ -276,6 +281,9 @@ func (c *MessagesCore) MessagesSendMedia(in *mtproto.TLMessagesSendMedia) (*mtpr
 	if err != nil {
 		c.Logger.Errorf("messages.sendMedia#c8f16791 - error: %v", err)
 		return nil, err
+	}
+	if rUpdate == nil {
+		return nil, mtproto.ErrInternalServerError
 	}
 
 	if in.ClearDraft {

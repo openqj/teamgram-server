@@ -113,6 +113,26 @@ func TestMessagesSearchFailsClosedWithoutMessageProvider(t *testing.T) {
 	}
 }
 
+func TestMessagesSearchRejectsNegativeLimitBeforeProviderAccess(t *testing.T) {
+	core := &MessagesCore{
+		ctx:    context.Background(),
+		svcCtx: &svc.ServiceContext{Dao: &dao.Dao{}},
+		MD:     &metadata.RpcMetadata{UserId: 41},
+	}
+	peer := mtproto.MakeTLInputPeerUser(&mtproto.InputPeer{UserId: 42, AccessHash: 99}).To_InputPeer()
+	filter := mtproto.MakeTLInputMessagesFilterEmpty(&mtproto.MessagesFilter{}).To_MessagesFilter()
+
+	got, err := core.MessagesSearch(&mtproto.TLMessagesSearch{
+		Peer:   peer,
+		Q:      "query",
+		Filter: filter,
+		Limit:  -1,
+	})
+	if got != nil || err != mtproto.ErrLimitInvalid {
+		t.Fatalf("MessagesSearch() = (%v, %v), want nil result and LIMIT_INVALID", got, err)
+	}
+}
+
 func TestMessagesSearchSavedPeerFailsClosedWithoutMessageProvider(t *testing.T) {
 	core := &MessagesCore{
 		ctx:    context.Background(),

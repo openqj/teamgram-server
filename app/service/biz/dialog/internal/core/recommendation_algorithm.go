@@ -49,6 +49,9 @@ type RecommendedDialog struct {
 // CalculateScore 计算推荐分数
 func (r *RecommendationAlgorithm) CalculateScore(ctx context.Context,
 	userID int64, peerType int32, peerID int64) (float64, error) {
+	if r == nil || r.core == nil {
+		return 0, fmt.Errorf("dialog recommendations: core is not configured")
+	}
 	store, err := r.core.pgStore()
 	if err != nil {
 		return 0, err
@@ -69,6 +72,9 @@ func (r *RecommendationAlgorithm) CalculateScore(ctx context.Context,
 // calculateFrequencyScore 计算对话频率分数
 func (r *RecommendationAlgorithm) calculateFrequencyScore(ctx context.Context,
 	userID int64, peerType int32, peerID int64, days int) (float64, error) {
+	if r == nil || r.core == nil {
+		return 0, fmt.Errorf("dialog recommendations: core is not configured")
+	}
 	store, err := r.core.pgStore()
 	if err != nil {
 		return 0, err
@@ -89,6 +95,9 @@ func (r *RecommendationAlgorithm) calculateFrequencyScore(ctx context.Context,
 // calculateRecencyScore 计算最近活跃度分数
 func (r *RecommendationAlgorithm) calculateRecencyScore(ctx context.Context,
 	userID int64, peerType int32, peerID int64) (float64, error) {
+	if r == nil || r.core == nil {
+		return 0, fmt.Errorf("dialog recommendations: core is not configured")
+	}
 	store, err := r.core.pgStore()
 	if err != nil {
 		return 0, err
@@ -109,6 +118,9 @@ func (r *RecommendationAlgorithm) calculateRecencyScore(ctx context.Context,
 // calculateEngagementScore 计算互动程度分数
 func (r *RecommendationAlgorithm) calculateEngagementScore(ctx context.Context,
 	userID int64, peerType int32, peerID int64) (float64, error) {
+	if r == nil || r.core == nil {
+		return 0, fmt.Errorf("dialog recommendations: core is not configured")
+	}
 	store, err := r.core.pgStore()
 	if err != nil {
 		return 0, err
@@ -149,6 +161,9 @@ func (r *RecommendationAlgorithm) calculateSocialScore(ctx context.Context,
 // GenerateRecommendations 为用户生成推荐列表
 func (r *RecommendationAlgorithm) GenerateRecommendations(ctx context.Context,
 	userID int64, limit int) ([]RecommendedDialog, error) {
+	if r == nil || r.core == nil {
+		return nil, fmt.Errorf("dialog recommendations: core is not configured")
+	}
 	if userID <= 0 {
 		return nil, fmt.Errorf("invalid user id: %d", userID)
 	}
@@ -289,6 +304,9 @@ func maxInt32(value int32) int32 {
 
 // getConfigInt 获取整数配置
 func (r *RecommendationAlgorithm) getConfigInt(ctx context.Context, key string, defaultValue int) int {
+	if r == nil || r.core == nil {
+		return defaultValue
+	}
 	store, err := r.core.pgStore()
 	if err != nil || store.RecommendationConfigs == nil {
 		return defaultValue

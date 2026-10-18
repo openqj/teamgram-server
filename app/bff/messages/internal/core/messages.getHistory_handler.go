@@ -45,12 +45,7 @@ func (c *MessagesCore) MessagesGetHistory(in *mtproto.TLMessagesGetHistory) (*mt
 	if in.GetMaxId() < 0 || in.GetMinId() < 0 {
 		return nil, mtproto.ErrMessageIdInvalid
 	}
-	// The count provider cannot apply these bounds, so returning a
-	// messagesSlice would fabricate exact pagination metadata.
-	if in.GetMaxId() != 0 || in.GetMinId() != 0 {
-		return nil, mtproto.ErrMethodNotImpl
-	}
-	if c.svcCtx == nil || c.svcCtx.Dao == nil || c.svcCtx.Dao.MessageClient == nil {
+	if c.svcCtx == nil || c.svcCtx.Dao == nil {
 		return nil, mtproto.ErrInternalServerError
 	}
 	var (
@@ -70,20 +65,34 @@ func (c *MessagesCore) MessagesGetHistory(in *mtproto.TLMessagesGetHistory) (*mt
 	}
 	switch peer.PeerType {
 	case mtproto.PEER_SELF:
+		// The count provider cannot apply these bounds, so returning a
+		// messagesSlice would fabricate exact pagination metadata.
+		if in.GetMaxId() != 0 || in.GetMinId() != 0 {
+			return nil, mtproto.ErrMethodNotImpl
+		}
 	case mtproto.PEER_USER:
+		if in.GetMaxId() != 0 || in.GetMinId() != 0 {
+			return nil, mtproto.ErrMethodNotImpl
+		}
 		if err = c.validateMessagesGetHistoryUserPeer(in.GetPeer()); err != nil {
 			return nil, err
 		}
 	case mtproto.PEER_CHAT:
+		if in.GetMaxId() != 0 || in.GetMinId() != 0 {
+			return nil, mtproto.ErrMethodNotImpl
+		}
 		if err = c.validateMessagesGetHistoryChatPeer(peer); err != nil {
 			return nil, err
 		}
 	case mtproto.PEER_CHANNEL:
-		// channelview currently implements only offset_id and limit.
-		if in.GetOffsetDate() != 0 || in.GetAddOffset() != 0 || in.GetHash() != 0 {
+		// There is no canonical hash computation in the native-channel
+		// provider, so do not claim messages.messagesNotModified for a
+		// client hash we cannot prove. All cursor and ID bounds are served
+		// from the authoritative channel projection.
+		if in.GetHash() != 0 {
 			return nil, mtproto.ErrMethodNotImpl
 		}
-		return channelview.HistoryForInputPeer(c.MD.UserId, in.GetPeer(), in.OffsetId, limit)
+		return channelview.HistoryForInputPeerLayer229(c.MD.UserId, in.GetPeer(), in.OffsetId, in.OffsetDate, in.AddOffset, limit, in.MaxId, in.MinId)
 		//// 400	CHANNEL_INVALID	The provided channel is invalid
 		//// 400	CHANNEL_PRIVATE	You haven't joined this channel/supergroup
 		//channel, err = c.svcCtx.Dao.ChannelClient.ChannelGetMutableChannel(
@@ -108,6 +117,9 @@ func (c *MessagesCore) MessagesGetHistory(in *mtproto.TLMessagesGetHistory) (*mt
 		err = mtproto.ErrPeerIdInvalid
 		c.Logger.Errorf("messages.getHistory - error: %v", err)
 		return nil, err
+	}
+	if c.svcCtx.Dao.MessageClient == nil {
+		return nil, mtproto.ErrInternalServerError
 	}
 
 	var (
@@ -336,8 +348,15 @@ func validateMessagesGetHistoryBoxes(boxList *message.Vector_MessageBox, limit, 
 		return mtproto.ErrInternalServerError
 	}
 	maxBoxes := int64(limit)
-	if addOffset > 0 {
+	switch {
+	case addOffset > 0:
 		maxBoxes += int64(addOffset)
+	case addOffset < 0:
+		if int64(addOffset)+int64(limit) > 0 {
+			maxBoxes = int64(limit)
+		} else {
+			maxBoxes = -int64(addOffset)
+		}
 	}
 	if int64(len(boxList.GetDatas())) > maxBoxes {
 		return mtproto.ErrInternalServerError

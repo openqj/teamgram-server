@@ -98,21 +98,86 @@ func TestStoriesReadPeerUserStoriesUsesTargetStore(t *testing.T) {
 	if err != nil || got == nil || got.GetStories() == nil || got.GetStories().GetPeer().GetUserId() != targetID || len(got.GetStories().GetStories()) != 1 || got.GetStories().GetStories()[0].GetId() != 8 {
 		t.Fatalf("peer stories=(%#v,%v)", got, err)
 	}
-	maxIDs, err := c.StoriesGetPeerMaxIDs78499170(&mtproto.TLStoriesGetPeerMaxIDs78499170{Id: []*mtproto.InputPeer{peer}})
+}
+
+func TestStoriesGetPeerMaxIDsReadsSelfStore(t *testing.T) {
+	const uid int64 = 777002
+	t.Cleanup(func() { _ = persist.Default.Set(storyKey(uid), "") })
+	if err := saveUserStories(uid, &userStoryStore{
+		Order: []int32{8},
+		Items: map[int32]*mtproto.StoryItem{8: mtproto.MakeTLStoryItem(&mtproto.StoryItem{Id: 8}).To_StoryItem()},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	c := &ApiFullCore{MD: &metadata.RpcMetadata{UserId: uid}}
+	maxIDs, err := c.StoriesGetPeerMaxIDs78499170(&mtproto.TLStoriesGetPeerMaxIDs78499170{
+		Id: []*mtproto.InputPeer{mtproto.MakeTLInputPeerSelf(nil).To_InputPeer()},
+	})
 	if err != nil || maxIDs == nil || len(maxIDs.GetDatas()) != 1 || maxIDs.GetDatas()[0].GetMaxId().GetValue() != 8 {
-		t.Fatalf("peer max ids=(%#v,%v)", maxIDs, err)
+		t.Fatalf("self max ids=(%#v,%v)", maxIDs, err)
 	}
 }
 
-func TestStoriesReadPeerMaxIDsReturnsEmptyRecentStoryForUnknownUser(t *testing.T) {
+func TestStoriesGetPeerMaxIDsReadsTargetStore(t *testing.T) {
 	const callerID int64 = 229907
 	const targetID int64 = 777001
 	t.Cleanup(func() { _ = persist.Default.Set(storyKey(targetID), "") })
+	if err := saveUserStories(targetID, &userStoryStore{
+		Order: []int32{9},
+		Items: map[int32]*mtproto.StoryItem{9: mtproto.MakeTLStoryItem(&mtproto.StoryItem{Id: 9}).To_StoryItem()},
+	}); err != nil {
+		t.Fatal(err)
+	}
 	c := &ApiFullCore{MD: &metadata.RpcMetadata{UserId: callerID}}
 	peer := mtproto.MakeTLInputPeerUser(&mtproto.InputPeer{UserId: targetID, AccessHash: 1}).To_InputPeer()
 	maxIDs, err := c.StoriesGetPeerMaxIDs78499170(&mtproto.TLStoriesGetPeerMaxIDs78499170{Id: []*mtproto.InputPeer{peer}})
-	if err != nil || maxIDs == nil || len(maxIDs.GetDatas()) != 1 || maxIDs.GetDatas()[0].GetMaxId() != nil {
-		t.Fatalf("unknown peer max ids=(%#v,%v)", maxIDs, err)
+	if err != nil || maxIDs == nil || len(maxIDs.GetDatas()) != 1 || maxIDs.GetDatas()[0].GetMaxId().GetValue() != 9 {
+		t.Fatalf("target peer max ids=(%#v,%v)", maxIDs, err)
+	}
+}
+
+func TestStoriesGetPeerMaxIDsPreservesMixedPeerBatch(t *testing.T) {
+	const callerID int64 = 229908
+	const targetID int64 = 777003
+	t.Cleanup(func() {
+		_ = persist.Default.Set(storyKey(callerID), "")
+		_ = persist.Default.Set(storyKey(targetID), "")
+	})
+	if err := saveUserStories(callerID, &userStoryStore{
+		Order: []int32{4},
+		Items: map[int32]*mtproto.StoryItem{4: mtproto.MakeTLStoryItem(&mtproto.StoryItem{Id: 4}).To_StoryItem()},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := saveUserStories(targetID, &userStoryStore{
+		Order: []int32{11},
+		Items: map[int32]*mtproto.StoryItem{11: mtproto.MakeTLStoryItem(&mtproto.StoryItem{Id: 11}).To_StoryItem()},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	c := &ApiFullCore{MD: &metadata.RpcMetadata{UserId: callerID}}
+	maxIDs, err := c.StoriesGetPeerMaxIDs78499170(&mtproto.TLStoriesGetPeerMaxIDs78499170{Id: []*mtproto.InputPeer{
+		mtproto.MakeTLInputPeerSelf(nil).To_InputPeer(),
+		mtproto.MakeTLInputPeerUser(&mtproto.InputPeer{UserId: targetID, AccessHash: 1}).To_InputPeer(),
+		mtproto.MakeTLInputPeerChannel(&mtproto.InputPeer{ChannelId: 1791945482995003419, AccessHash: 1}).To_InputPeer(),
+		mtproto.MakeTLInputPeerChat(&mtproto.InputPeer{ChatId: 17}).To_InputPeer(),
+	}})
+	if err != nil || maxIDs == nil || len(maxIDs.GetDatas()) != 4 {
+		t.Fatalf("mixed peer max ids=(%#v,%v), want four results", maxIDs, err)
+	}
+	if maxIDs.GetDatas()[0].GetMaxId().GetValue() != 4 || maxIDs.GetDatas()[1].GetMaxId().GetValue() != 11 {
+		t.Fatalf("mixed user max ids=%v,%v, want 4,11", maxIDs.GetDatas()[0].GetMaxId(), maxIDs.GetDatas()[1].GetMaxId())
+	}
+	if maxIDs.GetDatas()[2].GetMaxId() != nil || maxIDs.GetDatas()[3].GetMaxId() != nil {
+		t.Fatalf("unsupported peers returned max IDs: %#v", maxIDs.GetDatas())
+	}
+}
+
+func TestStoriesGetPeerMaxIDsRejectsMalformedPeer(t *testing.T) {
+	c := &ApiFullCore{MD: &metadata.RpcMetadata{UserId: 229909}}
+	maxIDs, err := c.StoriesGetPeerMaxIDs78499170(&mtproto.TLStoriesGetPeerMaxIDs78499170{Id: []*mtproto.InputPeer{nil}})
+	if maxIDs != nil || !sameRPCErrorCode(err, mtproto.ErrPeerIdInvalid) {
+		t.Fatalf("malformed peer max ids=(%#v,%v), want PEER_ID_INVALID", maxIDs, err)
 	}
 }
 

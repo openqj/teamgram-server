@@ -85,7 +85,7 @@ function makeClient(authKeyHex: string): any {
     (session as any)._serverAddress = process.env.TG_DC_HOST || '127.0.0.1';
     (session as any)._port = Number(process.env.TG_DC_PORT || '11443');
   };
-  return new TelegramClient(session, 1, '0123456789abcdef0123456789abcdef', {
+  const client = new TelegramClient(session, 1, '0123456789abcdef0123456789abcdef', {
     connection: Connection,
     fallbackConnection: Connection,
     shouldAllowHttpTransport: false,
@@ -97,6 +97,13 @@ function makeClient(authKeyHex: string): any {
     autoReconnect: false,
     baseLogger: quietLogger,
   });
+  const initWith = client._initWith.bind(client);
+  client._initWith = (query: any) => {
+    const original = initWith(query);
+    if (rpcName(original) !== 'InvokeWithLayer' || rpcName(original.query) !== 'InitConnection') throw new Error('INVALID_INIT_CONNECTION_WRAPPER');
+    return new Api.InvokeWithLayer({ layer: 229, query: original.query });
+  };
+  return client;
 }
 
 async function main() {
@@ -124,6 +131,7 @@ async function main() {
     }
 
     console.log(JSON.stringify({
+      layer: 229,
       userId: String(me.id),
       resultType: rpcName(result),
       channelId: String(target.channelId),

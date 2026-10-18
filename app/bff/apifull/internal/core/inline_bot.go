@@ -19,6 +19,7 @@
 package core
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/binary"
@@ -42,6 +43,8 @@ import (
 	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/persist"
 	"github.com/teamgram/teamgram-server/app/bff/paymentinvoice"
 	msgpb "github.com/teamgram/teamgram-server/app/messenger/msg/msg/msg"
+	syncpb "github.com/teamgram/teamgram-server/app/messenger/sync/sync"
+	messagepb "github.com/teamgram/teamgram-server/app/service/biz/message/message"
 	userpb "github.com/teamgram/teamgram-server/app/service/biz/user/user"
 	dfspb "github.com/teamgram/teamgram-server/app/service/dfs/dfs"
 	"google.golang.org/protobuf/types/known/wrapperspb"
@@ -171,7 +174,8 @@ func (c *ApiFullCore) MessagesGetInlineBotResults(in *mtproto.TLMessagesGetInlin
 // an inline-query record. InputPeerUser carries an access hash and must be
 // checked against the authoritative User service; accepting only its numeric
 // ID would let a stale or forged peer address another account. Chat peers do
-// not carry an access hash, while channel peers do. The *FromMessage variants
+// not carry an access hash, while channel peers do. inputPeerEmpty is valid
+// for conversation-independent inline queries. The *FromMessage variants
 // require message-service resolution that APIFull does not own, so they fail
 // closed instead of being reduced to an ID-only peer.
 func (c *ApiFullCore) validateInlineQueryPeer(callerID int64, peer *mtproto.InputPeer) error {
@@ -179,6 +183,11 @@ func (c *ApiFullCore) validateInlineQueryPeer(callerID int64, peer *mtproto.Inpu
 		return mtproto.ErrInputRequestInvalid
 	}
 	switch peer.GetPredicateName() {
+	case mtproto.Predicate_inputPeerEmpty:
+		// Inline queries such as WebA's GIF search are not bound to a
+		// conversation. Layer 229 represents that shape with an empty peer
+		// and omits peer_type from updateBotInlineQuery.
+		return nil
 	case mtproto.Predicate_inputPeerSelf:
 		return nil
 	case mtproto.Predicate_inputPeerUser:
@@ -238,6 +247,8 @@ func inlineQueryPeerKey(callerID int64, peer *mtproto.InputPeer) (string, error)
 		return "", mtproto.ErrInputRequestInvalid
 	}
 	switch peer.GetPredicateName() {
+	case mtproto.Predicate_inputPeerEmpty:
+		return "empty", nil
 	case mtproto.Predicate_inputPeerSelf:
 		return "self:" + strconv.FormatInt(callerID, 10), nil
 	case mtproto.Predicate_inputPeerUser:
@@ -269,6 +280,8 @@ func (c *ApiFullCore) inlineQueryPeerType(botID int64, peer *mtproto.InputPeer) 
 		return "", mtproto.ErrInputRequestInvalid
 	}
 	switch peer.GetPredicateName() {
+	case mtproto.Predicate_inputPeerEmpty:
+		return "", nil
 	case mtproto.Predicate_inputPeerSelf:
 		return mtproto.Predicate_inlineQueryPeerTypePM, nil
 	case mtproto.Predicate_inputPeerUser:
@@ -580,42 +593,128 @@ func (c *ApiFullCore) MessagesEditInlineBotMessage(in *mtproto.TLMessagesEditInl
 }
 
 func (c *ApiFullCore) MessagesGetBotCallbackAnswer(in *mtproto.TLMessagesGetBotCallbackAnswer) (*mtproto.Messages_BotCallbackAnswer, error) {
-	if _, err := c.requireUserId(); err != nil {
+	uid, err := c.requireUserId()
+	if err != nil {
 		return nil, err
 	}
 	if in == nil || in.GetPeer() == nil || in.GetMsgId() <= 0 || len(in.GetData()) == 0 {
 		return nil, mtproto.ErrInputRequestInvalid
 	}
-	result := new(mtproto.Messages_BotCallbackAnswer)
-	scopeKey := fmt.Sprintf("%s:msg:%d:%s", businessControlPeerKey(c.MD.GetUserId(), in.GetPeer()), in.GetMsgId(), businessControlHash("data", in.GetData()))
-	if local, loadErr := c.loadLocalBusinessResultForCaller("messages.getBotCallbackAnswer", scopeKey, result); loadErr != nil {
-		return nil, loadErr
-	} else if local {
-		if err := c.validateInlineQueryPeer(c.MD.GetUserId(), in.GetPeer()); err != nil {
-			return nil, err
-		}
-		if result.GetPredicateName() != mtproto.Predicate_messages_botCallbackAnswer || result.GetCacheTime() < 0 {
-			return nil, mtproto.ErrInternalServerError
-		}
-		return result, nil
+	if !c.hasNativeBotCallbackPath() {
+		return c.getBotCallbackAnswerFromProvider(in)
 	}
-	if err := c.callBusinessProvider("messages.getBotCallbackAnswer", map[string]any{
-		"game": in.GetGame(), "peer": in.GetPeer(), "msg_id": in.GetMsgId(), "data": in.GetData(), "password": in.GetPassword(),
-	}, result); err != nil {
+	if err = c.validateInlineQueryPeer(uid, in.GetPeer()); err != nil {
 		return nil, err
 	}
-	if result.GetPredicateName() != mtproto.Predicate_messages_botCallbackAnswer || result.GetCacheTime() < 0 {
+	peer := mtproto.FromInputPeer2(uid, in.GetPeer())
+	if peer == nil || !peer.IsUserOrChatOrChannel() || peer.PeerId <= 0 {
+		return nil, mtproto.ErrPeerIdInvalid
+	}
+	if peer.IsSelf() {
+		peer.PeerType = mtproto.PEER_USER
+		peer.PeerId = uid
+	}
+	box, err := c.svcCtx.Dao.MessageGetUserMessage(c.requestContext(), &messagepb.TLMessageGetUserMessage{UserId: uid, Id: in.GetMsgId()})
+	if err != nil {
+		return nil, err
+	}
+	if box == nil || box.GetMessage() == nil || box.GetMessageId() != in.GetMsgId() || box.GetMessage().GetId() != in.GetMsgId() {
+		return nil, mtproto.ErrMessageIdInvalid
+	}
+	if box.GetPeerType() != int32(peer.PeerType) || box.GetPeerId() != peer.PeerId {
+		return nil, mtproto.ErrPeerIdInvalid
+	}
+	if !callbackDataExists(box.GetMessage().GetReplyMarkup(), in.GetData()) {
+		return nil, mtproto.ErrDataInvalid
+	}
+	botID := box.GetSenderUserId()
+	if botID <= 0 {
+		return nil, mtproto.ErrBotInvalid
+	}
+	botProfile, err := c.svcCtx.Dao.UserGetImmutableUser(c.requestContext(), &userpb.TLUserGetImmutableUser{Id: botID})
+	if err != nil {
+		return nil, err
+	}
+	if botProfile == nil || botProfile.GetUser() == nil || botProfile.Deleted() || !botProfile.IsBot() {
+		return nil, mtproto.ErrBotInvalid
+	}
+	requesterProfile, err := c.svcCtx.Dao.UserGetImmutableUser(c.requestContext(), &userpb.TLUserGetImmutableUser{Id: uid})
+	if err != nil {
+		return nil, err
+	}
+	if requesterProfile == nil || requesterProfile.GetUser() == nil || requesterProfile.Deleted() {
+		return nil, mtproto.ErrUserIdInvalid
+	}
+	queryID, err := newInlineQueryID()
+	if err != nil {
 		return nil, mtproto.ErrInternalServerError
 	}
-	return result, nil
+	chatInstance, err := newInlineQueryID()
+	if err != nil {
+		return nil, mtproto.ErrInternalServerError
+	}
+	update := mtproto.MakeTLUpdateBotCallbackQuery(&mtproto.Update{
+		QueryId_INT64:  queryID,
+		UserId:         uid,
+		Peer_PEER:      peer.ToPeer(),
+		MsgId_INT32:    in.GetMsgId(),
+		ChatInstance:   chatInstance,
+		Data_FLAGBYTES: append([]byte(nil), in.GetData()...),
+	}).To_Update()
+	users := []*mtproto.User{requesterProfile.ToUser(botID), botProfile.ToUser(botID)}
+	if err = persist.CreateBotCallbackQuery(persist.BotCallbackQuery{
+		QueryID:      queryID,
+		BotID:        botID,
+		UserID:       uid,
+		PeerType:     int32(peer.PeerType),
+		PeerID:       peer.PeerId,
+		MessageID:    in.GetMsgId(),
+		ChatInstance: chatInstance,
+		Data:         append([]byte(nil), in.GetData()...),
+	}); err != nil {
+		return nil, err
+	}
+	if _, err = c.svcCtx.Dao.SyncClient.SyncPushBotUpdates(c.requestContext(), &syncpb.TLSyncPushBotUpdates{
+		UserId:  botID,
+		Updates: mtproto.MakeUpdatesByUpdatesUsers(users, update),
+	}); err != nil {
+		return nil, err
+	}
+	return emptyBotCallbackAnswer(), nil
 }
 
 func (c *ApiFullCore) MessagesSetBotCallbackAnswer(in *mtproto.TLMessagesSetBotCallbackAnswer) (*mtproto.Bool, error) {
-	if _, err := c.requireUserId(); err != nil {
+	uid, err := c.requireUserId()
+	if err != nil {
 		return nil, err
 	}
 	if in == nil || in.GetQueryId() <= 0 || in.GetCacheTime() < 0 {
 		return nil, mtproto.ErrInputRequestInvalid
+	}
+	if c.hasNativeBotCallbackPath() {
+		if err := c.requireBotCaller(uid); err != nil {
+			return nil, err
+		}
+		message, url := "", ""
+		if value := in.GetMessage(); value != nil {
+			message = value.GetValue()
+		}
+		if value := in.GetUrl(); value != nil {
+			url = value.GetValue()
+		}
+		if err := persist.SetBotCallbackAnswer(uid, in.GetQueryId(), persist.BotCallbackAnswer{
+			Alert:     in.GetAlert(),
+			HasURL:    url != "",
+			Message:   message,
+			URL:       url,
+			CacheTime: in.GetCacheTime(),
+		}); err != nil {
+			if errors.Is(err, persist.ErrBotCallbackQueryNotFound) {
+				return nil, mtproto.ErrQueryIdInvalid
+			}
+			return nil, err
+		}
+		return mtproto.BoolTrue, nil
 	}
 	var result struct {
 		Value *bool `json:"value"`
@@ -646,6 +745,60 @@ func (c *ApiFullCore) MessagesSetBotCallbackAnswer(in *mtproto.TLMessagesSetBotC
 		return mtproto.BoolTrue, nil
 	}
 	return mtproto.BoolFalse, nil
+}
+
+func (c *ApiFullCore) hasNativeBotCallbackPath() bool {
+	return c != nil && c.svcCtx != nil && c.svcCtx.Dao != nil &&
+		c.svcCtx.Dao.PollMessageReader != nil &&
+		c.svcCtx.Dao.SyncClient != nil && c.svcCtx.Dao.UserClient != nil
+}
+
+func (c *ApiFullCore) getBotCallbackAnswerFromProvider(in *mtproto.TLMessagesGetBotCallbackAnswer) (*mtproto.Messages_BotCallbackAnswer, error) {
+	result := new(mtproto.Messages_BotCallbackAnswer)
+	scopeKey := fmt.Sprintf("%s:msg:%d:%s", businessControlPeerKey(c.MD.GetUserId(), in.GetPeer()), in.GetMsgId(), businessControlHash("data", in.GetData()))
+	if local, loadErr := c.loadLocalBusinessResultForCaller("messages.getBotCallbackAnswer", scopeKey, result); loadErr != nil {
+		return nil, loadErr
+	} else if local {
+		if err := c.validateInlineQueryPeer(c.MD.GetUserId(), in.GetPeer()); err != nil {
+			return nil, err
+		}
+		if result.GetPredicateName() != mtproto.Predicate_messages_botCallbackAnswer || result.GetCacheTime() < 0 {
+			return nil, mtproto.ErrInternalServerError
+		}
+		return result, nil
+	}
+	if err := c.callBusinessProvider("messages.getBotCallbackAnswer", map[string]any{
+		"game": in.GetGame(), "peer": in.GetPeer(), "msg_id": in.GetMsgId(), "data": in.GetData(), "password": in.GetPassword(),
+	}, result); err != nil {
+		return nil, err
+	}
+	if result.GetPredicateName() != mtproto.Predicate_messages_botCallbackAnswer || result.GetCacheTime() < 0 {
+		return nil, mtproto.ErrInternalServerError
+	}
+	return result, nil
+}
+
+func emptyBotCallbackAnswer() *mtproto.Messages_BotCallbackAnswer {
+	return mtproto.MakeTLMessagesBotCallbackAnswer(&mtproto.Messages_BotCallbackAnswer{
+		CacheTime: 0,
+	}).To_Messages_BotCallbackAnswer()
+}
+
+func callbackDataExists(markup *mtproto.ReplyMarkup, data []byte) bool {
+	if markup == nil || markup.GetPredicateName() != mtproto.Predicate_replyInlineMarkup {
+		return false
+	}
+	for _, row := range markup.GetRows() {
+		if row == nil {
+			continue
+		}
+		for _, button := range row.GetButtons() {
+			if button != nil && button.GetPredicateName() == mtproto.Predicate_keyboardButtonCallback && bytes.Equal(button.GetData(), data) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (c *ApiFullCore) MessagesSendBotRequestedPeer(in *mtproto.TLMessagesSendBotRequestedPeer) (*mtproto.Updates, error) {

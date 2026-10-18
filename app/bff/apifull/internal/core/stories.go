@@ -1215,19 +1215,41 @@ func (c *ApiFullCore) StoriesGetPeerMaxIDs78499170(in *mtproto.TLStoriesGetPeerM
 	if in == nil {
 		return nil, storiesProviderUnavailable(c)
 	}
-	if _, err := c.requireUserId(); err != nil {
+	if _, err := c.storyActorID(); err != nil {
 		return nil, err
 	}
 	result := make([]*mtproto.RecentStory, 0, len(in.GetId()))
 	for _, peer := range in.GetId() {
-		targetID, stories, loadErr := c.readStoryStore(peer)
-		if loadErr != nil {
-			return nil, loadErr
-		}
-		if targetID <= 0 {
+		var maxID int32
+		switch {
+		case peer == nil:
+			return nil, mtproto.ErrPeerIdInvalid
+		case peer.GetPredicateName() == mtproto.Predicate_inputPeerSelf:
+			_, stories, loadErr := c.readStoryStore(peer)
+			if loadErr != nil {
+				return nil, loadErr
+			}
+			maxID = storyMaxID(stories)
+		case peer.GetPredicateName() == mtproto.Predicate_inputPeerUser:
+			if peer.GetUserId() <= 0 {
+				return nil, mtproto.ErrPeerIdInvalid
+			}
+			_, stories, loadErr := c.readStoryStore(peer)
+			if loadErr != nil {
+				return nil, loadErr
+			}
+			maxID = storyMaxID(stories)
+		case peer.GetPredicateName() == mtproto.Predicate_inputPeerChat,
+			peer.GetPredicateName() == mtproto.Predicate_inputPeerChannel,
+			peer.GetPredicateName() == mtproto.Predicate_inputPeerUserFromMessage,
+			peer.GetPredicateName() == mtproto.Predicate_inputPeerChannelFromMessage,
+			peer.GetPredicateName() == mtproto.Predicate_inputPeerUsername:
+			// APIFull has no authoritative story store for chats/channels or
+			// unresolved peers. An empty constructor keeps mixed peer batches
+			// aligned without fabricating a max ID.
+		default:
 			return nil, mtproto.ErrPeerIdInvalid
 		}
-		maxID := storyMaxID(stories)
 		recent := &mtproto.RecentStory{}
 		if maxID > 0 {
 			recent.MaxId = wrapperspb.Int32(maxID)

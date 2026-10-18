@@ -134,10 +134,57 @@ func inputRichEmpty(in *mtproto.InputRichMessage) bool {
 		len(in.GetUsers()) == 0
 }
 
-// inputRichToRich keeps the source text. No translator or model is configured.
-func inputRichToRich(in *mtproto.InputRichMessage) *mtproto.RichMessage {
+func inputPhotoToRichPhoto(in *mtproto.InputPhoto) (*mtproto.Photo, error) {
 	if in == nil {
-		return mtproto.MakeTLRichMessage(&mtproto.RichMessage{}).To_RichMessage()
+		return nil, mtproto.ErrInputConstructorInvalid
+	}
+	value := &mtproto.Photo{
+		Id:            in.GetId(),
+		AccessHash:    in.GetAccessHash(),
+		FileReference: in.GetFileReference(),
+	}
+	switch in.GetPredicateName() {
+	case mtproto.Predicate_inputPhotoEmpty:
+		return mtproto.MakeTLPhotoEmpty(value).To_Photo(), nil
+	case mtproto.Predicate_inputPhoto:
+		if value.Id <= 0 || value.AccessHash == 0 {
+			return nil, mtproto.ErrInputConstructorInvalid
+		}
+		return mtproto.MakeTLPhoto(value).To_Photo(), nil
+	default:
+		return nil, mtproto.ErrInputConstructorInvalid
+	}
+}
+
+func inputDocumentToRichDocument(in *mtproto.InputDocument) (*mtproto.Document, error) {
+	if in == nil {
+		return nil, mtproto.ErrInputConstructorInvalid
+	}
+	value := &mtproto.Document{
+		Id:            in.GetId(),
+		AccessHash:    in.GetAccessHash(),
+		FileReference: in.GetFileReference(),
+	}
+	switch in.GetPredicateName() {
+	case mtproto.Predicate_inputDocumentEmpty:
+		return mtproto.MakeTLDocumentEmpty(value).To_Document(), nil
+	case mtproto.Predicate_inputDocument:
+		if value.Id <= 0 || value.AccessHash == 0 {
+			return nil, mtproto.ErrInputConstructorInvalid
+		}
+		return mtproto.MakeTLDocument(value).To_Document(), nil
+	default:
+		return nil, mtproto.ErrInputConstructorInvalid
+	}
+}
+
+// inputRichToRich keeps the source text. No translator or model is configured.
+func inputRichToRich(in *mtproto.InputRichMessage) (*mtproto.RichMessage, error) {
+	if in == nil {
+		return mtproto.MakeTLRichMessage(&mtproto.RichMessage{}).To_RichMessage(), nil
+	}
+	if len(in.GetFiles()) > 0 || len(in.GetUsers()) > 0 {
+		return nil, mtproto.ErrMethodNotImpl
 	}
 	blocks := in.GetBlocks()
 	if len(blocks) == 0 {
@@ -146,13 +193,31 @@ func inputRichToRich(in *mtproto.InputRichMessage) *mtproto.RichMessage {
 			text = in.GetHtml()
 		}
 		if text != "" {
-			return plainToRichMessage(text)
+			blocks = plainToRichMessage(text).GetBlocks()
 		}
 	}
+	photos := make([]*mtproto.Photo, 0, len(in.GetPhotos()))
+	for _, photo := range in.GetPhotos() {
+		value, err := inputPhotoToRichPhoto(photo)
+		if err != nil {
+			return nil, err
+		}
+		photos = append(photos, value)
+	}
+	documents := make([]*mtproto.Document, 0, len(in.GetDocuments()))
+	for _, document := range in.GetDocuments() {
+		value, err := inputDocumentToRichDocument(document)
+		if err != nil {
+			return nil, err
+		}
+		documents = append(documents, value)
+	}
 	return mtproto.MakeTLRichMessage(&mtproto.RichMessage{
-		Rtl:    in.GetRtl(),
-		Blocks: blocks,
-	}).To_RichMessage()
+		Rtl:       in.GetRtl(),
+		Blocks:    blocks,
+		Photos:    photos,
+		Documents: documents,
+	}).To_RichMessage(), nil
 }
 
 func messageToRich(msg *mtproto.Message) *mtproto.RichMessage {

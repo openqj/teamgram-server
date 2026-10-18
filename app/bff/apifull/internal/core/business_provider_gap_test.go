@@ -131,6 +131,45 @@ func TestBusinessProviderUsesStableIdempotencyKey(t *testing.T) {
 	}
 }
 
+func TestBusinessProviderSignedErrorMapsToMethodNotImpl(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			RequestID string `json:"request_id"`
+			Operation string `json:"operation"`
+			UserID    int64  `json:"user_id"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		body, err := json.Marshal(businessProviderEnvelope{
+			RequestID: request.RequestID,
+			Operation: request.Operation,
+			UserID:    request.UserID,
+			Error:     "operation not provisioned",
+		})
+		if err != nil {
+			http.Error(w, "bad envelope", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("X-Teamgram-Business-Provider-Signature", businessProviderSignature(businessProviderGapTestKey, body))
+		_, _ = w.Write(body)
+	}))
+	defer server.Close()
+
+	core := &ApiFullCore{
+		svcCtx: &svc.ServiceContext{Config: config.Config{
+			BusinessProviderEndpoint:   server.URL,
+			BusinessProviderSigningKey: businessProviderGapTestKey,
+		}},
+		MD: &metadata.RpcMetadata{UserId: 42},
+	}
+	var result map[string]any
+	if err := core.callBusinessProvider("messages.getPaidReactionPrivacy", map[string]any{}, &result); err != mtproto.ErrMethodNotImpl {
+		t.Fatalf("signed provider error = %v, want METHOD_NOT_IMPL", err)
+	}
+}
+
 func TestBusinessProviderGapRejectsMalformedResult(t *testing.T) {
 	core := newBusinessProviderGapCore(t, "bots.updateStarRefProgram", map[string]any{"bot_id": 0, "commission_permille": 100})
 	result, err := core.BotsUpdateStarRefProgram(&mtproto.TLBotsUpdateStarRefProgram{
@@ -163,6 +202,17 @@ func TestMiniAppProviderMethodsUseSignedResponses(t *testing.T) {
 	})
 	if err != nil || data == nil || data.GetData() == "" {
 		t.Fatalf("invoke webview method = (%v, %v)", data, err)
+	}
+}
+
+func TestPopularAppBotsRejectsMalformedProviderUsers(t *testing.T) {
+	core := newBusinessProviderGapCore(t, "bots.getPopularAppBots", map[string]any{
+		"predicate_name": mtproto.Predicate_bots_popularAppBots,
+		"users":          []any{nil},
+	})
+	result, err := core.BotsGetPopularAppBots(&mtproto.TLBotsGetPopularAppBots{Limit: 20})
+	if result != nil || err != mtproto.ErrInternalServerError {
+		t.Fatalf("malformed popular app bots = (%v, %v), want nil and internal error", result, err)
 	}
 }
 

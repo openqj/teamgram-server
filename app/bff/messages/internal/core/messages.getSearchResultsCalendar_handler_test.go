@@ -107,3 +107,28 @@ func TestMessagesGetSearchResultsCalendarRejectsMissingProviderResult(t *testing
 		t.Fatalf("provider failure = (%v, %v), want search error", result, err)
 	}
 }
+
+func TestMessagesGetSearchResultsCalendarRejectsMalformedRequest(t *testing.T) {
+	core := &MessagesCore{MD: &metadata.RpcMetadata{UserId: 42}}
+	if result, err := core.MessagesGetSearchResultsCalendar(nil); result != nil || err != mtproto.ErrInputRequestInvalid {
+		t.Fatalf("nil request = (%v, %v), want INPUT_REQUEST_INVALID", result, err)
+	}
+
+	var nilCore *MessagesCore
+	if result, err := nilCore.MessagesGetSearchResultsCalendar(&mtproto.TLMessagesGetSearchResultsCalendar{}); result != nil || err != mtproto.ErrAuthKeyUnregistered {
+		t.Fatalf("nil receiver = (%v, %v), want AUTH_KEY_UNREGISTERED", result, err)
+	}
+}
+
+func TestMessagesGetSearchResultsCalendarFailsClosedWithoutLogger(t *testing.T) {
+	core := &MessagesCore{
+		MD: &metadata.RpcMetadata{UserId: 42},
+	}
+	result, err := core.MessagesGetSearchResultsCalendar(&mtproto.TLMessagesGetSearchResultsCalendar{
+		Peer:   mtproto.MakeTLInputPeerUser(&mtproto.InputPeer{UserId: 43, AccessHash: 143}).To_InputPeer(),
+		Filter: searchCalendarFilter(),
+	})
+	if result != nil || err != mtproto.ErrInternalServerError {
+		t.Fatalf("missing provider/logger = (%v, %v), want INTERNAL_SERVER_ERROR", result, err)
+	}
+}

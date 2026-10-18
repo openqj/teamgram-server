@@ -396,10 +396,16 @@ func (c *ApiFullCore) AccountGetCollectibleEmojiStatuses(in *mtproto.TLAccountGe
 		return nil, customEmojiProviderError(c, err)
 	}
 	if len(rows) == 0 {
-		// Do not return an empty success: without provider-owned rows the
-		// client cannot distinguish "no inventory" from an unavailable
-		// collectible provider and would cache a synthetic catalogue.
-		return nil, stickersProviderUnavailable(c)
+		// A successful PostgreSQL query is authoritative for this owner. An
+		// empty owner-scoped inventory is a valid account.EmojiStatuses result;
+		// provider/database failures have already returned above.
+		empty := make([]*mtproto.EmojiStatus, 0)
+		currentHash := collectibleEmojiStatusHash(empty)
+		var requestedHash int64
+		if in != nil {
+			requestedHash = in.GetHash()
+		}
+		return emojiStatusesReplyWithHash(requestedHash, currentHash, empty), nil
 	}
 	statuses := make([]*mtproto.EmojiStatus, 0, len(rows))
 	for _, row := range rows {

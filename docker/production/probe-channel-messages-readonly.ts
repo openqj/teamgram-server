@@ -116,6 +116,10 @@ async function main() {
   const messageId = Number(rawMessageId);
   const senderId = BigInt(rawSender);
   const messageDate = Number(rawDate);
+  const channelUsername = postgres(`SELECT username FROM apifull_channel WHERE id=${channelId} LIMIT 1`);
+  // Telegram reports CHANNEL_PRIVATE before membership lookup for private
+  // channels; public channels use USER_NOT_PARTICIPANT for an outsider.
+  const outsiderReadError = channelUsername ? 'USER_NOT_PARTICIPANT' : 'CHANNEL_PRIVATE';
   if (!Number.isSafeInteger(messageId) || !Number.isSafeInteger(messageDate)) {
     throw new Error('production channel message contains an invalid numeric field');
   }
@@ -170,7 +174,7 @@ async function main() {
     await outsiderClient.connect();
     const outsiderMe = await outsiderClient.getMe();
     if (String(outsiderMe?.id) !== String(outsiderUserId)) throw new Error('outsider auth key user mismatch');
-    await expectRpcError('nonmember channel read', 'USER_NOT_PARTICIPANT', () => outsiderClient.invoke(request(inputChannel)));
+    await expectRpcError('nonmember channel read', outsiderReadError, () => outsiderClient.invoke(request(inputChannel)));
 
     const inputPeer = new Api.InputPeerChannel({ channelId, accessHash });
     const historyRequest = (peer: any) => new Api.messages.GetHistory({
@@ -204,7 +208,7 @@ async function main() {
     await expectRpcError('history wrong access hash', 'CHANNEL_INVALID', () => client.invoke(historyRequest(
       new Api.InputPeerChannel({ channelId, accessHash: accessHash + 1n }),
     )));
-    await expectRpcError('history outsider read', 'USER_NOT_PARTICIPANT', () => outsiderClient.invoke(historyRequest(inputPeer)));
+    await expectRpcError('history outsider read', outsiderReadError, () => outsiderClient.invoke(historyRequest(inputPeer)));
 
     const rowAfter = postgres(queryMessage);
     const rowBefore = [rawChannelId, rawAccessHash, rawMessageId, rawSender, rawDate, contentHash].join('\t');
@@ -224,6 +228,7 @@ async function main() {
       channelEntityIncluded: true,
       wrongHashRejected: true,
       nonmemberRejected: true,
+      nonmemberError: outsiderReadError,
       persistedMessageUnchanged: true,
       getHistory: {
         type: historyType,

@@ -486,15 +486,24 @@ func botAPIRichText(raw json.RawMessage) (*mtproto.RichText, error) {
 }
 
 func sendRichMessage(ctx *svc.ServiceContext, r *http.Request, bot *mtproto.ImmutableUser, request *botAPIRequest) (any, int, int, string) {
-	if parameter := botAPIUnsupportedMessageParameter(request); parameter != "" {
+	if parameter := botAPIUnsupportedMessageParameterExcept(request, "direct_messages_topic_id", "ephemeral_message_parameters", "suggested_post_parameters"); parameter != "" {
 		return nil, http.StatusNotImplemented, 501, "Not Implemented: " + parameter + " is not supported by the Layer 229 adapter"
 	}
+	ephemeralParameters, ephemeralErr := botAPIEphemeralParametersValue(request)
+	if ephemeralErr != nil {
+		return nil, http.StatusBadRequest, 400, "Bad Request: " + ephemeralErr.Error()
+	}
+	ephemeralRequested := ephemeralParameters != nil
 	effect, effectErr := botAPIMessageEffect(request)
 	if effectErr != nil {
 		return nil, http.StatusBadRequest, 400, "Bad Request: " + effectErr.Error()
 	}
-	if ctx == nil || ctx.MessagesClient == nil {
-		return nil, http.StatusNotImplemented, 501, "Not Implemented: message service is not configured"
+	suggestedPost, suggestedPostErr := botAPISuggestedPost(request)
+	if suggestedPostErr != nil {
+		return nil, http.StatusBadRequest, 400, "Bad Request: " + suggestedPostErr.Error()
+	}
+	if ephemeralRequested && suggestedPost != nil {
+		return nil, http.StatusNotImplemented, 501, "Not Implemented: ephemeral messages with suggested_post_parameters are not supported"
 	}
 	richMessage, err := botAPIInputRichMessage(request)
 	if err != nil {
@@ -518,6 +527,12 @@ func sendRichMessage(ctx *svc.ServiceContext, r *http.Request, bot *mtproto.Immu
 	if err != nil || peerID == 0 {
 		return nil, http.StatusBadRequest, 400, "Bad Request: chat_id is invalid"
 	}
+	if suggestedPost != nil && peerType == mtproto.PEER_CHANNEL {
+		return nil, http.StatusNotImplemented, 501, "Not Implemented: suggested_post_parameters for channel sends is not supported by the Layer 229 adapter"
+	}
+	if ephemeralRequested && business {
+		return nil, http.StatusNotImplemented, 501, "Not Implemented: ephemeral messages on behalf of business accounts are not supported"
+	}
 	markup, err := botAPIReplyMarkup(request)
 	if err != nil {
 		return nil, http.StatusBadRequest, 400, "Bad Request: reply_markup is invalid"
@@ -526,9 +541,16 @@ func sendRichMessage(ctx *svc.ServiceContext, r *http.Request, bot *mtproto.Immu
 	if err != nil {
 		return nil, http.StatusBadRequest, 400, "Bad Request: reply_parameters is invalid"
 	}
-	topMsgID, err := botAPIOptionalInt32(request, "message_thread_id", 1, int64(^uint32(0)>>1))
+	topMsgID, err := botAPIMessageTopID(request)
 	if err != nil {
-		return nil, http.StatusBadRequest, 400, "Bad Request: message_thread_id is invalid"
+		status, code, description := botAPIMessageTopIDError(err)
+		return nil, status, code, description
+	}
+	if ephemeralRequested {
+		return sendBotAPIEphemeral(ctx, r, botID, request, peerType, peerID, "", nil, nil, richMessage, markup, replyTo)
+	}
+	if ctx == nil || ctx.MessagesClient == nil {
+		return nil, http.StatusNotImplemented, 501, "Not Implemented: message service is not configured"
 	}
 	updates, err := ctx.MessagesClient.MessagesSendMessage(callCtx, &mtproto.TLMessagesSendMessage{
 		Silent:             requestBool(request, "disable_notification"),
@@ -541,6 +563,7 @@ func sendRichMessage(ctx *svc.ServiceContext, r *http.Request, bot *mtproto.Immu
 		RandomId:           randomMessageID(),
 		ReplyMarkup:        markup,
 		RichMessage:        richMessage,
+		SuggestedPost:      suggestedPost,
 	})
 	if err != nil {
 		return nil, http.StatusBadRequest, 400, rpcDescription(err)
@@ -553,6 +576,9 @@ func sendRichMessage(ctx *svc.ServiceContext, r *http.Request, bot *mtproto.Immu
 }
 
 func sendRichMessageDraft(ctx *svc.ServiceContext, r *http.Request, bot *mtproto.ImmutableUser, request *botAPIRequest) (any, int, int, string) {
+	if parameter := botAPIUnsupportedMessageParameter(request); parameter != "" {
+		return nil, http.StatusNotImplemented, 501, "Not Implemented: " + parameter + " is not supported by the Layer 229 adapter"
+	}
 	canStop, err := request.bool("can_stop")
 	if err != nil {
 		return nil, http.StatusBadRequest, 400, "Bad Request: can_stop is invalid"

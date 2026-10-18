@@ -96,3 +96,26 @@ func TestBotAccessSettingsPostgresRoundTrip(t *testing.T) {
 		t.Fatalf("wrong bot access hash = %v", err)
 	}
 }
+
+func TestValidateBotAccessUsersRejectsMismatchedProfileID(t *testing.T) {
+	const (
+		requestedID = int64(993001)
+		returnedID  = int64(993002)
+		accessHash  = int64(993003)
+	)
+	client := &botAccessSettingsUserClient{users: map[int64]*mtproto.ImmutableUser{
+		requestedID: botAccessSettingsProfile(returnedID, accessHash, false),
+	}}
+	c := &ApiFullCore{
+		ctx:    context.Background(),
+		svcCtx: &svc.ServiceContext{Dao: &apifullDao.Dao{UserClient: client}},
+	}
+	_, err := c.validateBotAccessUsers(990001, []*mtproto.InputUser{{
+		PredicateName: mtproto.Predicate_inputUser,
+		UserId:        requestedID,
+		AccessHash:    accessHash,
+	}})
+	if !errors.Is(err, mtproto.ErrUserIdInvalid) {
+		t.Fatalf("mismatched profile ID: got %v, want USER_ID_INVALID", err)
+	}
+}

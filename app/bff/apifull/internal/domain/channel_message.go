@@ -1167,6 +1167,119 @@ func ListChannelMessages(userID, channelID int64, beforeID, limit int32) ([]Chan
 	return scanChannelMessages(channelID, rows)
 }
 
+// ListChannelMessagesHistory applies the messages.getHistory cursor rules to
+// the PostgreSQL-owned channel projection. The count is computed before the
+// cursor window so callers can fill messages.channelMessages.count.
+func ListChannelMessagesHistory(userID, channelID int64, offsetID, offsetDate, addOffset, minID, maxID, limit int32) ([]ChannelMessage, int32, error) {
+	if db == nil {
+		return nil, 0, errors.New("domain PostgreSQL is not open")
+	}
+	if limit <= 0 {
+		limit = 20
+	}
+	if limit > 50 {
+		limit = 50
+	}
+	where := []string{"channel_id=?", `NOT EXISTS (
+		SELECT 1 FROM apifull_channel_message_hidden h
+		WHERE h.user_id=? AND h.channel_id=apifull_channel_message.channel_id
+		AND h.message_id=apifull_channel_message.message_id)`}
+	args := []any{channelID, userID}
+	if minID > 0 {
+		where = append(where, "message_id>?")
+		args = append(args, minID)
+	}
+	if maxID > 0 {
+		where = append(where, "message_id<?")
+		args = append(args, maxID)
+	}
+	baseWhere := strings.Join(where, " AND ")
+	var count int32
+	if err := db.QueryRow(`SELECT COUNT(*) FROM apifull_channel_message WHERE `+baseWhere, args...).Scan(&count); err != nil {
+		return nil, 0, err
+	}
+
+	// Telegram uses three windows for add_offset: backward, forward, and an
+	// around-anchor window when the offset is negative but still leaves room
+	// for the requested page.
+	load := func(forward bool, anchorID, anchorDate int32, n int32) ([]ChannelMessage, error) {
+		if n <= 0 {
+			return []ChannelMessage{}, nil
+		}
+		window := append([]string(nil), where...)
+		windowArgs := append([]any(nil), args...)
+		if anchorDate > 0 {
+			if forward {
+				window = append(window, "date>?")
+			} else {
+				window = append(window, "date<?")
+			}
+			windowArgs = append(windowArgs, anchorDate)
+		} else if anchorID > 0 {
+			if forward {
+				window = append(window, "message_id>?")
+			} else {
+				window = append(window, "message_id<?")
+			}
+			windowArgs = append(windowArgs, anchorID)
+		}
+		order := "DESC"
+		if forward {
+			order = "ASC"
+		}
+		windowArgs = append(windowArgs, n)
+		rows, err := db.Query(`SELECT message_id, sender_user_id, date, message, edited, edited_at, pinned, reply_to_msg_id, reply_to_top_id, COALESCE(content_json,'')
+			FROM apifull_channel_message WHERE `+strings.Join(window, " AND ")+` ORDER BY message_id `+order+` LIMIT ?`, windowArgs...)
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+		result, err := scanChannelMessages(channelID, rows)
+		if err != nil {
+			return nil, err
+		}
+		if forward {
+			for i, j := 0, len(result)-1; i < j; i, j = i+1, j-1 {
+				result[i], result[j] = result[j], result[i]
+			}
+		}
+		return result, nil
+	}
+
+	if addOffset >= 0 {
+		// A zero offset means the newest page. The provider's backward query
+		// uses the requested limit plus add_offset and trims the skipped rows.
+		rows, err := load(false, offsetID, offsetDate, limit+addOffset)
+		if err != nil {
+			return nil, 0, err
+		}
+		if addOffset > 0 {
+			if addOffset >= int32(len(rows)) {
+				return []ChannelMessage{}, count, nil
+			}
+			rows = rows[addOffset:]
+		}
+		return rows, count, nil
+	}
+
+	if addOffset+limit > 0 {
+		forward, err := load(true, offsetID, offsetDate, -addOffset)
+		if err != nil {
+			return nil, 0, err
+		}
+		backward, err := load(false, offsetID, offsetDate, limit+addOffset)
+		if err != nil {
+			return nil, 0, err
+		}
+		return append(forward, backward...), count, nil
+	}
+	rows, err := load(true, offsetID, offsetDate, -addOffset)
+	if err != nil {
+		return nil, 0, err
+	}
+	return rows, count, nil
+}
+
 func ListChannelMessagesRange(userID, channelID int64, minID, maxID, limit int32) ([]ChannelMessage, int32, error) {
 	if db == nil {
 		return nil, 0, errors.New("domain PostgreSQL is not open")

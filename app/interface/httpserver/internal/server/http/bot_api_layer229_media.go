@@ -51,7 +51,7 @@ type botAPIInputChecklistTask struct {
 
 func sendLivePhoto(ctx *svc.ServiceContext, r *http.Request, bot *mtproto.ImmutableUser, request *botAPIRequest) (any, int, int, string) {
 	botID := bot.GetUser().GetId()
-	photo, err := botAPILayer229MediaInput(r, ctx, botID, request.string("photo"), "photo", request, false, "photo")
+	photo, err := botAPILayer229MediaInput(r, ctx, botID, request.string("photo"), "photo", request, true, "photo")
 	if err != nil {
 		return nil, http.StatusBadRequest, 400, "Bad Request: photo is invalid"
 	}
@@ -115,10 +115,10 @@ func botAPIPaidMediaInput(r *http.Request, ctx *svc.ServiceContext, botID int64,
 			"supports_streaming": json.RawMessage(fmt.Sprintf("%t", item.SupportsStreaming)),
 		}}, true, "")
 	case "live_photo":
-		if item.Photo == "" || item.Media == "" || botAPIHTTPMediaURL(item.Photo) || botAPIHTTPMediaURL(item.Media) {
-			return nil, errors.New("live photo URLs are unsupported")
+		if item.Photo == "" || item.Media == "" {
+			return nil, errors.New("live photo media is required")
 		}
-		photo, err := botAPILayer229MediaInput(r, ctx, botID, item.Photo, "photo", request, false, "")
+		photo, err := botAPILayer229MediaInput(r, ctx, botID, item.Photo, "photo", request, true, "")
 		if err != nil {
 			return nil, err
 		}
@@ -198,6 +198,9 @@ func botAPIInputChecklistValue(request *botAPIRequest) (*mtproto.TodoList, error
 }
 
 func sendMessageDraft(ctx *svc.ServiceContext, r *http.Request, bot *mtproto.ImmutableUser, request *botAPIRequest) (any, int, int, string) {
+	if parameter := botAPIUnsupportedMessageParameter(request); parameter != "" {
+		return nil, http.StatusNotImplemented, 501, "Not Implemented: " + parameter + " is not supported by the Layer 229 adapter"
+	}
 	canStop, err := request.bool("can_stop")
 	if err != nil {
 		return nil, http.StatusBadRequest, 400, "Bad Request: can_stop is invalid"
@@ -394,7 +397,18 @@ func botAPILayer229VideoDocument(r *http.Request, ctx *svc.ServiceContext, botID
 		raw = "attach://" + fallbackField
 	}
 	if botAPIHTTPMediaURL(raw) {
-		return nil, errors.New("live photo video URLs are unsupported")
+		if r == nil {
+			return nil, mtproto.ErrMediaInvalid
+		}
+		data, mimeType, name, err := fetchBotAPIRemoteMedia(r.Context(), raw)
+		if err != nil {
+			return nil, err
+		}
+		input, err := uploadBotAPIFile(r.Context(), ctx, botID, name, data)
+		if err != nil {
+			return nil, err
+		}
+		return botAPILayer229UploadedDocument(ctx, r, botID, input, name, mimeType, duration, width, height, supportsStreaming)
 	}
 	if strings.HasPrefix(raw, "attach://") {
 		if r == nil || ctx == nil {

@@ -113,6 +113,35 @@ func TestMessagesForwardMessagesSendsStoredMessageAndReturnsUpdates(t *testing.T
 	}
 }
 
+func TestMessagesForwardMessagesPreservesSuggestedPost(t *testing.T) {
+	sender := &forwardMsgClientStub{response: mtproto.MakeEmptyUpdates()}
+	core := newForwardTestCore(
+		&forwardMessageClientStub{response: &messagepb.Vector_MessageBox{Datas: []*mtproto.MessageBox{forwardSelfBox(100)}}},
+		&forwardUserClientStub{allowed: mtproto.BoolTrue},
+		sender,
+	)
+	want := &mtproto.SuggestedPost{}
+	request := forwardSelfRequest()
+	request.SuggestedPost = want
+
+	if _, err := core.MessagesForwardMessages(request); err != nil {
+		t.Fatalf("MessagesForwardMessages() error = %v", err)
+	}
+	if sender.request == nil || len(sender.request.GetMessage()) != 1 || sender.request.GetMessage()[0].GetMessage().GetSuggestedPost() != want {
+		t.Fatalf("forwarded suggested post = %v, want request object", sender.request)
+	}
+}
+
+func TestValidateStoredTextForwardOptionsRejectsSuggestedPost(t *testing.T) {
+	err := validateStoredTextForwardOptions(&mtproto.TLMessagesForwardMessages{
+		DropAuthor:    true,
+		SuggestedPost: &mtproto.SuggestedPost{},
+	})
+	if !errors.Is(err, mtproto.ErrMethodNotImpl) {
+		t.Fatalf("stored forward with suggested post = %v, want METHOD_NOT_IMPL", err)
+	}
+}
+
 func TestMessagesForwardMessagesFailsClosedOnNilSendResponse(t *testing.T) {
 	sender := &forwardMsgClientStub{}
 	core := newForwardTestCore(

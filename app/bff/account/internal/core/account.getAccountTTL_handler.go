@@ -47,6 +47,10 @@ func (c *AccountCore) AccountGetAccountTTL(in *mtproto.TLAccountGetAccountTTL) (
 		c.Logger.Errorf("account.getAccountTTL - user service returned no result")
 		return nil, mtproto.ErrInternalServerError
 	}
+	if !validAccountTTLDays(days.GetDays()) {
+		c.Logger.Errorf("account.getAccountTTL - user service returned invalid days: %d", days.GetDays())
+		return nil, mtproto.ErrInternalServerError
+	}
 
 	return mtproto.MakeTLAccountDaysTTL(&mtproto.AccountDaysTTL{
 		Days: days.Days,

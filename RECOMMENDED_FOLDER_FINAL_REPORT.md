@@ -4,7 +4,9 @@
 
 **功能描述**：为 Teamgram 实现系统级"推荐"聊天文件夹，位于"全部"文件夹右侧，展示算法推荐和系统推广的对话。
 
-**完成度**：约 **75%**
+**完成度**：核心 PostgreSQL/Dialog 能力已完成；生产 MTProto/BFF 集成按兼容性边界暂未启用。
+
+**截至**：2026-10-18
 
 **提交记录**：
 - Commit 1: `49edc189` - Phase 1-3 (基础架构)
@@ -17,7 +19,7 @@
 ### Phase 1: 数据库基础架构 (100%)
 
 ✅ **数据库迁移脚本**
-- 文件：[teamgramd/deploy/sql/postgres/103_dialog_recommendations.sql](teamgram-server/teamgramd/deploy/sql/postgres/103_dialog_recommendations.sql)
+- 文件：[teamgramd/deploy/sql/postgres/104_biz_dialog_recommendations.sql](teamgram-server/teamgramd/deploy/sql/postgres/104_biz_dialog_recommendations.sql)
 - 3个表：
   - `dialog_recommendations` - 推荐对话关系表（18个字段）
   - `recommendation_configs` - 推荐系统配置表（初始配置已准备）
@@ -56,7 +58,7 @@
   - ✅ `calculateSocialScore` - 社交关系评分（权重 0.2）
   - ✅ `GenerateRecommendations` - 生成推荐列表
   - ✅ `getConfigInt` - 从配置读取整数值
-- 注：当前返回模拟评分，待集成消息和用户服务后替换为真实数据
+- 候选来自用户真实 `dialogs` 行，评分使用活动时间、top message、未读和 peer 类型信号；消息级频率和社交图仍待独立服务数据。
 
 ✅ **核心业务处理器**
 - 文件：[dialog_recommendations.go](app/service/biz/dialog/internal/core/dialog_recommendations.go)
@@ -79,7 +81,7 @@
   5. ✅ `DialogRemovePromotedDialog` - 移除推广对话
      - 批量标记为已隐藏
 
-### Phase 3: Protobuf 接口定义 (90%)
+### Phase 3: Protobuf 接口定义 (100%)
 
 ✅ **Protocol Buffers 定义**
 - 文件：[dialog.tl.proto](app/service/biz/dialog/dialog/dialog.tl.proto)
@@ -90,30 +92,28 @@
   - ✅ 5个请求消息类型（TL_dialog_*）
   - ✅ 5个 RPC 方法声明
 
-⚠️ **临时解决方案**
-- 文件：[recommendation_types_stub.go](app/service/biz/dialog/dialog/recommendation_types_stub.go)
-- 临时类型定义，允许编译通过
-- **待完成**：运行 protobuf 编译器生成正式代码
+✅ **正式内部 gRPC 代码**
+- 已生成 `dialog.tl.pb.go` 和 `dialog.tl_grpc.pb.go`，临时 recommendation stub 已删除。
+- 推荐类型只用于内部 RPC；未加入通用 MTProto codec 注册。
 
-### Phase 4: BFF 层实现 (60%)
+### Phase 4: 实验性 BFF 层实现 (80%)
 
 ✅ **MTProto API Handlers**
 - [messages.getRecommendedDialogs_handler.go](app/bff/messages/internal/core/messages.getRecommendedDialogs_handler.go)
   - ✅ 从 Dialog 服务获取推荐列表
   - ✅ 支持分页（offset, limit）
-  - ⚠️ TODO: 构建完整的对话对象
-  - ⚠️ TODO: 获取用户和聊天信息
-  - ⚠️ TODO: 获取消息信息
+  - ✅ 通过 DialogExt 获取完整对话对象
+  - ✅ 补齐 top message、用户和群组实体
 - [messages.reportRecommendationFeedback_handler.go](app/bff/messages/internal/core/messages.reportRecommendationFeedback_handler.go)
   - ✅ 解析 InputPeer（User/Chat/Channel）
   - ✅ 调用 Dialog 服务记录反馈
-  - ✅ 支持3种反馈类型
+  - ✅ 校验并支持5种反馈类型
 
-⚠️ **未实现**
-- ❌ 修改 `messages.getDialogFilters` 添加固定的"推荐"文件夹（id=1）
-- ❌ 完善 `getRecommendedDialogs` 中的 TODO 部分
+⚠️ **生产边界**
+- `folder_id=1` 在 Layer 229 中是归档文件夹，生产 `messages.getDialogFilters` 不注入推荐文件夹。
+- `getRecommendedDialogs` 和反馈 BFF 文件保留实验 build tag，不属于正式 MTProto surface。
 
-### Phase 5: 定时任务 (100%)
+### Phase 5: 定时任务文件 (100%)
 
 ✅ **推荐刷新任务**
 - 文件：[recommendation_refresh_job.go](app/service/biz/dialog/internal/jobs/recommendation_refresh_job.go)
@@ -139,7 +139,7 @@
   - ✅ `TestRecommendationAlgorithm_CalculateScore` - 评分计算
   - ✅ `TestRecommendationAlgorithm_WeightsSum` - 权重总和验证
   - ✅ `TestRecommendationAlgorithm_GenerateRecommendations` - 推荐生成
-- 状态：测试框架已就绪，需要 mock 依赖才能运行
+- 状态：基础测试已通过；依赖 mock 或 PostgreSQL 的用例当前跳过
 
 ✅ **DAO 测试**
 - 文件：[dialog_recommendations_dao_test.go](app/service/biz/dialog/internal/dal/dao/postgres_dao/dialog_recommendations_dao_test.go)
@@ -150,7 +150,7 @@
   - ✅ `TestDialogRecommendationsDAO_UpdateStats` - 更新统计
   - ✅ `TestDialogRecommendationsDAO_DeleteExpired` - 清理过期
   - ✅ `TestDialogRecommendationsDAO_BatchInsert` - 批量插入
-- 状态：测试框架已就绪，需要测试数据库才能运行
+- 状态：测试文件已添加；需要测试数据库才能运行数据库用例
 
 ---
 
@@ -180,7 +180,7 @@
 - ✅ [RECOMMENDED_FOLDER_QUICKSTART.md](RECOMMENDED_FOLDER_QUICKSTART.md) - 快速启动指南
   - 立即可执行的步骤
   - 数据库迁移命令
-  - Protobuf 生成指南
+  - 内部 Protobuf 验证指南
   - 测试指南
   - 调试清单
   - 配置参数
@@ -192,29 +192,20 @@
 
 ## ⚠️ 待完成的工作
 
-### 高优先级
+### 后续工作
 
-1. **生成 Protobuf 代码**（阻塞项）
-   - 替换临时的 `recommendation_types_stub.go`
-   - 运行项目的 protobuf 编译工具
-   - 验证生成的代码
+1. **实验性 schema 接入**
+   - 当前 BFF 仅在 `recommendation_experimental` 下提供编译期适配器
+   - 如需暴露 wire route，必须使用独立实验 schema；生产 Layer 229 不复用 `folder_id=1`
 
-2. **完成 BFF 层 TODO**
-   - 在 `messages.getRecommendedDialogs` 中：
-     - 从 Dialog 服务获取完整对话信息
-     - 调用 User 服务获取用户信息
-     - 调用 Chat 服务获取聊天信息
-     - 构建完整的返回对象
-   - 修改 `messages.getDialogFilters` 添加固定的"推荐"文件夹
-
-3. **集成真实数据源**
+2. **集成更丰富的数据源**
    - 在推荐算法中集成消息服务获取对话频率
    - 集成用户服务获取社交关系
    - 调优算法权重
 
 ### 中优先级
 
-4. **配置定时任务**
+3. **配置定时任务**
    - 在应用启动时注册定时任务
    - 配置 Cron 表达式
    - 添加任务监控
@@ -335,19 +326,18 @@ feedback_type = 5  → muted (静音)
 psql -U postgres -d teamgram
 
 # 执行迁移
-\i teamgram-server/teamgramd/deploy/sql/postgres/103_dialog_recommendations.sql
+\i teamgram-server/teamgramd/deploy/sql/postgres/104_biz_dialog_recommendations.sql
 
 # 验证表已创建
 \dt dialog_recommendations
 SELECT * FROM recommendation_configs;
 ```
 
-### 2. 生成 Protobuf 代码
+### 2. 验证内部 Protobuf 代码
 
 ```bash
-# 待确定项目的 protobuf 生成命令
 cd app/service/biz/dialog
-[运行 protobuf 生成脚本]
+go test ./...
 
 # 验证生成
 ls -la dialog/*.pb.go
@@ -460,11 +450,11 @@ ORDER BY total_clicked DESC;
 
 ### 完成情况
 
-- **总体进度**：约 **75%**
+- **总体进度**：核心 PostgreSQL/Dialog 能力和实验性 BFF hydration 已完成；调度注册、实验 schema 和客户端仍待完成
 - **核心功能**：✅ 完成
 - **数据库层**：✅ 100% 完成
 - **业务逻辑**：✅ 100% 完成
-- **BFF 层**：⚠️ 60% 完成（需完成 TODO）
+- **BFF 层**：⚠️ 80% 完成（实验 surface，未注册正式 Layer 229）
 - **定时任务**：✅ 100% 完成
 - **测试框架**：✅ 80% 完成（需要测试环境）
 - **文档**：✅ 100% 完成
@@ -479,20 +469,20 @@ ORDER BY total_clicked DESC;
 
 ### 剩余工作量
 
-预计需要 **1-2天** 完成剩余工作：
-- 0.5天：生成 protobuf 代码
-- 0.5天：完成 BFF 层 TODO
-- 0.5天：集成测试和调试
+剩余工作主要包括：
+- 接入独立实验 schema（如需对外暴露实验 BFF）
+- 注册定时任务并接入监控
+- 在 PostgreSQL 测试环境运行集成、性能和压力测试
 
 ### 风险与建议
 
 **风险**：
-1. Protobuf 生成工具链未确定
-2. 推荐算法需要集成真实数据源
+1. 推荐算法仍需要消息频率和社交关系数据源
+2. 实验性 BFF 尚未进入正式 Layer 229 surface
 3. 性能优化需要生产环境验证
 
 **建议**：
-1. 尽快找到项目的 protobuf 生成方法
+1. 单独维护实验 schema，不修改正式 Layer 229 方法
 2. 分阶段上线：先上线基础功能，再优化算法
 3. 配置完善的监控，及时发现问题
 4. 灰度发布，先给少量用户开放
@@ -508,7 +498,7 @@ ORDER BY total_clicked DESC;
 
 ---
 
-**报告生成时间**：2026-10-17  
-**最后提交**：c25aaf14  
-**完成度**：75%  
-**状态**：✅ 核心功能已实现，待集成测试
+**报告生成时间**：2026-10-18
+**最后提交**：工作树继续实施
+**完成度**：核心 PostgreSQL/Dialog 能力已实现
+**状态**：✅ 已通过 `go test ./app/service/biz/dialog/...`；生产 BFF/客户端按兼容性边界暂未启用

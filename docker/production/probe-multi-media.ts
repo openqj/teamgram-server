@@ -39,7 +39,7 @@ function makeClient(auth: string): Client {
     (session as any)._serverAddress = process.env.TG_DC_HOST || '127.0.0.1';
     (session as any)._port = Number(process.env.TG_DC_PORT || '11443');
   };
-  return new TelegramClient(session, 1, '0123456789abcdef0123456789abcdef', {
+  const client = new TelegramClient(session, 1, '0123456789abcdef0123456789abcdef', {
     connection: Connection,
     fallbackConnection: Connection,
     shouldAllowHttpTransport: false,
@@ -52,6 +52,13 @@ function makeClient(auth: string): Client {
     autoReconnect: false,
     baseLogger: quietLogger,
   });
+  const initWith = client._initWith.bind(client);
+  client._initWith = (query: any) => {
+    const original = initWith(query);
+    if (rpcName(original) !== 'InvokeWithLayer' || rpcName(original.query) !== 'InitConnection') throw new Error('INVALID_INIT_CONNECTION_WRAPPER');
+    return new Api.InvokeWithLayer({ layer: 229, query: original.query });
+  };
+  return client;
 }
 
 function history(peer: any): any {
@@ -145,6 +152,7 @@ async function main() {
     const deleted = await alice.invoke(new Api.messages.DeleteMessages({ revoke: true, id: senderMessageIds }));
     const recipientDeleted = await bob.invoke(new Api.messages.DeleteMessages({ revoke: false, id: messageIds }));
     console.log(JSON.stringify({
+      layer: 229,
       tag,
       send: rpcName(sent),
       recipientHistory: rpcName(read),

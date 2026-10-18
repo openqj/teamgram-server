@@ -518,6 +518,7 @@ func (c *MessagesCore) makeForwardMessages(
 		}
 		m.ReplyTo = nil
 		m.Reactions = nil
+		m.SuggestedPost = request.GetSuggestedPost()
 		if m.ReplyMarkup != nil {
 			m.ReplyMarkup = m.ReplyMarkup.ToForwardMessage()
 		}

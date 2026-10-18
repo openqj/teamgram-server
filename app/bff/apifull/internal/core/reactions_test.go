@@ -43,6 +43,17 @@ func TestDefaultReactionRoundtrip(t *testing.T) {
 	}
 }
 
+func TestAvailableReactionCatalogRejectsUnknownConstructors(t *testing.T) {
+	valid := mtproto.MakeTLAvailableReaction(&mtproto.AvailableReaction{Reaction: "👍"}).To_AvailableReaction()
+	if !validAvailableReactionCatalog([]*mtproto.AvailableReaction{valid}) {
+		t.Fatal("known availableReaction constructor was rejected")
+	}
+	unknown := &mtproto.AvailableReaction{PredicateName: "availableReactionUnknown"}
+	if validAvailableReactionCatalog([]*mtproto.AvailableReaction{unknown}) {
+		t.Fatal("unknown available reaction constructor was accepted")
+	}
+}
+
 func TestGroupMessageReactionsAreVisibleToOtherMembers(t *testing.T) {
 	const (
 		aliceID   int64 = 81031

@@ -27,6 +27,56 @@ type localStarsInvoice struct {
 	description   string
 }
 
+func localGiftRecipientKey(selfID int64, user *mtproto.InputUser, peer *mtproto.InputPeer) (int64, error) {
+	if user != nil {
+		resolved := mtproto.FromInputUser(selfID, user)
+		if resolved == nil || resolved.PeerId <= 0 {
+			return 0, mtproto.ErrUserIdInvalid
+		}
+		switch resolved.PeerType {
+		case mtproto.PEER_SELF, mtproto.PEER_USER:
+			if resolved.PeerType == mtproto.PEER_USER && user.GetAccessHash() == 0 {
+				return 0, mtproto.ErrUserIdInvalid
+			}
+			return resolved.PeerId, nil
+		default:
+			return 0, mtproto.ErrUserIdInvalid
+		}
+	}
+	if peer == nil {
+		return 0, mtproto.ErrUserIdInvalid
+	}
+	switch peer.GetPredicateName() {
+	case mtproto.Predicate_inputPeerSelf:
+		if selfID <= 0 {
+			return 0, mtproto.ErrUserIdInvalid
+		}
+		return selfID, nil
+	case mtproto.Predicate_inputPeerUser:
+		if peer.GetUserId() <= 0 || peer.GetAccessHash() == 0 {
+			return 0, mtproto.ErrUserIdInvalid
+		}
+		return peer.GetUserId(), nil
+	case mtproto.Predicate_inputPeerChat:
+		key, err := domain.GiftOwnerKey(mtproto.PEER_CHAT, peer.GetChatId())
+		if err != nil {
+			return 0, mtproto.ErrPeerIdInvalid
+		}
+		return key, nil
+	case mtproto.Predicate_inputPeerChannel:
+		if peer.GetAccessHash() == 0 {
+			return 0, mtproto.ErrPeerIdInvalid
+		}
+		key, err := domain.GiftOwnerKey(mtproto.PEER_CHANNEL, peer.GetChannelId())
+		if err != nil {
+			return 0, mtproto.ErrPeerIdInvalid
+		}
+		return key, nil
+	default:
+		return 0, mtproto.ErrPeerIdInvalid
+	}
+}
+
 func (c *ApiFullCore) localStarsInvoice(in *mtproto.InputInvoice) (localStarsInvoice, error) {
 	uid, err := c.requireUserId()
 	if err != nil {
@@ -47,28 +97,22 @@ func (c *ApiFullCore) localStarsInvoice(in *mtproto.InputInvoice) (localStarsInv
 		}
 		result.kind, result.stars, result.giftSlug = domain.StarsSpendGift, gift.Stars, gift.Slug
 		result.title, result.description = "Star Gift", gift.Slug
-		if user := in.GetUserId(); user != nil {
-			peer := mtproto.FromInputUser(uid, user)
-			if peer == nil || (peer.PeerType != mtproto.PEER_USER && peer.PeerType != mtproto.PEER_SELF) || peer.PeerId <= 0 {
-				return localStarsInvoice{}, mtproto.ErrUserIdInvalid
-			}
-			result.recipientID = peer.PeerId
-		} else if peer := in.GetPeer(); peer != nil {
-			if peer.GetPredicateName() != mtproto.Predicate_inputPeerUser && peer.GetPredicateName() != mtproto.Predicate_inputPeerSelf {
-				return localStarsInvoice{}, mtproto.ErrMethodNotImpl
-			}
-			resolved := mtproto.FromInputPeer(peer)
-			if resolved == nil || resolved.PeerId <= 0 {
-				return localStarsInvoice{}, mtproto.ErrPeerIdInvalid
-			}
-			result.recipientID = resolved.PeerId
-		}
-		if result.recipientID <= 0 {
-			return localStarsInvoice{}, mtproto.ErrUserIdInvalid
+		result.recipientID, err = localGiftRecipientKey(uid, in.GetUserId(), in.GetPeer())
+		if err != nil {
+			return localStarsInvoice{}, err
 		}
 	case mtproto.Predicate_inputInvoicePremiumGiftStars:
 		user := in.GetUserId()
 		if user == nil {
+			return localStarsInvoice{}, mtproto.ErrUserIdInvalid
+		}
+		switch user.GetPredicateName() {
+		case mtproto.Predicate_inputUserSelf:
+		case mtproto.Predicate_inputUser:
+			if user.GetUserId() <= 0 || user.GetAccessHash() == 0 {
+				return localStarsInvoice{}, mtproto.ErrUserIdInvalid
+			}
+		default:
 			return localStarsInvoice{}, mtproto.ErrUserIdInvalid
 		}
 		peer := mtproto.FromInputUser(uid, user)
@@ -97,6 +141,15 @@ func (c *ApiFullCore) localStarsInvoice(in *mtproto.InputInvoice) (localStarsInv
 		}
 		bot := in.GetBot()
 		if bot == nil {
+			return localStarsInvoice{}, mtproto.ErrUserIdInvalid
+		}
+		switch bot.GetPredicateName() {
+		case mtproto.Predicate_inputUserSelf:
+		case mtproto.Predicate_inputUser:
+			if bot.GetUserId() <= 0 || bot.GetAccessHash() == 0 {
+				return localStarsInvoice{}, mtproto.ErrUserIdInvalid
+			}
+		default:
 			return localStarsInvoice{}, mtproto.ErrUserIdInvalid
 		}
 		botPeer := mtproto.FromInputUser(uid, bot)

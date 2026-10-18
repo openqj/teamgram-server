@@ -120,3 +120,85 @@ func TestVerifyConnectedBotResolvesInputUserSelf(t *testing.T) {
 		t.Fatalf("verify inputUserSelf = (%d, %v), want caller %d", got, err, callerID)
 	}
 }
+
+func TestConnectedBotControlsRejectInvalidPeersBeforeFallback(t *testing.T) {
+	const callerID = int64(81026004)
+	tests := []struct {
+		name string
+		peer *mtproto.InputPeer
+		want error
+	}{
+		{name: "nil request", want: mtproto.ErrInputRequestInvalid},
+		{name: "user missing hash", peer: mtproto.MakeTLInputPeerUser(&mtproto.InputPeer{UserId: callerID + 1}).To_InputPeer(), want: mtproto.ErrPeerIdInvalid},
+		{name: "channel missing hash", peer: mtproto.MakeTLInputPeerChannel(&mtproto.InputPeer{ChannelId: callerID + 2}).To_InputPeer(), want: mtproto.ErrChannelInvalid},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			core := premiumAccessCore(callerID, true)
+			var paused *mtproto.Bool
+			if tc.peer != nil {
+				paused = mtproto.BoolFalse
+			}
+			var got *mtproto.Bool
+			var err error
+			if tc.name == "nil request" {
+				got, err = core.AccountToggleConnectedBotPaused(nil)
+			} else {
+				got, err = core.AccountToggleConnectedBotPaused(&mtproto.TLAccountToggleConnectedBotPaused{Peer: tc.peer, Paused: paused})
+			}
+			if got != nil || !errors.Is(err, tc.want) {
+				t.Fatalf("toggle connected bot = (%v, %v), want nil and %v", got, err, tc.want)
+			}
+
+			if tc.name == "nil request" {
+				got, err = core.AccountDisablePeerConnectedBot(nil)
+			} else {
+				got, err = core.AccountDisablePeerConnectedBot(&mtproto.TLAccountDisablePeerConnectedBot{Peer: tc.peer})
+			}
+			if got != nil || !errors.Is(err, tc.want) {
+				t.Fatalf("disable connected bot = (%v, %v), want nil and %v", got, err, tc.want)
+			}
+		})
+	}
+}
+
+func TestInputUserIDsRejectsMalformedEntries(t *testing.T) {
+	const (
+		userID     = int64(81026005)
+		accessHash = int64(91026005)
+	)
+	valid := mtproto.MakeTLInputUser(&mtproto.InputUser{UserId: userID, AccessHash: accessHash}).To_InputUser()
+	tests := []struct {
+		name  string
+		users []*mtproto.InputUser
+		want  error
+	}{
+		{name: "valid", users: []*mtproto.InputUser{valid}},
+		{name: "nil entry", users: []*mtproto.InputUser{nil}, want: mtproto.ErrInputConstructorInvalid},
+		{name: "predicate-less entry", users: []*mtproto.InputUser{{UserId: userID, AccessHash: accessHash}}, want: mtproto.ErrInputConstructorInvalid},
+		{name: "self constructor", users: []*mtproto.InputUser{mtproto.MakeTLInputUserSelf(&mtproto.InputUser{}).To_InputUser()}, want: mtproto.ErrInputConstructorInvalid},
+		{name: "missing user id", users: []*mtproto.InputUser{mtproto.MakeTLInputUser(&mtproto.InputUser{AccessHash: accessHash}).To_InputUser()}, want: mtproto.ErrUserIdInvalid},
+		{name: "missing access hash", users: []*mtproto.InputUser{mtproto.MakeTLInputUser(&mtproto.InputUser{UserId: userID}).To_InputUser()}, want: mtproto.ErrUserIdInvalid},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := inputUserIDs(test.users)
+			if test.want != nil {
+				if got != nil || !errors.Is(err, test.want) {
+					t.Fatalf("inputUserIDs = (%v, %v), want nil and %v", got, err, test.want)
+				}
+				return
+			}
+			if err != nil || len(got) != 1 || got[0] != userID {
+				t.Fatalf("inputUserIDs = (%v, %v), want [%d], nil", got, err, userID)
+			}
+		})
+	}
+}
+
+func TestConnectedBotPeerRejectsPredicateLessRawFields(t *testing.T) {
+	peer := &mtproto.InputPeer{UserId: 81026006, AccessHash: 91026006}
+	if peerType, peerID, err := connectedBotPeer(peer); peerType != 0 || peerID != 0 || !errors.Is(err, mtproto.ErrPeerIdInvalid) {
+		t.Fatalf("predicate-less peer = (%d, %d, %v), want (0, 0, PEER_ID_INVALID)", peerType, peerID, err)
+	}
+}

@@ -10,6 +10,7 @@ import (
 	"github.com/teamgram/proto/mtproto"
 	"github.com/teamgram/teamgram-server/app/botapi"
 	"github.com/teamgram/teamgram-server/app/interface/httpserver/internal/svc"
+	"google.golang.org/grpc/status"
 )
 
 func sendGift(ctx *svc.ServiceContext, r *http.Request, botID int64, request *botAPIRequest) (any, int, int, string) {
@@ -24,22 +25,24 @@ func sendGift(ctx *svc.ServiceContext, r *http.Request, botID int64, request *bo
 	if request.has("user_id") == request.has("chat_id") {
 		return nil, http.StatusBadRequest, 400, "Bad Request: exactly one of user_id or chat_id is required"
 	}
-	var target *mtproto.InputUser
+	var targetUser *mtproto.InputUser
+	var targetPeer *mtproto.InputPeer
 	if request.has("user_id") {
 		userID, parseErr := request.int64("user_id")
 		if parseErr != nil || userID <= 0 {
 			return nil, http.StatusBadRequest, 400, "Bad Request: user_id is invalid"
 		}
-		target, err = botAPIStarsInputUser(ctx, r.Context(), botID, userID)
+		targetUser, err = botAPIStarsInputUser(ctx, r.Context(), botID, userID)
 	} else {
 		_, peerType, peerID, resolveErr := resolveBotAPIChatID(r.Context(), ctx, botID, request.string("chat_id"))
 		if resolveErr != nil || peerID <= 0 {
 			return nil, http.StatusBadRequest, 400, "Bad Request: chat_id is invalid"
 		}
-		if peerType != mtproto.PEER_USER {
-			return nil, http.StatusNotImplemented, 501, "Not Implemented: gift settlement for chats and channels is not represented by the local gift ledger"
+		if peerType == mtproto.PEER_USER {
+			targetUser, err = botAPIStarsInputUser(ctx, r.Context(), botID, peerID)
+		} else {
+			targetPeer = botAPIInputPeer(botID, peerType, peerID)
 		}
-		target, err = botAPIStarsInputUser(ctx, r.Context(), botID, peerID)
 	}
 	if err != nil {
 		return nil, http.StatusBadRequest, 400, rpcDescription(err)
@@ -47,6 +50,9 @@ func sendGift(ctx *svc.ServiceContext, r *http.Request, botID int64, request *bo
 	payForUpgrade, err := request.bool("pay_for_upgrade")
 	if err != nil {
 		return nil, http.StatusBadRequest, 400, "Bad Request: pay_for_upgrade is invalid"
+	}
+	if payForUpgrade {
+		return nil, http.StatusNotImplemented, 501, "Not Implemented: paid gift upgrades are not supported by the Layer 229 payment adapter"
 	}
 	text, entities, err := botAPITextEntities(request, "text", "text_entities", "text_parse_mode")
 	if err != nil {
@@ -60,7 +66,8 @@ func sendGift(ctx *svc.ServiceContext, r *http.Request, botID int64, request *bo
 		message = mtproto.MakeTLTextWithEntities(&mtproto.TextWithEntities{Text: text, Entities: botapi.MessageEntitiesToMTProto(entities)}).To_TextWithEntities()
 	}
 	invoice := mtproto.MakeTLInputInvoiceStarGift(&mtproto.InputInvoice{
-		UserId:         target,
+		Peer:           targetPeer,
+		UserId:         targetUser,
 		GiftId:         giftID,
 		IncludeUpgrade: payForUpgrade,
 		Message:        message,
@@ -110,6 +117,9 @@ func giftPremiumSubscription(ctx *svc.ServiceContext, r *http.Request, botID int
 	if err != nil {
 		return nil, http.StatusBadRequest, 400, "Bad Request: " + err.Error()
 	}
+	if err := validateBotAPITextLength(text, 128, "text"); err != nil {
+		return nil, http.StatusBadRequest, 400, "Bad Request: " + err.Error()
+	}
 	message := (*mtproto.TextWithEntities)(nil)
 	if request.has("text") {
 		message = mtproto.MakeTLTextWithEntities(&mtproto.TextWithEntities{Text: text, Entities: botapi.MessageEntitiesToMTProto(entities)}).To_TextWithEntities()
@@ -119,7 +129,7 @@ func giftPremiumSubscription(ctx *svc.ServiceContext, r *http.Request, botID int
 		Months:  int32(months),
 		Message: message,
 	}).To_InputInvoice()
-	if err = settleBotAPILayer229StarsInvoice(ctx.PaymentsClient, ctx.StarsClient, botRPCContext(r.Context(), botID), invoice, mtproto.Predicate_payments_paymentFormStars); err != nil {
+	if err = settleBotAPILayer229StarsInvoiceExpected(botRPCContext(r.Context(), botID), ctx.PaymentsClient, ctx.StarsClient, invoice, mtproto.Predicate_payments_paymentFormStars, starCount); err != nil {
 		return nil, http.StatusBadRequest, 400, rpcDescription(err)
 	}
 	return true, http.StatusOK, 0, ""
@@ -149,13 +159,17 @@ func transferBusinessAccountStars(ctx *svc.ServiceContext, r *http.Request, botI
 		Stars: stars,
 	}).To_InputInvoice()
 	callCtx := businessBotCallContext(r.Context(), botID, scope)
-	if err = settleBotAPILayer229StarsInvoice(ctx.PaymentsClient, ctx.StarsClient, callCtx, invoice, mtproto.Predicate_payments_paymentFormStars); err != nil {
+	if err = settleBotAPILayer229StarsInvoiceExpected(callCtx, ctx.PaymentsClient, ctx.StarsClient, invoice, mtproto.Predicate_payments_paymentFormStars, stars); err != nil {
 		return nil, http.StatusBadRequest, 400, rpcDescription(err)
 	}
 	return true, http.StatusOK, 0, ""
 }
 
 func settleBotAPILayer229StarsInvoice(paymentClient mtproto.RPCPaymentsClient, starsClient mtproto.RPCStarsClient, callCtx context.Context, invoice *mtproto.InputInvoice, expectedForm string) error {
+	return settleBotAPILayer229StarsInvoiceExpected(callCtx, paymentClient, starsClient, invoice, expectedForm, 0)
+}
+
+func settleBotAPILayer229StarsInvoiceExpected(callCtx context.Context, paymentClient mtproto.RPCPaymentsClient, starsClient mtproto.RPCStarsClient, invoice *mtproto.InputInvoice, expectedForm string, expectedStars int64) error {
 	if paymentClient == nil || starsClient == nil || invoice == nil {
 		return mtproto.ErrPaymentUnsupported
 	}
@@ -166,6 +180,21 @@ func settleBotAPILayer229StarsInvoice(paymentClient mtproto.RPCPaymentsClient, s
 	if form == nil || form.GetFormId() <= 0 || form.GetPredicateName() != expectedForm {
 		return errors.New("payment form did not match the requested Stars invoice")
 	}
+	if expectedStars > 0 {
+		var amount int64
+		if form.GetInvoice() == nil {
+			return errors.New("payment form did not include the requested Stars amount")
+		}
+		for _, price := range form.GetInvoice().GetPrices() {
+			if price == nil || price.GetAmount() < 0 || amount > int64(^uint64(0)>>1)-price.GetAmount() {
+				return errors.New("payment form Stars amount did not match star_count")
+			}
+			amount += price.GetAmount()
+		}
+		if amount != expectedStars {
+			return errors.New("payment form Stars amount did not match star_count")
+		}
+	}
 	result, err := starsClient.PaymentsSendStarsForm(callCtx, &mtproto.TLPaymentsSendStarsForm{FormId: form.GetFormId(), Invoice: invoice})
 	if err != nil {
 		return err
@@ -174,4 +203,15 @@ func settleBotAPILayer229StarsInvoice(paymentClient mtproto.RPCPaymentsClient, s
 		return errors.New("Stars payment result was not returned")
 	}
 	return nil
+}
+
+// paymentUnsupportedFromRPC also recognizes the status error returned after
+// the payment RPC crosses a gRPC boundary. errors.Is alone cannot match a
+// freshly decoded status error from another process.
+func paymentUnsupportedFromRPC(err error) bool {
+	if err == nil {
+		return false
+	}
+	return errors.Is(err, mtproto.ErrPaymentUnsupported) ||
+		(status.Code(err) == status.Code(mtproto.ErrPaymentUnsupported) && strings.Contains(err.Error(), "PAYMENT_UNSUPPORTED"))
 }

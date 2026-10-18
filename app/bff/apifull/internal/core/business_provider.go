@@ -70,7 +70,17 @@ func secureBusinessProviderURL(parsed *url.URL, allowInsecureHTTP bool) bool {
 // read-only operations so a stale or unauthenticated response cannot be
 // surfaced as a Layer 229 success.
 func (c *ApiFullCore) callBusinessProvider(operation string, payload any, result any) error {
-	if c == nil || c.svcCtx == nil || c.MD == nil || c.MD.GetUserId() <= 0 {
+	if c == nil || c.MD == nil {
+		return mtproto.ErrMethodNotImpl
+	}
+	return c.callBusinessProviderAs(c.MD.GetUserId(), operation, payload, result)
+}
+
+// callBusinessProviderAs keeps provider identity aligned with the account that
+// owns a business-scoped mutation. Native calls use the authenticated caller;
+// invokeWithBusinessConnection calls can explicitly use the trusted owner.
+func (c *ApiFullCore) callBusinessProviderAs(userID int64, operation string, payload any, result any) error {
+	if c == nil || c.svcCtx == nil || userID <= 0 {
 		return mtproto.ErrMethodNotImpl
 	}
 	endpoint := strings.TrimSpace(c.svcCtx.Config.BusinessProviderEndpoint)
@@ -103,7 +113,7 @@ func (c *ApiFullCore) callBusinessProvider(operation string, payload any, result
 		Operation string          `json:"operation"`
 		UserID    int64           `json:"user_id"`
 		Payload   json.RawMessage `json:"payload"`
-	}{hex.EncodeToString(nonce[:]), operation, c.MD.GetUserId(), payloadJSON}
+	}{hex.EncodeToString(nonce[:]), operation, userID, payloadJSON}
 	body, err := json.Marshal(request)
 	if err != nil {
 		return mtproto.ErrInternalServerError
@@ -117,7 +127,7 @@ func (c *ApiFullCore) callBusinessProvider(operation string, payload any, result
 		return mtproto.ErrInternalServerError
 	}
 	providercontract.SetRequestHeaders(req, body, key,
-		businessProviderIdempotencyKey(c.MD.GetUserId(), operation, payloadJSON),
+		businessProviderIdempotencyKey(userID, operation, payloadJSON),
 		"X-Teamgram-Business-Provider-Request-Signature", signingKey)
 	client := &http.Client{Timeout: timeout, CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}
 	resp, err := client.Do(req)
@@ -133,11 +143,18 @@ func (c *ApiFullCore) callBusinessProvider(operation string, payload any, result
 		return mtproto.ErrInternalServerError
 	}
 	var envelope businessProviderEnvelope
-	if err = json.Unmarshal(responseBody, &envelope); err != nil || !envelope.Verified || envelope.RequestID != request.RequestID || envelope.Operation != request.Operation || envelope.UserID != request.UserID {
+	if err = json.Unmarshal(responseBody, &envelope); err != nil || envelope.RequestID != request.RequestID || envelope.Operation != request.Operation || envelope.UserID != request.UserID {
 		return mtproto.ErrInternalServerError
 	}
-	if envelope.Error != "" || len(envelope.Result) == 0 || string(envelope.Result) == "null" {
+	// A signed provider error is an authoritative capability miss (for example,
+	// an operation that has not been provisioned for this caller), not a
+	// malformed response. Preserve the canonical unavailable-method error while
+	// keeping an unsigned or otherwise incomplete success response fail-closed.
+	if envelope.Error != "" {
 		return mtproto.ErrMethodNotImpl
+	}
+	if !envelope.Verified || len(envelope.Result) == 0 || string(envelope.Result) == "null" {
+		return mtproto.ErrInternalServerError
 	}
 	if err = json.Unmarshal(envelope.Result, result); err != nil {
 		return mtproto.ErrInternalServerError

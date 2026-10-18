@@ -46,9 +46,13 @@ func (c *DialogCore) DialogGetRecommendedDialogs(ctx context.Context,
 	if fetchLimit < limit || fetchLimit > 10000 {
 		return nil, mtproto.ErrOffsetInvalid
 	}
+	promotedLimit := int(fetchLimit)
+	if configured := NewRecommendationAlgorithm(c).getConfigInt(ctx, "promoted_max_slots", 3); configured > 0 && configured < promotedLimit {
+		promotedLimit = configured
+	}
 
 	// 1. 获取推广对话（优先级最高）
-	promotedDialogs, err := store.DialogRecommendations.SelectPromotedListWithLimit(ctx, userID, fetchLimit)
+	promotedDialogs, err := store.DialogRecommendations.SelectPromotedListWithLimit(ctx, userID, int32(promotedLimit))
 	if err != nil {
 		return nil, err
 	}

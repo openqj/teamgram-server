@@ -331,6 +331,53 @@ func HistoryForInputPeer(userID int64, peer *mtproto.InputPeer, offsetID, limit 
 	return History(userID, channelID, offsetID, limit)
 }
 
+// HistoryForInputPeerLayer229 is the messages.getHistory channel path. It
+// returns the channelMessages constructor with the channel pts and visible
+// message count; the older HistoryForInputPeer helper remains generic for
+// methods whose TL contract is messages.messages.
+func HistoryForInputPeerLayer229(userID int64, peer *mtproto.InputPeer, offsetID, offsetDate, addOffset, limit, maxID, minID int32) (*mtproto.Messages_Messages, error) {
+	channelID, err := ValidateReadInputPeer(userID, peer)
+	if err != nil {
+		return nil, err
+	}
+	rows, count, err := domain.ListChannelMessagesHistory(userID, channelID, offsetID, offsetDate, addOffset, minID, maxID, limit)
+	if err != nil {
+		return nil, err
+	}
+	messages, err := messagesOfForUser(rows, userID)
+	if err != nil {
+		return nil, err
+	}
+	channel, ok, err := domain.LoadChannel(channelID)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, mtproto.ErrChannelInvalid
+	}
+	chat := Chat(channel, channel.Creator == userID)
+	if channel.Creator != userID {
+		member, err := domain.ChannelIsMember(channel.ID, userID)
+		if err != nil {
+			return nil, stored(err)
+		}
+		chat.Left = !member
+	}
+	pts, err := domain.ChannelMessagePTS(channelID)
+	if err != nil {
+		return nil, err
+	}
+	return mtproto.MakeTLMessagesChannelMessages(&mtproto.Messages_Messages{
+		Inexact:  false,
+		Pts:      pts,
+		Count:    count,
+		Messages: messages,
+		Topics:   []*mtproto.ForumTopic{},
+		Chats:    []*mtproto.Chat{chat},
+		Users:    []*mtproto.User{},
+	}).To_Messages_Messages(), nil
+}
+
 const recentLocationsPageSize int32 = 50
 
 // RecentLocationsForInputPeer returns the newest geolocation messages from a

@@ -66,11 +66,7 @@ func (c *MsgCore) persistScheduled(in *msg.TLMsgSendMessageV2) (*mtproto.Updates
 		if date == 0 {
 			date = first
 		}
-		text := ""
-		if m := outBox.GetMessage(); m != nil {
-			text = m.GetMessage()
-		}
-		ups, err := schedstore.Append(in.UserId, peer, text, date)
+		ups, err := schedstore.AppendMessage(in.UserId, peer, outBox.GetMessage(), date)
 		if err != nil {
 			c.Logger.Errorf("msg.sendMessageV2 - schedule persist failed")
 			return nil, true, asStored(err)

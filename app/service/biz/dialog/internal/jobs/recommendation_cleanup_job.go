@@ -34,7 +34,8 @@ func (j *RecommendationCleanupJob) Run() {
 		logx.Error("RecommendationCleanupJob: PostgreSQL store is required")
 		return
 	}
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
 	now := time.Now().Unix()
 
 	logx.Info("RecommendationCleanupJob: starting cleanup of expired recommendations")

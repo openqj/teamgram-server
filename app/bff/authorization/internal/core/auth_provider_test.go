@@ -224,6 +224,32 @@ func TestAuthImportBotAuthorizationRejectsNonBotFromPostgresUserTokenAuthority(t
 	}
 }
 
+func TestAuthImportBotAuthorizationRejectsMalformedZeroIDFromPostgresUserTokenAuthority(t *testing.T) {
+	apiID, apiHash := validAuthAPI()
+	users := &authProviderTestUserClient{byTokenUser: authProviderTestUser(0, true)}
+	sessions := &authProviderTestAuthsessionClient{}
+	ctx := context.Background()
+	core := &AuthorizationCore{
+		ctx: ctx,
+		svcCtx: &svc.ServiceContext{
+			Config: config.Config{},
+			Dao:    &dao.Dao{UserClient: users, AuthsessionClient: sessions},
+		},
+		MD:     &metadata.RpcMetadata{PermAuthKeyId: 9203},
+		Logger: logx.WithContext(ctx),
+	}
+
+	result, err := core.AuthImportBotAuthorization(&mtproto.TLAuthImportBotAuthorization{
+		ApiId: apiID, ApiHash: apiHash, BotAuthToken: "malformed-bot-token",
+	})
+	if result != nil || !errors.Is(err, mtproto.ErrAccessTokenInvalid) {
+		t.Fatalf("bot import = (%v, %v), want ACCESS_TOKEN_INVALID", result, err)
+	}
+	if sessions.bindReq != nil {
+		t.Fatalf("zero-ID bot token was bound: %v", sessions.bindReq)
+	}
+}
+
 func TestAuthImportBotAuthorizationRejectsProviderDatabaseIdentityMismatch(t *testing.T) {
 	apiID, apiHash := validAuthAPI()
 	server := newAuthProviderTestServer(t, authProviderTestSigningKey, func(request authProviderRequest) authProviderResponse {

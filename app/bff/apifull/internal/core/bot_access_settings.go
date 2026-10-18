@@ -68,7 +68,7 @@ func (c *ApiFullCore) validateBotAccessUsers(uid int64, inputs []*mtproto.InputU
 		if err != nil {
 			return nil, err
 		}
-		if profile == nil || profile.GetUser() == nil || profile.Deleted() {
+		if profile == nil || profile.GetUser() == nil || profile.Deleted() || profile.GetUser().GetId() != id {
 			return nil, mtproto.ErrUserIdInvalid
 		}
 		if profile.GetUser().GetAccessHash() != seen[id] {

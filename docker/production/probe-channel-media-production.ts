@@ -59,6 +59,12 @@ function makeClient(authKeyB64: string): any {
     autoReconnect: false,
     baseLogger: quietLogger,
   });
+  const initWith = client._initWith.bind(client);
+  client._initWith = (query: any) => {
+    const original = initWith(query);
+    if (rpcName(original) !== 'InvokeWithLayer' || rpcName(original.query) !== 'InitConnection') throw new Error('INVALID_INIT_CONNECTION_WRAPPER');
+    return new Api.InvokeWithLayer({ layer: 229, query: original.query });
+  };
   (client as any)._borrowExportedSender = async () => undefined;
   (client as any)._updateLoop = async () => undefined;
   return client;
@@ -161,7 +167,7 @@ async function main() {
   let channelId = 0n;
   let accessHash = 0n;
   let failure: unknown;
-  const evidence: Record<string, unknown> = {};
+  const evidence: Record<string, unknown> = { layer: 229 };
 
   try {
     await client.connect();

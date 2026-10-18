@@ -101,6 +101,15 @@ func TestCollectibleEmojiStatusCatalogPostgresRoundTrip(t *testing.T) {
 	})
 
 	c := &ApiFullCore{MD: &metadata.RpcMetadata{UserId: uid}}
+	_, _ = db.Exec(`DELETE FROM apifull_collectible_emoji_status WHERE owner_user_id=$1`, uid)
+	empty, err := c.AccountGetCollectibleEmojiStatuses(&mtproto.TLAccountGetCollectibleEmojiStatuses{})
+	if err != nil || empty == nil || empty.GetPredicateName() != mtproto.Predicate_account_emojiStatuses || len(empty.GetStatuses()) != 0 || empty.GetHash() == 0 {
+		t.Fatalf("empty collectible statuses=%v err=%v", empty, err)
+	}
+	emptySame, err := c.AccountGetCollectibleEmojiStatuses(&mtproto.TLAccountGetCollectibleEmojiStatuses{Hash: empty.GetHash()})
+	if err != nil || emptySame == nil || emptySame.GetPredicateName() != mtproto.Predicate_account_emojiStatusesNotModified {
+		t.Fatalf("empty collectible same hash=%v err=%v", emptySame, err)
+	}
 	full, err := c.AccountGetCollectibleEmojiStatuses(&mtproto.TLAccountGetCollectibleEmojiStatuses{})
 	if err != nil {
 		t.Fatal(err)

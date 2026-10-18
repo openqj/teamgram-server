@@ -4,6 +4,7 @@
 package botapi
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"strconv"
@@ -31,46 +32,71 @@ type ResponseParameters struct {
 }
 
 type User struct {
-	ID                      int64  `json:"id"`
-	IsBot                   bool   `json:"is_bot"`
-	FirstName               string `json:"first_name"`
-	LastName                string `json:"last_name,omitempty"`
-	Username                string `json:"username,omitempty"`
-	LanguageCode            string `json:"language_code,omitempty"`
-	IsPremium               bool   `json:"is_premium,omitempty"`
-	AddedToAttachmentMenu   bool   `json:"added_to_attachment_menu,omitempty"`
-	CanJoinGroups           bool   `json:"can_join_groups,omitempty"`
-	CanReadAllGroupMessages bool   `json:"can_read_all_group_messages,omitempty"`
-	SupportsInlineQueries   bool   `json:"supports_inline_queries,omitempty"`
-	CanConnectToBusiness    bool   `json:"can_connect_to_business,omitempty"`
-	HasMainWebApp           bool   `json:"has_main_web_app,omitempty"`
+	ID                         int64  `json:"id"`
+	IsBot                      bool   `json:"is_bot"`
+	FirstName                  string `json:"first_name"`
+	LastName                   string `json:"last_name,omitempty"`
+	Username                   string `json:"username,omitempty"`
+	LanguageCode               string `json:"language_code,omitempty"`
+	IsPremium                  bool   `json:"is_premium,omitempty"`
+	AddedToAttachmentMenu      bool   `json:"added_to_attachment_menu,omitempty"`
+	CanJoinGroups              bool   `json:"can_join_groups,omitempty"`
+	CanReadAllGroupMessages    bool   `json:"can_read_all_group_messages,omitempty"`
+	SupportsGuestQueries       bool   `json:"supports_guest_queries,omitempty"`
+	SupportsInlineQueries      bool   `json:"supports_inline_queries,omitempty"`
+	CanConnectToBusiness       bool   `json:"can_connect_to_business,omitempty"`
+	HasMainWebApp              bool   `json:"has_main_web_app,omitempty"`
+	HasTopicsEnabled           bool   `json:"has_topics_enabled,omitempty"`
+	AllowsUsersToCreateTopics  bool   `json:"allows_users_to_create_topics,omitempty"`
+	CanManageBots              bool   `json:"can_manage_bots,omitempty"`
+	SupportsJoinRequestQueries bool   `json:"supports_join_request_queries,omitempty"`
 }
 
 type Chat struct {
-	ID                    int64    `json:"id"`
-	Type                  string   `json:"type"`
-	Title                 string   `json:"title,omitempty"`
-	Username              string   `json:"username,omitempty"`
-	FirstName             string   `json:"first_name,omitempty"`
-	LastName              string   `json:"last_name,omitempty"`
-	IsForum               bool     `json:"is_forum,omitempty"`
-	Photo                 any      `json:"photo,omitempty"`
-	ActiveUsernames       []string `json:"active_usernames,omitempty"`
-	HasPrivateForwards    bool     `json:"has_private_forwards,omitempty"`
-	HasRestrictedVoice    bool     `json:"has_restricted_voice_and_video_messages,omitempty"`
-	JoinToSendMessages    bool     `json:"join_to_send_messages,omitempty"`
-	JoinByRequest         bool     `json:"join_by_request,omitempty"`
-	Description           string   `json:"description,omitempty"`
-	InviteLink            string   `json:"invite_link,omitempty"`
-	PinnedMessage         *Message `json:"pinned_message,omitempty"`
-	Permissions           any      `json:"permissions,omitempty"`
-	SlowModeDelay         int      `json:"slow_mode_delay,omitempty"`
-	MessageAutoDeleteTime int      `json:"message_auto_delete_timer_changed,omitempty"`
-	HasHiddenMembers      bool     `json:"has_hidden_members,omitempty"`
-	HasAggressiveAntiSpam bool     `json:"has_aggressive_anti_spam_enabled,omitempty"`
-	EmojiStatusCustomID   string   `json:"emoji_status_custom_emoji_id,omitempty"`
-	AccentColorID         int      `json:"accent_color_id,omitempty"`
-	BackgroundCustomEmoji string   `json:"background_custom_emoji_id,omitempty"`
+	ID                        int64      `json:"id"`
+	Type                      string     `json:"type"`
+	Title                     string     `json:"title,omitempty"`
+	Username                  string     `json:"username,omitempty"`
+	FirstName                 string     `json:"first_name,omitempty"`
+	LastName                  string     `json:"last_name,omitempty"`
+	IsForum                   bool       `json:"is_forum,omitempty"`
+	IsDirectMessages          bool       `json:"is_direct_messages,omitempty"`
+	Photo                     any        `json:"photo,omitempty"`
+	ActiveUsernames           []string   `json:"active_usernames,omitempty"`
+	HasPrivateForwards        bool       `json:"has_private_forwards,omitempty"`
+	HasRestrictedVoice        bool       `json:"has_restricted_voice_and_video_messages,omitempty"`
+	JoinToSendMessages        bool       `json:"join_to_send_messages,omitempty"`
+	JoinByRequest             bool       `json:"join_by_request,omitempty"`
+	Description               string     `json:"description,omitempty"`
+	InviteLink                string     `json:"invite_link,omitempty"`
+	PinnedMessage             *Message   `json:"pinned_message,omitempty"`
+	Permissions               any        `json:"permissions,omitempty"`
+	SlowModeDelay             int        `json:"slow_mode_delay,omitempty"`
+	MessageAutoDeleteTime     int        `json:"message_auto_delete_timer_changed,omitempty"`
+	HasHiddenMembers          bool       `json:"has_hidden_members,omitempty"`
+	HasAggressiveAntiSpam     bool       `json:"has_aggressive_anti_spam_enabled,omitempty"`
+	EmojiStatusCustomID       string     `json:"emoji_status_custom_emoji_id,omitempty"`
+	AccentColorID             int        `json:"accent_color_id,omitempty"`
+	BackgroundCustomEmoji     string     `json:"background_custom_emoji_id,omitempty"`
+	MaxReactionCount          int        `json:"max_reaction_count,omitempty"`
+	AcceptedGiftTypes         any        `json:"accepted_gift_types,omitempty"`
+	CanSendPaidMedia          bool       `json:"can_send_paid_media,omitempty"`
+	UnrestrictBoostCount      int        `json:"unrestrict_boost_count,omitempty"`
+	HasProtectedContent       bool       `json:"has_protected_content,omitempty"`
+	HasVisibleHistory         bool       `json:"has_visible_history,omitempty"`
+	StickerSetName            string     `json:"sticker_set_name,omitempty"`
+	CanSetStickerSet          bool       `json:"can_set_sticker_set,omitempty"`
+	CustomEmojiStickerSetName string     `json:"custom_emoji_sticker_set_name,omitempty"`
+	LinkedChatID              int64      `json:"linked_chat_id,omitempty"`
+	PaidMessageStarCount      int64      `json:"paid_message_star_count,omitempty"`
+	GuardBot                  *User      `json:"guard_bot,omitempty"`
+	Community                 *Community `json:"community,omitempty"`
+}
+
+// Community represents a group of chats linked around a shared topic.
+type Community struct {
+	ID   int64  `json:"id"`
+	Name string `json:"name"`
 }
 
 // Story is the Bot API result returned by story publishing methods.
@@ -298,22 +324,57 @@ type PreCheckoutQuery struct {
 }
 
 type PollOption struct {
-	Text       string `json:"text"`
-	VoterCount int    `json:"voter_count"`
+	PersistentID string          `json:"persistent_id,omitempty"`
+	Text         string          `json:"text"`
+	TextEntities []MessageEntity `json:"text_entities,omitempty"`
+	Media        *PollMedia      `json:"media,omitempty"`
+	VoterCount   int             `json:"voter_count"`
+	AddedByUser  *User           `json:"added_by_user,omitempty"`
+	AddedByChat  *Chat           `json:"added_by_chat,omitempty"`
+	AdditionDate int64           `json:"addition_date,omitempty"`
+}
+
+// PollMedia is the media union allowed in poll options and explanations.
+type PollMedia struct {
+	Animation *Animation  `json:"animation,omitempty"`
+	Audio     *Audio      `json:"audio,omitempty"`
+	Document  *Document   `json:"document,omitempty"`
+	Link      *Link       `json:"link,omitempty"`
+	LivePhoto *LivePhoto  `json:"live_photo,omitempty"`
+	Location  *Location   `json:"location,omitempty"`
+	Photo     []PhotoSize `json:"photo,omitempty"`
+	Sticker   *Sticker    `json:"sticker,omitempty"`
+	Venue     *Venue      `json:"venue,omitempty"`
+	Video     *Video      `json:"video,omitempty"`
+}
+
+type Link struct {
+	URL string `json:"url"`
 }
 
 type Poll struct {
-	ID                    string       `json:"id"`
-	Question              string       `json:"question"`
-	Options               []PollOption `json:"options"`
-	TotalVoterCount       int          `json:"total_voter_count"`
-	IsClosed              bool         `json:"is_closed"`
-	IsAnonymous           bool         `json:"is_anonymous"`
-	Type                  string       `json:"type"`
-	AllowsMultipleAnswers bool         `json:"allows_multiple_answers"`
-	CorrectOptionID       int          `json:"correct_option_id,omitempty"`
-	OpenPeriod            int          `json:"open_period,omitempty"`
-	CloseDate             int64        `json:"close_date,omitempty"`
+	ID                    string          `json:"id"`
+	Question              string          `json:"question"`
+	QuestionEntities      []MessageEntity `json:"question_entities,omitempty"`
+	Options               []PollOption    `json:"options"`
+	TotalVoterCount       int             `json:"total_voter_count"`
+	IsClosed              bool            `json:"is_closed"`
+	IsAnonymous           bool            `json:"is_anonymous"`
+	Type                  string          `json:"type"`
+	AllowsMultipleAnswers bool            `json:"allows_multiple_answers"`
+	AllowsRevoting        bool            `json:"allows_revoting,omitempty"`
+	MembersOnly           bool            `json:"members_only,omitempty"`
+	CountryCodes          []string        `json:"country_codes,omitempty"`
+	CorrectOptionID       int             `json:"correct_option_id,omitempty"`
+	CorrectOptionIDs      []int           `json:"correct_option_ids,omitempty"`
+	Explanation           string          `json:"explanation,omitempty"`
+	ExplanationEntities   []MessageEntity `json:"explanation_entities,omitempty"`
+	ExplanationMedia      *PollMedia      `json:"explanation_media,omitempty"`
+	Description           string          `json:"description,omitempty"`
+	DescriptionEntities   []MessageEntity `json:"description_entities,omitempty"`
+	Media                 *PollMedia      `json:"media,omitempty"`
+	OpenPeriod            int             `json:"open_period,omitempty"`
+	CloseDate             int64           `json:"close_date,omitempty"`
 }
 
 type Dice struct {
@@ -352,6 +413,53 @@ type EphemeralMessageParameters struct {
 	CallbackQueryID             string `json:"callback_query_id,omitempty"`
 	ReplaceCallbackQueryMessage bool   `json:"replace_callback_query_message,omitempty"`
 }
+
+// DirectMessagesTopic identifies the topic that contains a direct message.
+// Layer 229 does not currently expose this object on ordinary Message values,
+// but keeping the Bot API shape here lets the adapter add it without changing
+// the public contract when the underlying update gains the required fields.
+type DirectMessagesTopic struct {
+	TopicID int64 `json:"topic_id"`
+	User    *User `json:"user,omitempty"`
+}
+
+// ManagedBotUpdated describes a managed bot lifecycle update.
+type ManagedBotUpdated struct {
+	User *User `json:"user"`
+	Bot  *User `json:"bot"`
+}
+
+// BotSubscriptionUpdated describes a payment subscription state transition.
+type BotSubscriptionUpdated struct {
+	User           *User  `json:"user"`
+	InvoicePayload string `json:"invoice_payload"`
+	State          string `json:"state"`
+}
+
+// MessageGenerationStopped is the Bot API shape for a stopped draft. The
+// current Layer 229 updateBotStopped constructor has no draft id, so the
+// converter intentionally does not emit this object until that field exists.
+type MessageGenerationStopped struct {
+	Chat            *Chat `json:"chat"`
+	MessageThreadID int   `json:"message_thread_id,omitempty"`
+	DraftID         int64 `json:"draft_id"`
+}
+
+// ManagedBotCreated is emitted on the service message confirming a managed
+// bot was created by the current bot.
+type ManagedBotCreated struct {
+	Bot *User `json:"bot"`
+}
+
+type CommunityChatAdded struct {
+	Community *Community `json:"community"`
+}
+
+type CommunityChatJoined struct {
+	Community *Community `json:"community"`
+}
+
+type CommunityChatRemoved struct{}
 
 type SuggestedPostPrice struct {
 	Currency string `json:"currency"`
@@ -676,6 +784,7 @@ type InlineKeyboardButton struct {
 	SwitchInlineQuery            string      `json:"switch_inline_query,omitempty"`
 	SwitchInlineQueryCurrentChat string      `json:"switch_inline_query_current_chat,omitempty"`
 	Pay                          bool        `json:"pay,omitempty"`
+	Disabled                     bool        `json:"disabled,omitempty"`
 }
 
 type ReplyMarkupInput struct {
@@ -693,8 +802,12 @@ type ReplyMarkupInput struct {
 type Message struct {
 	MessageID                   int                          `json:"message_id"`
 	MessageThreadID             int                          `json:"message_thread_id,omitempty"`
+	DirectMessagesTopic         *DirectMessagesTopic         `json:"direct_messages_topic,omitempty"`
 	From                        *User                        `json:"from,omitempty"`
 	SenderChat                  *Chat                        `json:"sender_chat,omitempty"`
+	SenderBoostCount            int                          `json:"sender_boost_count,omitempty"`
+	SenderBusinessBot           *User                        `json:"sender_business_bot,omitempty"`
+	SenderTag                   string                       `json:"sender_tag,omitempty"`
 	ReceiverUser                *User                        `json:"receiver_user,omitempty"`
 	Date                        int64                        `json:"date"`
 	Chat                        *Chat                        `json:"chat"`
@@ -713,6 +826,7 @@ type Message struct {
 	Entities                    []MessageEntity              `json:"entities,omitempty"`
 	Caption                     string                       `json:"caption,omitempty"`
 	CaptionEntities             []MessageEntity              `json:"caption_entities,omitempty"`
+	ShowCaptionAboveMedia       bool                         `json:"show_caption_above_media,omitempty"`
 	ViaBot                      *User                        `json:"via_bot,omitempty"`
 	EditDate                    int64                        `json:"edit_date,omitempty"`
 	EffectID                    string                       `json:"effect_id,omitempty"`
@@ -747,6 +861,7 @@ type Message struct {
 	SuggestedPostDeclined       *SuggestedPostDeclined       `json:"suggested_post_declined,omitempty"`
 	SuggestedPostPaid           *SuggestedPostPaid           `json:"suggested_post_paid,omitempty"`
 	SuggestedPostRefunded       *SuggestedPostRefunded       `json:"suggested_post_refunded,omitempty"`
+	ManagedBotCreated           *ManagedBotCreated           `json:"managed_bot_created,omitempty"`
 	PaidMedia                   *PaidMediaInfo               `json:"paid_media,omitempty"`
 	Checklist                   *Checklist                   `json:"checklist,omitempty"`
 	Gift                        *GiftInfo                    `json:"gift,omitempty"`
@@ -754,6 +869,9 @@ type Message struct {
 	GiftUpgradeSent             *GiftInfo                    `json:"gift_upgrade_sent,omitempty"`
 	ChecklistTasksDone          *ChecklistTasksDone          `json:"checklist_tasks_done,omitempty"`
 	ChecklistTasksAdded         *ChecklistTasksAdded         `json:"checklist_tasks_added,omitempty"`
+	CommunityChatAdded          *CommunityChatAdded          `json:"community_chat_added,omitempty"`
+	CommunityChatJoined         *CommunityChatJoined         `json:"community_chat_joined,omitempty"`
+	CommunityChatRemoved        *CommunityChatRemoved        `json:"community_chat_removed,omitempty"`
 	BusinessConnectionID        string                       `json:"business_connection_id,omitempty"`
 	RichMessage                 *mtproto.RichMessage         `json:"rich_message,omitempty"`
 }
@@ -808,10 +926,11 @@ type CallbackQuery struct {
 }
 
 type PollAnswer struct {
-	PollID    string `json:"poll_id"`
-	VoterChat *Chat  `json:"voter_chat,omitempty"`
-	User      *User  `json:"user,omitempty"`
-	OptionIDs []int  `json:"option_ids"`
+	PollID              string   `json:"poll_id"`
+	VoterChat           *Chat    `json:"voter_chat,omitempty"`
+	User                *User    `json:"user,omitempty"`
+	OptionIDs           []int    `json:"option_ids"`
+	OptionPersistentIDs []string `json:"option_persistent_ids,omitempty"`
 }
 
 type ChatJoinRequest struct {
@@ -821,6 +940,7 @@ type ChatJoinRequest struct {
 	Date       int64           `json:"date"`
 	Bio        string          `json:"bio,omitempty"`
 	InviteLink *ChatInviteLink `json:"invite_link,omitempty"`
+	QueryID    string          `json:"query_id,omitempty"`
 }
 
 type MessageReactionUpdated struct {
@@ -898,32 +1018,35 @@ type SentGuestMessage struct {
 }
 
 type Update struct {
-	UpdateID                int64                        `json:"update_id"`
-	Message                 *Message                     `json:"message,omitempty"`
-	EditedMessage           *Message                     `json:"edited_message,omitempty"`
-	ChannelPost             *Message                     `json:"channel_post,omitempty"`
-	EditedChannelPost       *Message                     `json:"edited_channel_post,omitempty"`
-	InlineQuery             *InlineQuery                 `json:"inline_query,omitempty"`
-	ChosenInlineResult      *ChosenInlineResult          `json:"chosen_inline_result,omitempty"`
-	CallbackQuery           *CallbackQuery               `json:"callback_query,omitempty"`
-	GuestMessage            *Message                     `json:"guest_message,omitempty"`
-	Poll                    *Poll                        `json:"poll,omitempty"`
-	PollAnswer              *PollAnswer                  `json:"poll_answer,omitempty"`
-	MyChatMember            *ChatMemberUpdated           `json:"my_chat_member,omitempty"`
-	ChatMember              *ChatMemberUpdated           `json:"chat_member,omitempty"`
-	ChatJoinRequest         *ChatJoinRequest             `json:"chat_join_request,omitempty"`
-	MessageReaction         *MessageReactionUpdated      `json:"message_reaction,omitempty"`
-	MessageReactionCount    *MessageReactionCountUpdated `json:"message_reaction_count,omitempty"`
-	ChatBoost               *ChatBoostUpdated            `json:"chat_boost,omitempty"`
-	RemovedChatBoost        *ChatBoostRemoved            `json:"removed_chat_boost,omitempty"`
-	PurchasedPaidMedia      *PaidMediaPurchased          `json:"purchased_paid_media,omitempty"`
-	WebAppQuery             *WebAppQuery                 `json:"web_app_query,omitempty"`
-	ShippingQuery           *ShippingQuery               `json:"shipping_query,omitempty"`
-	PreCheckoutQuery        *PreCheckoutQuery            `json:"pre_checkout_query,omitempty"`
-	BusinessConnection      *BusinessConnection          `json:"business_connection,omitempty"`
-	BusinessMessage         *Message                     `json:"business_message,omitempty"`
-	EditedBusinessMessage   *Message                     `json:"edited_business_message,omitempty"`
-	DeletedBusinessMessages *BusinessMessagesDeleted     `json:"deleted_business_messages,omitempty"`
+	UpdateID                 int64                        `json:"update_id"`
+	Message                  *Message                     `json:"message,omitempty"`
+	EditedMessage            *Message                     `json:"edited_message,omitempty"`
+	ChannelPost              *Message                     `json:"channel_post,omitempty"`
+	EditedChannelPost        *Message                     `json:"edited_channel_post,omitempty"`
+	InlineQuery              *InlineQuery                 `json:"inline_query,omitempty"`
+	ChosenInlineResult       *ChosenInlineResult          `json:"chosen_inline_result,omitempty"`
+	CallbackQuery            *CallbackQuery               `json:"callback_query,omitempty"`
+	GuestMessage             *Message                     `json:"guest_message,omitempty"`
+	Poll                     *Poll                        `json:"poll,omitempty"`
+	PollAnswer               *PollAnswer                  `json:"poll_answer,omitempty"`
+	MyChatMember             *ChatMemberUpdated           `json:"my_chat_member,omitempty"`
+	ChatMember               *ChatMemberUpdated           `json:"chat_member,omitempty"`
+	ChatJoinRequest          *ChatJoinRequest             `json:"chat_join_request,omitempty"`
+	MessageReaction          *MessageReactionUpdated      `json:"message_reaction,omitempty"`
+	MessageReactionCount     *MessageReactionCountUpdated `json:"message_reaction_count,omitempty"`
+	ChatBoost                *ChatBoostUpdated            `json:"chat_boost,omitempty"`
+	RemovedChatBoost         *ChatBoostRemoved            `json:"removed_chat_boost,omitempty"`
+	ManagedBot               *ManagedBotUpdated           `json:"managed_bot,omitempty"`
+	Subscription             *BotSubscriptionUpdated      `json:"subscription,omitempty"`
+	StoppedMessageGeneration *MessageGenerationStopped    `json:"stopped_message_generation,omitempty"`
+	PurchasedPaidMedia       *PaidMediaPurchased          `json:"purchased_paid_media,omitempty"`
+	WebAppQuery              *WebAppQuery                 `json:"web_app_query,omitempty"`
+	ShippingQuery            *ShippingQuery               `json:"shipping_query,omitempty"`
+	PreCheckoutQuery         *PreCheckoutQuery            `json:"pre_checkout_query,omitempty"`
+	BusinessConnection       *BusinessConnection          `json:"business_connection,omitempty"`
+	BusinessMessage          *Message                     `json:"business_message,omitempty"`
+	EditedBusinessMessage    *Message                     `json:"edited_business_message,omitempty"`
+	DeletedBusinessMessages  *BusinessMessagesDeleted     `json:"deleted_business_messages,omitempty"`
 }
 
 type ChatMemberUpdated struct {
@@ -958,6 +1081,7 @@ type ChatPermissions struct {
 	CanInviteUsers        bool `json:"can_invite_users,omitempty"`
 	CanPinMessages        bool `json:"can_pin_messages,omitempty"`
 	CanManageTopics       bool `json:"can_manage_topics,omitempty"`
+	CanReactToMessages    bool `json:"can_react_to_messages,omitempty"`
 }
 
 type ChatAdministratorRights struct {
@@ -977,6 +1101,8 @@ type ChatAdministratorRights struct {
 	CanEditStories          bool `json:"can_edit_stories"`
 	CanDeleteStories        bool `json:"can_delete_stories"`
 	CanManageDirectMessages bool `json:"can_manage_direct_messages"`
+	CanManageTags           bool `json:"can_manage_tags"`
+	CanSendWelcomeMessages  bool `json:"can_send_welcome_messages"`
 }
 
 // ChatInviteLink is the Bot API representation of an exported MTProto invite.
@@ -1007,6 +1133,7 @@ type ForumTopic struct {
 type ChatMember struct {
 	Status                  string `json:"status"`
 	User                    *User  `json:"user"`
+	Tag                     string `json:"tag,omitempty"`
 	IsAnonymous             bool   `json:"is_anonymous,omitempty"`
 	CustomTitle             string `json:"custom_title,omitempty"`
 	CanBeEdited             bool   `json:"can_be_edited,omitempty"`
@@ -1022,6 +1149,10 @@ type ChatMember struct {
 	CanPinMessages          bool   `json:"can_pin_messages,omitempty"`
 	CanManageTopics         bool   `json:"can_manage_topics,omitempty"`
 	CanManageDirectMessages bool   `json:"can_manage_direct_messages,omitempty"`
+	CanManageTags           bool   `json:"can_manage_tags,omitempty"`
+	CanSendWelcomeMessages  bool   `json:"can_send_welcome_messages,omitempty"`
+	CanReactToMessages      bool   `json:"can_react_to_messages,omitempty"`
+	CanEditTag              bool   `json:"can_edit_tag,omitempty"`
 	CanPostStories          bool   `json:"can_post_stories,omitempty"`
 	CanEditStories          bool   `json:"can_edit_stories,omitempty"`
 	CanDeleteStories        bool   `json:"can_delete_stories,omitempty"`
@@ -1054,6 +1185,7 @@ type WebhookInfo struct {
 type BotCommand struct {
 	Command     string `json:"command"`
 	Description string `json:"description"`
+	IsEphemeral bool   `json:"is_ephemeral,omitempty"`
 }
 
 // MessageEntitiesToMTProto converts the Bot API's UTF-16 offsets directly to
@@ -1186,9 +1318,15 @@ func UserFromImmutableUser(in *mtproto.ImmutableUser) *User {
 		AddedToAttachmentMenu:   bot != nil && bot.GetBotAttachMenu(),
 		CanJoinGroups:           bot != nil && !bot.GetBotNochats(),
 		CanReadAllGroupMessages: bot != nil && bot.GetBotChatHistory(),
-		SupportsInlineQueries:   bot != nil && (bot.GetBotInlinePlaceholder() != nil || bot.GetBotInlineGeo()),
-		CanConnectToBusiness:    bot != nil && bot.GetBotBusiness(),
-		HasMainWebApp:           bot != nil && bot.GetBotHasMainApp(),
+		// ImmutableUser embeds the older BotData projection, which does not
+		// carry the newer guest/forum capability bits.
+		SupportsGuestQueries:      false,
+		SupportsInlineQueries:     bot != nil && (bot.GetBotInlinePlaceholder() != nil || bot.GetBotInlineGeo()),
+		CanConnectToBusiness:      bot != nil && bot.GetBotBusiness(),
+		HasMainWebApp:             bot != nil && bot.GetBotHasMainApp(),
+		HasTopicsEnabled:          false,
+		AllowsUsersToCreateTopics: false,
+		CanManageBots:             d.GetBotCanManageBots(),
 	}
 }
 
@@ -1197,19 +1335,23 @@ func UserFromMTProto(in *mtproto.User) *User {
 		return nil
 	}
 	return &User{
-		ID:                      in.GetId(),
-		IsBot:                   in.GetBot(),
-		FirstName:               stringValue(in.GetFirstName()),
-		LastName:                stringValue(in.GetLastName()),
-		Username:                stringValue(in.GetUsername()),
-		LanguageCode:            stringValue(in.GetLangCode()),
-		IsPremium:               in.GetPremium(),
-		AddedToAttachmentMenu:   in.GetBot() && in.GetBotAttachMenu(),
-		CanJoinGroups:           in.GetBot() && !in.GetBotNochats(),
-		CanReadAllGroupMessages: in.GetBot() && in.GetBotChatHistory(),
-		SupportsInlineQueries:   in.GetBot() && (in.GetBotInlinePlaceholder() != nil || in.GetBotInlineGeo()),
-		CanConnectToBusiness:    in.GetBot() && in.GetBotBusiness(),
-		HasMainWebApp:           in.GetBot() && in.GetBotHasMainApp(),
+		ID:                        in.GetId(),
+		IsBot:                     in.GetBot(),
+		FirstName:                 stringValue(in.GetFirstName()),
+		LastName:                  stringValue(in.GetLastName()),
+		Username:                  stringValue(in.GetUsername()),
+		LanguageCode:              stringValue(in.GetLangCode()),
+		IsPremium:                 in.GetPremium(),
+		AddedToAttachmentMenu:     in.GetBot() && in.GetBotAttachMenu(),
+		CanJoinGroups:             in.GetBot() && !in.GetBotNochats(),
+		CanReadAllGroupMessages:   in.GetBot() && in.GetBotChatHistory(),
+		SupportsGuestQueries:      in.GetBot() && in.GetBotGuestchat(),
+		SupportsInlineQueries:     in.GetBot() && (in.GetBotInlinePlaceholder() != nil || in.GetBotInlineGeo()),
+		CanConnectToBusiness:      in.GetBot() && in.GetBotBusiness(),
+		HasMainWebApp:             in.GetBot() && in.GetBotHasMainApp(),
+		HasTopicsEnabled:          in.GetBot() && in.GetBotForumView(),
+		AllowsUsersToCreateTopics: in.GetBot() && in.GetBotForumCanManageTopics(),
+		CanManageBots:             in.GetBotCanManageBots(),
 	}
 }
 
@@ -1557,6 +1699,8 @@ func MessageFromMTProto(in *mtproto.Message, users []*mtproto.User, chats []*mtp
 		From:                userForPeer(in.GetFromId(), users),
 		Date:                int64(in.GetDate()),
 		Chat:                ChatFromPeer(in.GetPeerId(), users, chats),
+		SenderBoostCount:    int(wrapperInt32(in.GetFromBoostsApplied())),
+		SenderTag:           stringValue(in.GetFromRank()),
 		Text:                in.GetMessage(),
 		Entities:            messageEntities(in.GetEntities(), users),
 		EditDate:            int64(wrapperInt32(in.GetEditDate())),
@@ -1575,6 +1719,9 @@ func MessageFromMTProto(in *mtproto.Message, users []*mtproto.User, chats []*mtp
 	}
 	if in.GetViaBotId() != nil {
 		message.ViaBot = userByID(in.GetViaBotId().GetValue(), users)
+	}
+	if in.GetViaBusinessBotId() != nil {
+		message.SenderBusinessBot = userByID(in.GetViaBusinessBotId().GetValue(), users)
 	}
 	if in.GetGuestchatViaFrom() != nil {
 		peer := in.GetGuestchatViaFrom()
@@ -1617,6 +1764,7 @@ func MessageFromMTProto(in *mtproto.Message, users []*mtproto.User, chats []*mtp
 	}
 	message.ReplyMarkup = replyMarkupFromMTProto(in.GetReplyMarkup())
 	message.RichMessage = in.GetRichMessage()
+	message.ShowCaptionAboveMedia = in.GetInvertMedia()
 	message.SuggestedPostInfo = suggestedPostInfoFromMTProto(in.GetSuggestedPost())
 	applyMedia(message, in.GetMedia(), users, chats)
 	applyMessageAction(message, in.GetAction(), users, chats)
@@ -1713,6 +1861,10 @@ func applyMessageAction(message *Message, action *mtproto.MessageAction, users [
 		}
 	case mtproto.Predicate_messageActionSuggestedPostRefund:
 		message.SuggestedPostRefunded = &SuggestedPostRefunded{Reason: suggestedPostRefundReason(action)}
+	case mtproto.Predicate_messageActionManagedBotCreated:
+		if action.GetBotId() > 0 {
+			message.ManagedBotCreated = &ManagedBotCreated{Bot: userByID(action.GetBotId(), users)}
+		}
 	}
 }
 
@@ -2032,6 +2184,39 @@ func UpdateFromMTProtoForBot(in *mtproto.Update, users []*mtproto.User, chats []
 		if result.EditedMessage == nil {
 			return nil, false
 		}
+	case mtproto.Predicate_updateManagedBot:
+		if in.GetUserId() <= 0 || in.GetBotId() <= 0 {
+			return nil, false
+		}
+		result.ManagedBot = &ManagedBotUpdated{
+			User: userByID(in.GetUserId(), users),
+			Bot:  userByID(in.GetBotId(), users),
+		}
+	case mtproto.Predicate_updateBotStarsSubscription:
+		if in.GetUserId() <= 0 {
+			return nil, false
+		}
+		state := ""
+		switch {
+		case in.GetCanceled():
+			state = "canceled"
+		case in.GetPaymentFailed():
+			state = "failed"
+		case in.GetRestored():
+			state = "active"
+		}
+		if state == "" {
+			return nil, false
+		}
+		result.Subscription = &BotSubscriptionUpdated{
+			User:           userByID(in.GetUserId(), users),
+			InvoicePayload: string(in.GetPayload_BYTES()),
+			State:          state,
+		}
+	case mtproto.Predicate_updateBotStopped:
+		// Layer 229's updateBotStopped has no draft_id, which is required by
+		// Bot API MessageGenerationStopped. Do not emit a malformed update.
+		return nil, false
 	case mtproto.Predicate_updateBotInlineQuery:
 		result.InlineQuery = &InlineQuery{
 			ID:       fmt.Sprintf("%d", in.GetQueryId_INT64()),
@@ -2061,13 +2246,13 @@ func UpdateFromMTProtoForBot(in *mtproto.Update, users []*mtproto.User, chats []
 		result.CallbackQuery = &CallbackQuery{
 			ID:            fmt.Sprintf("%d", in.GetQueryId_INT64()),
 			From:          userByID(in.GetUserId(), users),
-			Message:       callbackMessage(in, users, chats),
+			Message:       callbackMessageForBot(in, users, chats, botID),
 			ChatInstance:  fmt.Sprintf("%d", in.GetChatInstance()),
 			Data:          string(in.GetData_FLAGBYTES()),
 			GameShortName: stringValue(in.GetGameShortName()),
 		}
 	case mtproto.Predicate_updateMessagePoll:
-		result.Poll = pollFromMTProto(in.GetPoll(), in.GetResults())
+		result.Poll = pollFromMTProto(in.GetPoll(), in.GetResults(), users, chats)
 		if result.Poll == nil {
 			return nil, false
 		}
@@ -2264,7 +2449,15 @@ func chatJoinRequestFromMTProto(in *mtproto.Update, users []*mtproto.User, chats
 		Date:       int64(in.GetDate_INT32()),
 		Bio:        in.GetAbout(),
 		InviteLink: chatInviteLinkFromMTProto(in.GetInvite(), users),
+		QueryID:    pollQueryID(in.GetQueryId_FLAGINT64()),
 	}
+}
+
+func pollQueryID(value *wrapperspb.Int64Value) string {
+	if id := wrapperInt64(value); id != 0 {
+		return strconv.FormatInt(id, 10)
+	}
+	return ""
 }
 
 func chatInviteLinkFromMTProto(in *mtproto.ExportedChatInvite, users []*mtproto.User) *ChatInviteLink {
@@ -2398,6 +2591,7 @@ var validAllowedUpdateTypes = map[string]struct{}{
 	"inline_query": {}, "chosen_inline_result": {}, "callback_query": {}, "guest_message": {}, "web_app_query": {}, "shipping_query": {}, "pre_checkout_query": {},
 	"purchased_paid_media": {}, "poll": {}, "poll_answer": {}, "my_chat_member": {}, "chat_member": {}, "chat_join_request": {},
 	"message_reaction": {}, "message_reaction_count": {}, "chat_boost": {}, "removed_chat_boost": {},
+	"managed_bot": {}, "subscription": {}, "stopped_message_generation": {},
 }
 
 // IsValidAllowedUpdateType reports whether name is a Telegram Bot API
@@ -2538,6 +2732,16 @@ func MessagesFromUpdates(updates *mtproto.Updates) []*Message {
 				result = append(result, message)
 			}
 		},
+		mtproto.Predicate_updateNewEphemeralMessage: func(_ int64, update *mtproto.Update, users []*mtproto.User, chats []*mtproto.Chat, _ int32) {
+			if message := messageFromEphemeralMTProto(update.GetMessage_EPHEMERALMESSAGE(), users, chats); message != nil {
+				result = append(result, message)
+			}
+		},
+		mtproto.Predicate_updateEditEphemeralMessage: func(_ int64, update *mtproto.Update, users []*mtproto.User, chats []*mtproto.Chat, _ int32) {
+			if message := messageFromEphemeralMTProto(update.GetMessage_EPHEMERALMESSAGE(), users, chats); message != nil {
+				result = append(result, message)
+			}
+		},
 	})
 	return result
 }
@@ -2607,10 +2811,16 @@ func entityType(predicate string) string {
 	if strings.HasPrefix(predicate, "messageEntity") {
 		value := strings.TrimPrefix(predicate, "messageEntity")
 		switch value {
+		case "BotCommand":
+			return "bot_command"
 		case "TextUrl":
 			return "text_link"
 		case "MentionName":
 			return "text_mention"
+		case "Strike":
+			return "strikethrough"
+		case "Blockquote":
+			return "blockquote"
 		case "Pre":
 			return "pre"
 		case "CustomEmoji":
@@ -2640,7 +2850,16 @@ func inlineChatType(peer *mtproto.InlineQueryPeerType) string {
 }
 
 func callbackMessage(update *mtproto.Update, users []*mtproto.User, chats []*mtproto.Chat) *Message {
+	return callbackMessageForBot(update, users, chats, 0)
+}
+
+func callbackMessageForBot(update *mtproto.Update, users []*mtproto.User, chats []*mtproto.Chat, botID int64) *Message {
 	chat := ChatFromPeer(update.GetPeer_PEER(), users, chats)
+	// Some callback paths carry the private peer from the clicker's dialog.
+	// Bot API exposes that same dialog with the clicker's user id.
+	if botID > 0 && update.GetPeer_PEER() != nil && update.GetPeer_PEER().GetUserId() == botID && update.GetUserId() > 0 && update.GetUserId() != botID {
+		chat = ChatFromPeer(mtproto.MakePeerUser(update.GetUserId()), users, chats)
+	}
 	if chat == nil {
 		return nil
 	}
@@ -2693,7 +2912,7 @@ func applyMedia(message *Message, media *mtproto.MessageMedia, users []*mtproto.
 			UserID:      media.GetUserId(),
 		}
 	case mtproto.Predicate_messageMediaPoll:
-		message.Poll = pollFromMTProto(media.GetPoll(), media.GetResults())
+		message.Poll = pollFromMTProto(media.GetPoll(), media.GetResults(), users, chats)
 	case mtproto.Predicate_messageMediaDice:
 		message.Dice = &Dice{Emoji: media.GetEmoticon(), Value: int(media.GetValue())}
 	case mtproto.Predicate_messageMediaGame:
@@ -2934,17 +3153,25 @@ func maskPointName(point int32) string {
 	}
 }
 
-func pollFromMTProto(poll *mtproto.Poll, results *mtproto.PollResults) *Poll {
+func pollFromMTProto(poll *mtproto.Poll, results *mtproto.PollResults, users []*mtproto.User, chats []*mtproto.Chat) *Poll {
 	if poll == nil {
 		return nil
 	}
+	question := poll.GetQuestion()
+	if question == "" {
+		question = textWithEntitiesText(poll.GetQuestion_TEXTWITHENTITIES())
+	}
 	result := &Poll{
 		ID:                    strconv.FormatInt(poll.GetId(), 10),
-		Question:              poll.GetQuestion(),
+		Question:              question,
+		QuestionEntities:      textWithEntitiesEntities(poll.GetQuestion_TEXTWITHENTITIES(), users),
 		IsClosed:              poll.GetClosed(),
 		IsAnonymous:           !poll.GetPublicVoters(),
 		Type:                  "regular",
 		AllowsMultipleAnswers: poll.GetMultipleChoice(),
+		AllowsRevoting:        !poll.GetRevotingDisabled(),
+		MembersOnly:           poll.GetSubscribersOnly(),
+		CountryCodes:          append([]string(nil), poll.GetCountriesIso2()...),
 		OpenPeriod:            int(wrapperInt32(poll.GetClosePeriod())),
 		CloseDate:             int64(wrapperInt32(poll.GetCloseDate())),
 	}
@@ -2963,10 +3190,80 @@ func pollFromMTProto(poll *mtproto.Poll, results *mtproto.PollResults) *Poll {
 				voterCount = int(voters.GetVoters_INT32())
 			}
 		}
-		result.Options = append(result.Options, PollOption{Text: answer.GetText(), VoterCount: voterCount})
+		option := PollOption{
+			PersistentID: pollPersistentID(answer.GetOption()),
+			Text:         answer.GetText(),
+			TextEntities: textWithEntitiesEntities(answer.GetText_TEXTWITHENTITIES(), users),
+			Media:        pollMediaFromMTProto(answer.GetMedia_FLAGMESSAGEMEDIA(), users, chats),
+			VoterCount:   voterCount,
+			AdditionDate: int64(wrapperInt32(answer.GetDate())),
+		}
+		if addedBy := answer.GetAddedBy(); addedBy != nil {
+			if addedBy.GetUserId() != 0 {
+				option.AddedByUser = userByID(addedBy.GetUserId(), users)
+			} else {
+				option.AddedByChat = ChatFromPeer(addedBy, users, chats)
+			}
+		}
+		result.Options = append(result.Options, option)
 	}
 	if results != nil {
 		result.TotalVoterCount = int(wrapperInt32(results.GetTotalVoters()))
+		if solution := results.GetSolution(); solution != nil {
+			result.Explanation = solution.GetValue()
+		}
+		result.ExplanationEntities = messageEntities(results.GetSolutionEntities(), users)
+		result.ExplanationMedia = pollMediaFromMTProto(results.GetSolutionMedia(), users, chats)
+		for index, answer := range results.GetResults() {
+			if answer == nil || !answer.GetCorrect() {
+				continue
+			}
+			result.CorrectOptionIDs = append(result.CorrectOptionIDs, index)
+		}
+		if len(result.CorrectOptionIDs) == 1 {
+			result.CorrectOptionID = result.CorrectOptionIDs[0]
+		}
+	}
+	return result
+}
+
+func pollPersistentID(option []byte) string {
+	if len(option) == 0 {
+		return ""
+	}
+	return base64.RawURLEncoding.EncodeToString(option)
+}
+
+func pollMediaFromMTProto(media *mtproto.MessageMedia, users []*mtproto.User, chats []*mtproto.Chat) *PollMedia {
+	if media == nil {
+		return nil
+	}
+	if media.GetPredicateName() == mtproto.Predicate_messageMediaWebPage {
+		if page := media.GetWebpage(); page != nil {
+			url := stringValue(page.GetUrl_FLAGSTRING())
+			if url == "" {
+				url = page.GetUrl_STRING()
+			}
+			if url != "" {
+				return &PollMedia{Link: &Link{URL: url}}
+			}
+		}
+	}
+	converted := &Message{}
+	applyMedia(converted, media, users, chats)
+	result := &PollMedia{
+		Animation: converted.Animation,
+		Audio:     converted.Audio,
+		Document:  converted.Document,
+		LivePhoto: converted.LivePhoto,
+		Location:  converted.Location,
+		Photo:     converted.Photo,
+		Sticker:   converted.Sticker,
+		Venue:     converted.Venue,
+		Video:     converted.Video,
+	}
+	if result.Animation == nil && result.Audio == nil && result.Document == nil && result.LivePhoto == nil && result.Location == nil && len(result.Photo) == 0 && result.Sticker == nil && result.Venue == nil && result.Video == nil {
+		return nil
 	}
 	return result
 }
@@ -3043,21 +3340,10 @@ func replyMarkupFromMTProto(markup *mtproto.ReplyMarkup) any {
 	switch markup.GetPredicateName() {
 	case mtproto.Predicate_replyInlineMarkup:
 		return map[string]any{"inline_keyboard": rows}
-	case mtproto.Predicate_replyKeyboardForceReply:
-		result := map[string]any{"force_reply": true}
-		if placeholder := stringValue(markup.GetPlaceholder()); placeholder != "" {
-			result["input_field_placeholder"] = placeholder
-		}
-		return result
-	case mtproto.Predicate_replyKeyboardHide:
-		return map[string]any{"remove_keyboard": true, "selective": markup.GetSelective()}
 	default:
-		return map[string]any{
-			"keyboard":          rows,
-			"resize_keyboard":   markup.GetResize(),
-			"one_time_keyboard": markup.GetSingleUse(),
-			"selective":         markup.GetSelective(),
-			"is_persistent":     markup.GetPersistent(),
-		}
+		// Telegram's Message.reply_markup field only contains inline keyboards.
+		// Reply keyboards, ForceReply, and remove_keyboard affect the client but
+		// are not serialized in the Message returned by sendMessage.
+		return nil
 	}
 }

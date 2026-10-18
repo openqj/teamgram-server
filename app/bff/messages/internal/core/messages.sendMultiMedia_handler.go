@@ -62,6 +62,7 @@ func (c *MessagesCore) MessagesSendMultiMedia(in *mtproto.TLMessagesSendMultiMed
 	if peer == nil || peer.PeerId <= 0 {
 		return nil, mtproto.ErrPeerIdInvalid
 	}
+	isSavedMessages := peer.IsUser() && peer.IsSelfUser(actingUserID)
 	switch peer.PeerType {
 	case mtproto.PEER_SELF:
 		peer.PeerType = mtproto.PEER_USER
@@ -219,7 +220,7 @@ func (c *MessagesCore) MessagesSendMultiMedia(in *mtproto.TLMessagesSendMultiMed
 		}).To_Message()
 
 		// Fix SavedPeerId
-		if peer.IsSelfUser(actingUserID) {
+		if isSavedMessages {
 			outMessage.SavedPeerId = peer.ToPeer()
 		}
 

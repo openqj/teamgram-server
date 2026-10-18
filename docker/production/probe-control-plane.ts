@@ -40,7 +40,7 @@ function makeClient(authKeyBase64: string): Client {
     (session as any)._serverAddress = process.env.TG_DC_HOST || '127.0.0.1';
     (session as any)._port = Number(process.env.TG_DC_PORT || '11443');
   };
-  return new TelegramClient(session, apiId, apiHash, {
+  const client = new TelegramClient(session, apiId, apiHash, {
     connection: ConnectionTCPObfuscated,
     fallbackConnection: ConnectionTCPObfuscated,
     shouldAllowHttpTransport: false,
@@ -53,6 +53,13 @@ function makeClient(authKeyBase64: string): Client {
     autoReconnect: false,
     baseLogger: quietLogger,
   });
+  const initWith = client._initWith.bind(client);
+  client._initWith = (query: any) => {
+    const original = initWith(query);
+    if (rpcName(original) !== 'InvokeWithLayer' || rpcName(original.query) !== 'InitConnection') throw new Error('INVALID_INIT_CONNECTION_WRAPPER');
+    return new Api.InvokeWithLayer({ layer: 229, query: original.query });
+  };
+  return client;
 }
 
 function callFromUpdates(value: any): any {
@@ -83,7 +90,7 @@ async function main() {
   let input: any;
   let discarded = false;
   const tag = `prod-call-${Date.now()}-${process.pid}`;
-  const results: Record<string, unknown> = { tag };
+  const results: Record<string, unknown> = { tag, layer: 229 };
   try {
     await a.connect();
     await b.connect();
