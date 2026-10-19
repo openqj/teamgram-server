@@ -18,12 +18,18 @@ TEAMGRAM_IDENTITY_REPLAY_REDIS_PASS=
 TEAMGRAM_IDENTITY_REPLAY_REDIS_TLS=false
 TEAMGRAM_IDENTITY_REPLAY_TTL_SECONDS=60
 TEAMGRAM_IDENTITY_REQUEST_TIMEOUT_SECONDS=5
+TEAMGRAM_CORS_ORIGINS=https://memory.example.com
 ```
 
 `identity:8090` is valid only when the Teamgram and Identity containers share
 the same Docker network. With the standalone Compose files on Docker Desktop,
 use a routable address such as `http://host.docker.internal:28082`, or attach
 both stacks to one external network before using the service name.
+
+When WebA calls the token exchange from a different origin, set
+`TEAMGRAM_CORS_ORIGINS` to the exact WebA origin(s). This enables the HTTP
+gateway's preflight response for the proof request; leaving it empty keeps the
+gateway same-origin only.
 
 The `AuthsessionClient` configuration must resolve the existing
 `service.authsession` RPC service. The bridge is disabled when all Identity

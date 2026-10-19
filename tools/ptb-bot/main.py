@@ -20,6 +20,7 @@ from telegram import (
     Update,
     WebAppInfo,
 )
+from telegram.error import BadRequest
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -603,6 +604,21 @@ async def _edit_or_reply(
             text=text,
             reply_markup=reply_markup,
         )
+    except BadRequest as exc:
+        detail = str(exc).lower()
+        edit_failures = (
+            "message_author_required",
+            "message to edit not found",
+            "message can't be edited",
+            "inaccessible message",
+        )
+        if query.from_user is None or not any(error in detail for error in edit_failures):
+            raise
+        await bot.send_message(
+            chat_id=query.from_user.id,
+            text=text,
+            reply_markup=reply_markup,
+        )
 
 
 async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -748,9 +764,12 @@ def build_application() -> Application:
     base_url = os.getenv("BOT_API_BASE_URL")
     base_file_url = os.getenv("BOT_API_FILE_URL")
     if base_url:
-        builder = builder.base_url(base_url)
+        # PTB appends "/<method>" to the parsed base URL. Accept a trailing
+        # slash in deployment env files so both Telegram-shaped conventions
+        # (".../bot" and ".../bot{token}/") remain usable.
+        builder = builder.base_url(base_url.rstrip("/"))
     if base_file_url:
-        builder = builder.base_file_url(base_file_url)
+        builder = builder.base_file_url(base_file_url.rstrip("/"))
     application = builder.build()
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("methods", methods))

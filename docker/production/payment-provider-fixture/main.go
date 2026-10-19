@@ -36,6 +36,39 @@ type settledCacheEntry struct {
 	response    []byte
 }
 
+type paymentProviderOption struct {
+	ID       string   `json:"id"`
+	Name     string   `json:"name"`
+	Methods  []string `json:"methods"`
+	Enabled  bool     `json:"enabled"`
+	TestMode bool     `json:"test_mode"`
+}
+
+var simulatedPaymentProviders = []paymentProviderOption{
+	{ID: "stripe", Name: "Stripe", Methods: []string{"card"}, Enabled: true, TestMode: true},
+	{ID: "paypal", Name: "PayPal", Methods: []string{"wallet"}, Enabled: true, TestMode: true},
+	{ID: "alipay", Name: "Alipay", Methods: []string{"wallet"}, Enabled: true, TestMode: true},
+}
+
+func paymentProviderOptions() []paymentProviderOption {
+	providers := make([]paymentProviderOption, len(simulatedPaymentProviders))
+	copy(providers, simulatedPaymentProviders)
+	return providers
+}
+
+func knownPaymentProvider(providerID string) bool {
+	providerID = strings.TrimSpace(providerID)
+	if providerID == "" {
+		return false
+	}
+	for _, provider := range simulatedPaymentProviders {
+		if provider.ID == providerID {
+			return true
+		}
+	}
+	return false
+}
+
 func (f *fixture) sign(body []byte) string {
 	mac := hmac.New(sha256.New, f.key)
 	_, _ = mac.Write(body)
@@ -195,6 +228,21 @@ func premiumPromo() map[string]any {
 	}
 }
 
+func premiumGiftCodeOptions() []any {
+	// Keep the fixture catalog deterministic and expose both provider-backed
+	// currency options and the Stars equivalent used by the WebA gift composer.
+	return []any{
+		map[string]any{"predicate_name": "premiumGiftCodeOption", "users": 1, "months": 1, "currency": "USD", "amount": 499},
+		map[string]any{"predicate_name": "premiumGiftCodeOption", "users": 1, "months": 3, "currency": "USD", "amount": 1399},
+		map[string]any{"predicate_name": "premiumGiftCodeOption", "users": 1, "months": 6, "currency": "USD", "amount": 2499},
+		map[string]any{"predicate_name": "premiumGiftCodeOption", "users": 1, "months": 12, "currency": "USD", "amount": 4499},
+		map[string]any{"predicate_name": "premiumGiftCodeOption", "users": 1, "months": 1, "currency": "XTR", "amount": 500},
+		map[string]any{"predicate_name": "premiumGiftCodeOption", "users": 1, "months": 3, "currency": "XTR", "amount": 1500},
+		map[string]any{"predicate_name": "premiumGiftCodeOption", "users": 1, "months": 6, "currency": "XTR", "amount": 2500},
+		map[string]any{"predicate_name": "premiumGiftCodeOption", "users": 1, "months": 12, "currency": "XTR", "amount": 5000},
+	}
+}
+
 func emptyUpdates() map[string]any {
 	return map[string]any{
 		"predicate_name": "updates",
@@ -287,6 +335,31 @@ func (f *fixture) responseWithContext(ctx context.Context, fields map[string]jso
 		}
 		result, err := staticStarsSubscriptionResponse(fields)
 		return result, "X-Teamgram-Payment-Signature", err
+	}
+	if operation == "get_payment_providers" {
+		uid := userID(fields)
+		if uid <= 0 {
+			return nil, "", fmt.Errorf("invalid payment provider options request")
+		}
+		body, err := json.Marshal(map[string]any{
+			"verified":  true,
+			"user_id":   uid,
+			"operation": operation,
+			"providers": paymentProviderOptions(),
+		})
+		return body, "X-Teamgram-Payment-Signature", err
+	}
+	if operation == "get_premium_gift_code_options" {
+		uid := userID(fields)
+		if uid <= 0 {
+			return nil, "", fmt.Errorf("invalid Premium gift code options request")
+		}
+		body, err := json.Marshal(map[string]any{
+			"verified": true,
+			"user_id":  uid,
+			"options":  premiumGiftCodeOptions(),
+		})
+		return body, "X-Teamgram-Payment-Signature", err
 	}
 	if operation == "change_stars_subscription" || operation == "fulfill_stars_subscription" || operation == "bot_cancel_stars_subscription" {
 		if f.store != nil {
@@ -609,6 +682,10 @@ func (f *fixture) responseWithContext(ctx context.Context, fields map[string]jso
 			return nil, "", err
 		}
 		formID := starsFormID(offer.ID)
+		providerID := strings.TrimSpace(rawString(fields, "provider_id"))
+		if providerID != "" && !knownPaymentProvider(providerID) {
+			return nil, "", fmt.Errorf("unknown payment provider")
+		}
 		body, err := json.Marshal(map[string]any{
 			"verified":            true,
 			"user_id":             uid,
@@ -619,6 +696,8 @@ func (f *fixture) responseWithContext(ctx context.Context, fields map[string]jso
 			"store_product":       offer.StoreProduct,
 			"currency":            offer.Currency,
 			"amount":              offer.Amount,
+			"payment_provider":    providerID,
+			"payment_providers":   paymentProviderOptions(),
 			"form":                starsForm(offer, formID),
 		})
 		return body, "X-Teamgram-Payment-Signature", err
@@ -634,8 +713,12 @@ func (f *fixture) responseWithContext(ctx context.Context, fields map[string]jso
 		requestKey := rawString(fields, "request_key")
 		fingerprint := rawString(fields, "fingerprint")
 		formID := rawInt64(fields, "form_id")
+		providerID := strings.TrimSpace(rawString(fields, "provider_id"))
 		if requestKey == "" || fingerprint == "" || formID <= 0 {
 			return nil, "", fmt.Errorf("invalid Stars settlement request")
+		}
+		if providerID != "" && !knownPaymentProvider(providerID) {
+			return nil, "", fmt.Errorf("unknown payment provider")
 		}
 		cacheKey := settlementCacheKey(operation, uid, requestKey)
 		payloadHash, err := settlementPayloadHash(fields)
@@ -667,8 +750,9 @@ func (f *fixture) responseWithContext(ctx context.Context, fields map[string]jso
 			"transaction_id":      transactionID,
 			"currency":            offer.Currency,
 			"amount":              offer.Amount,
+			"payment_provider":    providerID,
 			"title":               "Stars top-up",
-			"receipt":             map[string]any{"provider": "local-fixture", "transaction_id": transactionID},
+			"receipt":             map[string]any{"provider": "local-fixture", "payment_provider": providerID, "transaction_id": transactionID},
 		}
 		body, err := json.Marshal(result)
 		if err == nil {
@@ -805,9 +889,32 @@ func (f *fixture) healthz(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
+func (f *fixture) providers(w http.ResponseWriter, r *http.Request) {
+	if f.authKey != "" && !validBearerAuthorization(r.Header.Get("Authorization"), f.authKey) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	body, err := json.Marshal(map[string]any{
+		"verified":  true,
+		"operation": "get_payment_providers",
+		"providers": paymentProviderOptions(),
+	})
+	if err != nil {
+		http.Error(w, "failed to encode providers", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("X-Teamgram-Payment-Signature", f.sign(body))
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write(body)
+}
+
 func (f *fixture) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet && r.URL.Path == "/healthz" {
 		f.healthz(w, r)
+		return
+	}
+	if r.Method == http.MethodGet && r.URL.Path == "/providers" {
+		f.providers(w, r)
 		return
 	}
 	if r.Method != http.MethodPost {

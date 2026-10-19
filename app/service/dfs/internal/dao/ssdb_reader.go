@@ -24,16 +24,25 @@ import (
 	"io"
 	"strconv"
 
+	"github.com/teamgram/marmota/pkg/stores/kv"
 	"github.com/teamgram/teamgram-server/app/service/dfs/internal/model"
 
 	"github.com/zeromicro/go-zero/core/logx"
-	"github.com/zeromicro/go-zero/core/stores/kv"
 )
+
+type stringResult interface {
+	Result() (string, error)
+}
 
 type SSDBReader struct {
 	*model.DfsFileInfo
-	ssdb kv.Store
+	ssdb kv.ExtStore
 	i    int64 // current reading index
+	// S3 multipart uploads and http.ServeContent commonly use buffers smaller
+	// than a DFS part. Cache the active part so each Read does not repeat HGET.
+	partIndex  int
+	partData   []byte
+	partLoaded bool
 }
 
 func (d *Dao) NewSSDBReader(fileInfo *model.DfsFileInfo) *SSDBReader {
@@ -41,6 +50,7 @@ func (d *Dao) NewSSDBReader(fileInfo *model.DfsFileInfo) *SSDBReader {
 		DfsFileInfo: fileInfo,
 		ssdb:        d.ssdb,
 		i:           0,
+		partIndex:   -1,
 	}
 }
 
@@ -69,34 +79,32 @@ func (r *SSDBReader) Read(p []byte) (n int, err error) {
 		return
 	}
 
-	var (
-		b []byte
-	)
+	for n < l && r.i < r.DfsFileInfo.GetFileSize() {
+		idx := r.getPartIdx()
+		if !r.partLoaded || r.partIndex != idx {
+			r.partData, err = r.readFile(context.Background(), idx)
+			if err != nil {
+				return n, err
+			}
+			r.partIndex = idx
+			r.partLoaded = true
+		}
 
-	for idx := r.getPartIdx(); idx < r.DfsFileInfo.FileTotalParts; idx++ {
-		b, err = r.readFile(context.Background(), idx)
-		if err != nil {
-			return 0, err
-		}
-		// l += len(b) - r.getPartOffset()
 		offset := r.getPartOffset()
-		if len(b)-offset >= l-n {
-			// log.Debugf("endB - offset:%d, idx: %d, i: %d, l: %d, n: %d", offset, idx, r.i, l, n)
-			copy(p[n:], b[offset:offset+l-n])
-			r.i += int64(l - n)
-			n = l
-			// log.Debugf("endE - offset:%d, idx: %d, i: %d, l: %d, n: %d", offset, idx, r.i, l, n)
-			return
-		} else {
-			// log.Debugf("b - offset:%d, idx: %d, i: %d, l: %d, n: %d", offset, idx, r.i, l, n)
-			copy(p[n:], b[offset:])
-			n += len(b) - offset
-			r.i += int64(len(b) - offset)
-			// log.Debugf("e - offset:%d, idx: %d, i: %d, l: %d, n: %d", offset, idx, r.i, l, n)
+		if offset >= len(r.partData) {
+			return n, io.ErrUnexpectedEOF
 		}
+		available := len(r.partData) - offset
+		readSize := l - n
+		if readSize > available {
+			readSize = available
+		}
+		copy(p[n:n+readSize], r.partData[offset:offset+readSize])
+		n += readSize
+		r.i += int64(readSize)
 	}
 
-	return
+	return n, nil
 }
 
 // Seek implements the io.Seeker interface.
@@ -116,6 +124,8 @@ func (r *SSDBReader) Seek(offset int64, whence int) (int64, error) {
 		return 0, fmt.Errorf("ssdb.Reader.Seek: negative position")
 	}
 	r.i = abs
+	r.partLoaded = false
+	r.partData = nil
 	return abs, nil
 }
 
@@ -139,23 +149,36 @@ func (r *SSDBReader) ReadAll(ctx context.Context) ([]byte, error) {
 
 	var (
 		bytes []byte
-		err   error
-		bBuf  string
-		b     []byte
 		k     = getFileKey(r.Creator, r.FileId)
 	)
+	if size := r.GetFileSize(); size > 0 && size <= int64(^uint(0)>>1) {
+		bytes = make([]byte, 0, int(size))
+	}
 
-	for i := 0; i < r.FileTotalParts; i++ {
-		bBuf, err = r.ssdb.HgetCtx(ctx, k, strconv.Itoa(i))
+	pipeline, err := r.ssdb.GetPipeline(k)
+	if err != nil {
+		logx.WithContext(ctx).Errorf("get SSDB pipeline %s error(%v)", k, err)
+		return nil, err
+	}
+	results := make([]stringResult, r.FileTotalParts)
+	err = pipeline.PipelinedCtx(ctx, func(pipe kv.Pipeliner) error {
+		for i := 0; i < r.FileTotalParts; i++ {
+			results[i] = pipe.HGet(ctx, k, strconv.Itoa(i))
+		}
+		return nil
+	})
+	if err != nil {
+		logx.WithContext(ctx).Errorf("pipeline HGET %s error(%v)", k, err)
+		return nil, err
+	}
+
+	for i, result := range results {
+		bBuf, err := result.Result()
 		if err != nil {
-			logx.WithContext(ctx).Errorf("conn.Send(HGET %s, %d) error(%v)", k, i, err)
+			logx.WithContext(ctx).Errorf("pipeline HGET %s, %d error(%v)", k, i, err)
 			return nil, err
 		}
-		b = []byte(bBuf)
-		if bytes == nil {
-			bytes = make([]byte, 0, len(b)*r.FileTotalParts)
-		}
-		bytes = append(bytes, b...)
+		bytes = append(bytes, bBuf...)
 	}
 
 	return bytes, nil

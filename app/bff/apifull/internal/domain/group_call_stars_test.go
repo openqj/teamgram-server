@@ -28,6 +28,9 @@ func TestPaidGroupCallMessageSettlesAndAggregates(t *testing.T) {
 		if _, cleanupErr := db.Exec(`DELETE FROM apifull_star_tx WHERE user_id IN ($1,$2)`, senderID, creatorID); cleanupErr != nil {
 			t.Errorf("cleanup star transactions: %v", cleanupErr)
 		}
+		if _, cleanupErr := db.Exec(`DELETE FROM apifull_stars_sub2api_outbox WHERE user_id IN ($1,$2)`, senderID, creatorID); cleanupErr != nil {
+			t.Errorf("cleanup Stars mirror outbox: %v", cleanupErr)
+		}
 		if _, cleanupErr := db.Exec(`DELETE FROM apifull_stars WHERE user_id IN ($1,$2)`, senderID, creatorID); cleanupErr != nil {
 			t.Errorf("cleanup stars: %v", cleanupErr)
 		}

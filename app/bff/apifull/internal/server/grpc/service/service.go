@@ -57,7 +57,7 @@ func (s *Service) StartWorkers() {
 	go func() {
 		defer close(done)
 		var workers sync.WaitGroup
-		workers.Add(6)
+		workers.Add(7)
 		go func() {
 			defer workers.Done()
 			core.RunPremiumGrantReconciler(ctx, s.svcCtx)
@@ -81,6 +81,10 @@ func (s *Service) StartWorkers() {
 		go func() {
 			defer workers.Done()
 			core.RunPaymentRecoveryReconciler(ctx, s.svcCtx)
+		}()
+		go func() {
+			defer workers.Done()
+			core.RunStarsSub2APIMirror(ctx, s.svcCtx)
 		}()
 		workers.Wait()
 	}()

@@ -11,10 +11,13 @@ import (
 )
 
 type WebhookEvent = domain.PaymentWebhook
+type Sub2APIStarsUsageEvent = domain.Sub2APIStarsUsageEvent
 
 var (
-	ErrWebhookConflict = domain.ErrPaymentWebhookConflict
-	ErrInvalidWebhook  = domain.ErrPaymentRecoveryInvalid
+	ErrWebhookConflict      = domain.ErrPaymentWebhookConflict
+	ErrInvalidWebhook       = domain.ErrPaymentRecoveryInvalid
+	ErrStarsUsageConflict   = domain.ErrStarsUsageConflict
+	ErrStarsBalanceExceeded = domain.ErrStarsBalanceExceeded
 )
 
 func OpenPostgresReadOnly(dsn string) error {
@@ -27,4 +30,8 @@ func ClosePostgres() error {
 
 func EnqueueWebhook(ctx context.Context, event WebhookEvent, payload []byte) (bool, error) {
 	return domain.EnqueuePaymentWebhook(ctx, event, payload)
+}
+
+func ApplySub2APIStarsUsage(ctx context.Context, event Sub2APIStarsUsageEvent) (int64, error) {
+	return domain.ApplySub2APIStarsUsage(ctx, event)
 }

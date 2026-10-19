@@ -27,6 +27,25 @@ type localStarsInvoice struct {
 	description   string
 }
 
+func isStarsGiftInvoice(in *mtproto.InputInvoice) bool {
+	return in != nil && in.GetPredicateName() == mtproto.Predicate_inputInvoiceStars &&
+		in.GetPurpose() != nil && in.GetPurpose().GetPredicateName() == mtproto.Predicate_inputStorePaymentStarsGift
+}
+
+func starsGiftSlug(payerID, recipientID, stars int64, invoice *mtproto.InputInvoice) string {
+	body, err := json.Marshal(struct {
+		PayerID     int64                 `json:"payer_id"`
+		RecipientID int64                 `json:"recipient_id"`
+		Stars       int64                 `json:"stars"`
+		Invoice     *mtproto.InputInvoice `json:"invoice"`
+	}{payerID, recipientID, stars, invoice})
+	if err != nil {
+		return ""
+	}
+	digest := sha256.Sum256(body)
+	return "stars-gift-" + hex.EncodeToString(digest[:16])
+}
+
 func localGiftRecipientKey(selfID int64, user *mtproto.InputUser, peer *mtproto.InputPeer) (int64, error) {
 	if user != nil {
 		resolved := mtproto.FromInputUser(selfID, user)
@@ -87,6 +106,25 @@ func (c *ApiFullCore) localStarsInvoice(in *mtproto.InputInvoice) (localStarsInv
 	}
 	result := localStarsInvoice{payerID: uid}
 	switch in.GetPredicateName() {
+	case mtproto.Predicate_inputInvoiceStars:
+		purpose := in.GetPurpose()
+		if purpose == nil || purpose.GetPredicateName() != mtproto.Predicate_inputStorePaymentStarsGift {
+			return localStarsInvoice{}, mtproto.ErrPaymentUnsupported
+		}
+		if purpose.GetCurrency() != "XTR" || purpose.GetStars() <= 0 || purpose.GetAmount() != purpose.GetStars() {
+			return localStarsInvoice{}, mtproto.ErrInputRequestInvalid
+		}
+		result.recipientID, err = localGiftRecipientKey(uid, purpose.GetUserId(), nil)
+		if err != nil {
+			return localStarsInvoice{}, err
+		}
+		result.kind = domain.StarsSpendGift
+		result.stars = purpose.GetStars()
+		result.giftSlug = starsGiftSlug(uid, result.recipientID, result.stars, in)
+		if result.giftSlug == "" {
+			return localStarsInvoice{}, mtproto.ErrInternalServerError
+		}
+		result.title, result.description = "Star Gift", "Stars gift"
 	case mtproto.Predicate_inputInvoiceStarGift:
 		gift, found, findErr := domain.FindGiftByID(in.GetGiftId())
 		if findErr != nil {

@@ -29,7 +29,7 @@ MiniHttp:
   Timeout: 0
 Cache:
   - Host: 127.0.0.1:6379
-Minio:
+S3:
   Endpoint: localhost:8333
   AccessKeyID: seaweedfs
   SecretAccessKey: seaweedfs-secret

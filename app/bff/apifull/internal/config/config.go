@@ -46,6 +46,12 @@ type Config struct {
 	PaymentReconciliationIntervalSeconds int                       `json:",optional"`
 	PaymentReconciliationBatchSize       int                       `json:",optional"`
 	AllowInsecureProviderHTTP            bool                      `json:",optional"`
+	Sub2APIInternalBaseURL               string                    `json:",optional"`
+	Sub2APIServiceToken                  string                    `json:",optional"`
+	Sub2APITimeoutSeconds                int                       `json:",optional"`
+	IdentityBaseURL                      string                    `json:",optional"`
+	IdentityTeamgramServiceToken         string                    `json:",optional"`
+	IdentityTeamgramInstanceID           string                    `json:",optional"`
 	GroupCallMediaEndpoint               string                    `json:",optional"`
 	GroupCallMediaAPIKey                 string                    `json:",optional"`
 	GroupCallMediaSigningKey             string                    `json:",optional"`

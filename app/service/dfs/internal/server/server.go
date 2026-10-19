@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/teamgram/teamgram-server/app/service/dfs/internal/s3util"
 	"github.com/teamgram/teamgram-server/app/service/dfs/internal/server/http"
 	"github.com/zeromicro/go-zero/rest"
 
@@ -47,10 +48,15 @@ func (s *Server) Initialize() error {
 	}
 
 	logx.Infow("dfs configuration loaded",
-		logx.Field("s3_endpoint", c.Minio.Endpoint),
-		logx.Field("s3_use_ssl", c.Minio.UseSSL),
-		logx.Field("s3_region", c.Minio.Region),
-		logx.Field("s3_buckets", c.Minio.Bucket),
+		logx.Field("s3_endpoint", c.S3.Endpoint),
+		logx.Field("s3_use_ssl", c.S3.UseSSL),
+		logx.Field("s3_region", c.S3.Region),
+		logx.Field("s3_buckets", c.S3.Bucket),
+		logx.Field("s3_max_idle_conns", c.S3.Transport.MaxIdleConns),
+		logx.Field("s3_max_idle_conns_per_host", c.S3.Transport.MaxIdleConnsPerHost),
+		logx.Field("s3_max_conns_per_host", c.S3.Transport.MaxConnsPerHost),
+		logx.Field("s3_upload_part_size_mib", c.S3.Transport.UploadPartSizeMiB),
+		logx.Field("s3_upload_concurrency", c.S3.Transport.UploadConcurrency),
 	)
 	ctx := svc.NewServiceContext(c)
 
@@ -69,36 +75,84 @@ func applyObjectStorageEnv(c *config.Config) error {
 		if err := validateObjectStorageEndpoint(endpoint); err != nil {
 			return err
 		}
-		c.Minio.Endpoint = endpoint
+		c.S3.Endpoint = endpoint
 	}
 	if accessKey := os.Getenv("S3_ACCESS_KEY"); accessKey != "" {
-		c.Minio.AccessKeyID = accessKey
+		c.S3.AccessKeyID = accessKey
 	}
 	if secretKey := os.Getenv("S3_SECRET_KEY"); secretKey != "" {
-		c.Minio.SecretAccessKey = secretKey
+		c.S3.SecretAccessKey = secretKey
 	}
 	if useSSL := os.Getenv("S3_USE_SSL"); useSSL != "" {
 		parsed, err := strconv.ParseBool(useSSL)
 		if err != nil {
 			return fmt.Errorf("S3_USE_SSL must be true or false: %w", err)
 		}
-		c.Minio.UseSSL = parsed
+		c.S3.UseSSL = parsed
 	}
 	if region := strings.TrimSpace(os.Getenv("S3_REGION")); region != "" {
 		if strings.ContainsAny(region, " \t\r\n") {
 			return fmt.Errorf("S3_REGION must not contain whitespace")
 		}
-		c.Minio.Region = region
+		c.S3.Region = region
 	}
-	if c.Minio.Region == "" {
-		c.Minio.Region = "us-east-1"
+	if c.S3.Region == "" {
+		c.S3.Region = "us-east-1"
 	}
-	if c.Minio.Endpoint == "" {
-		return fmt.Errorf("S3_ENDPOINT or Minio.Endpoint is required")
+	if err := applyS3TransportEnv(&c.S3.Transport); err != nil {
+		return err
 	}
-	if c.Minio.AccessKeyID == "" || c.Minio.SecretAccessKey == "" {
+	if c.S3.Endpoint == "" {
+		return fmt.Errorf("S3_ENDPOINT or S3.Endpoint is required")
+	}
+	if c.S3.AccessKeyID == "" || c.S3.SecretAccessKey == "" {
 		return fmt.Errorf("S3_ACCESS_KEY and S3_SECRET_KEY or config credentials are required")
 	}
+	return nil
+}
+
+func applyS3TransportEnv(transport *s3util.TransportConfig) error {
+	if err := parsePositiveEnv("S3_MAX_IDLE_CONNS", &transport.MaxIdleConns, false); err != nil {
+		return err
+	}
+	if err := parsePositiveEnv("S3_MAX_IDLE_CONNS_PER_HOST", &transport.MaxIdleConnsPerHost, false); err != nil {
+		return err
+	}
+	if err := parsePositiveEnv("S3_MAX_CONNS_PER_HOST", &transport.MaxConnsPerHost, true); err != nil {
+		return err
+	}
+	if err := parsePositiveEnv("S3_IDLE_CONN_TIMEOUT_SECONDS", &transport.IdleConnTimeoutSeconds, false); err != nil {
+		return err
+	}
+	if err := parsePositiveEnv("S3_RESPONSE_HEADER_TIMEOUT_SECONDS", &transport.ResponseHeaderTimeoutSecs, false); err != nil {
+		return err
+	}
+	if value := strings.TrimSpace(os.Getenv("S3_UPLOAD_PART_SIZE_MIB")); value != "" {
+		parsed, err := strconv.Atoi(value)
+		if err != nil || parsed < 5 {
+			return fmt.Errorf("S3_UPLOAD_PART_SIZE_MIB must be an integer >= 5")
+		}
+		transport.UploadPartSizeMiB = parsed
+	}
+	if err := parsePositiveEnv("S3_UPLOAD_CONCURRENCY", &transport.UploadConcurrency, false); err != nil {
+		return err
+	}
+	return nil
+}
+
+func parsePositiveEnv(name string, target *int, allowZero bool) error {
+	value := strings.TrimSpace(os.Getenv(name))
+	if value == "" {
+		return nil
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil || parsed < 0 || (!allowZero && parsed == 0) {
+		if allowZero {
+			return fmt.Errorf("%s must be a non-negative integer", name)
+		}
+		return fmt.Errorf("%s must be a positive integer", name)
+	}
+	*target = parsed
 	return nil
 }
 

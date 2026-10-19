@@ -29,9 +29,11 @@ type Config struct {
 	PaymentProviderName                string    `json:",optional"`
 	PaymentProviderWebhookSigningKey   string    `json:",optional"`
 	PaymentProviderWebhookMaxBodyBytes int64     `json:",optional"`
+	CorsOrigins                        string    `json:",optional"`
 	IdentityBaseURL                    string    `json:",optional"`
 	IdentityTeamgramServiceToken       string    `json:",optional"`
 	IdentityTeamgramInstanceID         string    `json:",optional"`
+	Sub2APIServiceToken                string    `json:",optional"`
 	IdentityReplayKV                   kv.KvConf `json:",optional"`
 	IdentityReplayTTLSeconds           int       `json:",optional"`
 	IdentityRequestTimeoutSeconds      int       `json:",optional"`

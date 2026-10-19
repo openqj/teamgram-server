@@ -88,7 +88,7 @@ docker compose -f docker-compose-env.yaml up -d
 docker compose up -d
 ```
 
-S3 契约、旧 MinIO 到 SeaweedFS/RustFS 的迁移，以及生产 HA 部署手册见
+S3 契约、provider 迁移，以及生产 HA 部署手册见
 [对象存储](docs/object-storage-zh.md)。
 
 ---

@@ -14,8 +14,8 @@ import (
 	"github.com/teamgram/teamgram-server/app/service/dfs/internal/config"
 	"github.com/teamgram/teamgram-server/app/service/dfs/internal/dao"
 	"github.com/teamgram/teamgram-server/app/service/dfs/internal/imaging"
-	"github.com/teamgram/teamgram-server/app/service/dfs/internal/minio_util"
 	"github.com/teamgram/teamgram-server/app/service/dfs/internal/model"
+	"github.com/teamgram/teamgram-server/app/service/dfs/internal/s3util"
 	"github.com/teamgram/teamgram-server/app/service/dfs/internal/server/grpc/service"
 	"github.com/teamgram/teamgram-server/app/service/dfs/internal/server/http"
 	"github.com/teamgram/teamgram-server/app/service/dfs/internal/svc"
@@ -32,7 +32,7 @@ type (
 var (
 	New               = service.New
 	NewServiceContext = svc.NewServiceContext
-	NewMinioHelper    = dao.NewMinioHelper
+	NewS3Helper       = dao.NewS3Helper
 )
 
 //func New(c Config) *service.Service {
@@ -40,9 +40,9 @@ var (
 //}
 
 type (
-	MinioConfig     = minio_util.MinioConfig
+	S3Config        = s3util.S3Config
 	DFSHelper       = dao.Dao
-	MinioHelper     = minio_util.MinioUtil
+	S3Helper        = s3util.S3Util
 	DfsHttpFileInfo = model.DfsHttpFileInfo
 )
 
@@ -64,7 +64,7 @@ var (
 	ReSizeImage        = imaging.ReSizeImage
 	ReSizeImageByImage = imaging.ReSizeImageByImage
 
-	MustNewMinioClient = minio_util.MustNewMinioClient
+	MustNewS3Client = s3util.MustNewS3Client
 
 	GetStorageFileTypeConstructor = model.GetStorageFileTypeConstructor
 )
@@ -73,8 +73,8 @@ func init() {
 	zrpc.DontLogContentForMethod("/dfs.RPCDfs/dfs_writeFilePartData")
 }
 
-func NewDFSHelper(minio *MinioConfig, idgen zrpc.RpcClientConf, ssdb kv.KvConf) *DFSHelper {
-	return dao.NewDFSHelper(minio, idgen, ssdb)
+func NewDFSHelper(s3 *S3Config, idgen zrpc.RpcClientConf, ssdb kv.KvConf) *DFSHelper {
+	return dao.NewDFSHelper(s3, idgen, ssdb)
 }
 
 // GetDfsFile - GetDfsFile

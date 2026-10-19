@@ -47,6 +47,8 @@ var requiredReadOnlyPostgresMigrations = []string{
 	"097_apifull_payment_recovery",
 	"101_apifull_channel_peek_access",
 	"103_apifull_gift_payment_request",
+	"114_apifull_stars_sub2api_mirror",
+	"115_apifull_stars_sub2api_rate_snapshot",
 }
 
 var requiredReadOnlyPostgresSchemaQueries = []string{
@@ -77,6 +79,9 @@ var requiredReadOnlyPostgresSchemaQueries = []string{
 	`SELECT provider, user_id, transaction_id, product, state FROM apifull_payment_provider_reversal LIMIT 0`,
 	`SELECT provider, user_id, transaction_id, product, state, claim_token FROM apifull_payment_provider_reconciliation LIMIT 0`,
 	`SELECT channel_id, user_id, expires_at, granted_at FROM apifull_channel_peek_access LIMIT 0`,
+	`SELECT event_id, user_id, delta_stars, amount_usd, state, claim_token FROM apifull_stars_sub2api_outbox LIMIT 0`,
+	`SELECT account_id, user_id, residual_stars FROM apifull_sub2api_stars_residual LIMIT 0`,
+	`SELECT event_id, account_id, user_id, amount_usd, currency, applied_stars_delta FROM apifull_sub2api_stars_usage_event LIMIT 0`,
 }
 
 func (s *postgresStore) Get(key string) (string, error) {

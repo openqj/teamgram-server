@@ -45,3 +45,30 @@ func TestApplyProviderEnvironmentLoadsPaymentProvider(t *testing.T) {
 		t.Fatalf("timeout = %d", cfg.PaymentProviderTimeoutSeconds)
 	}
 }
+
+func TestApplyProviderEnvironmentLoadsStarsSub2APIBridge(t *testing.T) {
+	t.Setenv("TEAMGRAM_SUB2API_INTERNAL_BASE_URL", " https://sub2api.internal ")
+	t.Setenv("TEAMGRAM_SUB2API_SERVICE_TOKEN", " sub2api-service-token ")
+	t.Setenv("TEAMGRAM_SUB2API_TIMEOUT_SECONDS", "23")
+	t.Setenv("TEAMGRAM_IDENTITY_BASE_URL", " https://identity.internal ")
+	t.Setenv("TEAMGRAM_IDENTITY_TEAMGRAM_SERVICE_TOKEN", " identity-teamgram-token ")
+	t.Setenv("TEAMGRAM_IDENTITY_INSTANCE_ID", " instance-a ")
+
+	var cfg config.Config
+	if err := applyProviderEnvironment(&cfg); err != nil {
+		t.Fatalf("applyProviderEnvironment() error = %v", err)
+	}
+	if cfg.Sub2APIInternalBaseURL != "https://sub2api.internal" ||
+		cfg.Sub2APIServiceToken != "sub2api-service-token" ||
+		cfg.Sub2APITimeoutSeconds != 23 ||
+		cfg.IdentityBaseURL != "https://identity.internal" ||
+		cfg.IdentityTeamgramServiceToken != "identity-teamgram-token" ||
+		cfg.IdentityTeamgramInstanceID != "instance-a" {
+		t.Fatal("Stars/Sub2API bridge environment was not loaded")
+	}
+
+	t.Setenv("TEAMGRAM_SUB2API_TIMEOUT_SECONDS", "301")
+	if err := applyProviderEnvironment(&cfg); err == nil {
+		t.Fatal("applyProviderEnvironment() accepted an out-of-range Sub2API timeout")
+	}
+}

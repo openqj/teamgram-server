@@ -21,7 +21,7 @@ import (
 	"github.com/teamgram/teamgram-server/app/service/dfs/internal/imaging"
 	"github.com/teamgram/teamgram-server/app/service/dfs/internal/model"
 
-	"github.com/minio/minio-go/v7"
+	"github.com/teamgram/teamgram-server/app/service/dfs/internal/s3util"
 	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
@@ -109,7 +109,7 @@ func (c *DfsCore) uploadVideoSizeListV2(creatorId int64, video *mtproto.InputFil
 		photoId  = c.svcCtx.Dao.IDGenClient2.NextId(c.ctx)
 		sizeList = make([]*mtproto.PhotoSize, 0, 3)
 		// extType  = model.GetStorageFileTypeConstructor(ext)
-		fileSize minio.UploadInfo
+		fileSize s3util.UploadInfo
 		//ext         = model.GetFileExtName(video.GetName())
 		ext        = ".jpg"
 		extType    = model.GetStorageFileTypeConstructor(ext)
@@ -178,7 +178,7 @@ func (c *DfsCore) uploadVideoSizeListV2(creatorId int64, video *mtproto.InputFil
 
 func (c *DfsCore) uploadPhotoSizeListV2(creatorId int64, file *mtproto.InputFile, isABC bool) (photo *mtproto.Photo, err error) {
 	var (
-		fileSize  minio.UploadInfo
+		fileSize  s3util.UploadInfo
 		cacheData []byte
 		r         *dao.SSDBReader
 	)

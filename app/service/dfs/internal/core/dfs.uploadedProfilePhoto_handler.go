@@ -28,18 +28,18 @@ import (
 	"github.com/teamgram/teamgram-server/app/service/dfs/internal/imaging"
 	"github.com/teamgram/teamgram-server/app/service/dfs/internal/model"
 
-	"github.com/minio/minio-go/v7"
+	"github.com/teamgram/teamgram-server/app/service/dfs/internal/s3util"
 )
 
 // DfsUploadedProfilePhoto
 // dfs.uploadedProfilePhoto creator:long photo_id:long = Photo;
 func (c *DfsCore) DfsUploadedProfilePhoto(in *dfs.TLDfsUploadedProfilePhoto) (*mtproto.Photo, error) {
 	var (
-		fileSize minio.UploadInfo
+		fileSize s3util.UploadInfo
 		fileName = fmt.Sprintf("0/%d.jpeg", in.GetPhotoId())
 	)
 
-	cacheData, err := c.svcCtx.Dao.MinioUtil.GetPhotoFileData(c.ctx, fmt.Sprintf("0/%d.dat", in.GetPhotoId()))
+	cacheData, err := c.svcCtx.Dao.S3Util.GetPhotoFileData(c.ctx, fmt.Sprintf("0/%d.dat", in.GetPhotoId()))
 	if err != nil {
 		c.Logger.Errorf("dfs.uploadedProfilePhoto - %v", err)
 		return nil, err

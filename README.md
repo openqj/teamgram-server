@@ -84,8 +84,8 @@ docker compose -f docker-compose-env.yaml up -d
 docker compose up -d
 ```
 
-The S3 contract, legacy MinIO-to-SeaweedFS/RustFS migration, and production HA
-runbook are documented in [Object storage](docs/object-storage.md).
+The S3 contract, provider migration, and production HA runbook are documented
+in [Object storage](docs/object-storage.md).
 
 ---
 

@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -17,8 +18,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/minio/minio-go/v7"
-	"github.com/minio/minio-go/v7/pkg/credentials"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+	smithy "github.com/aws/smithy-go"
+	smithyhttp "github.com/aws/smithy-go/transport/http"
+	"github.com/teamgram/teamgram-server/tools/s3support"
 )
 
 const (
@@ -42,8 +47,7 @@ type probeConfig struct {
 }
 
 type probe struct {
-	client *minio.Client
-	core   *minio.Core
+	client *s3.Client
 	cfg    probeConfig
 }
 
@@ -58,22 +62,21 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-
-	client, err := minio.New(cfg.endpoint, &minio.Options{
-		Creds:        credentials.NewStaticV4(cfg.accessKey, cfg.secretKey, ""),
-		Secure:       cfg.secure,
-		Region:       cfg.region,
-		BucketLookup: minio.BucketLookupPath,
+	client, err := s3support.NewClient(s3support.Config{
+		Endpoint:  cfg.endpoint,
+		AccessKey: cfg.accessKey,
+		SecretKey: cfg.secretKey,
+		UseSSL:    cfg.secure,
+		Region:    cfg.region,
 	})
 	if err != nil {
 		log.Fatal(err)
 	}
-	core := &minio.Core{Client: client}
 
 	log.Printf("checking S3 data plane endpoint=%s bucket=%s prefix=%s region=%s", cfg.endpoint, cfg.bucket, cfg.prefix, cfg.region)
 	ctx, cancel := context.WithTimeout(context.Background(), cfg.timeout)
 	defer cancel()
-	if err := (&probe{client: client, core: core, cfg: cfg}).run(ctx); err != nil {
+	if err := (&probe{client: client, cfg: cfg}).run(ctx); err != nil {
 		log.Fatal(err)
 	}
 	log.Printf("S3 contract probe passed")
@@ -188,17 +191,14 @@ func (p *probe) run(ctx context.Context) (runErr error) {
 }
 
 func (p *probe) ensureBucket(ctx context.Context) error {
-	exists, err := p.client.BucketExists(ctx, p.cfg.bucket)
-	if err != nil {
-		return err
-	}
-	if exists {
+	_, err := p.client.HeadBucket(ctx, &s3.HeadBucketInput{Bucket: aws.String(p.cfg.bucket)})
+	if err == nil {
 		return nil
 	}
-	if !p.cfg.createBucket {
-		return fmt.Errorf("bucket does not exist; pass -create-bucket or S3_PROBE_CREATE_BUCKET=true for a new test bucket")
+	if !p.cfg.createBucket || !isNotFound(err) {
+		return err
 	}
-	if err := p.client.MakeBucket(ctx, p.cfg.bucket, minio.MakeBucketOptions{Region: p.cfg.region}); err != nil {
+	if _, err = p.client.CreateBucket(ctx, &s3.CreateBucketInput{Bucket: aws.String(p.cfg.bucket)}); err != nil {
 		return fmt.Errorf("create bucket: %w", err)
 	}
 	log.Printf("created bucket=%s; probe will leave the bucket in place", p.cfg.bucket)
@@ -207,8 +207,12 @@ func (p *probe) ensureBucket(ctx context.Context) error {
 
 func (p *probe) singlePutRoundTrip(ctx context.Context, key string, payload []byte) error {
 	const contentType = "application/x-teamgram-s3-contract"
-	if _, err := p.client.PutObject(ctx, p.cfg.bucket, key, bytes.NewReader(payload), int64(len(payload)), minio.PutObjectOptions{
-		ContentType: contentType,
+	if _, err := p.client.PutObject(ctx, &s3.PutObjectInput{
+		Bucket:        aws.String(p.cfg.bucket),
+		Key:           aws.String(key),
+		Body:          bytes.NewReader(payload),
+		ContentType:   aws.String(contentType),
+		ContentLength: aws.Int64(int64(len(payload))),
 	}); err != nil {
 		return fmt.Errorf("put object %q: %w", key, err)
 	}
@@ -223,30 +227,49 @@ func (p *probe) multipartRoundTrip(ctx context.Context, key string) error {
 	second := probePayload(1024*1024, "second")
 	want := append(append(make([]byte, 0, len(first)+len(second)), first...), second...)
 
-	uploadID, err := p.core.NewMultipartUpload(ctx, p.cfg.bucket, key, minio.PutObjectOptions{ContentType: "application/octet-stream"})
+	created, err := p.client.CreateMultipartUpload(ctx, &s3.CreateMultipartUploadInput{
+		Bucket:      aws.String(p.cfg.bucket),
+		Key:         aws.String(key),
+		ContentType: aws.String("application/octet-stream"),
+	})
 	if err != nil {
 		return fmt.Errorf("start multipart upload %q: %w", key, err)
 	}
+	uploadID := aws.ToString(created.UploadId)
 	completed := false
 	defer func() {
 		if !completed {
 			cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
-			if abortErr := p.core.AbortMultipartUpload(cleanupCtx, p.cfg.bucket, key, uploadID); abortErr != nil {
+			if abortErr := p.abortMultipart(cleanupCtx, key, uploadID); abortErr != nil {
 				log.Printf("warning: abort multipart key=%q: %v", key, abortErr)
 			}
 		}
 	}()
 
-	parts := make([]minio.CompletePart, 0, 2)
+	parts := make([]types.CompletedPart, 0, 2)
 	for number, payload := range [][]byte{first, second} {
-		part, err := p.core.PutObjectPart(ctx, p.cfg.bucket, key, uploadID, number+1, bytes.NewReader(payload), int64(len(payload)), "", "", nil)
+		part, err := p.client.UploadPart(ctx, &s3.UploadPartInput{
+			Bucket:        aws.String(p.cfg.bucket),
+			Key:           aws.String(key),
+			UploadId:      aws.String(uploadID),
+			PartNumber:    int32Ptr(int32(number + 1)),
+			Body:          bytes.NewReader(payload),
+			ContentLength: aws.Int64(int64(len(payload))),
+		})
 		if err != nil {
 			return fmt.Errorf("upload multipart part %d for %q: %w", number+1, key, err)
 		}
-		parts = append(parts, minio.CompletePart{PartNumber: part.PartNumber, ETag: part.ETag})
+		parts = append(parts, types.CompletedPart{PartNumber: int32Ptr(int32(number + 1)), ETag: part.ETag})
 	}
-	if _, err := p.core.CompleteMultipartUpload(ctx, p.cfg.bucket, key, uploadID, parts, minio.PutObjectOptions{}); err != nil {
+	if _, err := p.client.CompleteMultipartUpload(ctx, &s3.CompleteMultipartUploadInput{
+		Bucket:   aws.String(p.cfg.bucket),
+		Key:      aws.String(key),
+		UploadId: aws.String(uploadID),
+		MultipartUpload: &types.CompletedMultipartUpload{
+			Parts: parts,
+		},
+	}); err != nil {
 		return fmt.Errorf("complete multipart upload %q: %w", key, err)
 	}
 	completed = true
@@ -257,24 +280,24 @@ func (p *probe) multipartRoundTrip(ctx context.Context, key string) error {
 }
 
 func (p *probe) verifyObject(ctx context.Context, key string, want []byte, contentType string) error {
-	info, err := p.client.StatObject(ctx, p.cfg.bucket, key, minio.StatObjectOptions{})
+	info, err := p.client.HeadObject(ctx, &s3.HeadObjectInput{Bucket: aws.String(p.cfg.bucket), Key: aws.String(key)})
 	if err != nil {
 		return fmt.Errorf("head object: %w", err)
 	}
-	if info.Size != int64(len(want)) {
-		return fmt.Errorf("size=%d, want=%d", info.Size, len(want))
+	if aws.ToInt64(info.ContentLength) != int64(len(want)) {
+		return fmt.Errorf("size=%d, want=%d", aws.ToInt64(info.ContentLength), len(want))
 	}
-	if info.ContentType != contentType {
-		return fmt.Errorf("content type=%q, want=%q", info.ContentType, contentType)
+	if aws.ToString(info.ContentType) != contentType {
+		return fmt.Errorf("content type=%q, want=%q", aws.ToString(info.ContentType), contentType)
 	}
 
-	object, err := p.client.GetObject(ctx, p.cfg.bucket, key, minio.GetObjectOptions{})
+	object, err := p.client.GetObject(ctx, &s3.GetObjectInput{Bucket: aws.String(p.cfg.bucket), Key: aws.String(key)})
 	if err != nil {
 		return fmt.Errorf("get object: %w", err)
 	}
-	defer object.Close()
+	defer object.Body.Close()
 	digest := sha256.New()
-	readSize, err := io.Copy(digest, object)
+	readSize, err := io.Copy(digest, object.Body)
 	if err != nil {
 		return fmt.Errorf("read object: %w", err)
 	}
@@ -290,27 +313,34 @@ func (p *probe) verifyObject(ctx context.Context, key string, want []byte, conte
 }
 
 func (p *probe) listContains(ctx context.Context, key string) error {
-	found := false
-	for object := range p.client.ListObjects(ctx, p.cfg.bucket, minio.ListObjectsOptions{Prefix: p.cfg.prefix, Recursive: true}) {
-		if object.Err != nil {
-			return object.Err
+	paginator := s3.NewListObjectsV2Paginator(p.client, &s3.ListObjectsV2Input{
+		Bucket: aws.String(p.cfg.bucket),
+		Prefix: aws.String(p.cfg.prefix),
+	})
+	for paginator.HasMorePages() {
+		page, err := paginator.NextPage(ctx)
+		if err != nil {
+			return err
 		}
-		if object.Key == key {
-			found = true
+		for _, object := range page.Contents {
+			if aws.ToString(object.Key) == key {
+				return nil
+			}
 		}
 	}
-	if !found {
-		return fmt.Errorf("object %q was not returned for prefix %q", key, p.cfg.prefix)
-	}
-	return nil
+	return fmt.Errorf("object %q was not returned for prefix %q", key, p.cfg.prefix)
 }
 
 func (p *probe) listMultipartUploads(ctx context.Context) error {
-	result, err := p.core.ListMultipartUploads(ctx, p.cfg.bucket, p.cfg.prefix, "", "", "", 1000)
+	result, err := p.client.ListMultipartUploads(ctx, &s3.ListMultipartUploadsInput{
+		Bucket:     aws.String(p.cfg.bucket),
+		Prefix:     aws.String(p.cfg.prefix),
+		MaxUploads: int32Ptr(1000),
+	})
 	if err != nil {
 		return err
 	}
-	if result.IsTruncated {
+	if aws.ToBool(result.IsTruncated) {
 		return fmt.Errorf("more than 1000 incomplete uploads exist under prefix %q", p.cfg.prefix)
 	}
 	if len(result.Uploads) > 0 {
@@ -319,10 +349,19 @@ func (p *probe) listMultipartUploads(ctx context.Context) error {
 	return nil
 }
 
+func (p *probe) abortMultipart(ctx context.Context, key, uploadID string) error {
+	_, err := p.client.AbortMultipartUpload(ctx, &s3.AbortMultipartUploadInput{
+		Bucket:   aws.String(p.cfg.bucket),
+		Key:      aws.String(key),
+		UploadId: aws.String(uploadID),
+	})
+	return err
+}
+
 func (p *probe) cleanup(ctx context.Context, keys []string) error {
 	var firstErr error
 	for _, key := range keys {
-		if err := p.client.RemoveObject(ctx, p.cfg.bucket, key, minio.RemoveObjectOptions{}); err != nil && firstErr == nil {
+		if _, err := p.client.DeleteObject(ctx, &s3.DeleteObjectInput{Bucket: aws.String(p.cfg.bucket), Key: aws.String(key)}); err != nil && firstErr == nil {
 			firstErr = fmt.Errorf("delete object %q: %w", key, err)
 		}
 	}
@@ -354,6 +393,20 @@ func normalizeEndpoint(raw string, useSSL bool) (string, bool, error) {
 	}
 	return raw, useSSL, nil
 }
+
+func isNotFound(err error) bool {
+	var responseErr *smithyhttp.ResponseError
+	if errors.As(err, &responseErr) && responseErr.HTTPStatusCode() == 404 {
+		return true
+	}
+	var apiErr smithy.APIError
+	if errors.As(err, &apiErr) {
+		return apiErr.ErrorCode() == "NoSuchBucket" || apiErr.ErrorCode() == "NotFound" || apiErr.ErrorCode() == "NoSuchKey"
+	}
+	return false
+}
+
+func int32Ptr(value int32) *int32 { return &value }
 
 func envBool(name string, fallback bool) bool {
 	value := strings.TrimSpace(os.Getenv(name))

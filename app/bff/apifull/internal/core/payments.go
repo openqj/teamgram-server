@@ -1671,6 +1671,12 @@ func (c *ApiFullCore) PaymentsGetPaymentForm(in *mtproto.TLPaymentsGetPaymentFor
 	if in == nil || in.GetInvoice() == nil {
 		return nil, mtproto.ErrInvoicePayloadInvalid
 	}
+	if isStarsGiftInvoice(in.GetInvoice()) {
+		if !domain.Ready() {
+			return nil, mtproto.ErrPaymentUnsupported
+		}
+		return c.localStarsPaymentForm(in.GetInvoice())
+	}
 	switch in.GetInvoice().GetPredicateName() {
 	case mtproto.Predicate_inputInvoiceStarGiftUpgrade,
 		mtproto.Predicate_inputInvoiceStarGiftTransfer:

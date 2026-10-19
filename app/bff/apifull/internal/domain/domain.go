@@ -1282,6 +1282,17 @@ func ApplyStars(userID, delta int64, idem string) (int64, error) {
 }
 
 func applyStarsTx(tx *sql.Tx, userID, delta int64, idem string) (int64, error) {
+	return applyStarsTxInternal(tx, userID, delta, idem, true)
+}
+
+// applyStarsTxWithoutMirror is used only for signed external usage events that
+// already originated in the mirrored balance. Writing another outbox event
+// would feed the same movement back to the source system.
+func applyStarsTxWithoutMirror(tx *sql.Tx, userID, delta int64, idem string) (int64, error) {
+	return applyStarsTxInternal(tx, userID, delta, idem, false)
+}
+
+func applyStarsTxInternal(tx *sql.Tx, userID, delta int64, idem string, mirror bool) (int64, error) {
 	// Lock the balance before checking the ledger. A retry that waited for a
 	// concurrent debit must see that debit's idempotency record before checking
 	// the remaining balance. Every Stars writer uses this same lock order.
@@ -1312,6 +1323,13 @@ func applyStarsTx(tx *sql.Tx, userID, delta int64, idem string) (int64, error) {
 	}
 	if _, err = tx.Exec(`UPDATE apifull_stars SET balance=balance+$1 WHERE user_id=$2`, delta, userID); err != nil {
 		return 0, err
+	}
+	if mirror {
+		if _, err = tx.Exec(`INSERT INTO apifull_stars_sub2api_outbox
+			(event_id, user_id, delta_stars, state, attempts, lease_until, claim_token, next_attempt_at, last_error, created_at, updated_at)
+			VALUES ($1,$2,$3,'pending',0,TO_TIMESTAMP(0),NULL,CURRENT_TIMESTAMP,'',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)`, starsMirrorEventID(userID, idem), userID, delta); err != nil {
+			return 0, err
+		}
 	}
 	return bal + delta, nil
 }

@@ -22,7 +22,9 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"time"
 
+	"github.com/teamgram/marmota/pkg/stores/kv"
 	"github.com/teamgram/teamgram-server/app/service/dfs/internal/model"
 
 	"github.com/zeromicro/go-zero/core/logx"
@@ -46,15 +48,18 @@ func (d *Dao) WriteFilePartData(ctx context.Context, ownerId, fileId int64, file
 		k = getFileKey(ownerId, fileId)
 	)
 
-	err = d.ssdb.HsetCtx(ctx, k, strconv.Itoa(int(filePart)), string(bytes))
+	pipeline, err := d.ssdb.GetPipeline(k)
 	if err != nil {
-		logx.WithContext(ctx).Errorf("conn.Send(HSET %d, %d, %s) error(%v)", ownerId, fileId, filePart, err)
+		logx.WithContext(ctx).Errorf("get SSDB pipeline %s error(%v)", k, err)
 		return
 	}
-
-	_, err = d.ssdb.ExpireWithResultCtx(ctx, k, ssdbExpire)
+	err = pipeline.PipelinedCtx(ctx, func(pipe kv.Pipeliner) error {
+		pipe.HSet(ctx, k, strconv.Itoa(int(filePart)), string(bytes))
+		pipe.Expire(ctx, k, time.Duration(ssdbExpire)*time.Second)
+		return nil
+	})
 	if err != nil {
-		logx.WithContext(ctx).Errorf("conn.Send(EXPIRE %d,%d,%s) error(%v)", ownerId, fileId, filePart, err)
+		logx.WithContext(ctx).Errorf("pipeline HSET/EXPIRE %s, %d error(%v)", k, filePart, err)
 		return
 	}
 

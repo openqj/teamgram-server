@@ -324,6 +324,161 @@ func TestFixtureStarsFormIsSignedAndLayer229Encodable(t *testing.T) {
 	}
 }
 
+func TestFixturePaymentProvidersAreSignedAndDistinct(t *testing.T) {
+	f := testFixture()
+	fields := testFields(t, map[string]any{
+		"operation": "get_payment_providers",
+		"user_id":   int64(123),
+	})
+	body, header, err := f.response(fields)
+	if err != nil {
+		t.Fatalf("payment provider options response: %v", err)
+	}
+	if header != "X-Teamgram-Payment-Signature" {
+		t.Fatalf("signature header = %q", header)
+	}
+	assertFixtureSignature(t, f.key, body, f.sign(body))
+	var result struct {
+		Verified  bool                    `json:"verified"`
+		UserID    int64                   `json:"user_id"`
+		Providers []paymentProviderOption `json:"providers"`
+	}
+	if err = json.Unmarshal(body, &result); err != nil {
+		t.Fatalf("decode payment provider options: %v", err)
+	}
+	if !result.Verified || result.UserID != 123 || len(result.Providers) != 3 {
+		t.Fatalf("payment provider options = %+v", result)
+	}
+	seen := make(map[string]bool, len(result.Providers))
+	for _, provider := range result.Providers {
+		if provider.ID == "" || provider.Name == "" || len(provider.Methods) == 0 || !provider.Enabled || !provider.TestMode {
+			t.Fatalf("invalid payment provider option = %+v", provider)
+		}
+		if seen[provider.ID] {
+			t.Fatalf("duplicate payment provider id %q", provider.ID)
+		}
+		seen[provider.ID] = true
+	}
+}
+
+func TestFixturePremiumGiftCodeOptionsAreSignedAndComplete(t *testing.T) {
+	f := testFixture()
+	fields := testFields(t, map[string]any{
+		"operation": "get_premium_gift_code_options",
+		"user_id":   int64(123),
+	})
+	body, header, err := f.response(fields)
+	if err != nil {
+		t.Fatalf("Premium gift code options response: %v", err)
+	}
+	if header != "X-Teamgram-Payment-Signature" {
+		t.Fatalf("signature header = %q", header)
+	}
+	assertFixtureSignature(t, f.key, body, f.sign(body))
+	var result struct {
+		Verified bool  `json:"verified"`
+		UserID   int64 `json:"user_id"`
+		Options  []struct {
+			Users    int32  `json:"users"`
+			Months   int32  `json:"months"`
+			Currency string `json:"currency"`
+			Amount   int64  `json:"amount"`
+		} `json:"options"`
+	}
+	if err = json.Unmarshal(body, &result); err != nil {
+		t.Fatalf("decode Premium gift code options: %v", err)
+	}
+	if !result.Verified || result.UserID != 123 || len(result.Options) != 8 {
+		t.Fatalf("Premium gift code options = %+v", result)
+	}
+	seenCurrencies := make(map[string]bool, len(result.Options))
+	for _, option := range result.Options {
+		if option.Users != 1 || option.Months <= 0 || option.Amount <= 0 || option.Currency == "" {
+			t.Fatalf("invalid Premium gift code option = %+v", option)
+		}
+		seenCurrencies[option.Currency] = true
+	}
+	if !seenCurrencies["USD"] || !seenCurrencies["XTR"] {
+		t.Fatalf("gift code options currencies = %v, want USD and XTR", seenCurrencies)
+	}
+}
+
+func TestFixtureProvidersEndpointRequiresAuthAndReturnsOptions(t *testing.T) {
+	f := testFixture()
+	f.authKey = "provider-key"
+	unauthorized := httptest.NewRequest(http.MethodGet, "/providers", nil)
+	unauthorizedRecorder := httptest.NewRecorder()
+	f.ServeHTTP(unauthorizedRecorder, unauthorized)
+	if unauthorizedRecorder.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthorized providers status = %d", unauthorizedRecorder.Code)
+	}
+
+	request := httptest.NewRequest(http.MethodGet, "/providers", nil)
+	request.Header.Set("Authorization", "Bearer provider-key")
+	recorder := httptest.NewRecorder()
+	f.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("providers status = %d, want %d", recorder.Code, http.StatusOK)
+	}
+	var result struct {
+		Verified  bool                    `json:"verified"`
+		Providers []paymentProviderOption `json:"providers"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &result); err != nil {
+		t.Fatalf("decode providers endpoint: %v", err)
+	}
+	if !result.Verified || len(result.Providers) != 3 {
+		t.Fatalf("providers endpoint = %+v", result)
+	}
+	assertFixtureSignature(t, f.key, recorder.Body.Bytes(), recorder.Header().Get("X-Teamgram-Payment-Signature"))
+}
+
+func TestFixtureStarsSettlementRecordsSelectedProvider(t *testing.T) {
+	f := testFixture()
+	fields := testFields(t, map[string]any{
+		"operation":           "settle_stars",
+		"user_id":             int64(123),
+		"beneficiary_user_id": int64(123),
+		"required_product":    "stars_topup",
+		"request_key":         "stars:test-provider",
+		"fingerprint":         "fingerprint-provider",
+		"form_id":             int64(990019),
+		"provider_id":         "paypal",
+		"offer":               testStarsOffer(),
+	})
+	body, _, err := f.response(fields)
+	if err != nil {
+		t.Fatalf("Stars settlement response: %v", err)
+	}
+	var result struct {
+		PaymentProvider string `json:"payment_provider"`
+		Receipt         struct {
+			PaymentProvider string `json:"payment_provider"`
+		} `json:"receipt"`
+	}
+	if err = json.Unmarshal(body, &result); err != nil {
+		t.Fatalf("decode Stars settlement response: %v", err)
+	}
+	if result.PaymentProvider != "paypal" || result.Receipt.PaymentProvider != "paypal" {
+		t.Fatalf("selected payment provider = %+v", result)
+	}
+}
+
+func TestFixtureRejectsUnknownPaymentProvider(t *testing.T) {
+	f := testFixture()
+	fields := testFields(t, map[string]any{
+		"operation":           "get_stars_form",
+		"user_id":             int64(123),
+		"beneficiary_user_id": int64(123),
+		"required_product":    "stars_topup",
+		"provider_id":         "unknown",
+		"offer":               testStarsOffer(),
+	})
+	if _, _, err := f.response(fields); err == nil {
+		t.Fatal("unknown payment provider was accepted")
+	}
+}
+
 func TestFixtureBotInvoiceFormAndValidation(t *testing.T) {
 	f := testFixture()
 	invoice := map[string]any{

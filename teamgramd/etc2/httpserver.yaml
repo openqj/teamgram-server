@@ -43,6 +43,7 @@ Postgres:
 PaymentProviderName: external
 PaymentProviderWebhookSigningKey: ""
 PaymentProviderWebhookMaxBodyBytes: 1048576
+Sub2APIServiceToken: ""
 
 UserClient:
   Etcd:

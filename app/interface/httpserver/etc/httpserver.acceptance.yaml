@@ -1,0 +1,78 @@
+Http:
+  Name: interface.httpserver.agent.acceptance
+  Host: 0.0.0.0
+  Port: 8802
+  Timeout: 0
+  MaxBytes: 67108864
+  Log:
+    ServiceName: interface.httpserver.agent.acceptance
+    Level: info
+
+KeyFile: "./server_pkcs1.key"
+KeyFingerprint: "12240908862933197005"
+
+Session:
+  Etcd:
+    Hosts:
+      - etcd:2379
+    Key: interface.session
+  Timeout: 0
+
+AuthsessionClient:
+  Etcd:
+    Hosts:
+      - etcd:2379
+    Key: service.authsession
+  Timeout: 0
+
+Postgres:
+  DSN: ${TEAMGRAM_POSTGRES_DSN}
+  MaxConns: 16
+  MinConns: 2
+  MaxConnLifetime: 1h
+  MaxConnIdleTime: 30m
+  HealthCheckPeriod: 1m
+  ConnectTimeout: 10s
+
+PaymentProviderName: external
+PaymentProviderWebhookSigningKey: ""
+PaymentProviderWebhookMaxBodyBytes: 1048576
+
+CorsOrigins: ${TEAMGRAM_CORS_ORIGINS}
+
+IdentityBaseURL: ${TEAMGRAM_IDENTITY_BASE_URL}
+IdentityTeamgramServiceToken: ${TEAMGRAM_IDENTITY_TEAMGRAM_SERVICE_TOKEN}
+IdentityTeamgramInstanceID: default
+Sub2APIServiceToken: ${TEAMGRAM_SUB2API_SERVICE_TOKEN}
+IdentityReplayTTLSeconds: 60
+IdentityRequestTimeoutSeconds: 5
+IdentityReplayKV:
+  - Host: redis:6379
+    Pass: ""
+    Tls: false
+
+UserClient:
+  Etcd:
+    Hosts:
+      - etcd:2379
+    Key: service.biz_service
+ChatClient:
+  Etcd:
+    Hosts:
+      - etcd:2379
+    Key: service.biz_service
+MsgClient:
+  Etcd:
+    Hosts:
+      - etcd:2379
+    Key: messenger.msg
+BffClient:
+  Etcd:
+    Hosts:
+      - etcd:2379
+    Key: bff.bff
+DfsClient:
+  Etcd:
+    Hosts:
+      - etcd:2379
+    Key: service.dfs

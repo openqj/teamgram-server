@@ -21,7 +21,9 @@ package dao
 import (
 	"context"
 	"strconv"
+	"time"
 
+	"github.com/teamgram/marmota/pkg/stores/kv"
 	"github.com/teamgram/teamgram-server/app/service/dfs/internal/model"
 
 	"github.com/zeromicro/go-zero/core/logx"
@@ -30,17 +32,21 @@ import (
 func (d *Dao) SetFileInfo(ctx context.Context, fileInfo *model.DfsFileInfo) (err error) {
 	var (
 		key = getFileInfoKey(fileInfo.Creator, fileInfo.FileId)
-		// args = append([]interface{}{key}, fileInfo.ToArgs()...)
 	)
 
-	// TODO(@benqi): args error??
-	if err = d.ssdb.HmsetCtx(ctx, key, fileInfo.ToArgs()); err != nil {
-		logx.WithContext(ctx).Errorf("conn.Send(HMSET %s,%v) error(%v)", key, fileInfo, err)
+	pipeline, err := d.ssdb.GetPipeline(key)
+	if err != nil {
+		logx.WithContext(ctx).Errorf("get SSDB pipeline %s error(%v)", key, err)
 		return
 	}
 
-	if _, err = d.ssdb.ExpireWithResultCtx(ctx, key, ssdbExpire); err != nil {
-		logx.WithContext(ctx).Error("conn.Send(EXPIRE %d,%d) error(%v)", key, ssdbExpire, err)
+	err = pipeline.PipelinedCtx(ctx, func(pipe kv.Pipeliner) error {
+		pipe.HMSet(ctx, key, fileInfo.ToArgs())
+		pipe.Expire(ctx, key, time.Duration(ssdbExpire)*time.Second)
+		return nil
+	})
+	if err != nil {
+		logx.WithContext(ctx).Errorf("pipeline HMSET/EXPIRE %s error(%v)", key, err)
 	}
 
 	return

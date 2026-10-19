@@ -331,6 +331,12 @@ func (c *ApiFullCore) PaymentsSendStarsForm(in *mtproto.TLPaymentsSendStarsForm)
 	if in == nil || in.GetFormId() <= 0 || in.GetInvoice() == nil {
 		return nil, mtproto.ErrPaymentProviderInvalid
 	}
+	if isStarsGiftInvoice(in.GetInvoice()) {
+		if !domain.Ready() {
+			return nil, mtproto.ErrPaymentUnsupported
+		}
+		return c.settleLocalStarsForm(in)
+	}
 	switch in.GetInvoice().GetPredicateName() {
 	case mtproto.Predicate_inputInvoiceStarGiftUpgrade,
 		mtproto.Predicate_inputInvoiceStarGiftTransfer:
@@ -670,19 +676,20 @@ func (c *ApiFullCore) PaymentsGetStarsGiftOptions(in *mtproto.TLPaymentsGetStars
 	if err != nil {
 		return nil, err
 	}
-	if in == nil || in.GetUserId() == nil {
+	if in == nil {
 		return nil, mtproto.ErrInputConstructorInvalid
 	}
 	// The recipient is part of the offer request, but no recipient inventory
 	// is exposed. Accept a well-formed self/user reference so gifting another
 	// account does not require reading that account's private ledger.
-	inputUser := in.GetUserId()
-	if inputUser.GetPredicateName() == mtproto.Predicate_inputUser && inputUser.GetAccessHash() == 0 {
-		return nil, mtproto.ErrUserIdInvalid
-	}
-	peer := mtproto.FromInputUser(uid, inputUser)
-	if peer == nil || (peer.PeerType != mtproto.PEER_SELF && peer.PeerType != mtproto.PEER_USER) || peer.PeerId <= 0 {
-		return nil, mtproto.ErrUserIdInvalid
+	if inputUser := in.GetUserId(); inputUser != nil {
+		if inputUser.GetPredicateName() == mtproto.Predicate_inputUser && inputUser.GetAccessHash() == 0 {
+			return nil, mtproto.ErrUserIdInvalid
+		}
+		peer := mtproto.FromInputUser(uid, inputUser)
+		if peer == nil || (peer.PeerType != mtproto.PEER_SELF && peer.PeerType != mtproto.PEER_USER) || peer.PeerId <= 0 {
+			return nil, mtproto.ErrUserIdInvalid
+		}
 	}
 	offers, err := domain.ListStarsOffers("gift")
 	if err != nil {

@@ -20,6 +20,12 @@ Help:
 PaymentReconciliationIntervalSeconds: 30
 PaymentReconciliationBatchSize: 50
 PaymentProviderName: external
+Sub2APIInternalBaseURL: ""
+Sub2APIServiceToken: ""
+Sub2APITimeoutSeconds: 5
+IdentityBaseURL: ""
+IdentityTeamgramServiceToken: ""
+IdentityTeamgramInstanceID: "default"
 
 CdnProviderEndpoint: ""
 CdnProviderKey: ""

@@ -12,34 +12,34 @@ package dao
 import (
 	"github.com/teamgram/marmota/pkg/stores/kv"
 	"github.com/teamgram/teamgram-server/app/service/dfs/internal/config"
-	"github.com/teamgram/teamgram-server/app/service/dfs/internal/minio_util"
+	"github.com/teamgram/teamgram-server/app/service/dfs/internal/s3util"
 	idgen_client "github.com/teamgram/teamgram-server/app/service/idgen/client"
 
 	"github.com/zeromicro/go-zero/zrpc"
 )
 
 type Dao struct {
-	*minio_util.MinioUtil
+	*s3util.S3Util
 	idgen_client.IDGenClient2
 	ssdb kv.ExtStore
 }
 
 func New(c config.Config) *Dao {
 	return &Dao{
-		MinioUtil:    minio_util.MustNewMinioClient(&c.Minio),
+		S3Util:       s3util.MustNewS3Client(&c.S3),
 		IDGenClient2: idgen_client.NewIDGenClient2(zrpc.MustNewClient(c.IdGen)),
 		ssdb:         kv.NewStore(c.SSDB),
 	}
 }
 
-func NewDFSHelper(minio *minio_util.MinioConfig, idgen zrpc.RpcClientConf, ssdb kv.KvConf) *Dao {
+func NewDFSHelper(s3 *s3util.S3Config, idgen zrpc.RpcClientConf, ssdb kv.KvConf) *Dao {
 	return &Dao{
-		MinioUtil:    minio_util.MustNewMinioClient(minio),
+		S3Util:       s3util.MustNewS3Client(s3),
 		IDGenClient2: idgen_client.NewIDGenClient2(zrpc.MustNewClient(idgen)),
 		ssdb:         kv.NewStore(ssdb),
 	}
 }
 
-func NewMinioHelper(minio *minio_util.MinioConfig) *minio_util.MinioUtil {
-	return minio_util.MustNewMinioClient(minio)
+func NewS3Helper(s3 *s3util.S3Config) *s3util.S3Util {
+	return s3util.MustNewS3Client(s3)
 }

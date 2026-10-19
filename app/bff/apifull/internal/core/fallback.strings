@@ -1356,6 +1356,7 @@
 "LastSeenJustNow" = "last seen just now";
 "LastSeenMinutesAgo_one" = "last seen 1 minute ago";
 "LastSeenMinutesAgo_other" = "last seen {count} minutes ago";
+"SupportStatus" = "Support";
 "LastSeenHoursAgo_one" = "last seen {count} hour ago";
 "LastSeenHoursAgo_other" = "last seen {count} hours ago";
 "LastSeenTodayAt" = "last seen today at {time}";
@@ -1812,6 +1813,18 @@
 "StarsTransactionTOS" = "Review the {link} for Stars.";
 "StarsTransactionTOSLinkText" = "Terms of Service";
 "StarsTransactionTOSLink" = "https://telegram.org/tos/stars";
+"StarsConfirmPurchaseTitle" = "Confirm Your Purchase";
+"StarsSubscribeTitle" = "Subscribe";
+"StarsNeededTitle" = "You need %@ Stars";
+"Stars.Intro.PurchasedText.Stars_one" = "%@ Star";
+"Stars.Intro.PurchasedText.Stars_other" = "%@ Stars";
+"StarsTopUpConfirmation" = "Do you want to buy **%1$@** for **%2$@**?";
+"Stars.Transfer.Info" = "Do you want to buy **%1$@** in **%2$@** for **%3$@**?";
+"Stars.Transfer.Photos_one" = "%@ photo";
+"Stars.Transfer.Photos_other" = "%@ photos";
+"Stars.Transfer.Videos_one" = "%@ video";
+"Stars.Transfer.Videos_other" = "%@ videos";
+"Stars.Transfer.UnlockInfo" = "Do you want to unlock %1$@ in **%2$@** for **%3$@**?";
 "GiftStarsOutgoing" = "With Stars, {user} will be able to unlock content and services on Telegram.";
 "GiftPremiumHeader" = "Gift Premium";
 "GiftPremiumDescription" = "Give {user} access to exclusive features with Telegram Premium. {link}";

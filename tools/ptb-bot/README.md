@@ -15,10 +15,12 @@ base URLs:
 python3 -m venv .venv
 .venv/bin/pip install python-telegram-bot==22.8
 BOT_TOKEN='...' \
-BOT_API_BASE_URL='http://127.0.0.1:8801/bot{token}/' \
-BOT_API_FILE_URL='http://127.0.0.1:8801/file/bot{token}/' \
+BOT_API_BASE_URL='http://127.0.0.1:8801/bot{token}' \
+BOT_API_FILE_URL='http://127.0.0.1:8801/file/bot{token}' \
 .venv/bin/python tools/ptb-bot/main.py
 ```
+
+The PTB runner also accepts a trailing slash on either base URL.
 
 Open the Teamgram Web client and send `/start` to the bot. The bot enables a
 persistent keyboard below the composer (`Keyboard ping`, `Help`) and sends a

@@ -29,7 +29,7 @@ MiniHttp:
   Timeout: 0
 Cache:
   - Host: redis:6379
-Minio:
+S3:
   Endpoint: seaweedfs:8333
   AccessKeyID: seaweedfs
   SecretAccessKey: seaweedfs-secret

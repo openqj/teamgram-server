@@ -50,6 +50,12 @@ type Config struct {
 	PaymentProviderTimeoutSeconds             int                             `json:",optional"`
 	PaymentReconciliationIntervalSeconds      int                             `json:",optional"`
 	PaymentReconciliationBatchSize            int                             `json:",optional"`
+	Sub2APIInternalBaseURL                    string                          `json:",optional"`
+	Sub2APIServiceToken                       string                          `json:",optional"`
+	Sub2APITimeoutSeconds                     int                             `json:",optional"`
+	IdentityBaseURL                           string                          `json:",optional"`
+	IdentityTeamgramServiceToken              string                          `json:",optional"`
+	IdentityTeamgramInstanceID                string                          `json:",optional"`
 	AIProviderEndpoint                        string                          `json:",optional"`
 	AIProviderKey                             string                          `json:",optional"`
 	AIProviderSigningKey                      string                          `json:",optional"`

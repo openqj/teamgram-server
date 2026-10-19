@@ -52,13 +52,27 @@ func (s *Server) Initialize() error {
 		return errors.Wrap(err, "create httpserver service context")
 	}
 
-	s.httpSrv = http.New(ctx, c.Http)
+	s.httpSrv = http.New(ctx, c.Http, splitCorsOrigins(c.CorsOrigins)...)
 	s.ctx = ctx
 
 	return nil
 }
 
+func splitCorsOrigins(value string) []string {
+	parts := strings.Split(value, ",")
+	origins := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if origin := strings.TrimSpace(part); origin != "" {
+			origins = append(origins, origin)
+		}
+	}
+	return origins
+}
+
 func applyIdentityEnvironment(c *config.Config) error {
+	if value, ok := os.LookupEnv("TEAMGRAM_CORS_ORIGINS"); ok {
+		c.CorsOrigins = strings.TrimSpace(value)
+	}
 	if value, ok := os.LookupEnv("TEAMGRAM_IDENTITY_BASE_URL"); ok {
 		c.IdentityBaseURL = strings.TrimSpace(value)
 	}
@@ -67,6 +81,9 @@ func applyIdentityEnvironment(c *config.Config) error {
 	}
 	if value, ok := os.LookupEnv("TEAMGRAM_IDENTITY_INSTANCE_ID"); ok {
 		c.IdentityTeamgramInstanceID = strings.TrimSpace(value)
+	}
+	if value, ok := os.LookupEnv("TEAMGRAM_SUB2API_SERVICE_TOKEN"); ok {
+		c.Sub2APIServiceToken = strings.TrimSpace(value)
 	}
 	if value, ok := os.LookupEnv("TEAMGRAM_IDENTITY_REPLAY_TTL_SECONDS"); ok {
 		parsed, err := strconv.Atoi(strings.TrimSpace(value))

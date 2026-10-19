@@ -46,7 +46,7 @@ func (s *redisProofReplayStore) Claim(ctx context.Context, authKeyID, pingID int
 	if s == nil || s.store == nil {
 		return false, ErrIdentityReplayStoreUnavailable
 	}
-	if authKeyID <= 0 || pingID <= 0 || ttl <= 0 {
+	if authKeyID == 0 || pingID == 0 || ttl <= 0 {
 		return false, errors.New("invalid Identity proof replay claim")
 	}
 	if ttl > 5*time.Minute {

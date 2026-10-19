@@ -34,9 +34,11 @@ func TestApplyPaymentProviderEnvironmentRejectsInvalidBodyLimit(t *testing.T) {
 }
 
 func TestApplyIdentityEnvironment(t *testing.T) {
+	t.Setenv("TEAMGRAM_CORS_ORIGINS", " http://localhost:1235,https://web.example.com ")
 	t.Setenv("TEAMGRAM_IDENTITY_BASE_URL", " https://identity.internal ")
 	t.Setenv("TEAMGRAM_IDENTITY_TEAMGRAM_SERVICE_TOKEN", " teamgram-secret ")
 	t.Setenv("TEAMGRAM_IDENTITY_INSTANCE_ID", " instance-a ")
+	t.Setenv("TEAMGRAM_SUB2API_SERVICE_TOKEN", " sub2api-secret ")
 	t.Setenv("TEAMGRAM_IDENTITY_REQUEST_TIMEOUT_SECONDS", "7")
 
 	c := config.Config{}
@@ -52,8 +54,14 @@ func TestApplyIdentityEnvironment(t *testing.T) {
 	if c.IdentityTeamgramInstanceID != "instance-a" {
 		t.Fatalf("IdentityTeamgramInstanceID = %q", c.IdentityTeamgramInstanceID)
 	}
+	if c.Sub2APIServiceToken != "sub2api-secret" {
+		t.Fatalf("Sub2API service token = %q", c.Sub2APIServiceToken)
+	}
 	if c.IdentityRequestTimeoutSeconds != 7 {
 		t.Fatalf("IdentityRequestTimeoutSeconds = %d", c.IdentityRequestTimeoutSeconds)
+	}
+	if got := splitCorsOrigins(c.CorsOrigins); len(got) != 2 || got[0] != "http://localhost:1235" || got[1] != "https://web.example.com" {
+		t.Fatalf("CorsOrigins = %#v", got)
 	}
 }
 
@@ -61,5 +69,18 @@ func TestApplyIdentityEnvironmentRejectsInvalidTimeout(t *testing.T) {
 	t.Setenv("TEAMGRAM_IDENTITY_REQUEST_TIMEOUT_SECONDS", "not-a-number")
 	if err := applyIdentityEnvironment(&config.Config{}); err == nil {
 		t.Fatal("applyIdentityEnvironment() error = nil, want invalid timeout error")
+	}
+}
+
+func TestSplitCorsOriginsTrimsAndDropsEmptyValues(t *testing.T) {
+	got := splitCorsOrigins(" http://localhost:1235, ,https://web.example.com ")
+	want := []string{"http://localhost:1235", "https://web.example.com"}
+	if len(got) != len(want) {
+		t.Fatalf("origins = %#v, want %#v", got, want)
+	}
+	for index := range want {
+		if got[index] != want[index] {
+			t.Fatalf("origins = %#v, want %#v", got, want)
+		}
 	}
 }

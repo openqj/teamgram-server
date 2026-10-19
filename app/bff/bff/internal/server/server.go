@@ -192,6 +192,27 @@ func applyProviderEnvironment(c *config.Config) error {
 		name   string
 		target *string
 	}{
+		{name: "TEAMGRAM_SUB2API_INTERNAL_BASE_URL", target: &c.Sub2APIInternalBaseURL},
+		{name: "TEAMGRAM_SUB2API_SERVICE_TOKEN", target: &c.Sub2APIServiceToken},
+		{name: "TEAMGRAM_IDENTITY_BASE_URL", target: &c.IdentityBaseURL},
+		{name: "TEAMGRAM_IDENTITY_TEAMGRAM_SERVICE_TOKEN", target: &c.IdentityTeamgramServiceToken},
+		{name: "TEAMGRAM_IDENTITY_INSTANCE_ID", target: &c.IdentityTeamgramInstanceID},
+	} {
+		if value, ok := os.LookupEnv(override.name); ok {
+			*override.target = strings.TrimSpace(value)
+		}
+	}
+	if value, ok := os.LookupEnv("TEAMGRAM_SUB2API_TIMEOUT_SECONDS"); ok {
+		timeout, err := strconv.Atoi(strings.TrimSpace(value))
+		if err != nil || timeout < 0 || timeout > 300 {
+			return errors.New("TEAMGRAM_SUB2API_TIMEOUT_SECONDS must be an integer from 0 to 300")
+		}
+		c.Sub2APITimeoutSeconds = timeout
+	}
+	for _, override := range []struct {
+		name   string
+		target *string
+	}{
 		{name: "TEAMGRAM_CDN_PROVIDER_ENDPOINT", target: &c.CdnProviderEndpoint},
 		{name: "TEAMGRAM_CDN_PROVIDER_KEY", target: &c.CdnProviderKey},
 		{name: "TEAMGRAM_CDN_PROVIDER_SIGNING_KEY", target: &c.CdnProviderSigningKey},
@@ -842,6 +863,12 @@ func (s *Server) Initialize() error {
 			PaymentReconciliationIntervalSeconds: c.PaymentReconciliationIntervalSeconds,
 			PaymentReconciliationBatchSize:       c.PaymentReconciliationBatchSize,
 			AllowInsecureProviderHTTP:            c.ProviderFixtureMode,
+			Sub2APIInternalBaseURL:               c.Sub2APIInternalBaseURL,
+			Sub2APIServiceToken:                  c.Sub2APIServiceToken,
+			Sub2APITimeoutSeconds:                c.Sub2APITimeoutSeconds,
+			IdentityBaseURL:                      c.IdentityBaseURL,
+			IdentityTeamgramServiceToken:         c.IdentityTeamgramServiceToken,
+			IdentityTeamgramInstanceID:           c.IdentityTeamgramInstanceID,
 			AIProviderEndpoint:                   c.AIProviderEndpoint,
 			AIProviderKey:                        c.AIProviderKey,
 			AIProviderSigningKey:                 c.AIProviderSigningKey,

@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"hash"
@@ -18,8 +19,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/minio/minio-go/v7"
-	"github.com/minio/minio-go/v7/pkg/credentials"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/feature/s3/manager"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+	smithy "github.com/aws/smithy-go"
+	smithyhttp "github.com/aws/smithy-go/transport/http"
+	"github.com/teamgram/teamgram-server/tools/s3support"
 )
 
 const defaultBuckets = "documents,encryptedfiles,photos,videos"
@@ -62,6 +68,17 @@ type digestReader struct {
 	reader io.Reader
 	hash   hash.Hash
 	bytes  int64
+}
+
+type objectInfo struct {
+	Size               int64
+	ETag               string
+	ContentType        string
+	ContentEncoding    string
+	ContentDisposition string
+	ContentLanguage    string
+	CacheControl       string
+	Metadata           map[string]string
 }
 
 func (r *digestReader) Read(p []byte) (int, error) {
@@ -109,9 +126,6 @@ func main() {
 		defer manifest.file.Close()
 	}
 
-	// A restore target must be checked for every bucket before the first write;
-	// otherwise a later non-empty bucket could leave an earlier bucket partially
-	// restored before the run aborts.
 	if cfg.RequireEmptyTarget {
 		for _, bucket := range cfg.Buckets {
 			if err := checkSourceBucket(ctx, source, bucket); err != nil {
@@ -218,12 +232,13 @@ func loadEndpoint(prefix string) (endpointConfig, error) {
 	}, nil
 }
 
-func newClient(cfg endpointConfig) (*minio.Client, error) {
-	return minio.New(cfg.Endpoint, &minio.Options{
-		Creds:        credentials.NewStaticV4(cfg.AccessKey, cfg.SecretKey, ""),
-		Secure:       cfg.UseSSL,
-		Region:       cfg.Region,
-		BucketLookup: minio.BucketLookupPath,
+func newClient(cfg endpointConfig) (*s3.Client, error) {
+	return s3support.NewClient(s3support.Config{
+		Endpoint:  cfg.Endpoint,
+		AccessKey: cfg.AccessKey,
+		SecretKey: cfg.SecretKey,
+		UseSSL:    cfg.UseSSL,
+		Region:    cfg.Region,
 	})
 }
 
@@ -244,15 +259,11 @@ func normalizeEndpoint(raw string, useSSL bool) (string, bool, error) {
 	return raw, useSSL, nil
 }
 
-func checkSourceBucket(ctx context.Context, client *minio.Client, bucket string) error {
-	exists, err := client.BucketExists(ctx, bucket)
-	if err != nil {
+func checkSourceBucket(ctx context.Context, client *s3.Client, bucket string) error {
+	if _, err := client.HeadBucket(ctx, &s3.HeadBucketInput{Bucket: aws.String(bucket)}); err != nil {
 		return err
 	}
-	if !exists {
-		return fmt.Errorf("source bucket does not exist")
-	}
-	versioning, err := client.GetBucketVersioning(ctx, bucket)
+	versioning, err := client.GetBucketVersioning(ctx, &s3.GetBucketVersioningInput{Bucket: aws.String(bucket)})
 	if err != nil {
 		if isNotImplemented(err) {
 			log.Printf("bucket=%s source versioning API is unavailable; continuing with current-object migration", bucket)
@@ -260,51 +271,57 @@ func checkSourceBucket(ctx context.Context, client *minio.Client, bucket string)
 		}
 		return fmt.Errorf("check source versioning: %w", err)
 	}
-	if versioning.Enabled() {
+	if versioning.Status == types.BucketVersioningStatusEnabled {
 		return fmt.Errorf("source bucket versioning is enabled; version history and delete markers require a separate migration")
 	}
 	return nil
 }
 
-func ensureTargetBucket(ctx context.Context, client *minio.Client, bucket, mode, region string, requireEmpty bool) error {
-	exists, err := client.BucketExists(ctx, bucket)
-	if err != nil {
-		return err
-	}
-	if exists {
+func ensureTargetBucket(ctx context.Context, client *s3.Client, bucket, mode, region string, requireEmpty bool) error {
+	_, err := client.HeadBucket(ctx, &s3.HeadBucketInput{Bucket: aws.String(bucket)})
+	if err == nil {
 		if requireEmpty {
-			for object := range client.ListObjects(ctx, bucket, minio.ListObjectsOptions{Recursive: true}) {
-				if object.Err != nil {
-					return fmt.Errorf("list target bucket: %w", object.Err)
+			paginator := s3.NewListObjectsV2Paginator(client, &s3.ListObjectsV2Input{Bucket: aws.String(bucket)})
+			if paginator.HasMorePages() {
+				page, listErr := paginator.NextPage(ctx)
+				if listErr != nil {
+					return fmt.Errorf("list target bucket: %w", listErr)
 				}
-				return fmt.Errorf("target bucket is not empty (first object %q)", object.Key)
+				if len(page.Contents) > 0 {
+					return fmt.Errorf("target bucket is not empty (first object %q)", aws.ToString(page.Contents[0].Key))
+				}
 			}
 		}
 		return nil
 	}
+	if !isNotFound(err) {
+		return err
+	}
 	if mode != "copy" {
 		return fmt.Errorf("target bucket does not exist")
 	}
-	return client.MakeBucket(ctx, bucket, minio.MakeBucketOptions{Region: region})
+	_, err = client.CreateBucket(ctx, &s3.CreateBucketInput{Bucket: aws.String(bucket)})
+	return err
 }
 
-func migrateBucket(ctx context.Context, source, target *minio.Client, bucket, mode string, manifest *manifestWriter) error {
+func migrateBucket(ctx context.Context, source, target *s3.Client, bucket, mode string, manifest *manifestWriter) error {
+	paginator := s3.NewListObjectsV2Paginator(source, &s3.ListObjectsV2Input{Bucket: aws.String(bucket)})
 	var failed int
 	var firstErr error
-	for info := range source.ListObjects(ctx, bucket, minio.ListObjectsOptions{Recursive: true}) {
-		if info.Err != nil {
-			if firstErr == nil {
-				firstErr = info.Err
-			}
-			failed++
-			continue
+	for paginator.HasMorePages() {
+		page, err := paginator.NextPage(ctx)
+		if err != nil {
+			return err
 		}
-		if err := migrateObject(ctx, source, target, bucket, info.Key, mode, manifest); err != nil {
-			log.Printf("bucket=%s key=%q failed: %v", bucket, info.Key, err)
-			if firstErr == nil {
-				firstErr = err
+		for _, object := range page.Contents {
+			key := aws.ToString(object.Key)
+			if err := migrateObject(ctx, source, target, bucket, key, mode, manifest); err != nil {
+				log.Printf("bucket=%s key=%q failed: %v", bucket, key, err)
+				if firstErr == nil {
+					firstErr = err
+				}
+				failed++
 			}
-			failed++
 		}
 	}
 	if failed > 0 {
@@ -313,12 +330,12 @@ func migrateBucket(ctx context.Context, source, target *minio.Client, bucket, mo
 	return nil
 }
 
-func migrateObject(ctx context.Context, source, target *minio.Client, bucket, key, mode string, manifest *manifestWriter) error {
-	sourceInfo, err := source.StatObject(ctx, bucket, key, minio.StatObjectOptions{})
+func migrateObject(ctx context.Context, source, target *s3.Client, bucket, key, mode string, manifest *manifestWriter) error {
+	sourceInfo, err := headObject(ctx, source, bucket, key)
 	if err != nil {
 		return fmt.Errorf("stat source: %w", err)
 	}
-	targetInfo, targetErr := target.StatObject(ctx, bucket, key, minio.StatObjectOptions{})
+	targetInfo, targetErr := headObject(ctx, target, bucket, key)
 	if targetErr == nil {
 		sourceDigest, err := hashObject(ctx, source, bucket, key, sourceInfo.Size)
 		if err != nil {
@@ -340,22 +357,26 @@ func migrateObject(ctx context.Context, source, target *minio.Client, bucket, ke
 		return fmt.Errorf("target object is missing")
 	}
 
-	object, err := source.GetObject(ctx, bucket, key, minio.GetObjectOptions{})
+	object, err := source.GetObject(ctx, &s3.GetObjectInput{Bucket: aws.String(bucket), Key: aws.String(key)})
 	if err != nil {
 		return fmt.Errorf("get source: %w", err)
 	}
-	defer object.Close()
+	defer object.Body.Close()
 	digest := sha256.New()
-	reader := &digestReader{reader: object, hash: digest}
-	_, err = target.PutObject(ctx, bucket, key, reader, sourceInfo.Size, putOptions(sourceInfo))
-	if err != nil {
+	reader := &digestReader{reader: object.Body, hash: digest}
+	uploader := manager.NewUploader(target, func(u *manager.Uploader) {
+		u.PartSize = 16 << 20
+		u.Concurrency = 4
+		u.RequestChecksumCalculation = aws.RequestChecksumCalculationWhenRequired
+	})
+	if _, err = uploader.Upload(ctx, putInput(bucket, key, reader, sourceInfo)); err != nil {
 		return fmt.Errorf("put target: %w", err)
 	}
 	if reader.bytes != sourceInfo.Size {
 		return fmt.Errorf("source read size %d differs from expected %d", reader.bytes, sourceInfo.Size)
 	}
 	sourceDigest := hex.EncodeToString(digest.Sum(nil))
-	targetInfo, err = target.StatObject(ctx, bucket, key, minio.StatObjectOptions{})
+	targetInfo, err = headObject(ctx, target, bucket, key)
 	if err != nil {
 		return fmt.Errorf("stat copied target: %w", err)
 	}
@@ -369,14 +390,31 @@ func migrateObject(ctx context.Context, source, target *minio.Client, bucket, ke
 	return writeManifest(manifest, manifestRecord{At: time.Now().UTC().Format(time.RFC3339Nano), Bucket: bucket, Key: key, Size: sourceInfo.Size, SHA256: sourceDigest, SourceETag: sourceInfo.ETag, TargetETag: targetInfo.ETag, Status: "copied"})
 }
 
-func hashObject(ctx context.Context, client *minio.Client, bucket, key string, expectedSize int64) (string, error) {
-	object, err := client.GetObject(ctx, bucket, key, minio.GetObjectOptions{})
+func headObject(ctx context.Context, client *s3.Client, bucket, key string) (objectInfo, error) {
+	output, err := client.HeadObject(ctx, &s3.HeadObjectInput{Bucket: aws.String(bucket), Key: aws.String(key)})
+	if err != nil {
+		return objectInfo{}, err
+	}
+	return objectInfo{
+		Size:               aws.ToInt64(output.ContentLength),
+		ETag:               strings.Trim(aws.ToString(output.ETag), "\""),
+		ContentType:        defaultContentType(aws.ToString(output.ContentType)),
+		ContentEncoding:    aws.ToString(output.ContentEncoding),
+		ContentDisposition: aws.ToString(output.ContentDisposition),
+		ContentLanguage:    aws.ToString(output.ContentLanguage),
+		CacheControl:       aws.ToString(output.CacheControl),
+		Metadata:           copyStringMap(output.Metadata),
+	}, nil
+}
+
+func hashObject(ctx context.Context, client *s3.Client, bucket, key string, expectedSize int64) (string, error) {
+	object, err := client.GetObject(ctx, &s3.GetObjectInput{Bucket: aws.String(bucket), Key: aws.String(key)})
 	if err != nil {
 		return "", err
 	}
-	defer object.Close()
+	defer object.Body.Close()
 	digest := sha256.New()
-	n, err := io.Copy(digest, object)
+	n, err := io.Copy(digest, object.Body)
 	if err != nil {
 		return "", err
 	}
@@ -386,28 +424,37 @@ func hashObject(ctx context.Context, client *minio.Client, bucket, key string, e
 	return hex.EncodeToString(digest.Sum(nil)), nil
 }
 
-func putOptions(info minio.ObjectInfo) minio.PutObjectOptions {
-	return minio.PutObjectOptions{
-		ContentType:        defaultContentType(info.ContentType),
-		ContentEncoding:    info.Metadata.Get("Content-Encoding"),
-		ContentDisposition: info.Metadata.Get("Content-Disposition"),
-		ContentLanguage:    info.Metadata.Get("Content-Language"),
-		CacheControl:       info.Metadata.Get("Cache-Control"),
-		UserMetadata:       copyStringMap(info.UserMetadata),
+func putInput(bucket, key string, body io.Reader, info objectInfo) *s3.PutObjectInput {
+	return &s3.PutObjectInput{
+		Bucket:             aws.String(bucket),
+		Key:                aws.String(key),
+		Body:               body,
+		ContentLength:      aws.Int64(info.Size),
+		ContentType:        aws.String(defaultContentType(info.ContentType)),
+		ContentEncoding:    optionalString(info.ContentEncoding),
+		ContentDisposition: optionalString(info.ContentDisposition),
+		ContentLanguage:    optionalString(info.ContentLanguage),
+		CacheControl:       optionalString(info.CacheControl),
+		Metadata:           copyStringMap(info.Metadata),
 	}
 }
 
-func metadataEqual(source, target minio.ObjectInfo) bool {
+func optionalString(value string) *string {
+	if value == "" {
+		return nil
+	}
+	return aws.String(value)
+}
+
+func metadataEqual(source, target objectInfo) bool {
 	if defaultContentType(source.ContentType) != defaultContentType(target.ContentType) {
 		return false
 	}
-	for _, header := range []string{"Content-Encoding", "Content-Disposition", "Content-Language", "Cache-Control"} {
-		if source.Metadata.Get(header) != target.Metadata.Get(header) {
-			return false
-		}
+	if source.ContentEncoding != target.ContentEncoding || source.ContentDisposition != target.ContentDisposition || source.ContentLanguage != target.ContentLanguage || source.CacheControl != target.CacheControl {
+		return false
 	}
-	sourceMetadata, sourceOK := canonicalUserMetadata(source.UserMetadata)
-	targetMetadata, targetOK := canonicalUserMetadata(target.UserMetadata)
+	sourceMetadata, sourceOK := canonicalUserMetadata(source.Metadata)
+	targetMetadata, targetOK := canonicalUserMetadata(target.Metadata)
 	if !sourceOK || !targetOK || len(sourceMetadata) != len(targetMetadata) {
 		return false
 	}
@@ -419,7 +466,7 @@ func metadataEqual(source, target minio.ObjectInfo) bool {
 	return true
 }
 
-func canonicalUserMetadata(source minio.StringMap) (map[string]string, bool) {
+func canonicalUserMetadata(source map[string]string) (map[string]string, bool) {
 	if len(source) == 0 {
 		return nil, true
 	}
@@ -434,7 +481,7 @@ func canonicalUserMetadata(source minio.StringMap) (map[string]string, bool) {
 	return target, true
 }
 
-func copyStringMap(source minio.StringMap) map[string]string {
+func copyStringMap(source map[string]string) map[string]string {
 	if len(source) == 0 {
 		return nil
 	}
@@ -481,13 +528,27 @@ func sameEndpoint(source, target endpointConfig) bool {
 }
 
 func isNotFound(err error) bool {
-	response := minio.ToErrorResponse(err)
-	return response.StatusCode == 404 || response.Code == "NoSuchKey" || response.Code == "NoSuchObject" || response.Code == "NotFound"
+	var responseErr *smithyhttp.ResponseError
+	if errors.As(err, &responseErr) && responseErr.HTTPStatusCode() == 404 {
+		return true
+	}
+	var apiErr smithy.APIError
+	if errors.As(err, &apiErr) {
+		return apiErr.ErrorCode() == "NoSuchBucket" || apiErr.ErrorCode() == "NoSuchKey" || apiErr.ErrorCode() == "NoSuchObject" || apiErr.ErrorCode() == "NotFound"
+	}
+	return false
 }
 
 func isNotImplemented(err error) bool {
-	response := minio.ToErrorResponse(err)
-	return response.StatusCode == 501 || response.Code == "NotImplemented" || response.Code == "NotImplementedException"
+	var responseErr *smithyhttp.ResponseError
+	if errors.As(err, &responseErr) && responseErr.HTTPStatusCode() == 501 {
+		return true
+	}
+	var apiErr smithy.APIError
+	if errors.As(err, &apiErr) {
+		return apiErr.ErrorCode() == "NotImplemented" || apiErr.ErrorCode() == "NotImplementedException"
+	}
+	return false
 }
 
 func envBool(name string, defaultValue bool) (bool, error) {

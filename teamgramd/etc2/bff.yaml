@@ -41,6 +41,12 @@ PaymentProviderName: external
 PaymentProviderKey: ""
 PaymentProviderSigningKey: ""
 PaymentProviderTimeoutSeconds: 5
+Sub2APIInternalBaseURL: ""
+Sub2APIServiceToken: ""
+Sub2APITimeoutSeconds: 5
+IdentityBaseURL: ""
+IdentityTeamgramServiceToken: ""
+IdentityTeamgramInstanceID: ""
 SponsoredProviderEndpoint: ""
 SponsoredProviderKey: ""
 SponsoredProviderSigningKey: ""

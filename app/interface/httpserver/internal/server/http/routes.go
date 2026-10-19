@@ -38,6 +38,11 @@ func RegisterHandlers(engine *rest.Server, serverCtx *svc.ServiceContext) {
 				Handler: paymentProviderWebhookHandler(serverCtx),
 			},
 			{
+				Method:  http.MethodPost,
+				Path:    "/v1/internal/sub2api/stars/usage",
+				Handler: sub2APIStarsUsageHandler(serverCtx),
+			},
+			{
 				Method:  http.MethodGet,
 				Path:    "/file/:token/:kind/:file_name",
 				Handler: botAPIFileHandler(serverCtx),

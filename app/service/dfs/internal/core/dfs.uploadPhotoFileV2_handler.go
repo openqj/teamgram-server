@@ -20,14 +20,14 @@ import (
 	"github.com/teamgram/teamgram-server/app/service/dfs/internal/imaging"
 	"github.com/teamgram/teamgram-server/app/service/dfs/internal/model"
 
-	"github.com/minio/minio-go/v7"
+	"github.com/teamgram/teamgram-server/app/service/dfs/internal/s3util"
 )
 
 // DfsUploadPhotoFileV2
 // dfs.uploadPhotoFileV2 creator:long file:InputFile = Photo;
 func (c *DfsCore) DfsUploadPhotoFileV2(in *dfs.TLDfsUploadPhotoFileV2) (*mtproto.Photo, error) {
 	var (
-		fileSize  minio.UploadInfo
+		fileSize  s3util.UploadInfo
 		cacheData []byte
 		file      = in.GetFile()
 		err       error

@@ -71,3 +71,28 @@ the same matrix on at least two hosts behind the real load balancer, add
 connection-pool/queue metrics, execute backup-restore and external provider
 checks, and reduce the 200/500 RPS tail through measured worker or replica
 scaling.
+
+## Performance follow-up
+
+The next optimization pass keeps the identity and replay contracts unchanged:
+
+- AIMemory `/me` rate-limit JWT verification and Redis Lua evaluation now run
+  in the AnyIO worker pool instead of blocking the event loop. The verified
+  claims remain on `request.state` and are reused by the FastAPI dependency.
+- AIMemory Identity public-key files are cached per process and invalidated by
+  inode, permissions, size, and mtime changes. A protected `O_NOFOLLOW` open is
+  still used on cache misses, so key rotation and file safety checks remain
+  active.
+- Local Compose keeps one API worker. Staging defaults to two through
+  `STAGING_API_WORKERS`; VPS deployments use `AIMEMORY_API_WORKERS` and must
+  size each process's SQLAlchemy pool against the PostgreSQL connection
+  budget.
+- Identity request logging now emits only requests at or above
+  `IDENTITY_REQUEST_LOG_SLOW_THRESHOLD` (250 ms by default), removing a
+  synchronous stdout write from the normal token-exchange path.
+
+Code-level verification after this pass: AIMemory Identity auth 11/11, AIMemory
+rate-limit regression 6/6, AIMemory Compose contract 41/41, and Identity
+`go test ./...` all passed. A new 100/200/500 RPS before/after run has not yet
+been completed, so the previous 200+ RPS tail-latency gate remains open until
+the worker and event-loop changes are measured on the same stack.

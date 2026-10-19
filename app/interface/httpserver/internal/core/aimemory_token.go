@@ -87,7 +87,10 @@ type encryptedPingProof struct {
 }
 
 func (c *HttpserverCore) validateEncryptedPing(in *mtproto.MTPRawMessage) (encryptedPingProof, error) {
-	if in == nil || in.AuthKeyId() <= 0 || len(in.Payload) < minimumEncryptedMTProtoRequest || len(in.Payload) > maximumAIMemoryProofBytes {
+	if in == nil {
+		return encryptedPingProof{}, ErrAIMemoryTokenProof
+	}
+	if in.AuthKeyId() == 0 || len(in.Payload) < minimumEncryptedMTProtoRequest || len(in.Payload) > maximumAIMemoryProofBytes {
 		return encryptedPingProof{}, ErrAIMemoryTokenProof
 	}
 	if c == nil || c.svcCtx == nil || c.svcCtx.Dao == nil {
@@ -116,7 +119,7 @@ func (c *HttpserverCore) validateEncryptedPing(in *mtproto.MTPRawMessage) (encry
 		return encryptedPingProof{}, ErrAIMemoryTokenProof
 	}
 	ping, ok := object.(*mtproto.TLPing)
-	if !ok || ping.GetPingId() <= 0 {
+	if !ok || ping == nil || ping.GetPingId() == 0 {
 		return encryptedPingProof{}, ErrAIMemoryTokenProof
 	}
 	return encryptedPingProof{AuthKeyID: in.AuthKeyId(), PingID: ping.GetPingId()}, nil

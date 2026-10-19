@@ -45,7 +45,7 @@ func (c *DfsCore) DfsDownloadFile(in *dfs.TLDfsDownloadFile) (*mtproto.Upload_Fi
 		//	id:long
 		//	access_hash:long = InputFileLocation;
 
-		bytes, err = c.svcCtx.Dao.GetCacheFile(c.ctx, location.GetId(), offset, limit, c.svcCtx.Dao.MinioUtil.GetEncryptedFile)
+		bytes, err = c.svcCtx.Dao.GetCacheFile(c.ctx, location.GetId(), offset, limit, c.svcCtx.Dao.S3Util.GetEncryptedFile)
 		if err != nil {
 			c.Logger.Errorf("download file: %v", err)
 			err = nil
@@ -61,7 +61,7 @@ func (c *DfsCore) DfsDownloadFile(in *dfs.TLDfsDownloadFile) (*mtproto.Upload_Fi
 
 		if location.GetThumbSize() == "" {
 			// fileLocation := location.To_InputDocumentFileLocation()
-			bytes, err = c.svcCtx.Dao.GetCacheFile(c.ctx, location.GetId(), offset, limit, c.svcCtx.Dao.MinioUtil.GetDocumentFile)
+			bytes, err = c.svcCtx.Dao.GetCacheFile(c.ctx, location.GetId(), offset, limit, c.svcCtx.Dao.S3Util.GetDocumentFile)
 			if err != nil {
 				path := fmt.Sprintf("%d.dat", location.GetId())
 				bytes, err = c.svcCtx.Dao.GetDocumentFile(c.ctx, path, offset, limit)
