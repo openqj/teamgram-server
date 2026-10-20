@@ -146,7 +146,7 @@ services:
     volumes:
       - object_data:/data
     healthcheck:
-      test: [CMD-SHELL, "wget -q -O /dev/null http://127.0.0.1:8333/"]
+      test: [CMD-SHELL, "wget -q -O /dev/null http://127.0.0.1:9333/cluster/status"]
       interval: 2s
       timeout: 3s
       retries: 60

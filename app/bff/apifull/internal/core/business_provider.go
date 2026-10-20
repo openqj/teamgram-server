@@ -24,11 +24,10 @@ const (
 	businessProviderRetryDelay  = 50 * time.Millisecond
 )
 
-// Mini App calls may be retried after a transient provider failure. The
-// provider contract carries a stable Idempotency-Key, so a retry cannot turn
-// a repeated WebView action into a second provider mutation when the provider
-// has already committed the first attempt.
-func retryableMiniAppProviderOperation(operation string) bool {
+// Idempotent provider reads and Mini App operations may be retried after a
+// transient failure. The provider contract keeps one stable request body and
+// Idempotency-Key across attempts.
+func retryableBusinessProviderOperation(operation string) bool {
 	switch operation {
 	case "messages.getBotApp",
 		"messages.requestAppWebView",
@@ -36,6 +35,7 @@ func retryableMiniAppProviderOperation(operation string) bool {
 		"messages.sendWebViewData",
 		"messages.sendWebViewResultMessage",
 		"bots.getPopularAppBots",
+		"bots.getBotRecommendations",
 		"bots.checkDownloadFileParams",
 		"bots.invokeWebViewCustomMethod":
 		return true
@@ -188,7 +188,7 @@ func (c *ApiFullCore) callBusinessProviderAs(userID int64, operation string, pay
 	idempotencyKey := businessProviderIdempotencyKey(userID, operation, payloadJSON)
 	client := &http.Client{Timeout: timeout, CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}
 	maxAttempts := 1
-	if retryableMiniAppProviderOperation(operation) {
+	if retryableBusinessProviderOperation(operation) {
 		maxAttempts = businessProviderMaxAttempts
 	}
 	for attempt := 1; attempt <= maxAttempts; attempt++ {

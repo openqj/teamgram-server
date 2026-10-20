@@ -21,6 +21,11 @@ import (
 
 // New new a grpc server.
 func New(ctx *svc.ServiceContext, c zrpc.RpcServerConf) *zrpc.RpcServer {
+	// Upload parts are binary payloads; logging them adds large base64 copies per RPC.
+	c.Middlewares.StatConf.IgnoreContentMethods = append(
+		c.Middlewares.StatConf.IgnoreContentMethods,
+		"/dfs.RPCDfs/dfs_writeFilePartData",
+	)
 	s, err := zrpc.NewServer(c, func(grpcServer *grpc.Server) {
 		dfs.RegisterRPCDfsServer(grpcServer, service.New(ctx))
 	})

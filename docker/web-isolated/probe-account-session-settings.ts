@@ -334,7 +334,7 @@ async function run() {
       crossSessionConsistency: tracker.getCrossSessionViolations(),
     };
     const reportFile = `/tmp/teamgram-probe-account-session-settings-${Date.now()}.json`;
-    fs.writeFileSync(reportFile, JSON.stringify(report, null, 2));
+    fs.writeFileSync(reportFile, JSON.stringify(report, (_, value) => typeof value === 'bigint' ? value.toString() : value, 2));
     console.log(`\n✓ Session tracking report saved to ${reportFile}`);
   } finally {
     if (secondAuthorizationHash !== undefined) {

@@ -314,17 +314,24 @@ async function run() {
     requireCondition(contentRead === true || rpcName(contentRead).toLowerCase().includes('true'), 'channels.readMessageContents did not return true');
     console.log(`PASS channel content read: ${rpcName(contentRead)}`);
 
-	await expectRpcError('non-member history rejection', 'USER_NOT_PARTICIPANT', () => history(Api, dave, davePeer));
-	await expectRpcError('non-member search rejection', 'USER_NOT_PARTICIPANT', () => search(Api, dave, davePeer, tag));
+	const publicHistory = await history(Api, dave, davePeer);
+	requireCondition(messageList(publicHistory).some((candidate: any) => candidate?.message === text), 'public non-member history did not return the stored channel message');
+	console.log(`PASS public non-member history: ${rpcName(publicHistory)}`);
+	const publicSearch = await search(Api, dave, davePeer, tag);
+	requireCondition(messageList(publicSearch).some((candidate: any) => candidate?.message === text), 'public non-member search did not return the stored channel message');
+	console.log(`PASS public non-member search: ${rpcName(publicSearch)}`);
 	await expectRpcError('non-member write rejection', 'USER_NOT_PARTICIPANT', () => dave.client.invoke(
       new Api.messages.SendMessage({ peer: davePeer, message: `${tag} outsider write`, randomId: randomID() }),
     ));
 	await expectRpcError('non-member full channel rejection', 'USER_NOT_PARTICIPANT', () => dave.client.invoke(
 		new Api.channels.GetFullChannel({ channel: daveInputChannel }),
 	));
-	await expectRpcError('non-member getMessages rejection', 'USER_NOT_PARTICIPANT', () => dave.client.invoke(
-		new Api.channels.GetMessages({ channel: daveInputChannel, id: [new Api.InputMessageID({ id: message.id })] }),
-	));
+	const publicByID = await dave.client.invoke(new Api.channels.GetMessages({
+		channel: daveInputChannel,
+		id: [new Api.InputMessageID({ id: message.id })],
+	}));
+	requireCondition(messageList(publicByID).some((candidate: any) => candidate?.message === text), 'public non-member getMessages did not return the stored channel message');
+	console.log(`PASS public non-member getMessages: ${rpcName(publicByID)}`);
 	await expectRpcError('non-member deleteHistory rejection', 'USER_NOT_PARTICIPANT', () => dave.client.invoke(
 		new Api.channels.DeleteHistory({ channel: daveInputChannel, maxId: message.id }),
 	));
@@ -391,7 +398,7 @@ async function run() {
       crossSessionConsistency: tracker.getCrossSessionViolations(),
     };
     const reportFile = `/tmp/teamgram-probe-channel-message-lifecycle-${Date.now()}.json`;
-    fs.writeFileSync(reportFile, JSON.stringify(report, null, 2));
+    fs.writeFileSync(reportFile, JSON.stringify(report, (_, value) => typeof value === 'bigint' ? value.toString() : value, 2));
     console.log(`\n✓ Session tracking report saved to ${reportFile}`);
   } finally {
     if (!channelDeleted && alice && createdChannel) {

@@ -45,16 +45,23 @@ func loadDeliveryReceipt(ctx context.Context, tx pgx.Tx, userID int64) (*Prepare
 	}
 	var hash, data []byte
 	var delivered bool
-	// A no-op conflict update makes PostgreSQL return either the newly inserted
-	// row or the existing row in one round trip. It also takes the row lock that
-	// the previous INSERT-plus-SELECT path used for concurrent retries.
+	// A completed receipt can be reused when a Kafka topic is recreated while
+	// PostgreSQL survives and its offsets start over. Incomplete receipts keep
+	// their original hash and still reject a changed request.
 	if err := tx.QueryRow(ctx, `INSERT INTO sync_delivery_receipts
 	 (consumer_group,topic,partition_id,message_offset,user_id,request_hash)
 	 VALUES ($1,$2,$3,$4,$5,$6)
 	 ON CONFLICT (consumer_group,topic,partition_id,message_offset,user_id)
-	 DO UPDATE SET request_hash=sync_delivery_receipts.request_hash
+	 DO UPDATE SET request_hash=EXCLUDED.request_hash,
+	 delivery_data=CASE WHEN sync_delivery_receipts.request_hash<>EXCLUDED.request_hash THEN NULL ELSE sync_delivery_receipts.delivery_data END,
+	 delivered=CASE WHEN sync_delivery_receipts.request_hash<>EXCLUDED.request_hash THEN FALSE ELSE sync_delivery_receipts.delivered END,
+	 delivered_at=CASE WHEN sync_delivery_receipts.request_hash<>EXCLUDED.request_hash THEN NULL ELSE sync_delivery_receipts.delivered_at END
+	 WHERE sync_delivery_receipts.delivered OR sync_delivery_receipts.request_hash=EXCLUDED.request_hash
 	 RETURNING request_hash,delivery_data,delivered`, receipt.ConsumerGroup, receipt.Topic, receipt.Partition, receipt.Offset, userID, receipt.RequestHash).
 		Scan(&hash, &data, &delivered); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, errors.New("sync: Kafka delivery identity was reused for another request")
+		}
 		return nil, err
 	}
 	if !bytes.Equal(hash, receipt.RequestHash) {

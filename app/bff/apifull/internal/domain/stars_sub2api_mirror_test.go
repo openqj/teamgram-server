@@ -31,6 +31,32 @@ func TestStarsFromSub2APIUSDUsesFixedRateAndRoundsEachSignedEventUp(t *testing.T
 	}
 }
 
+func TestStarsFromSub2APIUSDRoundsEventsIndependently(t *testing.T) {
+	smallDelta, _, err := parseStarsMirrorDecimal("0.01", 18)
+	if err != nil {
+		t.Fatal(err)
+	}
+	combined, _, err := parseStarsMirrorDecimal("0.02", 18)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := starsFromSub2APIUSD(smallDelta)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := starsFromSub2APIUSD(smallDelta)
+	if err != nil {
+		t.Fatal(err)
+	}
+	combinedStars, err := starsFromSub2APIUSD(combined)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first+second != 2 || combinedStars != 1 {
+		t.Fatalf("independent deltas = %d Stars, combined delta = %d Stars; want 2 and 1", first+second, combinedStars)
+	}
+}
+
 func TestUSDFromStarsUsesFixedRateAndEightDecimalSnapshot(t *testing.T) {
 	for _, test := range []struct {
 		stars int64
@@ -89,6 +115,12 @@ func TestPostgresSub2APIStarsUsageIsIdempotentAndDoesNotRefeed(t *testing.T) {
 	}
 	if _, err := apply(eventPrefix+"-2", "-0.2"); !errors.Is(err, ErrStarsUsageConflict) {
 		t.Fatalf("changed replay error = %v, want conflict", err)
+	}
+	if _, err := ApplySub2APIStarsUsage(context.Background(), Sub2APIStarsUsageEvent{
+		EventID: eventPrefix + "-wrong-account-owner", AccountID: accountID, UserID: userID + 1,
+		AmountUSD: "0.1", Currency: "USD",
+	}); !errors.Is(err, ErrStarsUsageConflict) {
+		t.Fatalf("account owner change error = %v, want conflict", err)
 	}
 	if balance, err := StarsBalance(userID); err != nil || balance != 2 {
 		t.Fatalf("Stars balance after external usage = (%d, %v), want 2", balance, err)

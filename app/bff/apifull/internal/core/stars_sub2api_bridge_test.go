@@ -77,14 +77,14 @@ func TestDeliverStarsSub2APIMirrorUsesIdentityAndBalanceOriginKey(t *testing.T) 
 		t.Fatalf("parse mirror config = enabled:%v err:%v", enabled, err)
 	}
 	for _, event := range []domain.StarsMirrorOutboxEvent{
-		{EventID: "event-credit", UserID: 42, DeltaStars: 25, AmountUSD: "3.75"},
-		{EventID: "event-debit", UserID: 42, DeltaStars: -4, AmountUSD: "0.6"},
+		{EventID: "event-credit", UserID: 42, DeltaStars: 25, AmountUSD: "3.47222222"},
+		{EventID: "event-debit", UserID: 42, DeltaStars: -4, AmountUSD: "0.55555556"},
 	} {
 		if err = deliverStarsSub2APIMirror(context.Background(), cfg, event); err != nil {
 			t.Fatalf("deliver %s: %v", event.EventID, err)
 		}
 	}
-	if got, want := strings.Join(operations, ","), "add:3.75,subtract:0.6"; got != want {
+	if got, want := strings.Join(operations, ","), "add:3.47222222,subtract:0.55555556"; got != want {
 		t.Fatalf("balance operations = %q, want %q", got, want)
 	}
 }

@@ -181,12 +181,12 @@ func StoreSponsoredPeers(ctx context.Context, query string, peers *mtproto.Conta
 	return internal.StoreSponsoredPeers(ctx, query, peers)
 }
 
-func LoadSponsoredMessages(ctx context.Context, peerKey string) (*mtproto.Messages_SponsoredMessages, bool, error) {
-	return internal.LoadSponsoredMessages(ctx, peerKey)
+func LoadSponsoredMessages(ctx context.Context, peerKey string, messageID int32) (*mtproto.Messages_SponsoredMessages, bool, error) {
+	return internal.LoadSponsoredMessages(ctx, peerKey, messageID)
 }
 
-func StoreSponsoredMessages(ctx context.Context, peerKey string, messages *mtproto.Messages_SponsoredMessages) error {
-	return internal.StoreSponsoredMessages(ctx, peerKey, messages)
+func StoreSponsoredMessages(ctx context.Context, peerKey string, messageID int32, messages *mtproto.Messages_SponsoredMessages) error {
+	return internal.StoreSponsoredMessages(ctx, peerKey, messageID, messages)
 }
 
 func DeleteSponsoredInventory(ctx context.Context, query, peerKey string) error {

@@ -93,6 +93,13 @@ before changing either setting. The settings are process-local, so scale Sync
 replicas with Kafka partition count and keep total handler concurrency within
 the measured gateway, database, and session-service budget.
 
+`sync_delivery_receipts` is stored in PostgreSQL while Kafka offsets belong to
+the current topic log. If a Kafka topic is recreated while PostgreSQL persists,
+its offsets can be reused: a previously completed receipt may start a new
+delivery with the new request hash, while an incomplete receipt with a changed
+hash still fails closed. Do not delete receipts to clear this condition; inspect
+the stored completion state and preserve the update journal.
+
 APIFull channel writes also expose
 `teamgram_apifull_channel_persistence_seconds` with `stage=message_tx` and
 `stage=outbox_write`. Compare these stages with client ACK and live-delivery
@@ -137,6 +144,37 @@ outbox row after replay. Never clear an alert by deleting pending or terminal
 rows.
 
 ## SLO Evidence
+
+### 2026-10-20 Local Recovery Acceptance
+
+`/tmp/teamgram-messaging-reliability-acceptance-20261020-final.json` passed
+with 40 A-to-B and 40 B-to-A Layer 229 sends, 100% successful recorded RPCs,
+18.6ms send RPC p95, and 995.4ms live-delivery p95. It also verified a real
+disposable backend container replacement, 15.1 seconds of Kafka unavailability,
+four durable pending delivery intents during the outage, ordered recovery,
+random-id replay, continuous update state, and zero remaining test messages.
+The final Prometheus samples were fresh and showed both inbox and state pending
+queues at zero; all lab containers, volumes, and networks were removed.
+
+This is local seeded-account evidence, not production traffic or the 30-day
+SLO. It closes the local messaging restart and broker-recovery checks only; the
+production canary still needs 43,200 settled minute buckets per shard.
+
+### 2026-10-20 PostgreSQL/Kafka Integration Closure
+
+`/tmp/teamgram-messaging-reliability-acceptance-20261020-go-tests-fixed.json`
+passed the disposable-lab run, including 173 passing Go test events across the
+six MQ, message, inbox, and Sync packages. The single-node baseline delivered
+40 messages (20 per direction) with 100% recorded RPC success, 17.6ms send RPC
+p95, and 1,011.7ms live-delivery p95. The run replaced the backend container,
+verified recovery from a 14.6-second Kafka outage with four durable pending
+intents, checked update continuity and random-id replay, then drained both
+outboxes. Fresh Prometheus samples showed inbox and state pending at zero; all
+temporary lab containers, networks, and volumes were removed.
+
+This remains `LOCAL_SAMPLE` evidence. The single-node workload is not a
+capacity benchmark, and it does not establish production traffic or a
+30-day SLO.
 
 The 30-day evaluator uses 43,200 settled UTC minute buckets and keeps synthetic
 and organic evidence separate. Schema version 2 records ACK and live delivery,

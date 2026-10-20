@@ -1,0 +1,28 @@
+FROM alpine:3.22 AS isolated-gateway
+RUN apk add --no-cache socat
+
+FROM golang:1.25.0 AS isolated-dfs-builder
+ARG GOFLAGS=-p=2
+ENV GOPROXY=https://goproxy.cn,direct
+WORKDIR /workspace/teamgram-server
+COPY teamgram-server/go.mod teamgram-server/go.sum ./
+COPY teamgram-server/ ./
+COPY proto/ /workspace/proto/
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    go build -tags=jsoniter -o /out/dfs ./app/service/dfs/cmd/dfs/*.go
+
+FROM mysql:8.0 AS isolated-mysql
+COPY teamgram-server/teamgramd/deploy/sql/ /docker-entrypoint-initdb.d/
+RUN rm /docker-entrypoint-initdb.d/migrate-20260309.sql
+COPY teamgram-server/docker/web-isolated/mysql-init/zz-web-isolated-test-accounts.sql /docker-entrypoint-initdb.d/zz-web-isolated-test-accounts.sql
+
+FROM mysql:8.0 AS isolated-mysql-fixture
+COPY teamgram-server/docker/web-isolated/mysql-init/zz-web-isolated-test-accounts.sql /opt/zz-web-isolated-test-accounts.sql
+
+FROM ubuntu:latest AS teamgram-app
+WORKDIR /app
+COPY teamgram-server/teamgramd/ /app/
+COPY --from=isolated-dfs-builder /out/dfs /app/bin/dfs
+RUN chmod +x /app/docker/entrypoint.sh /app/docker/entrypoint-web-isolated.sh
+ENTRYPOINT ["/app/docker/entrypoint-web-isolated.sh"]

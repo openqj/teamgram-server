@@ -156,7 +156,7 @@ async function actor(role: 'A' | 'B', updates = false): Promise<Actor> {
   const auth = supplied || loadFixtureAuthKey(username);
   if (!auth) throw new Error(`no auth key for ${role} (${username}); set ${role}_AUTH_B64`);
   let lastError: unknown;
-  for (let attempt = 0; attempt < 4; attempt += 1) {
+  for (let attempt = 0; attempt < 24; attempt += 1) {
     const session = authSession({ CallbackSession } as any, auth, dcId, dcHost, dcPort);
     const client = new TelegramClient(session, apiId, apiHash, {
       connection: Connection,
@@ -182,7 +182,7 @@ async function actor(role: 'A' | 'B', updates = false): Promise<Actor> {
     } catch (error) {
       lastError = error;
       try { client.destroy(); } catch {}
-      if (attempt < 3) await new Promise((resolve) => setTimeout(resolve, 750));
+      if (attempt < 23) await new Promise((resolve) => setTimeout(resolve, 1000));
     }
   }
   throw lastError || new Error(`${role} connection failed`);

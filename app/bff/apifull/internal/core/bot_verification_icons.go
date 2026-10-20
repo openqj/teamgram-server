@@ -235,7 +235,7 @@ func (c *ApiFullCore) BotsGetBotRecommendations(in *mtproto.TLBotsGetBotRecommen
 	if local, loadErr := c.loadLocalBusinessResult("bots.getBotRecommendations", fmt.Sprintf("bot:%d", botID), result); loadErr != nil {
 		return nil, loadErr
 	} else if local {
-		if result == nil || len(result.GetUsers()) > 10000 {
+		if !validBotRecommendationsResult(result) {
 			return nil, mtproto.ErrInternalServerError
 		}
 		return result, nil
@@ -245,8 +245,20 @@ func (c *ApiFullCore) BotsGetBotRecommendations(in *mtproto.TLBotsGetBotRecommen
 	}, result); err != nil {
 		return nil, err
 	}
-	if result == nil || len(result.GetUsers()) > 10000 {
+	if !validBotRecommendationsResult(result) {
 		return nil, mtproto.ErrInternalServerError
 	}
 	return result, nil
+}
+
+func validBotRecommendationsResult(result *mtproto.Users_Users) bool {
+	if result == nil || len(result.GetUsers()) > 10000 {
+		return false
+	}
+	switch result.GetPredicateName() {
+	case mtproto.Predicate_users_users, mtproto.Predicate_users_usersSlice:
+		return true
+	default:
+		return false
+	}
 }

@@ -97,6 +97,31 @@ func TestBotGapMethodsUseSignedBusinessProvider(t *testing.T) {
 	}
 }
 
+func TestBotRecommendationsUseSignedProviderAndLayer229Result(t *testing.T) {
+	for _, predicate := range []string{mtproto.Predicate_users_users, mtproto.Predicate_users_usersSlice} {
+		t.Run(predicate, func(t *testing.T) {
+			core := newBusinessProviderGapCore(t, "bots.getBotRecommendations", map[string]any{
+				"predicate_name": predicate,
+				"users":          []any{},
+				"count":          0,
+			})
+			got, err := core.BotsGetBotRecommendations(&mtproto.TLBotsGetBotRecommendations{Bot: miniBotInput(7, 9)})
+			if err != nil || got == nil || got.GetPredicateName() != predicate {
+				t.Fatalf("bot recommendations = (%v, %v)", got, err)
+			}
+		})
+	}
+
+	core := newBusinessProviderGapCore(t, "bots.getBotRecommendations", map[string]any{
+		"predicate_name": "users_unknown",
+		"users":          []any{},
+	})
+	got, err := core.BotsGetBotRecommendations(&mtproto.TLBotsGetBotRecommendations{Bot: miniBotInput(7, 9)})
+	if got != nil || err != mtproto.ErrInternalServerError {
+		t.Fatalf("unknown bot recommendation constructor = (%v, %v), want nil and INTERNAL_SERVER_ERROR", got, err)
+	}
+}
+
 func TestBotPaymentResultMethodsUseSignedBusinessProvider(t *testing.T) {
 	if persist.PostgresEnabled() {
 		t.Skip("PostgreSQL owns bot payment query callbacks; provider fallback is tested without the local store")

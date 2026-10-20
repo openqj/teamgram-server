@@ -36,21 +36,20 @@ type stringResult interface {
 
 type SSDBReader struct {
 	*model.DfsFileInfo
-	ssdb kv.ExtStore
-	i    int64 // current reading index
-	// S3 multipart uploads and http.ServeContent commonly use buffers smaller
-	// than a DFS part. Cache the active part so each Read does not repeat HGET.
-	partIndex  int
-	partData   []byte
-	partLoaded bool
+	ssdb            kv.ExtStore
+	i               int64 // current reading index
+	cachedPartStart int
+	cachedParts     []string
 }
+
+const ssdbReadAheadParts = 4
 
 func (d *Dao) NewSSDBReader(fileInfo *model.DfsFileInfo) *SSDBReader {
 	return &SSDBReader{
-		DfsFileInfo: fileInfo,
-		ssdb:        d.ssdb,
-		i:           0,
-		partIndex:   -1,
+		DfsFileInfo:     fileInfo,
+		ssdb:            d.ssdb,
+		i:               0,
+		cachedPartStart: -1,
 	}
 }
 
@@ -81,25 +80,21 @@ func (r *SSDBReader) Read(p []byte) (n int, err error) {
 
 	for n < l && r.i < r.DfsFileInfo.GetFileSize() {
 		idx := r.getPartIdx()
-		if !r.partLoaded || r.partIndex != idx {
-			r.partData, err = r.readFile(context.Background(), idx)
-			if err != nil {
-				return n, err
-			}
-			r.partIndex = idx
-			r.partLoaded = true
+		if err = r.loadPartWindow(context.Background(), idx); err != nil {
+			return n, err
 		}
 
+		partData := r.cachedParts[idx-r.cachedPartStart]
 		offset := r.getPartOffset()
-		if offset >= len(r.partData) {
+		if offset >= len(partData) {
 			return n, io.ErrUnexpectedEOF
 		}
-		available := len(r.partData) - offset
+		available := len(partData) - offset
 		readSize := l - n
 		if readSize > available {
 			readSize = available
 		}
-		copy(p[n:n+readSize], r.partData[offset:offset+readSize])
+		copy(p[n:n+readSize], partData[offset:offset+readSize])
 		n += readSize
 		r.i += int64(readSize)
 	}
@@ -124,25 +119,53 @@ func (r *SSDBReader) Seek(offset int64, whence int) (int64, error) {
 		return 0, fmt.Errorf("ssdb.Reader.Seek: negative position")
 	}
 	r.i = abs
-	r.partLoaded = false
-	r.partData = nil
+	r.cachedPartStart = -1
+	r.cachedParts = nil
 	return abs, nil
 }
 
-func (r *SSDBReader) readFile(ctx context.Context, filePart int) ([]byte, error) {
-	var (
-		err  error
-		k    = getFileKey(r.Creator, r.FileId)
-		bBuf string
-	)
-
-	bBuf, err = r.ssdb.HgetCtx(ctx, k, strconv.Itoa(int(filePart)))
-	if err != nil {
-		logx.WithContext(ctx).Errorf("conn.Send(HGET %s, %d) error(%v)", k, filePart, err)
-		return nil, err
+func (r *SSDBReader) loadPartWindow(ctx context.Context, filePart int) error {
+	if filePart >= r.cachedPartStart && filePart < r.cachedPartStart+len(r.cachedParts) {
+		return nil
 	}
+	start := filePart - filePart%ssdbReadAheadParts
+	end := start + ssdbReadAheadParts
+	if end > r.FileTotalParts {
+		end = r.FileTotalParts
+	}
+	if start < 0 || start >= end {
+		return io.ErrUnexpectedEOF
+	}
+	k := getFileKey(r.Creator, r.FileId)
+	pipeline, err := r.ssdb.GetPipeline(k)
+	if err != nil {
+		logx.WithContext(ctx).Errorf("get SSDB pipeline %s error(%v)", k, err)
+		return err
+	}
+	results := make([]stringResult, end-start)
+	err = pipeline.PipelinedCtx(ctx, func(pipe kv.Pipeliner) error {
+		for i := start; i < end; i++ {
+			results[i-start] = pipe.HGet(ctx, k, strconv.Itoa(i))
+		}
+		return nil
+	})
+	if err != nil {
+		logx.WithContext(ctx).Errorf("pipeline HGET %s error(%v)", k, err)
+		return err
+	}
+	parts := make([]string, len(results))
+	for i, result := range results {
+		value, resultErr := result.Result()
+		if resultErr != nil {
+			logx.WithContext(ctx).Errorf("pipeline HGET %s, %d error(%v)", k, start+i, resultErr)
+			return resultErr
+		}
+		parts[i] = value
+	}
+	r.cachedPartStart = start
+	r.cachedParts = parts
 
-	return []byte(bBuf), nil
+	return nil
 }
 
 func (r *SSDBReader) ReadAll(ctx context.Context) ([]byte, error) {

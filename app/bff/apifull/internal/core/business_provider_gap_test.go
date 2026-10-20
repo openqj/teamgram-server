@@ -18,9 +18,10 @@ import (
 
 const businessProviderGapTestKey = "business-provider-gap-test-signing-key-0123456789"
 
-func TestRetryableMiniAppProviderOperations(t *testing.T) {
+func TestRetryableBusinessProviderOperations(t *testing.T) {
 	for _, operation := range []string{
 		"bots.getPopularAppBots",
+		"bots.getBotRecommendations",
 		"bots.checkDownloadFileParams",
 		"bots.invokeWebViewCustomMethod",
 		"messages.getBotApp",
@@ -29,12 +30,12 @@ func TestRetryableMiniAppProviderOperations(t *testing.T) {
 		"messages.sendWebViewData",
 		"messages.sendWebViewResultMessage",
 	} {
-		if !retryableMiniAppProviderOperation(operation) {
-			t.Fatalf("Mini App operation %q is not retryable", operation)
+		if !retryableBusinessProviderOperation(operation) {
+			t.Fatalf("business provider operation %q is not retryable", operation)
 		}
 	}
 	for _, operation := range []string{"bots.sendCustomRequest", "payments.settleStars", "messages.getPaidReactionPrivacy"} {
-		if retryableMiniAppProviderOperation(operation) {
+		if retryableBusinessProviderOperation(operation) {
 			t.Fatalf("non-Mini App operation %q is retryable", operation)
 		}
 	}

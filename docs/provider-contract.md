@@ -1,8 +1,12 @@
 # Provider and Delivery Contract
 
-Provider boundaries use the same authenticated transport rules. The
-operation-specific result remains opaque and must still be decoded and
-validated against its Layer 229 constructor by the caller.
+Provider boundaries use the same authenticated transport rules. This contract
+describes Teamgram's integration boundary, not who owns the authoritative
+service behind it; that service may be first-party or an enabled third-party
+upstream. See [Provider ownership and readiness](provider-ownership-and-readiness-zh.md)
+for the per-capability ownership and evidence status. The operation-specific
+result remains opaque and must still be decoded and validated against its
+Layer 229 constructor by the caller.
 
 ## Request
 

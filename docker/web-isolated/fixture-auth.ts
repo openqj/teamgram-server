@@ -6,7 +6,8 @@ type GramJs = {
 
 function postgres(query: string): string {
   return execFileSync('docker', [
-    'exec', 'teamgram-postgres', 'psql', '-v', 'ON_ERROR_STOP=1', '-At', '-q', '-U', 'teamgram', '-d', 'teamgram', '-c', query,
+    'exec', process.env.TEAMGRAM_POSTGRES_CONTAINER || 'teamgram-postgres',
+    'psql', '-v', 'ON_ERROR_STOP=1', '-At', '-q', '-U', 'teamgram', '-d', 'teamgram', '-c', query,
   ], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
 }
 

@@ -16,6 +16,7 @@ const timeoutMs = Number(process.env.STATUS_TIMEOUT_MS || '10000');
 const reportPath = process.env.STATUS_REPORT || `/tmp/teamgram-account-update-status-${Date.now()}.json`;
 const apiId = Number(process.env.TG_API_ID || '1');
 const apiHash = process.env.TG_API_HASH || '0123456789abcdef0123456789abcdef';
+const postgresContainer = process.env.TEAMGRAM_POSTGRES_CONTAINER || 'teamgram-postgres';
 const quietLogger = { debug() {}, info() {}, warn() {}, error() {} };
 
 const globalAny = globalThis as typeof globalThis & { self?: any; addEventListener?: () => void };
@@ -47,7 +48,7 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function sql(query: string): string {
   return execFileSync('docker', [
-    'exec', 'teamgram-postgres', 'psql', '-v', 'ON_ERROR_STOP=1', '-At', '-q', '-F', '\t',
+    'exec', postgresContainer, 'psql', '-v', 'ON_ERROR_STOP=1', '-At', '-q', '-F', '\t',
     '-U', 'teamgram', '-d', 'teamgram', '-c', query,
   ], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
 }

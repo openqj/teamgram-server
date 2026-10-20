@@ -13,7 +13,7 @@ stdout/stderr；它不会修改 `LAYER229_METHOD_LEDGER.csv`，也不会把跳�
 | `update_fanout` | B 的实时 Layer 229 updates 流收到目标 update，且 `pts/qts/seq/date` 连续 | B 重新调用 `getHistory` 或读取数据库 |
 | `session_restart` | 销毁 A/B 客户端后用新 session 继续读写，并核对幂等/权限 | 同一客户端断线重连，或只看 HTTP 200 |
 | `backend_restart` | 保存带 tag 的业务对象，重启 backend/session 服务，A/B 新 session 读回并继续操作 | 只重启 GramJS 客户端、只重启 Web UI |
-| `provider_contract` | 签名、nonce、constructor、权限和失败关闭均通过真实 provider endpoint | 本地 `apifull_*` fixture、静态 JSON、单元测试 |
+| `provider_contract` | 签名、nonce、constructor、权限和失败关闭均通过目标环境连接的权威 provider endpoint；可以是自有服务或该能力实际依赖的第三方服务 | 本地 `apifull_*` fixture、静态 JSON、单元测试 |
 | `provider_restart_reconciliation` | 结算、重启、退款/撤销、两账号权益回收和对账记录完整 | 只返回 `PaymentResult`、只校验一次幂等 replay |
 
 矩阵中的 `READY` 只表示本机脚本和必需环境存在；`PASS` 只表示该次命令退出码为零。两者都不提升台账的
@@ -63,8 +63,10 @@ RUN_BACKEND_RESTART=1 python3 tools/critical_path_acceptance.py \
 export TEAMGRAM_GRAMJS_DIR=/path/to/telegram-tt-master
 ```
 
-`web-isolated` 探针默认连接 `127.0.0.1:31443`，生产形状探针默认连接 `127.0.0.1:11443`。需要真实 provider
-或 auth key 的行会在缺少凭据时显示 `BLOCKED`，不会回退到假数据。探针执行后先保存 JSON 报告，再运行：
+`web-isolated` 探针默认连接 `127.0.0.1:31443`，生产形状探针默认连接 `127.0.0.1:11443`。需要已部署权威 provider
+或 auth key 的行会在缺少凭据时显示 `BLOCKED`，不会回退到假数据；自有 provider 可以满足此门槛，隔离 fixture 不能替代目标环境证据。探针执行后先保存 JSON 报告，再运行：
+
+矩阵 runner 对目标端口 `31443` 的行会按 Compose gateway 自动解析同项目的 `postgres` 容器，并传给 fixture/session 查询；找不到唯一数据库时会阻止执行。`business-webview-cross-account` 在该隔离端口使用永久 fixture auth key，不依赖短信登录 fixture。
 
 ```sh
 python3 tools/layer229_acceptance_report.py --strict

@@ -23,11 +23,15 @@ const sponsoredProviderTestKey = "sponsored-provider-test-signing-key-0123456789
 
 func TestMessagesGetSponsoredMessagesUsesVerifiedProvider(t *testing.T) {
 	var requestIDs []string
+	var requestMessageIDs []*int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var request struct {
 			RequestID string `json:"request_id"`
 			Operation string `json:"operation"`
 			UserID    int64  `json:"user_id"`
+			Payload   struct {
+				MsgID *int32 `json:"msg_id"`
+			} `json:"payload"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 			t.Fatal(err)
@@ -36,6 +40,7 @@ func TestMessagesGetSponsoredMessagesUsesVerifiedProvider(t *testing.T) {
 			t.Fatalf("idempotency key = %q, request id = %q", r.Header.Get("Idempotency-Key"), request.RequestID)
 		}
 		requestIDs = append(requestIDs, request.RequestID)
+		requestMessageIDs = append(requestMessageIDs, request.Payload.MsgID)
 		result := map[string]any{"predicate_name": "messages_sponsoredMessages", "constructor": 0, "messages": []any{}, "chats": []any{}, "users": []any{}}
 		encoded, err := json.Marshal(result)
 		if err != nil {
@@ -65,18 +70,26 @@ func TestMessagesGetSponsoredMessagesUsesVerifiedProvider(t *testing.T) {
 	if len(requestIDs) != 2 || requestIDs[0] == "" || requestIDs[0] != requestIDs[1] {
 		t.Fatalf("request IDs = %#v, want stable retry key", requestIDs)
 	}
+	messageID := int32(117)
+	got, err = c.MessagesGetSponsoredMessages(&mtproto.TLMessagesGetSponsoredMessages{Peer: peer, MsgId: wrapperspb.Int32(messageID)})
+	if err != nil || got == nil {
+		t.Fatalf("MessagesGetSponsoredMessages with msg_id = (%v, %v)", got, err)
+	}
+	if len(requestIDs) != 3 || requestIDs[2] == requestIDs[0] || requestMessageIDs[2] == nil || *requestMessageIDs[2] != messageID {
+		t.Fatalf("provider request context = ids:%#v msg_ids:%#v, want msg_id %d and distinct request id", requestIDs, requestMessageIDs, messageID)
+	}
 }
 
-func TestMessagesGetSponsoredMessagesRejectsMessageSelectorForInventory(t *testing.T) {
+func TestMessagesGetSponsoredMessagesRejectsNonPositiveMessageSelector(t *testing.T) {
 	c := New(context.Background(), &svc.ServiceContext{})
 	c.MD = &metadata.RpcMetadata{UserId: time.Now().UnixNano()}
 	peer := mtproto.MakeTLInputPeerSelf(nil).To_InputPeer()
 	got, err := c.MessagesGetSponsoredMessages(&mtproto.TLMessagesGetSponsoredMessages{
 		Peer:  peer,
-		MsgId: wrapperspb.Int32(1),
+		MsgId: wrapperspb.Int32(0),
 	})
-	if got != nil || err != mtproto.ErrMethodNotImpl {
-		t.Fatalf("MessagesGetSponsoredMessages() = (%v, %v), want nil and METHOD_NOT_IMPL", got, err)
+	if got != nil || err != mtproto.ErrMessageIdInvalid {
+		t.Fatalf("MessagesGetSponsoredMessages() = (%v, %v), want nil and MESSAGE_ID_INVALID", got, err)
 	}
 }
 

@@ -28,6 +28,10 @@ function rpcName(value: any) {
   return value?.className || value?.constructor?.name || typeof value;
 }
 
+function isTrue(value: unknown) {
+  return value === true || rpcName(value).toLowerCase().includes('true');
+}
+
 function chatList(value: any): any[] {
   return [
     ...(Array.isArray(value?.chats) ? value.chats : []),
@@ -213,6 +217,7 @@ async function run() {
   const { Api } = gram;
   let actors: Actor[] = [];
   let createdChannel: any;
+  let channelUsername = '';
   const createdInviteLinks = new Set<string>();
 
   const rememberInvite = (value: any) => {
@@ -237,6 +242,14 @@ async function run() {
     const ownerChannel = inputChannel(Api, createdChannel);
     const ownerPeer = inputPeerChannel(Api, createdChannel);
     console.log(`PASS channel creation: ${rpcName(created)}`);
+
+    channelUsername = `invites_${Date.now()}_${process.pid}`;
+    const usernameUpdated = await owner.client.invoke(new Api.channels.UpdateUsername({
+      channel: ownerChannel,
+      username: channelUsername,
+    }));
+    requireCondition(isTrue(usernameUpdated), 'channels.updateUsername did not return true');
+    console.log(`PASS public channel username: ${rpcName(usernameUpdated)}`);
 
     const memberUser = await searchUser(Api, owner, member.username);
     const requesterUser = await searchUser(Api, owner, requester.username);
@@ -314,7 +327,10 @@ async function run() {
     const requestInvite = rememberInvite(requestExport);
     const requestHash = inviteHash(requestInvite.link);
     const checkedRequest = await requester.client.invoke(new Api.messages.CheckChatInvite({ hash: requestHash }));
-    requireCondition(checkedRequest?.requestNeeded === true, 'request invite check did not preserve request_needed');
+    requireCondition(
+      checkedRequest?.requestNeeded === true,
+      `request invite check did not preserve request_needed: ${rpcName(checkedRequest)} requestNeeded=${String(checkedRequest?.requestNeeded)} exported=${String(requestInvite.requestNeeded)}`,
+    );
     await expectRpcError('request invite import acknowledgement', 'INVITE_REQUEST_SENT', () => requester.client.invoke(
       new Api.messages.ImportChatInvite({ hash: requestHash }),
     ));
@@ -541,6 +557,16 @@ async function run() {
           );
         } catch (error) {
           console.error(`invite cleanup failed for ${link}: ${String(error)}`);
+        }
+      }
+      if (channelUsername) {
+        try {
+          await owner.client.invoke(new Api.channels.UpdateUsername({
+            channel: inputChannel(Api, createdChannel),
+            username: '',
+          }));
+        } catch (error) {
+          console.error(`channel username cleanup failed: ${String(error)}`);
         }
       }
       try {

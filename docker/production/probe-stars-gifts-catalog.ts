@@ -223,7 +223,9 @@ async function run() {
       peer: new Api.InputPeerSelf(),
       offset: '',
       limit: 10,
-      ascending: true,
+      // The fixture user may already have more than one page of history. Read
+      // the newest page so the transaction seeded by this probe is observable.
+      ascending: false,
     }));
     const matchingHistory = Array.isArray(history?.history)
       ? history.history.filter((value: any) => String(value?.id) === starsIdem)

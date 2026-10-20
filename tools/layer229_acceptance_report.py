@@ -118,6 +118,16 @@ PROVIDER_GAP_LABELS = (
     "missing_session_update_delivery_restart_evidence",
 )
 
+# Latest recorded critical-path matrix snapshot in PRODUCTION_READINESS_DECISION.md.
+# These workflow rows are separate from per-method production acceptance.
+CRITICAL_PATH_MATRIX_SNAPSHOT = {
+    "snapshot_date": "2026-10-20",
+    "pass": 77,
+    "fail": 8,
+    "manual": 5,
+    "total": 90,
+}
+
 COMPONENT_ONLY_STATUSES = {
     "PARTIAL_COMPONENT_ONLY",
     "PARTIAL_ISOLATED_DB_ONLY",
@@ -252,15 +262,23 @@ def build_report(ledger_path: Path, methods_path: Path) -> dict[str, Any]:
         "audit": dict(sorted(Counter(row["audit_status"] for row in rows).items())),
         "production": dict(sorted(Counter(row["production_acceptance_status"] for row in rows).items())),
     }
+    accepted_statuses = {"PRODUCTION_ACCEPTED", "ACCEPTED", "PASS"}
+    production_accepted = sum(
+        row["production_acceptance_status"] in accepted_statuses for row in rows
+    )
     blocked_by_namespace: dict[str, list[str]] = defaultdict(list)
     for row in rows:
         if row["production_acceptance_status"] == "BLOCKED_BY_IMPLEMENTATION_GAP":
             blocked_by_namespace[row["namespace"]].append(row["method"])
     blocked_by_namespace = {key: sorted(value) for key, value in sorted(blocked_by_namespace.items())}
-    blocked_rows = [
-        row for row in rows if row["production_acceptance_status"] == "BLOCKED_BY_IMPLEMENTATION_GAP"
-    ]
-    provider_gap_summary = summarize_provider_gaps(blocked_rows)
+    unaccepted_rows = [row for row in rows if row["production_acceptance_status"] not in accepted_statuses]
+    unaccepted_by_namespace: dict[str, list[str]] = defaultdict(list)
+    for row in unaccepted_rows:
+        unaccepted_by_namespace[row["namespace"]].append(row["method"])
+    unaccepted_by_namespace = {
+        key: sorted(value) for key, value in sorted(unaccepted_by_namespace.items())
+    }
+    provider_gap_summary = summarize_provider_gaps(unaccepted_rows)
 
     validation = {
         "row_count": len(rows),
@@ -275,21 +293,48 @@ def build_report(ledger_path: Path, methods_path: Path) -> dict[str, Any]:
         "csv_errors": errors,
         "matches_source": not (errors or duplicate_methods or duplicate_ids or missing or extra or id_mismatches),
     }
+    acceptance_summary = {
+        "protocol_catalog": {
+            "matched": validation["matches_source"],
+            "methods": validation["unique_methods"],
+            "expected_methods": validation["source_method_count"],
+        },
+        "evidence_by_production_status": status_counts["production"],
+        "critical_path_matrix": {
+            **CRITICAL_PATH_MATRIX_SNAPSHOT,
+            "source": "PRODUCTION_READINESS_DECISION.md",
+            "scope": "workflow probes; counts are not per-method production acceptance",
+        },
+        "full_production_acceptance": {
+            "accepted_methods": production_accepted,
+            "total_methods": len(rows),
+            "complete": bool(rows) and production_accepted == len(rows),
+            "accepted_statuses": sorted(accepted_statuses),
+        },
+    }
     return {
         "ledger": str(ledger_path),
         "methods_source": str(methods_path),
         "validation": validation,
         "status_counts": status_counts,
+        "acceptance_summary": acceptance_summary,
         "blocked_by_namespace": blocked_by_namespace,
         "blocked_total": sum(len(methods) for methods in blocked_by_namespace.values()),
+        "unaccepted_by_namespace": unaccepted_by_namespace,
         "provider_gap_summary": provider_gap_summary,
-        "next_steps": {namespace: NEXT_STEPS.get(namespace, "Provide an authoritative provider, live session evidence, restart and failure-recovery checks.") for namespace in blocked_by_namespace},
+        "next_steps": {
+            namespace: NEXT_STEPS.get(
+                namespace,
+                "Provide an authoritative provider, live session evidence, restart and failure-recovery checks.",
+            )
+            for namespace in unaccepted_by_namespace
+        },
         "rows": rows,
     }
 
 
 def classify_provider_gaps(row: dict[str, str]) -> list[str]:
-    """Classify explicit evidence gaps for one blocked method.
+    """Classify explicit evidence gaps for one method not yet production accepted.
 
     These labels describe evidence still missing from the ledger. They are
     intentionally additive: a method may have a signed provider boundary and
@@ -332,16 +377,16 @@ def has_missing_provider_evidence(text: str) -> bool:
     return False
 
 
-def summarize_provider_gaps(blocked_rows: list[dict[str, str]]) -> dict[str, Any]:
+def summarize_provider_gaps(rows: list[dict[str, str]]) -> dict[str, Any]:
     methods: dict[str, list[str]] = {label: [] for label in PROVIDER_GAP_LABELS}
-    for row in blocked_rows:
+    for row in rows:
         for label in classify_provider_gaps(row):
             methods[label].append(row["method"])
     for values in methods.values():
         values.sort()
     return {
-        "scope": "production_acceptance_status == BLOCKED_BY_IMPLEMENTATION_GAP",
-        "method_count": len(blocked_rows),
+        "scope": "all methods without a production-accepted status; text-derived categories can overlap",
+        "method_count": len(rows),
         "counts": {label: len(methods[label]) for label in PROVIDER_GAP_LABELS},
         "methods": methods,
     }
@@ -361,20 +406,52 @@ def focused_rows(report: dict[str, Any], focus: list[str]) -> dict[str, list[dic
 
 
 def print_text(report: dict[str, Any], focus: list[str]) -> None:
-    validation = report["validation"]
-    print("Layer 229 acceptance summary")
-    print(f"ledger rows: {validation['row_count']}; unique methods: {validation['unique_methods']}; source methods: {validation['source_method_count']}")
-    print(f"source match: {'PASS' if validation['matches_source'] else 'FAIL'}")
-    print("production status counts:")
+    summary = report["acceptance_summary"]
+    catalog = summary["protocol_catalog"]
+    production = summary["full_production_acceptance"]
+    matrix = summary["critical_path_matrix"]
+
+    print("Layer 229 验收进度")
+    print(
+        f"1. 协议目录: {catalog['methods']}/{catalog['expected_methods']} "
+        f"{'PASS' if catalog['matched'] else 'FAIL'} (方法与 constructor ID 匹配)"
+    )
+    print("2. 台账中的阶段性证据:")
+    evidence_labels = {
+        "PARTIAL_ISOLATED_SESSION_E2E": "隔离会话 E2E",
+        "PARTIAL_ISOLATED_DB_ONLY": "隔离 PostgreSQL/DAO",
+        "PARTIAL_COMPONENT_ONLY": "组件/单元",
+        "ISOLATED_COMPONENT_ONLY": "隔离组件",
+        "ISOLATED_DB_ONLY": "隔离数据库",
+        "TRANSPORT_ONLY": "仅传输包装层",
+    }
+    for status, label in evidence_labels.items():
+        print(f"   {label}: {report['status_counts']['production'].get(status, 0)}")
     for status, count in report["status_counts"]["production"].items():
-        print(f"  {status}: {count}")
-    print("blocked by namespace:")
-    for namespace, methods in report["blocked_by_namespace"].items():
-        print(f"  {namespace}: {len(methods)}; next: {report['next_steps'][namespace]}")
-    print("provider gap summary (blocked methods):")
+        if status not in evidence_labels and status in {"PRODUCTION_ACCEPTED", "ACCEPTED", "PASS"}:
+            print(f"   已登记生产通过: {count} ({status})")
+    print(
+        f"3. 关键业务矩阵快照 ({matrix['snapshot_date']}): "
+        f"{matrix['pass']} PASS / {matrix['fail']} FAIL / {matrix['manual']} MANUAL "
+        f"({matrix['total']} 条链路探针)"
+    )
+    print("   矩阵按业务链路计数，PASS 不会自动登记为对应 API 方法的生产通过。")
+    print(
+        f"4. 完整生产验收: {production['accepted_methods']}/"
+        f"{production['total_methods']} "
+        f"{'PASS' if production['complete'] else '未完成（已通过 0 项）'}"
+    )
+    print("   仅统计 production_acceptance_status 为 PRODUCTION_ACCEPTED、ACCEPTED 或 PASS 的方法。")
+    print("   尚未闭环：真实 provider、重启恢复、跨设备 update fan-out、生产流量与长期 SLO。")
+    if report["unaccepted_by_namespace"]:
+        print("尚未生产验收的方法（按 namespace）:")
+        for namespace, methods in report["unaccepted_by_namespace"].items():
+            print(f"  {namespace}: {len(methods)}; next: {report['next_steps'][namespace]}")
     provider_gaps = report["provider_gap_summary"]
-    for label, count in provider_gaps["counts"].items():
-        print(f"  {label}: {count}")
+    if provider_gaps["method_count"]:
+        print("未闭环证据线索（从台账文字分类，类别可重叠）:")
+        for label, count in provider_gaps["counts"].items():
+            print(f"  {label}: {count}")
     if focus:
         for group, rows in focused_rows(report, focus).items():
             print(f"focus {group}: {len(rows)} methods")

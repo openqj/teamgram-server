@@ -157,6 +157,24 @@ function makeClient(authKeyBase64: string): Client {
     autoReconnect: false,
     baseLogger: quietLogger,
   });
+  const originalInvoke = client.invoke.bind(client);
+  const rpcTimeoutMs = Number(process.env.PROBE_RPC_TIMEOUT_MS || '30000');
+  client.invoke = async (request: any) => {
+    const requestName = rpcName(request);
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        originalInvoke(request),
+        new Promise((_, reject) => {
+          timeout = setTimeout(() => reject(new Error(`RPC_TIMEOUT ${requestName}`)), rpcTimeoutMs);
+        }),
+      ]);
+    } catch (error) {
+      throw new Error(`${requestName}: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      if (timeout) clearTimeout(timeout);
+    }
+  };
   // The acceptance client only uses its authenticated primary DC for these RPCs.
   // GramJS may open an additional media sender without a matching exported
   // media auth key; suppress that unrelated background connection.
@@ -174,6 +192,10 @@ async function waitForMessage(client: Client, request: () => any, text: string):
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
   throw new Error(`message not visible after retries: ${text}`);
+}
+
+function trace(stage: string): void {
+  if (process.env.PROBE_TRACE === '1') console.error(`probe stage: ${stage}`);
 }
 
 async function main() {
@@ -196,6 +218,7 @@ async function main() {
   let deliveredScheduledMessageId = 0;
   let reactionWasSet = false;
   try {
+    trace('connect');
     await a.connect();
     await b.connect();
     const meA = await a.getMe();
@@ -205,6 +228,7 @@ async function main() {
     }
     results.auth = { a: rpcName(meA), b: rpcName(meB) };
 
+    trace('read-only');
     const config = await a.invoke(new Api.help.GetConfig());
     const nearestDc = await a.invoke(new Api.help.GetNearestDc());
     const countries = await a.invoke(new Api.help.GetCountriesList({ langCode: 'en', hash: 0 }));
@@ -223,6 +247,7 @@ async function main() {
 
     const peerA = inputPeerUser(B_ID, B_HASH);
     const peerB = inputPeerUser(A_ID, A_HASH);
+    trace('direct-message');
     const sent = await a.invoke(new Api.messages.SendMessage({
       peer: peerA, message: directText, randomId: BigInt(Date.now()) * 1000n + 1n,
     }));
@@ -250,6 +275,7 @@ async function main() {
       edit: rpcName(edited), senderMessageId: aMessageId, receiverMessageId: bMessageId,
     };
 
+    trace('reactions');
     const reaction = await b.invoke(new Api.messages.SendReaction({
       peer: peerB, msgId: bMessageId, reaction: [new Api.ReactionEmoji({ emoticon: '👍' })],
     }));
@@ -268,6 +294,7 @@ async function main() {
       unread: rpcName(unreadReactions), read: rpcName(readReactions), clear: rpcName(reactionClear),
     };
 
+    trace('group-and-forum');
     const groupTitle = `${tag} canonical group`;
     const createdGroup = await a.invoke(new Api.messages.CreateChat({
       users: [inputUser(B_ID, B_HASH)],
@@ -311,6 +338,7 @@ async function main() {
       .find((chat: any) => String(chat?.id) === String(groupId));
     if (groupAfterEdit?.title !== groupEditedTitle) throw new Error('group title edit did not read back');
 
+    trace('polls');
     const pollText = `${tag} poll`;
     const pollOptions = [Buffer.from([0]), Buffer.from([1])];
     const poll = new Api.Poll({
@@ -387,6 +415,7 @@ async function main() {
       groupId: String(groupId), messageId: groupMessageId,
     };
 
+    trace('scheduled');
     const scheduledText = `${tag} scheduled`;
     const scheduled = await a.invoke(new Api.messages.SendMessage({
       peer: peerA, message: scheduledText, randomId: BigInt(Date.now()) * 1000n + 4n,
@@ -426,6 +455,7 @@ async function main() {
       cancel: rpcName(deletedScheduled), deliver: rpcName(delivered), deliveredHistory: rpcName(deliveredMessage),
     };
 
+    trace('channel');
     const channelTitle = `${tag} canonical channel`;
     const created = await b.invoke(new Api.channels.CreateChannel({
       broadcast: true,
@@ -539,6 +569,7 @@ async function main() {
       channelId: String(channelId),
     };
   } finally {
+    trace('cleanup');
     if (reactionWasSet && bMessageId > 0) {
       try { await b.invoke(new Api.messages.SendReaction({ peer: inputPeerUser(A_ID, A_HASH), msgId: bMessageId, reaction: [] })); } catch {}
     }
@@ -572,5 +603,5 @@ async function main() {
 
 main().catch((error) => {
   console.error(String(error));
-  process.exitCode = 1;
+  process.exit(1);
 });

@@ -26,7 +26,7 @@ var (
 const (
 	starsPerUSDNumerator   int64 = 36
 	starsPerUSDDenominator int64 = 5
-	usdSnapshotScale            = 8
+	usdSnapshotScale             = 8
 )
 
 type StarsMirrorOutboxEvent struct {
@@ -87,7 +87,7 @@ func ApplySub2APIStarsUsage(ctx context.Context, event Sub2APIStarsUsageEvent) (
 		return 0, ErrStarsUsageConflict
 	}
 	// A concurrent replay can have committed while this transaction waited for
-	// the account residual lock. Re-read the event before changing that residual.
+	// the account mapping lock. Re-read the event before applying its delta.
 	if existingStars, found, readErr := findSub2APIStarsUsage(ctx, tx, event); readErr != nil {
 		return 0, readErr
 	} else if found {
@@ -147,7 +147,7 @@ func findSub2APIStarsUsage(ctx context.Context, tx *sql.Tx, event Sub2APIStarsUs
 	if err != nil {
 		return 0, false, err
 	}
-	storedAmount, _, parseErr := parseStarsMirrorDecimal(amountText, starsUsageResidualScale)
+	storedAmount, _, parseErr := parseStarsMirrorDecimal(amountText, 18)
 	inputAmount, _, inputErr := parseStarsMirrorDecimal(event.AmountUSD, 18)
 	if parseErr != nil || inputErr != nil || accountID != event.AccountID || userID != event.UserID || currency != event.Currency || storedAmount.Cmp(inputAmount) != 0 {
 		return 0, false, ErrStarsUsageConflict

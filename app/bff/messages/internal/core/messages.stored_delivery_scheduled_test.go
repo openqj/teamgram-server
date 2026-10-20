@@ -1,6 +1,7 @@
 package core
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"testing"
@@ -47,6 +48,13 @@ func TestStoredScheduledDeliveryValidatesDateAndPeer(t *testing.T) {
 	if err != nil || updates == nil || len(updates.GetUpdates()) != 1 ||
 		updates.GetUpdates()[0].GetPredicateName() != mtproto.Predicate_updateNewScheduledMessage {
 		t.Fatalf("schedule message: result=%+v err=%v", updates, err)
+	}
+	encoded := mtproto.NewEncodeBuf(512)
+	if err = updates.Encode(encoded, 229); err != nil {
+		t.Fatalf("scheduled updates encode: %v", err)
+	}
+	if !bytes.Contains(encoded.GetBuf(), []byte{0xd3, 0xb9, 0x00, 0x76}) {
+		t.Fatalf("scheduled updates omitted message constructor: %x", encoded.GetBuf())
 	}
 	stored, err := schedstore.List(userID)
 	if err != nil || len(stored) != 1 || stored[0].GetMessage() != "scheduled text" || stored[0].GetPeerId().GetUserId() != targetID || stored[0].GetDate() != future.GetValue() {

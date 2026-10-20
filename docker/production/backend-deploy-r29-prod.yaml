@@ -59,6 +59,7 @@ services:
     # may still define MYSQL_URI; inheriting that key would violate the
     # PostgreSQL-only runtime contract even when TEAMGRAM_POSTGRES_DSN is set.
     environment: !override
+      KAFKA_HOST: "${KAFKA_HOST:?KAFKA_HOST is required}"
       TEAMGRAM_POSTGRES_DSN: "${TEAMGRAM_POSTGRES_DSN:?TEAMGRAM_POSTGRES_DSN is required}"
       TEAMGRAM_SYNC_POSTGRES_MAX_CONNS: "${TEAMGRAM_SYNC_POSTGRES_MAX_CONNS:-16}"
       TEAMGRAM_KAFKA_DLQ_TOPIC: "${TEAMGRAM_KAFKA_DLQ_TOPIC:?Pre-create a Kafka dead-letter topic}"

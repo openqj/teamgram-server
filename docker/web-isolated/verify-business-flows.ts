@@ -240,6 +240,8 @@ async function run() {
   let createdGroupId: bigint | number | undefined;
   let directMessageId: number | undefined;
   let forwardedMessageId: number | undefined;
+  let groupMessageId: number | undefined;
+  let memberGroupMessageId: number | undefined;
   let contactInput: any;
   let importedPhone: string | undefined;
   let importedSavedPhone: string | undefined;
@@ -706,6 +708,7 @@ async function run() {
       })), groupText);
     const groupMessage = findMessage(bobGroupHistory, groupText);
     requireCondition(groupMessage, 'group history did not return the group message');
+    groupMessageId = groupMessage.id;
 
     console.log('group reaction flow');
     const groupReaction = await bob.client.invoke(new Api.messages.SendReaction({
@@ -798,6 +801,7 @@ async function run() {
     })), memberGroupText);
     const memberGroupMessage = findMessage(aliceGroupHistory, memberGroupText);
     requireCondition(memberGroupMessage, 'group history did not return the member message');
+    memberGroupMessageId = memberGroupMessage.id;
     requireCondition(
       peerId(memberGroupMessage?.fromId) === String(carol.id),
       'group history did not identify Carol as the member-message sender',
@@ -1138,6 +1142,41 @@ async function run() {
     throw error;
   } finally {
     const cleanupErrors: string[] = [];
+    for (const actor of actors) {
+      try {
+        const tagged = await actor.client.invoke(new Api.messages.SearchGlobal({
+          q: tag,
+          filter: new Api.InputMessagesFilterEmpty(),
+          minDate: 0,
+          maxDate: 0,
+          offsetRate: 0,
+          offsetPeer: new Api.InputPeerEmpty(),
+          offsetId: 0,
+          limit: 100,
+        }));
+        const ownIds: number[] = [];
+        const localIds: number[] = [];
+        for (const message of messageList(tagged)) {
+          if (typeof message?.message !== 'string' || !message.message.includes(tag) || typeof message.id !== 'number') {
+            continue;
+          }
+          const senderId = message?.fromId?.userId ?? message?.fromId?.userID;
+          if (senderId !== undefined && String(senderId) === String(actor.id)) {
+            ownIds.push(message.id);
+          } else {
+            localIds.push(message.id);
+          }
+        }
+        if (ownIds.length > 0) {
+          await actor.client.invoke(new Api.messages.DeleteMessages({ revoke: true, id: ownIds }));
+        }
+        if (localIds.length > 0) {
+          await actor.client.invoke(new Api.messages.DeleteMessages({ revoke: false, id: localIds }));
+        }
+      } catch (error) {
+        cleanupErrors.push(`tagged-message cleanup for ${actor.username}: ${String(error)}`);
+      }
+    }
     if (createdChannel && owner) {
       try {
         await owner.client.invoke(new Api.channels.DeleteChannel({ channel: inputChannel(Api, createdChannel) }));
@@ -1146,6 +1185,18 @@ async function run() {
       }
     }
     if (createdGroupId !== undefined && owner) {
+      const groupMessageCleanup = [
+        { actor: owner, ids: groupMessageId === undefined ? [] : [groupMessageId] },
+        { actor: actors[2], ids: memberGroupMessageId === undefined ? [] : [memberGroupMessageId] },
+      ];
+      for (const { actor, ids } of groupMessageCleanup) {
+        if (!actor || ids.length === 0) continue;
+        try {
+          await actor.client.invoke(new Api.messages.DeleteMessages({ revoke: true, id: ids }));
+        } catch (error) {
+          cleanupErrors.push(`group-message cleanup: ${String(error)}`);
+        }
+      }
       try {
         await owner.client.invoke(new Api.messages.DeleteChat({ chatId: createdGroupId }));
       } catch (error) {
@@ -1164,6 +1215,14 @@ async function run() {
         await owner.client.invoke(new Api.messages.DeleteMessages({ revoke: true, id: [forwardedMessageId] }));
       } catch (error) {
         cleanupErrors.push(`forwarded-message cleanup: ${String(error)}`);
+      }
+      const recipient = actors[2];
+      if (recipient) {
+        try {
+          await recipient.client.invoke(new Api.messages.DeleteMessages({ revoke: true, id: [forwardedMessageId] }));
+        } catch (error) {
+          cleanupErrors.push(`forwarded-recipient cleanup: ${String(error)}`);
+        }
       }
     }
     if (contactInput && owner) {

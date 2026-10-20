@@ -101,6 +101,24 @@ for migration in "${migrations[@]}"; do
     # the authoritative deduplication table already exists.
     legacy_checksum_condition="version = '091_biz_bot_api_update_dedup' AND checksum = 'd0577c3e30e89a114631c57436fdd2d38ab34b2ff7bfe9c3a02b03570d19e069' AND to_regclass('public.bot_api_update_dedup') IS NOT NULL"
   fi
+  if [[ "$version" == "096_user_premium_payment_recovery" && "$checksum" == "65b8b0543e41a23c0ba9ece66fcc39fe180ea38acdc94a7cadf43ad29192e714" ]]; then
+    # 096 was journaled once with a pre-release checksum. Accept only that
+    # exact row when all recovery columns are present; arbitrary drift remains
+    # fatal and a partial table cannot be hidden by the journal.
+    legacy_checksum_condition="version = '096_user_premium_payment_recovery' AND checksum = 'ebc76808ba4d1f6ce576c4b48d599cd110f502e7a702c5d2de851d7868ca8a4c' AND (SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'user_premium_payment_grant' AND column_name IN ('starts_at', 'expires_at', 'revoked_at')) = 3"
+  fi
+  if [[ "$version" == "108_bff_messages_received_notifications" && "$checksum" == "138be89c7187c0b1cd78807579d6e61f188f04d099d9f7006b82cb500ba2c4be" ]]; then
+    # 108 was applied locally before the migration checksum was recorded in
+    # the repository. Require its complete notification table before accepting
+    # the exact manual journal entry.
+    legacy_checksum_condition="version = '108_bff_messages_received_notifications' AND checksum = 'manual-local-20261018' AND (SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'bff_messages_received_notification' AND column_name IN ('user_id', 'message_id', 'flags', 'created_at')) = 4"
+  fi
+  if [[ "$version" == "109_business_payment_transfer_star_gift" && "$checksum" == "cad5695bafc91e26403eaacf25f17c437b3d301d349d6e1814380727b7bc6424" ]]; then
+    # 109 was journaled once with the 096 checksum after a pre-release file
+    # rename. Require the expanded operation constraint so the journal cannot
+    # mask a schema that lacks the Star Gift transfer operation.
+    legacy_checksum_condition="version = '109_business_payment_transfer_star_gift' AND checksum = '65b8b0543e41a23c0ba9ece66fcc39fe180ea38acdc94a7cadf43ad29192e714' AND EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = 'public.teamgram_business_payment_operation'::regclass AND conname = 'teamgram_business_payment_operation_operation_check' AND pg_get_constraintdef(oid) LIKE '%payments.transferStarGift%')"
+  fi
   {
     printf '%s\n' 'BEGIN;'
     printf '%s\n' "SELECT pg_advisory_xact_lock(hashtextextended('teamgram-schema-migrations', 0));"

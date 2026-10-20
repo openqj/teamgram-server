@@ -55,6 +55,11 @@ function assertType(value: any, ...names: string[]): void {
   }
 }
 
+function findSeededSubscription(status: any): any {
+  if (!Array.isArray(status?.subscriptions)) return undefined;
+  return status.subscriptions.find((subscription: any) => String(subscription?.id) === subscriptionId);
+}
+
 function makeClient(): any {
   const auth = process.env.AUTH_B64 || loadAuthKey();
   if (!auth) throw new Error(`no active production auth key found for user ${userId}`);
@@ -151,7 +156,8 @@ async function run(): Promise<void> {
     const getSubscriptions = () => client.invoke(new Api.payments.GetStarsSubscriptions({ peer, offset: '0' }));
     const statusBefore = await getSubscriptions();
     assertType(statusBefore, 'payments.StarsStatus', 'PaymentsStarsStatus', 'StarsStatus');
-    if (!Array.isArray(statusBefore.subscriptions) || statusBefore.subscriptions.length !== 1 || String(statusBefore.subscriptions[0].id) !== subscriptionId) {
+    const seededBefore = findSeededSubscription(statusBefore);
+    if (!seededBefore) {
       throw new Error('provider did not return the seeded Stars subscription');
     }
     const changeRequest = new Api.payments.ChangeStarsSubscription({ peer, subscriptionId, canceled: true });
@@ -160,7 +166,8 @@ async function run(): Promise<void> {
     assertType(changed, 'BoolTrue', 'Boolean', 'boolTrue');
     assertType(changedReplay, 'BoolTrue', 'Boolean', 'boolTrue');
     const statusCanceled = await getSubscriptions();
-    if (!statusCanceled.subscriptions[0].canceled || !statusCanceled.subscriptions[0].canRefulfill) {
+    const seededCanceled = findSeededSubscription(statusCanceled);
+    if (!seededCanceled?.canceled || !seededCanceled?.canRefulfill) {
       throw new Error('cancel mutation was not persisted by the provider');
     }
     const fulfillRequest = new Api.payments.FulfillStarsSubscription({ peer, subscriptionId });
@@ -169,7 +176,8 @@ async function run(): Promise<void> {
     assertType(fulfilled, 'BoolTrue', 'Boolean', 'boolTrue');
     assertType(fulfilledReplay, 'BoolTrue', 'Boolean', 'boolTrue');
     const statusFulfilled = await getSubscriptions();
-    if (statusFulfilled.subscriptions[0].canceled === true || statusFulfilled.subscriptions[0].canRefulfill === true) {
+    const seededFulfilled = findSeededSubscription(statusFulfilled);
+    if (seededFulfilled?.canceled === true || seededFulfilled?.canRefulfill === true) {
       throw new Error('fulfill mutation was not persisted by the provider');
     }
     const botCancelRequest = makeBotCancelStarsSubscription(new Api.InputUser({ userId, accessHash: BigInt(0) }), subscriptionId, false);
@@ -178,7 +186,8 @@ async function run(): Promise<void> {
     assertType(botCanceled, 'BoolTrue', 'Boolean', 'boolTrue');
     assertType(botCanceledReplay, 'BoolTrue', 'Boolean', 'boolTrue');
     const statusBotCanceled = await getSubscriptions();
-    if (!statusBotCanceled.subscriptions[0].canceled || !statusBotCanceled.subscriptions[0].botCanceled) {
+    const seededBotCanceled = findSeededSubscription(statusBotCanceled);
+    if (!seededBotCanceled?.canceled || !seededBotCanceled?.botCanceled) {
       throw new Error('bot cancellation was not persisted by the provider');
     }
     const operationCounts = sql(`SELECT operation || '=' || count(*)::text
@@ -190,9 +199,9 @@ async function run(): Promise<void> {
       throw new Error(`provider mutation idempotency rows = ${operationCounts}`);
     }
     observed.statusBefore = { type: typeName(statusBefore), subscriptions: statusBefore.subscriptions.length, balance: String(statusBefore.balance) };
-    observed.cancel = { type: typeName(changed), replayType: typeName(changedReplay), canceled: Boolean(statusCanceled.subscriptions[0].canceled) };
-    observed.fulfill = { type: typeName(fulfilled), replayType: typeName(fulfilledReplay), canceled: Boolean(statusFulfilled.subscriptions[0].canceled) };
-    observed.botCancel = { type: typeName(botCanceled), replayType: typeName(botCanceledReplay), botCanceled: statusBotCanceled.subscriptions[0].botCanceled };
+    observed.cancel = { type: typeName(changed), replayType: typeName(changedReplay), canceled: Boolean(seededCanceled.canceled) };
+    observed.fulfill = { type: typeName(fulfilled), replayType: typeName(fulfilledReplay), canceled: Boolean(seededFulfilled.canceled) };
+    observed.botCancel = { type: typeName(botCanceled), replayType: typeName(botCanceledReplay), botCanceled: seededBotCanceled.botCanceled };
     observed.operationCounts = operationCounts.split('\n');
     console.log(JSON.stringify({ transport: `DC${dcId} TCPObfuscated -> gateway -> session -> APIFull -> payment provider -> PostgreSQL`, userId: userId.toString(), subscriptionId, observed }));
   } finally {

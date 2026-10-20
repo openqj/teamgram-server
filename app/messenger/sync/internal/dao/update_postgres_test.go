@@ -285,6 +285,39 @@ func TestPostgresReceiptIdentityConflictRejected(t *testing.T) {
 	}
 }
 
+func TestPostgresCompletedReceiptCanBeReusedAfterTopicRecreation(t *testing.T) {
+	d := syncPostgresDAO(t)
+	testutil.SeedAuth(t, d.Pool, 7, 91, mtproto.AuthKeyTypePerm, false)
+	firstUpdates := mtproto.MakeUpdatesByUpdates(seqTestUpdate(7))
+	firstCtx := receiptContext(8)
+	if _, err := d.PrepareUpdates(firstCtx, 7, firstUpdates, 0, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.MarkDeliveryComplete(firstCtx, 7); err != nil {
+		t.Fatal(err)
+	}
+
+	secondHash := sha256.Sum256([]byte("recreated topic request"))
+	secondCtx := WithDeliveryReceipt(context.Background(), DeliveryReceipt{
+		ConsumerGroup: "sync-test", Topic: "Sync-T", Partition: 0, Offset: 8, RequestHash: secondHash[:],
+	})
+	secondUpdates := mtproto.MakeUpdatesByUpdates(seqTestUpdate(8))
+	prepared, err := d.PrepareUpdates(secondCtx, 7, secondUpdates, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prepared.Completed || prepared.AuthUpdates[91].GetSeq() != 2 {
+		t.Fatalf("reused completed receipt did not prepare a new delivery: %+v", prepared)
+	}
+	if err := d.MarkDeliveryComplete(secondCtx, 7); err != nil {
+		t.Fatal(err)
+	}
+	var rows int
+	if err := d.Pool.QueryRow(context.Background(), `SELECT count(*) FROM auth_seq_updates WHERE auth_id=91 AND user_id=7`).Scan(&rows); err != nil || rows != 2 {
+		t.Fatalf("update journal rows=%d error=%v", rows, err)
+	}
+}
+
 func TestPostgresConcurrentReceiptReplayAllocatesOnce(t *testing.T) {
 	d := syncPostgresDAO(t)
 	testutil.SeedAuth(t, d.Pool, 7, 91, mtproto.AuthKeyTypePerm, false)

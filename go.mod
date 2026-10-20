@@ -112,7 +112,7 @@ require (
 	github.com/prometheus/common v0.66.1 // indirect
 	github.com/prometheus/procfs v0.16.1 // indirect
 	github.com/rcrowley/go-metrics v0.0.0-20201227073835-cf1acfcdf475 // indirect
-	github.com/redis/go-redis/v9 v9.18.0 // indirect
+	github.com/redis/go-redis/v9 v9.18.0
 	github.com/rogpeppe/go-internal v1.10.0 // indirect
 	github.com/spaolacci/murmur3 v1.1.0 // indirect
 	github.com/valyala/bytebufferpool v1.0.1-0.20201104193830-18533face0df // indirect

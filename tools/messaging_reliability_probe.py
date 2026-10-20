@@ -275,15 +275,43 @@ def experiment(lab: Lab, args: argparse.Namespace, report: dict) -> None:
         packages = ["./pkg/mqproducer", "./pkg/mqconsumer", "./app/messenger/msg/internal/dao",
                     "./app/messenger/msg/inbox/internal/core", "./app/messenger/msg/msg/internal/core",
                     "./app/messenger/sync/internal/dao"]
-        result = lab.run(["go", "test", "-race", "-json", "-count=1", *packages], timeout=max(lab.timeout, 300))
-        passed = [json.loads(line)["Test"] for line in result.stdout.splitlines()
-                  if line.startswith("{") and json.loads(line).get("Action") == "pass" and "Test" in json.loads(line)]
+        result = lab.run(
+            ["go", "test", "-race", "-json", "-count=1", *packages],
+            check=False,
+            timeout=max(lab.timeout, 300),
+        )
+        events = []
+        for line in result.stdout.splitlines():
+            if not line.startswith("{"):
+                continue
+            try:
+                events.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+        passed = [event["Test"] for event in events
+                  if event.get("Action") == "pass" and "Test" in event]
         required = {"TestProducerKafkaIntegration", "TestInboxDeliveryPostgresBacklogIncludesDelayedAndExpiredWork",
                     "TestInboxDeliveryPostgresWorkerDrainsOrderedRowsAfterAsyncAck",
                     "TestInboxDeliveryPostgresCompletionMetricCountsOnlyCommittedAck", "TestPostgresMsgSendEntryBatchAndRetry",
                     "TestPostgresInboxConsumerRetryAfterSyncFailure"}
+        if result.returncode != 0:
+            failed_tests = {
+                (event.get("Package", ""), event.get("Test", ""))
+                for event in events
+                if event.get("Action") == "fail"
+            }
+            failure_output = [
+                event.get("Output", "").strip()
+                for event in events
+                if event.get("Action") == "output"
+                and (event.get("Package", ""), event.get("Test", "")) in failed_tests
+                and event.get("Output", "").strip()
+            ]
+            detail = "\n".join(failure_output[-40:]) or result.stderr[-4000:] or "no Go test failure detail"
+            raise ProbeError(f"isolated Go tests failed (exit {result.returncode}):\n{detail}")
         if not required.issubset(passed):
-            raise ProbeError("required PostgreSQL or Kafka integration checks did not run")
+            missing = ", ".join(sorted(required - set(passed)))
+            raise ProbeError(f"required PostgreSQL or Kafka integration checks did not pass: {missing}")
         report["go_tests"] = {"status": "PASS", "packages": packages, "passed_tests": passed}
 
     seed_accounts(lab)
@@ -322,18 +350,26 @@ def experiment(lab: Lab, args: argparse.Namespace, report: dict) -> None:
     pending = lab.wait_sql("postgres", "SELECT (SELECT count(*) FROM msg_inbox_delivery_outbox WHERE state=0)+(SELECT count(*) FROM msg_state_delivery_outbox WHERE state=0);", "0")
     report["pending_after_probes"] = int(pending)
     deadline = time.monotonic() + 30
+    report["monitoring"] = {"status": "PENDING", "fresh_database_sampler": False, "pending": []}
     while time.monotonic() < deadline:
         try:
             series = prometheus_query(args.metrics_port, 'teamgram_delivery_backlog_sample_timestamp_seconds{job="messenger.msg"}')
-            if series and time.time() - float(series[0]["value"][1]) < 30:
-                report["monitoring"] = {"status": "PASS", "fresh_database_sampler": True,
-                                         "pending": prometheus_query(args.metrics_port, 'teamgram_delivery_pending{job="messenger.msg"}')}
+            pending_series = prometheus_query(args.metrics_port, 'teamgram_delivery_pending{job="messenger.msg"}')
+            now = time.time()
+            sample_times = [float(item["value"][1]) for item in series]
+            pending_queues = {item["metric"].get("queue") for item in pending_series}
+            pending_values = [float(item["value"][1]) for item in pending_series]
+            fresh = bool(sample_times) and all(0 <= now - stamp < 30 for stamp in sample_times)
+            drained = {"inbox", "state"}.issubset(pending_queues) and all(value == 0 for value in pending_values)
+            report["monitoring"] = {"status": "PASS" if fresh and drained else "PENDING",
+                                     "fresh_database_sampler": fresh, "pending": pending_series}
+            if fresh and drained:
                 break
         except (OSError, ValueError, ProbeError):
             pass
         time.sleep(1)
     else:
-        raise ProbeError("Prometheus did not receive fresh delivery metrics")
+        raise ProbeError("Prometheus did not observe zero delivery backlog after PostgreSQL outboxes drained")
     report["dependencies_at_completion"] = {}
     for service in ("postgres", "kafka", "redis", "etcd", "seaweedfs", "backend", "prometheus"):
         state = lab.container(service)["State"]

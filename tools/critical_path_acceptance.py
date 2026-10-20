@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 from collections import Counter
 import datetime as dt
+from functools import lru_cache
 import json
 import os
 from pathlib import Path
@@ -109,12 +110,47 @@ def select_rows(rows: list[dict[str, Any]], args: argparse.Namespace) -> list[di
     return selected
 
 
+@lru_cache(maxsize=None)
+def postgres_container_for_port(port: str) -> str | None:
+    if shutil.which("docker") is None:
+        return None
+    gateways = subprocess.run(
+        ["docker", "ps", "--filter", f"publish={port}", "--format", '{{.Label "com.docker.compose.project"}}'],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    projects = {line.strip() for line in gateways.stdout.splitlines() if line.strip()}
+    if gateways.returncode != 0 or len(projects) != 1:
+        return None
+    project = next(iter(projects))
+    databases = subprocess.run(
+        [
+            "docker", "ps", "--filter", f"label=com.docker.compose.project={project}",
+            "--filter", "label=com.docker.compose.service=postgres", "--format", "{{.Names}}",
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    names = [line.strip() for line in databases.stdout.splitlines() if line.strip()]
+    if databases.returncode != 0 or len(names) != 1:
+        return None
+    return names[0]
+
+
 def effective_env(row: dict[str, Any]) -> dict[str, str]:
     env = dict(os.environ)
     if "TEAMGRAM_GRAMJS_DIR" in row.get("required_env", []) and not env.get("TEAMGRAM_GRAMJS_DIR"):
         env["TEAMGRAM_GRAMJS_DIR"] = str(DEFAULT_GRAMJS)
     for name, value in row.get("env_defaults", {}).items():
         env.setdefault(str(name), str(value))
+    if env.get("TG_DC_PORT") == "31443" and not env.get("TEAMGRAM_POSTGRES_CONTAINER"):
+        container = postgres_container_for_port("31443")
+        if container:
+            env["TEAMGRAM_POSTGRES_CONTAINER"] = container
+    if row.get("id") == "business-webview-cross-account" and env.get("TG_DC_PORT") == "31443":
+        env.setdefault("TEAMGRAM_BUSINESS_USE_FIXTURE_AUTH", "1")
     return env
 
 
@@ -137,6 +173,8 @@ def inspect_row(row: dict[str, Any]) -> dict[str, Any]:
         errors.append(f"script not found: {script}")
     if row.get("requires_docker") and shutil.which("docker") is None:
         errors.append("docker executable not found")
+    if env.get("TG_DC_PORT") == "31443" and not env.get("TEAMGRAM_POSTGRES_CONTAINER"):
+        errors.append("cannot resolve the PostgreSQL container for the 31443 Compose gateway")
     if row.get("kind") == "tsx":
         gramjs = Path(env.get("TEAMGRAM_GRAMJS_DIR", ""))
         tsx = gramjs / "node_modules" / ".bin" / "tsx"

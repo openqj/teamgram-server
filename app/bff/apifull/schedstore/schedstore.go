@@ -186,6 +186,9 @@ func AppendMessage(userID int64, peer *mtproto.Peer, input *mtproto.Message, whe
 		return nil, err
 	}
 	msg := proto.Clone(input).(*mtproto.Message)
+	if msg.PredicateName == "" {
+		msg.PredicateName = mtproto.Predicate_message
+	}
 	msg.Out = true
 	msg.FromScheduled = true
 	msg.Id = id

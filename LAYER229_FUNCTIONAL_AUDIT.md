@@ -1,5 +1,20 @@
 # Layer 229 API 功能验收
 
+## 2026-10-20：隔离数据库绑定与会话证据复验
+
+- 修正关键路径 runner 的隔离目标选择：对 `TG_DC_PORT=31443` 的矩阵项，从监听该端口的 Compose gateway 解析同项目 PostgreSQL，并把容器名传给探针；频道/成员/邀请共享会话框架现在也读取该容器，不能唯一解析时预检阻止运行。Business WebView 隔离探针显式用 fixture auth key，避免误走未配置的 SMS provider。
+- `/tmp/teamgram-critical-path-acceptance-isolated-db-bound-20261020-final.json` 记录 7/7 PASS：频道消息生命周期、频道成员重连、邀请跨账号、通知设置、账号/密码会话、全局隐私、Business/WebView。矩阵声明的覆盖集合有 94 个唯一方法名；其中 `channels.readMessageContents`、`messages.requestUrlAuth`、`messages.acceptUrlAuth`、`messages.readDiscussion`、`messages.forwardMessages` 五项从 DB/component 升为 `PARTIAL_ISOLATED_SESSION_E2E`。生产分层变为 session=433、DB-only=216、component-only=145，其余 12 项合计不变；这批结果仍不满足真实 Provider、后端重启、生产流量和长期 SLO 门槛，完整生产接受仍是 0/813。
+- `/tmp/teamgram-messaging-reliability-acceptance-20261020-go-tests-fixed.json` 为 `PASS`：6 个 MQ/消息/Sync Go 包共 173 个通过事件；40 条本地消息样本双向 RPC 成功率 100%、发送 RPC P95 17.6ms、实时投递 P95 1,011.7ms。后端容器替换、14.6 秒 Kafka 中断、4 条持久待投递 intent、PTS 连续、随机 ID 重放和恢复均通过；Prometheus 新鲜样本显示 inbox/state pending 为 0，临时容器、网络、volume 清理完成。该报告标记 `LOCAL_SAMPLE`，不能证明生产容量或 30 天 SLO。
+- 报告工具现按所有未生产验收行汇总缺口线索，当前文字分类为 signed provider boundary 86、PostgreSQL/component-only 560、missing real provider 223、session/update/restart 548；类别可重叠且基于 ledger 文本，不应当作精确缺陷数。严格台账仍为 813/813 source match、完整生产验收 0/813。
+
+## 2026-10-20：scheduled message 生产续验与 PostgreSQL 18 schema preflight
+
+- 当前 `backend-backend-1` 使用 `teamgram-server-e2e-stars-gift:20261020-scheduled-fix`，Docker health 为 `healthy`，`restart=0`、`oom=false`。PostgreSQL 18.6 的运行库 `schema_migrations` 共有 115 条记录，最新登记版本为 `117_apifull_sponsored_message_context`；`apifull_sponsored_inventory.message_id` 和对应 partial unique index 均可见。
+- 迁移执行先按完整目录运行并发现 091/096/108/109 的历史 checksum 漂移；没有覆盖历史 journal，而是在 `apply.sh` 中加入四条精确旧 checksum + schema 完整性例外。随后用完整目录重放，`full_migration_replay_rc=0`，113–117 已事务提交，任意其它 checksum 仍会失败。发布前仍需在干净 staging 数据库重放并保留 journal provenance，不能把这些兼容例外当作历史文件可任意修改。
+- `probe-real-chain.ts` 清理了临时 scheduled response byte dump；新镜像上两组独立 DC2 TCPObfuscated session 完成配置/只读、私聊、反应、投票、群组/论坛、`messages.sendScheduledMessages`、scheduled history/get/cancel/deliver、频道 history/search/views 和 `updates.getChannelDifference`。所有结果构造器通过，临时消息/群组/频道清理完成，`core.real-chain` 报告为 `PASS`。
+- 同轮重新生成 `core.real-chain`、`readonly.constructor-surface`、`provider.stars-gifts-catalog` 三份矩阵报告，均为 `PASS`。合并快照 `/tmp/teamgram-critical-path-acceptance-current-scheduled-20261020.json` 为 77 PASS、8 FAIL、5 MANUAL；其中旧矩阵行保留此前证据，只有上述三行是本轮新重跑，不能将矩阵 PASS 外推为 813 个方法的完整生产通过。
+- 严格台账仍为 813/813 方法、constructor ID 和 source match，缺失/重复/冲突均为 0。生产状态继续为 `PARTIAL_ISOLATED_SESSION_E2E=428`、`PARTIAL_ISOLATED_DB_ONLY=220`、`PARTIAL_COMPONENT_ONLY=146`、`ISOLATED_COMPONENT_ONLY=6`、`ISOLATED_DB_ONLY=2`、`TRANSPORT_ONLY=11`；完整生产验收仍为 **0/813**。仓库已有自有 provider 接口/客户端、隔离 fixture 和独立 Product Identity 服务；这不代表权威生产端点已接入或验收通过。Teamgram `TEAMGRAM_AUTH_PROVIDER_*` 验证 Bot/Web 凭据，与 Identity JWT/账号绑定接口是不同契约；Files BFF 已有签名 CDN provider，DFS 使用 S3 存储契约。自有系统、外部上游、fixture 和验收证据逐项见[Provider 归属与验收状态](docs/provider-ownership-and-readiness-zh.md)。
+
 ## 2026-10-18：`payments.getPremiumGiftCodeOptions` provider option 语义收口
 
 - `payments.getPremiumGiftCodeOptions#2757ba54` 继续按 Layer 229 处理可选 `boost_peer`，通过签名 payment provider 绑定 caller，并在返回 `Vector<PremiumGiftCodeOption>` 前校验 `users`、`months`、`currency`、`amount` 及可选 `store_product`/`store_quantity` 字段；带空商品标识或非正商品数量的 provider 响应 fail-closed，不把 malformed option 编码到 wire。

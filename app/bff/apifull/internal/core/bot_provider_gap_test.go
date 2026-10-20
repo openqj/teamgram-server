@@ -12,10 +12,9 @@ import (
 	"github.com/teamgram/teamgram-server/app/bff/apifull/internal/svc"
 )
 
-// These methods need a bot business/provider backend that is not part of the
-// APIFull service yet. Keep their Layer 229 boundary fail-closed until one is
-// available: returning a synthetic success would make clients believe that a
-// bot setting or recommendation was applied.
+// Bot recommendations and the star referral program require an authoritative
+// bot business provider. Keep their Layer 229 boundary fail-closed when neither
+// a published control-plane result nor a signed provider is available.
 func TestBotProviderGapsFailClosedWithoutPersistence(t *testing.T) {
 	oldStore := persist.Default
 	store := &botProviderGapStoreProbe{}

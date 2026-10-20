@@ -279,7 +279,7 @@ export function loadFixtureAuthKey(username: string, offset = 0): string | undef
     throw new Error(`fixture auth key offset must be a non-negative integer: ${offset}`);
   }
   const value = execFileSync('docker', [
-    'exec', 'teamgram-postgres', 'psql', '-v', 'ON_ERROR_STOP=1', '-At', '-q', '-U', 'teamgram', '-d', 'teamgram', '-c', `
+    'exec', process.env.TEAMGRAM_POSTGRES_CONTAINER || 'teamgram-postgres', 'psql', '-v', 'ON_ERROR_STOP=1', '-At', '-q', '-U', 'teamgram', '-d', 'teamgram', '-c', `
     SELECT encode(k.body, 'base64')
     FROM users u
     JOIN auth_users au ON au.user_id=u.id

@@ -1,0 +1,229 @@
+services:
+  teamgram:
+    build:
+      context: ${TEAMGRAM_WORKSPACE_DIR:?run web-isolated.sh up first}
+      dockerfile: teamgram-server/Dockerfile.web-isolated
+      target: teamgram-app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      etcd:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+      jaeger:
+        condition: service_started
+      group-call-media-provider-fixture:
+        condition: service_healthy
+      business-provider-fixture:
+        condition: service_healthy
+    environment:
+      TEAMGRAM_POSTGRES_DSN: postgres://teamgram:${ISOLATED_POSTGRES_PASSWORD:?run web-isolated.sh up first}@postgres:5432/teamgram?sslmode=disable
+      TEAMGRAM_KAFKA_DLQ_TOPIC: teamgram-dlq
+      S3_ENDPOINT: minio:9000
+      S3_ACCESS_KEY: ${ISOLATED_MINIO_ROOT_USER:?run web-isolated.sh up first}
+      S3_SECRET_KEY: ${ISOLATED_MINIO_ROOT_PASSWORD:?run web-isolated.sh up first}
+      S3_USE_SSL: "false"
+      TEAMGRAM_PROVIDER_FIXTURE_MODE: "1"
+      TEAMGRAM_GROUP_CALL_MEDIA_ENDPOINT: http://group-call-media-provider-fixture:23194
+      TEAMGRAM_GROUP_CALL_MEDIA_API_KEY: group-call-media-fixture-key
+      TEAMGRAM_GROUP_CALL_MEDIA_SIGNING_KEY: group-call-media-fixture-signing-key-at-least-32-bytes
+      TEAMGRAM_GROUP_CALL_MEDIA_RTMP_HOST: 127.0.0.1:1935
+      TEAMGRAM_GROUP_CALL_MEDIA_TIMEOUT_SECONDS: "5"
+      TEAMGRAM_BUSINESS_PROVIDER_ENDPOINT: http://business-provider-fixture:23190
+      TEAMGRAM_BUSINESS_PROVIDER_KEY: isolated-business-provider-key
+      TEAMGRAM_BUSINESS_PROVIDER_SIGNING_KEY: isolated-business-provider-signing-key-at-least-32-bytes
+      TEAMGRAM_BUSINESS_PROVIDER_TIMEOUT_SECONDS: "5"
+    networks:
+      - isolated
+
+  business-provider-fixture:
+    build:
+      context: ${TEAMGRAM_WORKSPACE_DIR:?run web-isolated.sh up first}/teamgram-server
+      dockerfile: docker/production/business-provider-fixture/Dockerfile
+    environment:
+      TEAMGRAM_POSTGRES_DSN: postgres://teamgram:${ISOLATED_POSTGRES_PASSWORD:?run web-isolated.sh up first}@postgres:5432/teamgram?sslmode=disable
+      TEAMGRAM_BUSINESS_PROVIDER_KEY: isolated-business-provider-key
+      TEAMGRAM_BUSINESS_PROVIDER_SIGNING_KEY: isolated-business-provider-signing-key-at-least-32-bytes
+      TEAMGRAM_BUSINESS_PROVIDER_TIMEOUT_SECONDS: "5"
+      PORT: "23190"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "/business-provider", "--healthcheck"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
+    networks:
+      - isolated
+
+  group-call-media-provider-fixture:
+    image: teamgram-group-call-media-provider-fixture:acceptance
+    environment:
+      GROUP_CALL_MEDIA_PROVIDER_KEY: group-call-media-fixture-key
+      GROUP_CALL_MEDIA_PROVIDER_SIGNING_KEY: group-call-media-fixture-signing-key-at-least-32-bytes
+      GROUP_CALL_MEDIA_PROVIDER_RTMP_HOST: 127.0.0.1:1935
+      GROUP_CALL_MEDIA_PROVIDER_PORT: "23194"
+    healthcheck:
+      test: ["CMD", "/group-call-media-provider", "--healthcheck"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
+    networks:
+      - isolated
+
+  gateway:
+    build:
+      context: ${TEAMGRAM_WORKSPACE_DIR:?run web-isolated.sh up first}
+      dockerfile: teamgram-server/Dockerfile.web-isolated
+      target: isolated-gateway
+    entrypoint: ["/usr/bin/socat"]
+    command:
+      - "TCP-LISTEN:11443,bind=0.0.0.0,reuseaddr,fork"
+      - "TCP:teamgram:11443"
+    depends_on:
+      teamgram:
+        condition: service_started
+    ports:
+      - "127.0.0.1:31443:11443"
+    networks:
+      - isolated
+      - frontdoor
+
+  postgres:
+    image: postgres:18.1-alpine3.23
+    environment:
+      POSTGRES_DB: teamgram
+      POSTGRES_USER: teamgram
+      POSTGRES_PASSWORD: ${ISOLATED_POSTGRES_PASSWORD:?run web-isolated.sh up first}
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          pg_isready -U teamgram -d teamgram &&
+          psql -U teamgram -d teamgram -Atqc
+          "SELECT 1 FROM users WHERE username = 'isolated_test_01' LIMIT 1"
+          | grep -qx 1
+      interval: 5s
+      timeout: 5s
+      retries: 60
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ${ISOLATED_POSTGRES_DUMP:?run web-isolated.sh up first}:/docker-entrypoint-initdb.d/01-production-snapshot.sql:ro
+    networks:
+      - isolated
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    volumes:
+      - redis_data:/data
+    networks:
+      - isolated
+
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.11
+    environment:
+      ETCD_NAME: isolated
+      ETCD_DATA_DIR: /etcd-data
+      ETCD_LISTEN_CLIENT_URLS: http://0.0.0.0:2379
+      ETCD_ADVERTISE_CLIENT_URLS: http://etcd:2379
+      ETCD_LISTEN_PEER_URLS: http://0.0.0.0:2380
+      ETCD_INITIAL_ADVERTISE_PEER_URLS: http://etcd:2380
+      ETCD_INITIAL_CLUSTER: isolated=http://etcd:2380
+      ETCD_INITIAL_CLUSTER_TOKEN: ${ISOLATED_ETCD_CLUSTER_TOKEN:?run web-isolated.sh up first}
+      ETCD_INITIAL_CLUSTER_STATE: new
+      ETCD_AUTO_COMPACTION_RETENTION: "1"
+    healthcheck:
+      test: ["CMD", "etcdctl", "endpoint", "health", "--endpoints=http://127.0.0.1:2379"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    volumes:
+      - etcd_data:/etcd-data
+    networks:
+      - isolated
+
+  kafka:
+    image: apache/kafka:3.9.0
+    environment:
+      KAFKA_HEAP_OPTS: "-Xms256m -Xmx512m"
+      KAFKA_NODE_ID: "1"
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://kafka:9092,CONTROLLER://kafka:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "1"
+      KAFKA_NUM_PARTITIONS: "3"
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+    healthcheck:
+      test: ["CMD", "/opt/kafka/bin/kafka-topics.sh", "--bootstrap-server", "kafka:9092", "--list"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+    networks:
+      - isolated
+
+  minio:
+    image: chrislusf/seaweedfs:4.47
+    command:
+      - mini
+      - -dir=/data
+      - -ip.bind=0.0.0.0
+      - -bucket=documents,encryptedfiles,photos,videos
+      - -master.telemetry=false
+      - -s3.iam=false
+      - -s3.port=9000
+    environment:
+      AWS_ACCESS_KEY_ID: ${ISOLATED_MINIO_ROOT_USER:?run web-isolated.sh up first}
+      AWS_SECRET_ACCESS_KEY: ${ISOLATED_MINIO_ROOT_PASSWORD:?run web-isolated.sh up first}
+    volumes:
+      - minio_data:/data
+    networks:
+      - isolated
+
+  minio-init:
+    image: alpine:3.20
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["sleep 2"]
+    depends_on:
+      - minio
+    networks:
+      - isolated
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.63.0
+    networks:
+      - isolated
+
+volumes:
+  postgres_data:
+  redis_data:
+  etcd_data:
+  kafka_data:
+  minio_data:
+
+networks:
+  isolated:
+    internal: true
+  frontdoor:

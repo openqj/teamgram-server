@@ -339,7 +339,11 @@ func TestInboxDeliveryPostgresLeaseRecoveryRejectsStaleRelease(t *testing.T) {
 	if err = d.Pool.QueryRow(ctx, `SELECT claim_token::text, last_error FROM msg_inbox_delivery_outbox`).Scan(&token, &lastError); err != nil || token != second.token || lastError != "" {
 		t.Fatalf("stale release changed current claim: %q %q, %v", token, lastError, err)
 	}
+	if _, err = d.Pool.Exec(ctx, `UPDATE msg_inbox_delivery_outbox SET attempts=100,max_attempts=200 WHERE id=$1 AND claim_token=$2::uuid`, second.id, second.token); err != nil {
+		t.Fatal(err)
+	}
 	second.attempts = 100
+	second.maxAttempts = 200
 	if err = d.releaseInboxDelivery(ctx, second, errors.New("repeated failure")); err != nil {
 		t.Fatal(err)
 	}

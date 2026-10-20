@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"strings"
 
 	"github.com/teamgram/proto/mtproto"
 )
@@ -64,19 +65,23 @@ func StoreSponsoredPeers(ctx context.Context, query string, peers *mtproto.Conta
 	return err
 }
 
-// LoadSponsoredMessages reads the deployment-owned messages constructor for
-// one canonical InputPeer key. Missing rows are not converted into empty ads.
-func LoadSponsoredMessages(ctx context.Context, peerKey string) (*mtproto.Messages_SponsoredMessages, bool, error) {
+// LoadSponsoredMessages reads the deployment-owned constructor for one peer
+// and optional Layer 229 message context. Missing rows are not converted into
+// empty ads or a less-specific peer result.
+func LoadSponsoredMessages(ctx context.Context, peerKey string, messageID int32) (*mtproto.Messages_SponsoredMessages, bool, error) {
+	if strings.TrimSpace(peerKey) == "" || messageID < 0 {
+		return nil, false, ErrSponsoredInventoryInvalid
+	}
 	store, ok := Default.(*postgresStore)
 	if !ok || store == nil || store.db == nil {
 		return nil, false, ErrSponsoredInventoryUnavailable
 	}
 	var raw []byte
 	err := store.db.QueryRowContext(ctx, `SELECT payload FROM apifull_sponsored_inventory
-		WHERE inventory_type = 'messages' AND peer_key = $1 AND active
+		WHERE inventory_type = 'messages' AND peer_key = $1 AND message_id = $2 AND active
 		AND (starts_at IS NULL OR starts_at <= CURRENT_TIMESTAMP)
 		AND (ends_at IS NULL OR ends_at > CURRENT_TIMESTAMP)
-		ORDER BY id DESC LIMIT 1`, peerKey).Scan(&raw)
+		ORDER BY id DESC LIMIT 1`, peerKey, messageID).Scan(&raw)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, false, nil
 	}
@@ -94,7 +99,10 @@ func LoadSponsoredMessages(ctx context.Context, peerKey string) (*mtproto.Messag
 }
 
 // StoreSponsoredMessages provisions the deployment-owned messages inventory.
-func StoreSponsoredMessages(ctx context.Context, peerKey string, messages *mtproto.Messages_SponsoredMessages) error {
+func StoreSponsoredMessages(ctx context.Context, peerKey string, messageID int32, messages *mtproto.Messages_SponsoredMessages) error {
+	if strings.TrimSpace(peerKey) == "" || messageID < 0 {
+		return ErrSponsoredInventoryInvalid
+	}
 	store, ok := Default.(*postgresStore)
 	if !ok || store == nil || store.db == nil {
 		return ErrSponsoredInventoryUnavailable
@@ -106,10 +114,10 @@ func StoreSponsoredMessages(ctx context.Context, peerKey string, messages *mtpro
 	if err != nil {
 		return err
 	}
-	_, err = store.db.ExecContext(ctx, `INSERT INTO apifull_sponsored_inventory (inventory_type, peer_key, payload)
-		VALUES ('messages', $1, $2::jsonb)
-		ON CONFLICT (inventory_type, peer_key) WHERE inventory_type = 'messages'
-		DO UPDATE SET payload = EXCLUDED.payload, active = TRUE, updated_at = CURRENT_TIMESTAMP`, peerKey, string(raw))
+	_, err = store.db.ExecContext(ctx, `INSERT INTO apifull_sponsored_inventory (inventory_type, peer_key, message_id, payload)
+		VALUES ('messages', $1, $2, $3::jsonb)
+		ON CONFLICT (inventory_type, peer_key, message_id) WHERE inventory_type = 'messages'
+		DO UPDATE SET payload = EXCLUDED.payload, active = TRUE, updated_at = CURRENT_TIMESTAMP`, peerKey, messageID, string(raw))
 	return err
 }
 

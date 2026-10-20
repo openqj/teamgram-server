@@ -50,6 +50,7 @@ var requiredReadOnlyPostgresMigrations = []string{
 	"114_apifull_stars_sub2api_mirror",
 	"115_apifull_stars_sub2api_rate_snapshot",
 	"116_apifull_stars_sub2api_account_binding",
+	"117_apifull_sponsored_message_context",
 }
 
 var requiredReadOnlyPostgresSchemaQueries = []string{
@@ -61,7 +62,7 @@ var requiredReadOnlyPostgresSchemaQueries = []string{
 	`SELECT owner_user_id, collectible_id, document_id FROM apifull_collectible_emoji_status LIMIT 0`,
 	`SELECT owner_user_id, bot_user_id, enabled FROM apifull_user_emoji_status_permission LIMIT 0`,
 	`SELECT id, promo FROM apifull_premium_promo LIMIT 0`,
-	`SELECT id, inventory_type, query, peer_key, payload FROM apifull_sponsored_inventory LIMIT 0`,
+	`SELECT id, inventory_type, query, peer_key, message_id, payload FROM apifull_sponsored_inventory LIMIT 0`,
 	`SELECT id, source_channel_id, source_message_id, destination_peer_type, destination_peer_id, destination_message_id, message_json FROM apifull_public_forward_message LIMIT 0`,
 	`SELECT id, source_user_id, source_story_id, destination_peer_type, destination_peer_id, destination_story_id, story_json, peer_json FROM apifull_public_forward_story LIMIT 0`,
 	`SELECT gift_id FROM apifull_gift_chat_theme LIMIT 0`,

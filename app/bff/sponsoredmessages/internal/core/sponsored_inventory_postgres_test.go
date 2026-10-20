@@ -33,7 +33,7 @@ func TestSponsoredInventoryHandlersReadPostgres(t *testing.T) {
 	messages := mtproto.MakeTLMessagesSponsoredMessages(&mtproto.Messages_SponsoredMessages{
 		Messages: []*mtproto.SponsoredMessage{{RandomId: []byte("message"), Message: "ad"}},
 	}).To_Messages_SponsoredMessages()
-	if err := persist.StoreSponsoredMessages(t.Context(), "inputPeerSelf:0:0:0", messages); err != nil {
+	if err := persist.StoreSponsoredMessages(t.Context(), "inputPeerSelf:0:0:0", 0, messages); err != nil {
 		t.Fatal(err)
 	}
 	c := New(t.Context(), &svc.ServiceContext{})

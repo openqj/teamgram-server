@@ -18,6 +18,17 @@ through authsession.
 HTTP is accepted only for loopback development endpoints. Empty configuration
 keeps both import methods unavailable.
 
+## Product Identity boundary
+
+This provider contract verifies Bot API credentials and Telegram Web tokens;
+it is not the Product Identity account authority or its JWT/token-exchange API.
+The independent `services/identity` service owns canonical `acct:<UUID>`
+accounts and Teamgram account bindings. Do not point `TEAMGRAM_AUTH_PROVIDER_ENDPOINT`
+directly at Identity: the request and response contracts differ. A deployment
+that needs both boundaries must configure the credential verifier separately
+and use the documented Teamgram-to-Identity communication bridge for Identity
+JWT exchange.
+
 ## Request and response
 
 The BFF sends `POST` JSON with an HMAC-SHA256 signature over the exact request
@@ -77,3 +88,7 @@ authorization, Passport, and bot-connection requests to the signed
 overlay sets `TEAMGRAM_PROVIDER_FIXTURE_MODE=1` and uses the `.test` service
 alias for its HTTP endpoint. Keep that mode unset in production; without it,
 non-HTTPS, non-loopback provider endpoints remain rejected.
+
+The fixture proves the signed provider contract in an isolated environment; it
+does not establish production Bot/Web credential authority or Product Identity
+integration.
